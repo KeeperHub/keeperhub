@@ -17,6 +17,7 @@ import { getWorkflowAccess } from "@/lib/workflow/access";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import { clearStrayToggles } from "@/lib/workflow/validation/action-config";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
+import { stripOrgRpcSelection } from "@/lib/workflow/strip-org-rpc-selection";
 // Node type for type-safe node manipulation
 type WorkflowNodeLike = {
   id: string;
@@ -191,11 +192,12 @@ export async function POST(
       duplicatedNodes as Record<string, unknown>[],
       duplicatedEdges as Record<string, unknown>[]
     );
-    // A copy into another organization starts with no stray toggle values.
+    // A copy into another organization starts with no stray toggle values
+    // and no pinned RPC config, as those ids belong to the source org.
     const newNodes =
       sourceWorkflow.organizationId === organizationId
         ? sanitized.nodes
-        : clearStrayToggles(sanitized.nodes);
+        : stripOrgRpcSelection(clearStrayToggles(sanitized.nodes));
     const newEdges = sanitized.edges;
 
     const featureGuard = await enforceWorkflowFeatures(

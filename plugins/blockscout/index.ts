@@ -12,6 +12,8 @@ const networkField = (): ActionConfigField => ({
   key: "network",
   label: "Chain",
   type: "chain-select",
+  // Picks the Blockscout explorer to query; no RPC endpoint is involved.
+  rpcRouted: false,
   chainTypeFilter: "evm",
   allowedChainIds: [...SUPPORTED_BLOCKSCOUT_CHAIN_IDS],
   defaultValue: "1",
