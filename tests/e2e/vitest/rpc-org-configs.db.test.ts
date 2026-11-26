@@ -336,6 +336,15 @@ describe.skipIf(SKIP)("organization RPC configs (Postgres)", () => {
     );
     expect(listed).toMatchObject({ unreadable: true, slots: [] });
 
+    const retested = await service.retestOrgRpcConfig({
+      organizationId: ORG_ID,
+      configId: broken.id,
+    });
+    expect(retested).toMatchObject({
+      ok: false,
+      code: service.OrgRpcErrorCode.INVALID_INPUT,
+    });
+
     const deleted = await service.deleteOrgRpcConfig({
       organizationId: ORG_ID,
       configId: broken.id,

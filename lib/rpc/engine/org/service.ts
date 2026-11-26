@@ -694,10 +694,14 @@ export async function retestOrgRpcConfig(input: {
       `Chain ${row.chainId} is not supported.`
     );
   }
-  const checked = await verifyRpcConfigUrls(
-    decodeRpcConfigUrls(row.encryptedUrls),
-    record.chain
-  );
+  const urls = readUrls(row);
+  if (!urls) {
+    return failure(
+      OrgRpcErrorCode.INVALID_INPUT,
+      "This config's URLs can no longer be read. Edit it and paste them again."
+    );
+  }
+  const checked = await verifyRpcConfigUrls(urls, record.chain);
   const [updated] = await db
     .update(organizationRpcConfigs)
     .set({ verification: checked.verification, updatedAt: new Date() })
