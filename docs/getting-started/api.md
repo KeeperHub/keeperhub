@@ -39,8 +39,8 @@ curl -sf -H "Authorization: Bearer $KEEPERHUB_API_KEY" \
 health checks at this endpoint. `GET /api/chains` is public and answers either way, so it tells
 you the service is reachable, not that your key works.
 
-No browser? Signup is captcha-gated and key creation needs a signed confirmation, so scripts start
-from wallet sign-in instead. See [Headless Onboarding](/api/headless-onboarding).
+Running a script or agent? Create the account and an organization key once in the dashboard, then
+call the API with the key. See [Headless Onboarding](/api/headless-onboarding).
 
 ## 2. Fund the wallet, if the workflow spends
 
