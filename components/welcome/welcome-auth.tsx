@@ -3,7 +3,7 @@
 import { useRef } from "react";
 import { SignInChoices } from "@/components/auth/sign-in-choices";
 import { KeeperHubLogo } from "@/components/icons/keeperhub-logo";
-import { authClient } from "@/lib/auth-client";
+import { signInAnonymously } from "@/lib/auth-client";
 import { markContinueAsGuest } from "@/lib/welcome-status";
 
 /**
@@ -18,7 +18,7 @@ export function WelcomeAuth(): React.ReactElement {
   const continueWithoutAccount = async (): Promise<void> => {
     markContinueAsGuest();
     try {
-      await authClient.signIn.anonymous();
+      await signInAnonymously();
     } catch {
       // Fall through: the client gate still handles the no-session case.
     }

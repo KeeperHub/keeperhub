@@ -126,10 +126,9 @@ scoped to an organization, a `401` means it is not. Point health checks and
 first-run scripts at this endpoint. `GET /api/chains` is public and answers
 either way, so it reports reachability rather than a working credential.
 
-No browser available? Sign-up is captcha-gated and key creation needs a signed
-confirmation, so a script or agent starts from wallet sign-in instead:
-[Headless Onboarding](/api/headless-onboarding) is the same path
-without a UI.
+Running a script or agent? Create the account and an organization key once in
+the dashboard; after that, [Headless Onboarding](/api/headless-onboarding)
+covers every step over HTTP with the key.
 
 ## 3. Supported chains
 

@@ -558,6 +558,8 @@ export type RpcConfigEntry = {
   fallbackWssUrl?: string;
   isPrivateMempoolRpcEnabled?: boolean;
   privateMempoolRpcUrl?: string;
+  // Block builder endpoints keyed by label, e.g. { "titan": "https://..." }.
+  builderRpcUrls?: Record<string, string>;
   isEnabled?: boolean;
   isTestnet?: boolean;
 };
@@ -724,9 +726,9 @@ export function getWssUrl(options: GetWssUrlOptions): string | undefined {
 }
 
 /**
- * Options for getPrivateRpcUrl / getUsePrivateMempoolRpc
+ * Options for the chain-config field lookups below
  */
-export type GetPrivateMempoolOptions = {
+export type ChainConfigLookupOptions = {
   rpcConfig: RpcConfig;
   jsonKey: string;
 };
@@ -740,7 +742,7 @@ export type GetPrivateMempoolOptions = {
  * @returns The private RPC URL, or undefined if not configured
  */
 export function getPrivateRpcUrl(
-  options: GetPrivateMempoolOptions
+  options: ChainConfigLookupOptions
 ): string | undefined {
   return findRpcConfigEntry(options.rpcConfig, options.jsonKey)
     ?.privateMempoolRpcUrl;
@@ -752,11 +754,47 @@ export function getPrivateRpcUrl(
  * Defaults to false when not set in chain-config JSON.
  */
 export function getUsePrivateMempoolRpc(
-  options: GetPrivateMempoolOptions
+  options: ChainConfigLookupOptions
 ): boolean {
   return (
     findRpcConfigEntry(options.rpcConfig, options.jsonKey)
       ?.isPrivateMempoolRpcEnabled ?? false
+  );
+}
+
+export type BuilderRpcUrls = Record<string, string>;
+
+const BUILDER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+// Keeps lowercase labels mapped to https URLs; undefined when none remain.
+export function normalizeBuilderRpcUrls(
+  value: unknown
+): BuilderRpcUrls | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const result: BuilderRpcUrls = {};
+  for (const [label, url] of Object.entries(value)) {
+    if (!BUILDER_LABEL_PATTERN.test(label) || typeof url !== "string") {
+      continue;
+    }
+    try {
+      if (new URL(url).protocol === "https:") {
+        result[label] = url;
+      }
+    } catch {
+      // Not a URL: skipped.
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+// Block builder endpoints from chain-config JSON, with no env-var fallback.
+export function getBuilderRpcUrls(
+  options: ChainConfigLookupOptions
+): BuilderRpcUrls | undefined {
+  return normalizeBuilderRpcUrls(
+    findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.builderRpcUrls
   );
 }
 

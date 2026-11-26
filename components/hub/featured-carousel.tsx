@@ -19,7 +19,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { api, type SavedWorkflow } from "@/lib/api-client";
-import { authClient, useSession } from "@/lib/auth-client";
+import { signInAnonymously, useSession } from "@/lib/auth-client";
 import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { WorkflowMiniMap } from "./workflow-mini-map";
@@ -77,7 +77,7 @@ export function FeaturedCarousel({ workflows }: FeaturedCarouselProps) {
 
     try {
       if (!session?.user) {
-        await authClient.signIn.anonymous();
+        await signInAnonymously();
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
