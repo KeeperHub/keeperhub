@@ -2,7 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   type AttributableRpcClient,
+  noteRpcCall,
   noteRpcClient,
+  noteRpcFailover,
   readRpcAttribution,
   runWithRpcAttribution,
   setRpcAttributionStorage,
@@ -17,19 +19,8 @@ function orgEndpoint(configId: string): FakeEndpoint {
   return { origin: RpcOrigin.ORG, configId };
 }
 
-/** A client whose primary and fallback can be switched between mid-step. */
-function fakeClient(
-  primary: FakeEndpoint,
-  fallback?: FakeEndpoint
-): AttributableRpcClient & { failOver(): void } {
-  let onFallback = false;
-  return {
-    activeEndpoint: () => (onFallback && fallback ? fallback : primary),
-    manager: { isCurrentlyUsingFallback: () => onFallback },
-    failOver: () => {
-      onFallback = true;
-    },
-  };
+function fakeClient(endpoint: FakeEndpoint): AttributableRpcClient {
+  return { activeEndpoint: () => endpoint };
 }
 
 beforeAll(() => {
@@ -78,12 +69,12 @@ describe("rpc step attribution", () => {
     });
   });
 
-  it("marks a step failed over when a client is on its fallback at completion", async () => {
+  it("marks a step failed over when one of its calls went to a fallback", async () => {
     const result = await runWithRpcAttribution(async () => {
-      const client = fakeClient(orgEndpoint("cfg-1"), PLATFORM);
-      noteRpcClient(client);
+      noteRpcClient(fakeClient(orgEndpoint("cfg-1")));
       await Promise.resolve();
-      client.failOver();
+      noteRpcCall(PLATFORM);
+      noteRpcFailover();
       return readRpcAttribution();
     });
     // The org primary served before the failover, so the step stays org.
@@ -92,6 +83,26 @@ describe("rpc step attribution", () => {
       rpcConfigId: "cfg-1",
       rpcFailedOver: true,
     });
+  });
+
+  it("keeps a fallback call on a shared manager to the step that made it", async () => {
+    const [failed, steady] = await Promise.all([
+      runWithRpcAttribution(async () => {
+        noteRpcClient(fakeClient(orgEndpoint("cfg-1")));
+        await Promise.resolve();
+        noteRpcFailover();
+        noteRpcCall(orgEndpoint("cfg-1-fallback"));
+        return readRpcAttribution();
+      }),
+      runWithRpcAttribution(async () => {
+        noteRpcClient(fakeClient(orgEndpoint("cfg-1")));
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        noteRpcCall(orgEndpoint("cfg-1"));
+        return readRpcAttribution();
+      }),
+    ]);
+    expect(failed?.rpcFailedOver).toBe(true);
+    expect(steady?.rpcFailedOver).toBe(false);
   });
 
   it("keeps sibling runs apart", async () => {

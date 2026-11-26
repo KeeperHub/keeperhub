@@ -1,7 +1,7 @@
 /**
  * Per-step record of which RPC endpoints served a workflow step or a direct
- * execution. The engine notes every client it hands out; the step wrapper
- * reads the note when the step completes.
+ * execution. The engine notes every client it hands out and every call it
+ * makes; the step wrapper reads the note when the step completes.
  *
  * Reachable from the workflow runtime bundle, which forbids Node builtins, so
  * this module holds no static `node:` import. The AsyncLocalStorage is
@@ -16,16 +16,17 @@ type AttributedEndpoint = Pick<RpcEndpoint, "origin" | "configId">;
 /** The part of an engine client the collector needs. */
 export type AttributableRpcClient = {
   activeEndpoint(): AttributedEndpoint;
-  manager: { isCurrentlyUsingFallback(): boolean };
-};
-
-type NotedClient = {
-  client: AttributableRpcClient;
-  servedAtStart: AttributedEndpoint;
 };
 
 type RpcAttributionCollector = {
-  clients: NotedClient[];
+  /** True once any endpoint served the run. */
+  used: boolean;
+  /** True once an organization endpoint served the run. */
+  servedByOrg: boolean;
+  /** The last organization config that served the run. */
+  configId: string | null;
+  /** True once a call of the run moved from its primary to its fallback. */
+  failedOver: boolean;
   parent: RpcAttributionCollector | undefined;
 };
 
@@ -60,60 +61,78 @@ export function runWithRpcAttribution<T>(fn: () => T): T {
     return fn();
   }
   const collector: RpcAttributionCollector = {
-    clients: [],
+    used: false,
+    servedByOrg: false,
+    configId: null,
+    failedOver: false,
     parent: storage.getStore(),
   };
   return storage.run(collector, fn);
 }
 
-/** Called by the engine for every client it returns. No-op outside a run. */
-export function noteRpcClient(client: AttributableRpcClient): void {
+function forEachCollector(
+  note: (collector: RpcAttributionCollector) => void
+): void {
   let collector = storageSlot.storage?.getStore();
-  if (!collector) {
-    return;
-  }
-  const servedAtStart = client.activeEndpoint();
   while (collector) {
-    collector.clients.push({ client, servedAtStart });
+    note(collector);
     collector = collector.parent;
   }
 }
 
-function isOrgEndpoint(endpoint: AttributedEndpoint): boolean {
-  return endpoint.origin === RpcOrigin.ORG;
+/** Note that `endpoint` served the current run and every run around it. */
+function noteServed(endpoint: AttributedEndpoint): void {
+  forEachCollector((collector) => {
+    collector.used = true;
+    if (endpoint.origin === RpcOrigin.ORG) {
+      collector.servedByOrg = true;
+      collector.configId = endpoint.configId ?? collector.configId;
+    }
+  });
+}
+
+/** Called by the engine for every client it returns. No-op outside a run. */
+export function noteRpcClient(client: AttributableRpcClient): void {
+  noteServed(client.activeEndpoint());
+}
+
+/*
+ * The two below are called from a call's telemetry, in the caller's context,
+ * so a manager shared across steps reports each call to the step that made
+ * it rather than its own current state.
+ */
+
+/** A call of the current run was served by `endpoint`. */
+export function noteRpcCall(endpoint: AttributedEndpoint): void {
+  noteServed(endpoint);
+}
+
+/** A call of the current run moved from its primary to its fallback. */
+export function noteRpcFailover(): void {
+  forEachCollector((collector) => {
+    collector.failedOver = true;
+  });
 }
 
 /**
- * Derive the stored attribution from the noted clients. Organization origin
- * wins when any of its endpoints served; the config is the last one that did.
+ * The stored attribution. Organization origin wins when any of its endpoints
+ * served; the config is the last one that did.
  */
 function deriveRpcAttribution(
-  clients: readonly NotedClient[]
+  collector: RpcAttributionCollector
 ): RpcAttribution | null {
-  if (clients.length === 0) {
+  if (!collector.used) {
     return null;
   }
-  let configId: string | null = null;
-  let servedByOrg = false;
-  let failedOver = false;
-  for (const { client, servedAtStart } of clients) {
-    failedOver = failedOver || client.manager.isCurrentlyUsingFallback();
-    for (const served of [servedAtStart, client.activeEndpoint()]) {
-      if (isOrgEndpoint(served)) {
-        servedByOrg = true;
-        configId = served.configId ?? configId;
-      }
-    }
-  }
   return {
-    rpcOrigin: servedByOrg ? RpcOrigin.ORG : RpcOrigin.PLATFORM,
-    rpcConfigId: servedByOrg ? configId : null,
-    rpcFailedOver: failedOver,
+    rpcOrigin: collector.servedByOrg ? RpcOrigin.ORG : RpcOrigin.PLATFORM,
+    rpcConfigId: collector.servedByOrg ? collector.configId : null,
+    rpcFailedOver: collector.failedOver,
   };
 }
 
 /** The attribution of the current run so far, null outside a run or with no RPC. */
 export function readRpcAttribution(): RpcAttribution | null {
   const collector = storageSlot.storage?.getStore();
-  return collector ? deriveRpcAttribution(collector.clients) : null;
+  return collector ? deriveRpcAttribution(collector) : null;
 }

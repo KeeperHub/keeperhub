@@ -300,6 +300,26 @@ describe("createRpcEngine", () => {
     });
   });
 
+  it("marks only the step whose call failed over on a shared manager", async () => {
+    setRpcAttributionStorage(new AsyncLocalStorage());
+    const failedOver = await runWithRpcAttribution(async () => {
+      const client = await engine.evm(orgScope("org_1"), 1);
+      let calls = 0;
+      await client.manager.executeWithFailover(() => {
+        calls += 1;
+        return calls <= 3 ? down() : Promise.resolve("ok");
+      });
+      return readRpcAttribution();
+    });
+    const later = await runWithRpcAttribution(async () => {
+      const client = await engine.evm(orgScope("org_1"), 1);
+      await client.manager.executeWithFailover(() => Promise.resolve("ok"));
+      return readRpcAttribution();
+    });
+    expect(failedOver?.rpcFailedOver).toBe(true);
+    expect(later?.rpcFailedOver).toBe(false);
+  });
+
   it("fails for an unknown chain", async () => {
     await expect(
       engine.route(platformScope(PlatformRpcPurpose.BILLING), 999)

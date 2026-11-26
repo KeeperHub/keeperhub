@@ -29,6 +29,7 @@ vi.mock("@/lib/workflow/executor/logging", () => ({
 import {
   type AttributableRpcClient,
   noteRpcClient,
+  noteRpcFailover,
   setRpcAttributionStorage,
 } from "@/lib/rpc/engine/step-attribution";
 import { RpcOrigin } from "@/lib/rpc/engine/types";
@@ -51,13 +52,9 @@ const context: StepContext = {
 
 function client(
   origin: RpcOrigin,
-  configId: string | null,
-  onFallback = false
+  configId: string | null
 ): AttributableRpcClient {
-  return {
-    activeEndpoint: () => ({ origin, configId }),
-    manager: { isCurrentlyUsingFallback: () => onFallback },
-  };
+  return { activeEndpoint: () => ({ origin, configId }) };
 }
 
 function persistedRpc(): unknown {
@@ -92,7 +89,8 @@ describe("withStepLogging RPC attribution", () => {
 
   it("writes a failover on an errored step too", async () => {
     await withStepLogging({ _context: context }, async () => {
-      noteRpcClient(client(RpcOrigin.PLATFORM, null, true));
+      noteRpcClient(client(RpcOrigin.PLATFORM, null));
+      noteRpcFailover();
       await Promise.resolve();
       return { success: false, error: "reverted" };
     });

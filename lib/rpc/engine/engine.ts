@@ -14,11 +14,15 @@ import { resolveRoute } from "./resolve-route";
 import { RpcRouteError, RpcRouteErrorCode } from "./route-error";
 import { EMPTY_ORG_RPC_STATE, type OrgRpcSource } from "./sources/org-source";
 import type { PlatformRpcSource } from "./sources/platform-source";
-import { noteRpcClient } from "./step-attribution";
+import {
+  noteRpcCall,
+  noteRpcClient,
+  noteRpcFailover,
+} from "./step-attribution";
 import { composeFailoverCallbacks } from "./telemetry/platform-collectors";
 import { createPlatformSink } from "./telemetry/platform-sink";
 import { createRouteSink, isPlatformOnlyRoute } from "./telemetry/route-sink";
-import type { RpcTelemetrySink } from "./telemetry/sink";
+import type { RpcOperationType, RpcTelemetrySink } from "./telemetry/sink";
 import type { RpcUsageRecorder } from "./telemetry/usage";
 import {
   type PrivateMempoolRequest,
@@ -29,6 +33,7 @@ import {
   RpcPurpose,
   type RpcRoute,
   RpcRouteNotice,
+  RpcRoutePosition,
   type RpcScope,
   RpcScopeKind,
 } from "./types";
@@ -106,11 +111,41 @@ function failureOwnerOf(route: RpcRoute): RpcOrigin {
 /** Namespaces engine-built managers in the provider caches. */
 const MANAGER_CACHE_PREFIX = "route:";
 
-function managerCacheKey(route: RpcRoute, tuning?: RpcClientTuning): string {
+/** Marks the managers whose calls are left out of step attribution. */
+const UNATTRIBUTED_CACHE_SUFFIX = ":unattributed";
+
+function managerCacheKey(route: RpcRoute, request: RouteRequest): string {
+  const { tuning } = request;
   const base = `${MANAGER_CACHE_PREFIX}${route.key}`;
-  return tuning
+  const tuned = tuning
     ? `${base}:${tuning.maxRetries ?? ""}:${tuning.timeoutMs ?? ""}`
     : base;
+  return request.unattributed ? `${tuned}${UNATTRIBUTED_CACHE_SUFFIX}` : tuned;
+}
+
+/**
+ * Report each call attempt to the step making it. Managers are shared, but
+ * a call runs in its caller's context, so the step that made it is noted.
+ */
+function attributedSink(
+  sink: RpcTelemetrySink,
+  route: RpcRoute
+): RpcTelemetrySink {
+  return {
+    ...sink,
+    attempt(position: RpcRoutePosition, operation: RpcOperationType): void {
+      noteRpcCall(
+        position === RpcRoutePosition.FALLBACK && route.fallback
+          ? route.fallback
+          : route.primary
+      );
+      sink.attempt(position, operation);
+    },
+    failover(): void {
+      noteRpcFailover();
+      sink.failover();
+    },
+  };
 }
 
 export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
@@ -171,7 +206,8 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
 
   async function telemetryFor(
     family: RpcChainType,
-    resolved: RpcRoute
+    resolved: RpcRoute,
+    request: RouteRequest
   ): Promise<{
     sink: RpcTelemetrySink;
     onFailoverStateChange?: FailoverStateChangeCallback;
@@ -182,10 +218,13 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
       chainName: resolved.chain.name,
       collector,
     });
-    const sink = createRouteSink(resolved, {
+    const routeSink = createRouteSink(resolved, {
       platformSink,
       recorder: deps.usageRecorder,
     });
+    const sink = request.unattributed
+      ? routeSink
+      : attributedSink(routeSink, resolved);
     // The per-chain "using fallback" gauge describes KeeperHub endpoints only.
     const onFailoverStateChange = isPlatformOnlyRoute(resolved)
       ? composeFailoverCallbacks(await deps.failoverCallback())
@@ -209,7 +248,8 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
       );
       const { sink, onFailoverStateChange } = await telemetryFor(
         RpcChainType.EVM,
-        resolved
+        resolved,
+        request
       );
       const manager = createRpcProviderManager({
         primaryRpcUrl: resolved.primary.url.reveal(),
@@ -223,7 +263,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         onFailoverStateChange,
         maxRetries: request.tuning?.maxRetries,
         timeoutMs: request.tuning?.timeoutMs,
-        cacheKey: managerCacheKey(resolved, request.tuning),
+        cacheKey: managerCacheKey(resolved, request),
       });
       const client = {
         route: resolved,
@@ -249,7 +289,8 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
       );
       const { sink, onFailoverStateChange } = await telemetryFor(
         RpcChainType.SOLANA,
-        resolved
+        resolved,
+        request
       );
       const manager = createSolanaProviderManager({
         primaryRpcUrl: resolved.primary.url.reveal(),
@@ -260,7 +301,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         onFailoverStateChange,
         maxRetries: request.tuning?.maxRetries,
         timeoutMs: request.tuning?.timeoutMs,
-        cacheKey: managerCacheKey(resolved, request.tuning),
+        cacheKey: managerCacheKey(resolved, request),
       });
       const client = {
         route: resolved,
