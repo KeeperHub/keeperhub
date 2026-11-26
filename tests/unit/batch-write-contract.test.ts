@@ -1354,6 +1354,40 @@ describe("batch-write-contract - simulateAt next-block", () => {
     ]);
   });
 
+  it("passes a Block-triggered run's trigger block to the check and the send", async () => {
+    mockSimulateAtNextBlock.mockResolvedValueOnce({
+      returnData: aggregate3Return([SUCCESS_RETURN, SUCCESS_RETURN]),
+      simulation: SIMULATION,
+    });
+    mockExecuteContractCall.mockResolvedValueOnce({
+      ...RECEIPT,
+      simulation: SIMULATION,
+    });
+    const triggerBlock = {
+      chainId: 1,
+      number: 101,
+    };
+
+    await batchWriteContractCore(
+      baseInput({
+        simulateAt: "next-block",
+        _context: { organizationId: "org-1", triggerBlock },
+      })
+    );
+
+    const request = mockSimulateAtNextBlock.mock.calls[0]?.[1] as {
+      options: unknown;
+    };
+    expect(request.options).toEqual({ triggerBlock });
+    const adapterOptions = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      simulation?: unknown;
+    };
+    expect(adapterOptions.simulation).toEqual({
+      triggerBlock,
+      basedOn: SIMULATION,
+    });
+  });
+
   it("names each block when the send checked again on a newer one", async () => {
     const sendSimulation = {
       ...SIMULATION,

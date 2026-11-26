@@ -26,7 +26,12 @@ vi.mock("@kubernetes/client-node", () => {
   class V1MicroTime extends Date {}
 
   type Lease = {
-    metadata: { name: string; namespace: string; resourceVersion?: string };
+    metadata: {
+      name: string;
+      namespace: string;
+      resourceVersion?: string;
+      annotations?: Record<string, string>;
+    };
     spec: Record<string, unknown>;
   };
 
@@ -90,7 +95,10 @@ vi.mock("@kubernetes/client-node", () => {
   };
 });
 
-import { LeaderElector } from "../../lib/leader-election.js";
+import {
+  type LeaderElectionConfig,
+  LeaderElector,
+} from "../../lib/leader-election.js";
 
 // Sub-second durations keep the test fast while preserving the required
 // ordering retryPeriod < renewDeadline < leaseDuration.
@@ -228,5 +236,96 @@ describe("LeaderElector", () => {
     expect(a.startedCount).toBe(1);
 
     await a.elector.stop();
+  });
+
+  type AnnotatingOptions = Pick<LeaderElectionConfig, "getAnnotations"> & {
+    received: Array<Readonly<Record<string, string>>>;
+  };
+
+  function makeAnnotatingElector(
+    identity: string,
+    options: AnnotatingOptions,
+  ): LeaderElector {
+    return new LeaderElector({
+      leaseName: "test-leader",
+      namespace: "test-ns",
+      holderIdentity: identity,
+      ...TIMING,
+      getAnnotations: options.getAnnotations,
+      onStartedLeading: ({ annotations }) => {
+        options.received.push(annotations);
+      },
+      onStoppedLeading: () => undefined,
+    });
+  }
+
+  function storedAnnotations(): Record<string, string> | undefined {
+    return (
+      store.leases.get("test-leader") as {
+        metadata: { annotations?: Record<string, string> };
+      }
+    ).metadata.annotations;
+  }
+
+  it("writes annotations on renew and hands them to the next leader", async () => {
+    let progress = "100";
+    const firstReceived: Array<Readonly<Record<string, string>>> = [];
+    const first = makeAnnotatingElector("pod-a", {
+      received: firstReceived,
+      getAnnotations: () => ({ "test/progress": progress }),
+    });
+    void first.run().catch(() => undefined);
+
+    await vi.waitFor(() => {
+      expect(storedAnnotations()?.["test/progress"]).toBe("100");
+    });
+    expect(firstReceived).toEqual([{}]);
+
+    progress = "250";
+    await first.stop();
+    expect(storedAnnotations()?.["test/progress"]).toBe("250");
+
+    const nextReceived: Array<Readonly<Record<string, string>>> = [];
+    const next = makeAnnotatingElector("pod-b", { received: nextReceived });
+    void next.run().catch(() => undefined);
+
+    await vi.waitFor(() => {
+      expect(next.isLeader()).toBe(true);
+    });
+    expect(nextReceived).toEqual([{ "test/progress": "250" }]);
+
+    await next.stop();
+  });
+
+  it("keeps renewing when collecting annotations throws", async () => {
+    vi.spyOn(console, "warn").mockImplementation((): void => {
+      // suppress test output
+    });
+    const elector = makeAnnotatingElector("pod-a", {
+      received: [],
+      getAnnotations: () => {
+        throw new Error("progress unavailable");
+      },
+    });
+    void elector.run().catch(() => undefined);
+
+    await vi.waitFor(() => {
+      expect(elector.isLeader()).toBe(true);
+    });
+    const firstRenew = (
+      store.leases.get("test-leader") as { spec: { renewTime: string } }
+    ).spec.renewTime;
+    await new Promise((r) => setTimeout(r, 100));
+    const laterRenew = (
+      store.leases.get("test-leader") as { spec: { renewTime: string } }
+    ).spec.renewTime;
+
+    expect(new Date(laterRenew).getTime()).toBeGreaterThan(
+      new Date(firstRenew).getTime(),
+    );
+    expect(elector.isLeader()).toBe(true);
+    expect(storedAnnotations()).toBeUndefined();
+
+    await elector.stop();
   });
 });

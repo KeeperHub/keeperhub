@@ -34,6 +34,16 @@ vi.mock("../../block-dispatcher/sqs-enqueue.js", () => ({
   enqueueBlockTrigger: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Pushed headers carry everything a dispatch needs, so blocks reach the
+// phantom pre-create. Keep it off the network: an unreachable internal API
+// would retry on every block and stall the height these tests measure.
+vi.mock("../../lib/phantom.js", () => ({
+  createPhantomExecution: vi
+    .fn()
+    .mockResolvedValue({ executionId: "exec", alreadyExisted: false }),
+  failPhantomExecution: vi.fn().mockResolvedValue(undefined),
+}));
+
 const BLOCK_ADVANCE_MS = 2_000;
 const MONITOR_RECREATE_MS = 6_000;
 const PRIMARY_PROBE_INTERVAL_MS = 60_000;
