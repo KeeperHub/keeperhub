@@ -117,10 +117,18 @@ export function isUniqueViolation(err: unknown): boolean {
   return pgErrorCode(err) === UNIQUE_VIOLATION;
 }
 
+/** Postgres `foreign_key_violation`. */
+const FOREIGN_KEY_VIOLATION = "23503";
+
+/** True when a caught DB error is a Postgres foreign key violation. */
+export function isForeignKeyViolation(err: unknown): boolean {
+  return pgErrorCode(err) === FOREIGN_KEY_VIOLATION;
+}
+
 /** Default curated response per Postgres SQLSTATE code. */
 const PG_CODE_DEFAULTS: Record<string, CuratedDbError> = {
   [UNIQUE_VIOLATION]: { message: "This record already exists.", status: 409 },
-  "23503": {
+  [FOREIGN_KEY_VIOLATION]: {
     message: "A related record is missing or still in use.",
     status: 409,
   },

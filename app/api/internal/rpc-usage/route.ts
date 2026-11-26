@@ -5,7 +5,10 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { rpcUsageAccumulator } from "@/lib/rpc/engine";
 import type { RpcUsageBucket } from "@/lib/rpc/engine/telemetry/usage";
 import { RpcOrigin, RpcTransport } from "@/lib/rpc/engine/types";
-import { flushRpcUsage } from "@/lib/rpc/engine/usage-store";
+import {
+  bucketsForKnownOrganizations,
+  flushRpcUsage,
+} from "@/lib/rpc/engine/usage-store";
 
 const MAX_BUCKETS = 1000;
 const count = z.number().int().nonnegative().optional();
@@ -88,9 +91,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   try {
-    rpcUsageAccumulator.restore(parsed.data.buckets.map(toBucket));
+    const buckets = await bucketsForKnownOrganizations(
+      parsed.data.buckets.map(toBucket)
+    );
+    rpcUsageAccumulator.restore(buckets);
     await flushRpcUsage();
-    return NextResponse.json({ accepted: parsed.data.buckets.length });
+    return NextResponse.json({ accepted: buckets.length });
   } catch (error) {
     logSystemError(
       ErrorCategory.DATABASE,

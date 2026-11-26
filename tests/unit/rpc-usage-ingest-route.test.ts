@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   authenticate: vi.fn(),
   restore: vi.fn(),
   flush: vi.fn(),
+  known: vi.fn(),
 }));
 vi.mock("@/lib/internal-service-auth", () => ({
   authenticateInternalService: mocks.authenticate,
@@ -14,6 +15,7 @@ vi.mock("@/lib/rpc/engine", () => ({
   rpcUsageAccumulator: { restore: mocks.restore },
 }));
 vi.mock("@/lib/rpc/engine/usage-store", () => ({
+  bucketsForKnownOrganizations: mocks.known,
   flushRpcUsage: mocks.flush,
 }));
 
@@ -49,6 +51,9 @@ describe("POST /api/internal/rpc-usage", () => {
     vi.clearAllMocks();
     mocks.authenticate.mockResolvedValue({ authenticated: true });
     mocks.flush.mockResolvedValue(1);
+    mocks.known.mockImplementation((buckets: unknown[]) =>
+      Promise.resolve(buckets)
+    );
   });
 
   it("refuses callers without a valid service signature", async () => {
@@ -90,5 +95,13 @@ describe("POST /api/internal/rpc-usage", () => {
       (await post({ buckets: [bucket({ counters: { requests: -1 } })] })).status
     ).toBe(400);
     expect(mocks.restore).not.toHaveBeenCalled();
+  });
+
+  it("drops buckets for organizations that do not exist", async () => {
+    mocks.known.mockResolvedValue([]);
+    const res = await post({ buckets: [bucket({ organizationId: "gone" })] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accepted: 0 });
+    expect(mocks.restore).toHaveBeenCalledWith([]);
   });
 });

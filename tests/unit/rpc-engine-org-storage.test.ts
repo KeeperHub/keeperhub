@@ -15,7 +15,12 @@ vi.mock("@/lib/db", () => ({
 vi.mock("@/lib/logging", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/logging")>()),
   logSystemWarn: vi.fn(),
+  logWarn: vi.fn(),
 }));
+
+const FK_VIOLATION = Object.assign(new Error("insert failed"), {
+  cause: Object.assign(new Error("violates foreign key"), { code: "23503" }),
+});
 
 import type { OrganizationRpcConfigRow } from "@/lib/db/schema-rpc";
 import {
@@ -115,6 +120,19 @@ describe("flushRpcUsage", () => {
     await expect(flushRpcUsage(accumulator)).resolves.toBe(0);
     const [bucket] = accumulator.drain();
     expect(bucket.counters.requests).toBe(3);
+  });
+
+  it("drops an organization that no longer exists and stores the rest", async () => {
+    dbMock.onConflictDoUpdate
+      .mockRejectedValueOnce(FK_VIOLATION)
+      .mockRejectedValueOnce(FK_VIOLATION)
+      .mockResolvedValueOnce(undefined);
+    const accumulator = new RpcUsageAccumulator();
+    accumulator.record({ ...key, organizationId: "org_gone" }, { requests: 1 });
+    accumulator.record(key, { requests: 3 });
+
+    await expect(flushRpcUsage(accumulator)).resolves.toBe(1);
+    expect(accumulator.size).toBe(0);
   });
 
   it("does nothing when there is nothing to write", async () => {
