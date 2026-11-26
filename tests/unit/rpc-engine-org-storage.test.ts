@@ -21,7 +21,7 @@ import type { OrganizationRpcConfigRow } from "@/lib/db/schema-rpc";
 import {
   decodeRpcConfigUrls,
   encodeRpcConfigUrls,
-  filledRpcConfigSlots,
+  filledUrlSlots,
   orgRpcConfigFromRow,
 } from "@/lib/rpc/engine/org/codec";
 import { RpcConfigUrlSlot } from "@/lib/rpc/engine/org/url-slots";
@@ -57,7 +57,9 @@ describe("RPC config codec", () => {
   });
 
   it("exposes only which slots are set", () => {
-    const slots = filledRpcConfigSlots(encodeRpcConfigUrls(urls));
+    const slots = filledUrlSlots(
+      decodeRpcConfigUrls(encodeRpcConfigUrls(urls))
+    );
     expect(slots).toEqual([
       RpcConfigUrlSlot.HTTP_PRIMARY,
       RpcConfigUrlSlot.WSS_PRIMARY,

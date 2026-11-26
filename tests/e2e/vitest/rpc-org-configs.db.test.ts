@@ -289,6 +289,29 @@ describe.skipIf(SKIP)("organization RPC configs (Postgres)", () => {
       latencyMsMax: 30,
     });
   });
+  it("lists and deletes a config whose URLs can no longer be decrypted", async () => {
+    const [broken] = await db
+      .insert(organizationRpcConfigs)
+      .values({
+        organizationId: ORG_ID,
+        chainId: SEPOLIA,
+        name: "Unreadable",
+        encryptedUrls: "not-a-ciphertext",
+      })
+      .returning();
+
+    const listed = (await service.listOrgRpcConfigs(ORG_ID)).find(
+      (config) => config.id === broken.id
+    );
+    expect(listed).toMatchObject({ unreadable: true, slots: [] });
+
+    const deleted = await service.deleteOrgRpcConfig({
+      organizationId: ORG_ID,
+      configId: broken.id,
+    });
+    expect(deleted).toMatchObject({ ok: true, config: { id: broken.id } });
+  });
+
   it("returns and stores nothing from a URL but its encrypted form", async () => {
     const leaks = [
       "pathkey0123456789abcdef",

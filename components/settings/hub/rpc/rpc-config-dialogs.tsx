@@ -487,6 +487,13 @@ export function EditRpcConfigDialog({
                 </p>
               </div>
 
+              {config.unreadable && (
+                <Notice tone="warning">
+                  The saved URLs can no longer be read. Paste every URL again,
+                  starting with the HTTPS primary; saving replaces them.
+                </Notice>
+              )}
+
               <NameField
                 error={errors.name}
                 onChange={(name) => {

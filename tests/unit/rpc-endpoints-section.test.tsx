@@ -40,6 +40,7 @@ const state: RpcEndpointsState = {
         isDefault: true,
         enabled: true,
         slots: [RpcConfigUrlSlot.HTTP_PRIMARY],
+        unreadable: false,
         verification: {
           [RpcConfigUrlSlot.HTTP_PRIMARY]: { ok: true, checkedAt: CHECKED_AT },
         },
@@ -53,6 +54,7 @@ const state: RpcEndpointsState = {
         isDefault: false,
         enabled: false,
         slots: [RpcConfigUrlSlot.HTTP_PRIMARY],
+        unreadable: false,
         verification: {
           [RpcConfigUrlSlot.HTTP_PRIMARY]: {
             ok: false,

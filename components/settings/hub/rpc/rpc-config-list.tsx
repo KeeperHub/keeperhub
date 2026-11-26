@@ -58,6 +58,9 @@ export type RpcConfigActions = {
   onSetOwnRpcOnly: (chainId: number, ownRpcOnly: boolean) => Promise<void>;
 };
 
+const UNREADABLE_NOTE =
+  "Its saved URLs can no longer be read. Edit it and paste them again.";
+
 function plural(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
@@ -190,15 +193,19 @@ function ConfigLine({
           </Badge>
         )}
         {!config.enabled && <Badge variant="outline">Disabled</Badge>}
-        <span className="flex flex-wrap items-center gap-1">
-          {filledSlots(config).map((slot) => (
-            <SlotChip
-              check={config.verification[slot]}
-              key={slot}
-              slot={slot}
-            />
-          ))}
-        </span>
+        {config.unreadable ? (
+          <span className="text-destructive text-xs">{UNREADABLE_NOTE}</span>
+        ) : (
+          <span className="flex flex-wrap items-center gap-1">
+            {filledSlots(config).map((slot) => (
+              <SlotChip
+                check={config.verification[slot]}
+                key={slot}
+                slot={slot}
+              />
+            ))}
+          </span>
+        )}
       </div>
       {canManage && (
         <div className="flex items-center gap-1">

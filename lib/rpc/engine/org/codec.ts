@@ -25,10 +25,9 @@ export function encodeRpcConfigUrls(urls: RpcConfigUrls): string {
 }
 
 /** Which URL slots a stored config fills. Safe to show to any member. */
-export function filledRpcConfigSlots(
-  encryptedUrls: string
+export function filledUrlSlots(
+  urls: Partial<RpcConfigUrls>
 ): RpcConfigUrlSlot[] {
-  const urls = decodeRpcConfigUrls(encryptedUrls);
   return RPC_CONFIG_URL_SLOTS.filter((slot) => Boolean(urls[slot]));
 }
 

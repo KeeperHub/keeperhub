@@ -59,6 +59,7 @@ function config(overrides: Partial<OrgRpcConfigView>): OrgRpcConfigView {
     isDefault: false,
     enabled: true,
     slots: [RpcConfigUrlSlot.HTTP_PRIMARY],
+    unreadable: false,
     verification: {},
     createdAt: CHECKED_AT,
     updatedAt: CHECKED_AT,

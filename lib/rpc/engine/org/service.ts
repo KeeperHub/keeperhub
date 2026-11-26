@@ -9,6 +9,7 @@ import {
   organizationRpcChainPolicy,
   organizationRpcConfigs,
 } from "@/lib/db/schema-rpc";
+import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { actionUsesRpc } from "@/lib/workflow/rpc-selection-field";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import { findActionById } from "@/plugins/registry";
@@ -22,7 +23,7 @@ import type { OrgRpcConfig } from "../types";
 import {
   decodeRpcConfigUrls,
   encodeRpcConfigUrls,
-  filledRpcConfigSlots,
+  filledUrlSlots,
   orgRpcConfigFromRow,
 } from "./codec";
 import { OrgRpcErrorCode } from "./codes";
@@ -92,19 +93,38 @@ export type OrgRpcConfigView = {
   isDefault: boolean;
   enabled: boolean;
   slots: RpcConfigUrlSlot[];
+  /** True when the stored URLs cannot be decrypted; they must be re-entered. */
+  unreadable: boolean;
   verification: RpcConfigVerification;
   createdAt: string;
   updatedAt: string;
 };
 
+/** The stored URLs, or null when they cannot be decrypted. */
+function readUrls(row: OrganizationRpcConfigRow): RpcConfigUrls | null {
+  try {
+    return decodeRpcConfigUrls(row.encryptedUrls);
+  } catch (error) {
+    logSystemError(
+      ErrorCategory.INFRASTRUCTURE,
+      "[RPC Engine] Could not decrypt an organization RPC config",
+      error,
+      { organization_id: row.organizationId, config_id: row.id }
+    );
+    return null;
+  }
+}
+
 function toView(row: OrganizationRpcConfigRow): OrgRpcConfigView {
+  const urls = readUrls(row);
   return {
     id: row.id,
     chainId: row.chainId,
     name: row.name,
     isDefault: row.isDefault,
     enabled: row.enabled,
-    slots: filledRpcConfigSlots(row.encryptedUrls),
+    slots: urls ? filledUrlSlots(urls) : [],
+    unreadable: urls === null,
     verification: row.verification,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -452,7 +472,7 @@ export type UpdateOrgRpcConfigInput = {
 };
 
 function applyUrlChanges(
-  current: RpcConfigUrls,
+  current: Partial<RpcConfigUrls>,
   changes: RpcConfigUrlChanges
 ): { urls: Partial<RpcConfigUrls>; changed: Partial<RpcConfigUrls> } {
   const urls: Partial<RpcConfigUrls> = { ...current };
@@ -503,8 +523,9 @@ export async function updateOrgRpcConfig(
     return failure(OrgRpcErrorCode.INVALID_INPUT, "Give the config a name.");
   }
 
+  // URLs that can no longer be decrypted are replaced by what is sent now.
   const { urls, changed } = applyUrlChanges(
-    decodeRpcConfigUrls(row.encryptedUrls),
+    readUrls(row) ?? {},
     input.urls ?? {}
   );
   if (!urls[RpcConfigUrlSlot.HTTP_PRIMARY]) {
