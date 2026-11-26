@@ -57,7 +57,11 @@ vi.mock("viem", () => ({
 }));
 
 vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { TRANSACTION: "transaction", NETWORK_RPC: "network_rpc" },
+  ErrorCategory: {
+    TRANSACTION: "transaction",
+    NETWORK_RPC: "network_rpc",
+    BILLING: "billing",
+  },
   logSystemError: vi.fn(),
 }));
 
@@ -76,6 +80,13 @@ vi.mock("@/lib/metrics/types", () => ({
     SPONSORSHIP_GAS_COST_USD_MICRO_TOTAL:
       "sponsorship.gas_cost_usd_micro.total",
   },
+}));
+
+// Billing reads go through KeeperHub's endpoints; the client is built per test.
+const mockPlatformEvm = vi.fn();
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: { evm: (...args: unknown[]) => mockPlatformEvm(...args) },
 }));
 
 import type { EvmRpcClient } from "@/lib/rpc/engine";
@@ -101,6 +112,7 @@ import {
 } from "@/lib/web3/turnkey-revert";
 
 const PRIMARY_URL = "https://rpc.example.com";
+const PLATFORM_BILLING_URL = "https://billing.keeperhub.example.com";
 const FALLBACK_URL = "https://fallback.example.com";
 
 function endpoint(
@@ -203,6 +215,7 @@ function setupSuccessfulSponsorship(): void {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(isGasSponsorshipEnabled).mockReturnValue(true);
+  mockPlatformEvm.mockResolvedValue(evmClient(PLATFORM_BILLING_URL));
 });
 
 describe("executeSponsoredTransaction", () => {
@@ -471,7 +484,7 @@ describe("failures after the sponsored transaction is broadcast", () => {
     const orgFallback = "https://org-fallback.example.org";
     mockWaitForTransactionReceipt.mockImplementation(
       ({ url }: { url: string }) => {
-        if (url === orgFallback) {
+        if (url === orgFallback || url === PLATFORM_BILLING_URL) {
           return Promise.resolve({
             status: "success",
             gasUsed: BigInt(21_000),
@@ -491,7 +504,68 @@ describe("failures after the sponsored transaction is broadcast", () => {
     const askedUrls = mockWaitForTransactionReceipt.mock.calls.map(
       ([args]) => (args as { url: string }).url
     );
-    expect(askedUrls).toEqual([orgPrimary, orgFallback]);
+    // The route's own endpoints decide the outcome; billing then asks
+    // KeeperHub's, which never stood in for the route's read.
+    expect(askedUrls).toEqual([orgPrimary, orgFallback, PLATFORM_BILLING_URL]);
+  });
+
+  it("bills an organization route's gas from KeeperHub's receipt, not the route's", async () => {
+    setupSuccessfulSponsorship();
+    const orgUrl = "https://org-proxy.example.org";
+    mockWaitForTransactionReceipt.mockImplementation(
+      ({ url }: { url: string }) =>
+        Promise.resolve({
+          status: "success",
+          gasUsed: url === orgUrl ? BigInt(1) : BigInt(21_000),
+          effectiveGasPrice: url === orgUrl ? BigInt(0) : BigInt(1_000_000_000),
+        })
+    );
+
+    const result = await executeSponsoredTransaction({
+      ...baseTxParams,
+      rpc: evmClient(orgUrl, undefined, RpcOrigin.ORG),
+    });
+
+    expect(mockRecordGasUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gasUsed: BigInt(21_000),
+        gasPrice: BigInt(1_000_000_000),
+      })
+    );
+    expect(result?.gasUsedUnits).toBe("21000");
+  });
+
+  it("still bills when an organization route reports a revert KeeperHub does not see", async () => {
+    setupSuccessfulSponsorship();
+    const orgUrl = "https://org-proxy.example.org";
+    mockWaitForTransactionReceipt.mockImplementation(
+      ({ url }: { url: string }) =>
+        Promise.resolve({
+          status: url === orgUrl ? "reverted" : "success",
+          blockNumber: BigInt(100),
+          gasUsed: BigInt(21_000),
+          effectiveGasPrice: BigInt(1_000_000_000),
+        })
+    );
+
+    const error = await executeSponsoredTransaction({
+      ...baseTxParams,
+      rpc: evmClient(orgUrl, undefined, RpcOrigin.ORG),
+    }).catch((e: unknown) => e);
+
+    expect(isSponsoredTxRevertError(error)).toBe(true);
+    expect(mockRecordGasUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ gasUsed: BigInt(21_000) })
+    );
+  });
+
+  it("reuses a KeeperHub route's receipt for billing", async () => {
+    setupSuccessfulSponsorship();
+
+    await executeSponsoredTransaction(baseTxParams);
+
+    expect(mockPlatformEvm).not.toHaveBeenCalled();
+    expect(mockWaitForTransactionReceipt).toHaveBeenCalledTimes(1);
   });
 
   it("converts an untyped post-receipt failure into a pending error rather than letting it look pre-broadcast", async () => {

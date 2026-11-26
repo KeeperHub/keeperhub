@@ -15,7 +15,13 @@ import {
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
 import { MetricNames } from "@/lib/metrics/types";
-import { type EvmRpcClient, isPlatformOnlyRoute } from "@/lib/rpc/engine";
+import {
+  type EvmRpcClient,
+  isPlatformOnlyRoute,
+  PlatformRpcPurpose,
+  platformScope,
+  rpc as rpcEngine,
+} from "@/lib/rpc/engine";
 import { viemTransportOf, viemTransportsOf } from "@/lib/rpc/engine/viem";
 import { isBlockedHost, isBlockedIp } from "@/lib/safe-fetch";
 import { sleep } from "@/lib/sleep";
@@ -368,57 +374,68 @@ async function waitForSponsoredReceipt(
 }
 
 /**
- * Wait for receipt, record gas usage, and build the result.
- *
- * Turnkey pays the gas, so the org's wallet is never charged for the
- * underlying tx -- but the on-chain receipt still reports gasUsed and
- * effectiveGasPrice, which is what we meter against the org's gas-credit
- * balance. Billing is skipped on testnets.
- *
- * Callers treat a throw from here as "do not fall back to direct signing",
- * which only holds if every throw is one of the two typed sponsored errors.
- * `settleSponsoredTx` below enforces that.
+ * The receipt sponsored gas is billed from. KeeperHub pays the gas, so its own
+ * endpoints say what was used: an organization's endpoint could report any
+ * gas figure or a revert. A KeeperHub route's receipt is reused as is. If
+ * KeeperHub's endpoints cannot read it, the route's receipt is used and the
+ * gap is reported, since an organization cannot cause that on purpose.
  */
-async function finalizeSponsoredTx(
+async function readBillingReceipt(
   txHash: Hex,
   sendTransactionStatusId: string,
   rpc: EvmRpcClient,
-  organizationId: string,
-  chainId: number,
-  executionId: string,
+  routeReceipt: TransactionReceipt,
   receiptWait?: ReceiptWaitOptions
-): Promise<SponsoredTransactionResult> {
-  const publicClient = createPublicClient({
-    transport: viemTransportOf(rpc),
-  });
-
-  const receipt = await waitForSponsoredReceipt(
-    txHash,
-    sendTransactionStatusId,
-    rpc,
-    receiptWait
-  );
-
-  if (receipt.status !== "success") {
-    // The sponsored tx is on-chain and reverted. Read-only replay to recover
-    // the reason (Turnkey's early hash meant we never saw its FAILED status),
-    // then raise the typed revert error -- not a generic Error -- so the caller
-    // reports it as the node result instead of falling back and duplicating.
-    const reason = await decodeSponsoredRevertReason(
-      publicClient,
-      txHash,
-      receipt.blockNumber
+): Promise<TransactionReceipt> {
+  if (isPlatformOnlyRoute(rpc.route)) {
+    return routeReceipt;
+  }
+  try {
+    const platform = await rpcEngine.evm(
+      platformScope(PlatformRpcPurpose.BILLING),
+      rpc.route.chain.chainId
     );
-    throw new SponsoredTxRevertError({
-      message: reason ?? "reason unavailable",
+    return await waitForSponsoredReceipt(
       txHash,
       sendTransactionStatusId,
-      revertChain: [],
-    });
+      platform,
+      receiptWait
+    );
+  } catch (error) {
+    logSystemError(
+      ErrorCategory.BILLING,
+      "[Sponsorship] Could not read a sponsored receipt from KeeperHub endpoints for billing",
+      error instanceof Error ? error : new Error(String(error)),
+      { chainId: String(rpc.route.chain.chainId), txHash }
+    );
+    return routeReceipt;
   }
+}
 
-  const gasUsed = receipt.gasUsed;
-  const effectiveGasPrice = receipt.effectiveGasPrice;
+type SponsoredGasTarget = {
+  organizationId: string;
+  chainId: number;
+  txHash: Hex;
+  executionId: string;
+};
+
+type MeteredGas = {
+  gasUsed: bigint;
+  effectiveGasPrice: bigint;
+  gasCostWei: bigint;
+};
+
+/**
+ * Count a sponsored transaction's gas in metrics and against the
+ * organization's gas credits. Billing is skipped on testnets.
+ */
+async function meterSponsoredGas(
+  billed: TransactionReceipt,
+  target: SponsoredGasTarget
+): Promise<MeteredGas> {
+  const { organizationId, chainId, txHash, executionId } = target;
+  const gasUsed = billed.gasUsed;
+  const effectiveGasPrice = billed.effectiveGasPrice;
   // `gasUsed` on the receipt is a unit count; the fee is units * price. Callers
   // put this in `output.gasUsed`, which finalize sums into
   // `workflow_executions.gas_used_wei`, so it has to be the fee like the
@@ -475,6 +492,88 @@ async function finalizeSponsoredTx(
       Math.ceil(gasCostUsd * 1_000_000)
     );
   }
+
+  return { gasUsed, effectiveGasPrice, gasCostWei };
+}
+
+/**
+ * Wait for receipt, record gas usage, and build the result.
+ *
+ * Turnkey pays the gas, so the org's wallet is never charged for the
+ * underlying tx -- but the on-chain receipt still reports gasUsed and
+ * effectiveGasPrice, which is what we meter against the org's gas-credit
+ * balance. Billing is skipped on testnets.
+ *
+ * Callers treat a throw from here as "do not fall back to direct signing",
+ * which only holds if every throw is one of the two typed sponsored errors.
+ * `settleSponsoredTx` below enforces that.
+ */
+async function finalizeSponsoredTx(
+  txHash: Hex,
+  sendTransactionStatusId: string,
+  rpc: EvmRpcClient,
+  organizationId: string,
+  chainId: number,
+  executionId: string,
+  receiptWait?: ReceiptWaitOptions
+): Promise<SponsoredTransactionResult> {
+  const publicClient = createPublicClient({
+    transport: viemTransportOf(rpc),
+  });
+
+  const receipt = await waitForSponsoredReceipt(
+    txHash,
+    sendTransactionStatusId,
+    rpc,
+    receiptWait
+  );
+  const billed = await readBillingReceipt(
+    txHash,
+    sendTransactionStatusId,
+    rpc,
+    receipt,
+    receiptWait
+  );
+
+  // Billing follows KeeperHub's receipt, so a route reporting a revert for a
+  // transaction that succeeded still pays for its gas.
+  if (receipt.status !== "success") {
+    if (billed.status === "success") {
+      await meterSponsoredGas(billed, {
+        organizationId,
+        chainId,
+        txHash,
+        executionId,
+      }).catch((error: unknown) => {
+        logSystemError(
+          ErrorCategory.BILLING,
+          "[Sponsorship] Failed to meter a sponsored transaction its route reported as reverted",
+          error instanceof Error ? error : new Error(String(error)),
+          { organizationId, chainId: chainId.toString(), txHash }
+        );
+      });
+    }
+    // The sponsored tx is on-chain and reverted. Read-only replay to recover
+    // the reason (Turnkey's early hash meant we never saw its FAILED status),
+    // then raise the typed revert error -- not a generic Error -- so the caller
+    // reports it as the node result instead of falling back and duplicating.
+    const reason = await decodeSponsoredRevertReason(
+      publicClient,
+      txHash,
+      receipt.blockNumber
+    );
+    throw new SponsoredTxRevertError({
+      message: reason ?? "reason unavailable",
+      txHash,
+      sendTransactionStatusId,
+      revertChain: [],
+    });
+  }
+
+  const { gasUsed, effectiveGasPrice, gasCostWei } = await meterSponsoredGas(
+    billed,
+    { organizationId, chainId, txHash, executionId }
+  );
 
   return {
     success: true,
