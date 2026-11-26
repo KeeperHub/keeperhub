@@ -618,7 +618,7 @@ Execute state-changing functions on smart contracts using your Turnkey wallet. R
 
 **Inputs:** Network, Contract Address, ABI (auto-fetched), Function, Function Arguments, Fail workflow on error (optional, on by default), Gas Limit, Priority Fee, Max Fee, Sponsor gas, Simulate at and Next block timestamp offset (optional, in Advanced section; Sponsor gas only on networks gas sponsorship covers)
 
-**Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`, `simulation` (only when Simulate at is Next block)
+**Outputs:** `success`, `transactionHash`, `transactionLink`, `gasUsed` (total gas cost in wei), `result`, `error`, `simulation` (only when Simulate at is Next block), `broadcast` (when and how the transaction was sent)
 
 **When to use:** Execute DeFi operations (harvest, compound, rebalance), respond to on-chain events, automate protocol maintenance.
 
@@ -699,6 +699,25 @@ The Condition keeps runs far from the unlock from reaching the write: 24 is two 
 ```
 
 `baseBlock` is the latest block the check started from. `assumedTimestamp` is the predicted time of the next block and `timestampOffsetSec` the block time used; on Ethereum, after a missed slot or on a slow RPC, `assumedTimestamp` can be more than one block time after `baseBlock`'s timestamp. `rpcMethod` is `eth_estimateGas+blockOverrides`, `eth_simulateV1` or `eth_call+blockOverrides`. Compare `assumedBlockNumber` with the block in the transaction link to see whether the transaction made the predicted block. `simulation` is absent when the step failed before the check ran, for example on an invalid setting or an RPC that does not support it. Batch Write Contract also reports `resultsSimulation`, the predicted block its per-call check ran against; it differs from `simulation` when the send had to check again on a newer block or slot.
+
+**Sending to block builders.** On networks with block builder endpoints configured (Ethereum), a Write Contract with Next block set also sends the signed transaction straight to those builders, at the same time as it sends it through the network's regular RPC. It is the same signed transaction, so it can only be included once, and it reaches the builders without waiting to spread through the public mempool. A builder that rejects it or does not answer within 2 seconds never fails the step. Writes on a private mempool relay, Safe and gas-sponsored writes, and writes with Simulate at set to Latest block are sent through the RPC only.
+
+**Broadcast.** A successful send reports when and how the transaction went out:
+
+```json
+{
+  "broadcast": {
+    "broadcastAt": "2026-01-15T10:30:05.412Z",
+    "via": "primary",
+    "builders": [
+      { "name": "titan", "accepted": true },
+      { "name": "beaverbuild", "accepted": false, "error": "Unable to decode the transaction." }
+    ]
+  }
+}
+```
+
+`broadcastAt` is when the network's RPC accepted the transaction, and `via` whether that was the primary or the fallback RPC. Compare `broadcastAt` with the timestamp of `assumedBlockNumber`: a transaction sent several seconds before the block but included later reached the block's builder late. `builders` lists each builder the transaction was also sent to, and is absent when none were.
 
 ### When a write fails
 

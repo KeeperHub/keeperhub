@@ -120,6 +120,7 @@ describe("RPC Preferences API Routes", () => {
     defaultFallbackWss: null,
     usePrivateMempoolRpc: false,
     defaultPrivateRpcUrl: null,
+    builderRpcUrls: null,
     isEnabled: true,
     status: "stable",
     createdAt: new Date("2026-01-01"),

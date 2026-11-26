@@ -13,6 +13,7 @@ import {
   userRpcPreferences,
 } from "@/lib/db/schema";
 import { logWarn } from "@/lib/logging";
+import { type BuilderRpcUrls, normalizeBuilderRpcUrls } from "./rpc-config";
 import type { ResolvedRpcConfig } from "./types";
 
 /**
@@ -94,6 +95,22 @@ export async function resolveRpcConfig(
   }
 
   return applyPrivateMempoolSwap(baseConfig, options);
+}
+
+/**
+ * Block builder endpoints for a chain, or undefined when it has none. Only
+ * next-block writes use them, so this is a separate lookup rather than part of
+ * every resolveRpcConfig call.
+ */
+export async function getChainBuilderRpcUrls(
+  chainId: number
+): Promise<BuilderRpcUrls | undefined> {
+  const rows = await db
+    .select({ builderRpcUrls: chains.builderRpcUrls })
+    .from(chains)
+    .where(and(eq(chains.chainId, chainId), eq(chains.isEnabled, true)))
+    .limit(1);
+  return normalizeBuilderRpcUrls(rows[0]?.builderRpcUrls);
 }
 
 type ChainRow = typeof chains.$inferSelect;

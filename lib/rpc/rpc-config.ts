@@ -558,6 +558,8 @@ export type RpcConfigEntry = {
   fallbackWssUrl?: string;
   isPrivateMempoolRpcEnabled?: boolean;
   privateMempoolRpcUrl?: string;
+  // Block builder endpoints keyed by a short label, e.g. { "titan": "https://..." }.
+  builderRpcUrls?: Record<string, string>;
   isEnabled?: boolean;
   isTestnet?: boolean;
 };
@@ -757,6 +759,49 @@ export function getUsePrivateMempoolRpc(
   return (
     findRpcConfigEntry(options.rpcConfig, options.jsonKey)
       ?.isPrivateMempoolRpcEnabled ?? false
+  );
+}
+
+export type BuilderRpcUrls = Record<string, string>;
+
+const BUILDER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * Keep only well-formed builder entries: a short lowercase label mapped to an
+ * https URL. The label is what the step output reports, so the URL itself
+ * never leaves the server. Returns undefined when nothing valid remains.
+ */
+export function normalizeBuilderRpcUrls(
+  value: unknown
+): BuilderRpcUrls | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const result: BuilderRpcUrls = {};
+  for (const [label, url] of Object.entries(value)) {
+    if (!BUILDER_LABEL_PATTERN.test(label) || typeof url !== "string") {
+      continue;
+    }
+    try {
+      if (new URL(url).protocol === "https:") {
+        result[label] = url;
+      }
+    } catch {
+      // Not a URL: skipped.
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/**
+ * Get the block builder endpoints from chain-config JSON. No env-var
+ * fallback, same as the private mempool fields.
+ */
+export function getBuilderRpcUrls(
+  options: GetPrivateMempoolOptions
+): BuilderRpcUrls | undefined {
+  return normalizeBuilderRpcUrls(
+    findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.builderRpcUrls
   );
 }
 

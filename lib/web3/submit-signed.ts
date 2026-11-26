@@ -1,7 +1,26 @@
 import "server-only";
 import { ethers, isError } from "ethers";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import type { BuilderRpcUrls } from "@/lib/rpc/rpc-config";
+import {
+  type BuilderBroadcastResult,
+  broadcastToBuilders,
+} from "@/lib/web3/builder-broadcast";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
+
+/** Where and when the signed transaction went out. Labels only, never URLs. */
+export type BroadcastInfo = {
+  // ISO time the regular RPC accepted the transaction.
+  broadcastAt: string;
+  via: "primary" | "fallback";
+  // Block builders that were also sent the transaction, when any were.
+  builders?: BuilderBroadcastResult[];
+};
+
+export type SubmitSignedOptions = {
+  // Also send the signed bytes to these block builders, in parallel.
+  builderRpcUrls?: BuilderRpcUrls;
+};
 
 export type BroadcastResult = {
   hash: string;
@@ -11,6 +30,9 @@ export type BroadcastResult = {
    * before/during our broadcast attempt. Callers may skip `response.wait()`.
    */
   preExistingReceipt?: ethers.TransactionReceipt;
+  // Set when the regular RPC accepted the broadcast. Absent when the outcome
+  // came from reconciliation instead.
+  broadcast?: BroadcastInfo;
 };
 
 /**
@@ -110,7 +132,8 @@ export function isPreBroadcastNetworkError(
 export async function submitSignedTransactionWithFailover(
   signer: ethers.Signer,
   txRequest: ethers.TransactionRequest,
-  rpcManager: RpcProviderManager
+  rpcManager: RpcProviderManager,
+  options: SubmitSignedOptions = {}
 ): Promise<BroadcastResult> {
   let populated: ethers.TransactionRequest;
   let signedHex: string;
@@ -124,15 +147,38 @@ export async function submitSignedTransactionWithFailover(
   }
   const expectedHash = computeTxHash(signedHex);
 
+  // Started before the regular broadcast so neither waits for the other.
+  const builderSends = options.builderRpcUrls
+    ? broadcastToBuilders(signedHex, options.builderRpcUrls)
+    : undefined;
+
   try {
-    const response = await rpcManager.executeWithFailover(
-      (provider) => provider.broadcastTransaction(signedHex),
-      "write-broadcast"
-    );
-    return { hash: response.hash, response };
+    let via: BroadcastInfo["via"] = "primary";
+    const response = await rpcManager.executeWithFailover((provider) => {
+      via = isFallbackProvider(rpcManager, provider) ? "fallback" : "primary";
+      return provider.broadcastTransaction(signedHex);
+    }, "write-broadcast");
+    const broadcastAt = new Date().toISOString();
+    const builders = builderSends ? await builderSends : undefined;
+    return {
+      hash: response.hash,
+      response,
+      broadcast: { broadcastAt, via, ...(builders ? { builders } : {}) },
+    };
   } catch (err) {
     return await reconcile(rpcManager, expectedHash, populated.nonce, err);
   }
+}
+
+// Partial managers (tests, legacy callers) may not expose the fallback.
+function isFallbackProvider(
+  rpcManager: RpcProviderManager,
+  provider: ethers.JsonRpcProvider
+): boolean {
+  return (
+    typeof rpcManager.getFallbackProvider === "function" &&
+    provider === rpcManager.getFallbackProvider()
+  );
 }
 
 function computeTxHash(signedHex: string): string {

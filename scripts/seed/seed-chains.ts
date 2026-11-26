@@ -22,6 +22,7 @@ import {
 } from "../../lib/db/schema";
 import {
   CHAIN_CONFIG,
+  getBuilderRpcUrls,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrlByChainId,
@@ -1257,6 +1258,11 @@ async function seedChains() {
   console.log(`Seeding ${DEFAULT_CHAINS.length} chains...`);
 
   for (const chain of DEFAULT_CHAINS) {
+    const jsonKey = CHAIN_CONFIG[chain.chainId]?.jsonKey;
+    const builderRpcUrls = jsonKey
+      ? (getBuilderRpcUrls({ rpcConfig, jsonKey }) ?? null)
+      : null;
+
     // Check if chain already exists
     const existing = await db
       .select()
@@ -1280,6 +1286,7 @@ async function seedChains() {
           defaultFallbackWss: chain.defaultFallbackWss ?? null,
           usePrivateMempoolRpc: chain.usePrivateMempoolRpc ?? false,
           defaultPrivateRpcUrl: chain.defaultPrivateRpcUrl ?? null,
+          builderRpcUrls,
           isTestnet: chain.isTestnet,
           isEnabled: chain.isEnabled,
           status: chain.status ?? "stable",
@@ -1292,7 +1299,7 @@ async function seedChains() {
       continue;
     }
 
-    await db.insert(chains).values(chain);
+    await db.insert(chains).values({ ...chain, builderRpcUrls });
     console.log(`  + ${chain.name} (${chain.chainId}) inserted`);
   }
 

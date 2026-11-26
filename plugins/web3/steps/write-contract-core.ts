@@ -21,7 +21,9 @@ import { db } from "@/lib/db";
 import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
 import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
 import { getTransactionUrl } from "@/lib/explorer";
-import { ErrorCategory, logUserError } from "@/lib/logging";
+import { ErrorCategory, logUserError, logWarn } from "@/lib/logging";
+import { getChainBuilderRpcUrls } from "@/lib/rpc/config-service";
+import type { BuilderRpcUrls } from "@/lib/rpc/rpc-config";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import {
   getOrganizationWalletAddress,
@@ -71,6 +73,7 @@ import {
 import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
+import type { BroadcastInfo } from "@/lib/web3/submit-signed";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import { traceExecutedCallWithFailover } from "@/lib/web3/trace-executed-call";
 import {
@@ -176,6 +179,9 @@ export type WriteContractResult =
       error?: string;
       rejection?: RevertKind;
       simulation?: NextBlockSimulation;
+      // When and through which RPC the transaction went out, and which block
+      // builders also received it. Labels only, never URLs.
+      broadcast?: BroadcastInfo;
     }
   | {
       success: false;
@@ -250,6 +256,22 @@ export function applyFailOnError(
     rejection: result.rejection,
     ...(result.simulation ? { simulation: result.simulation } : {}),
   };
+}
+
+// Builder endpoints are an optional speed-up: a failed lookup sends through
+// the regular RPC alone rather than failing the step.
+async function lookupBuilderRpcUrls(
+  chainId: number
+): Promise<BuilderRpcUrls | undefined> {
+  try {
+    return await getChainBuilderRpcUrls(chainId);
+  } catch (error) {
+    logWarn(
+      `[Write Contract] Builder endpoint lookup failed: ${getErrorMessage(error)}`,
+      { chain_id: String(chainId) }
+    );
+    return undefined;
+  }
 }
 
 /**
@@ -761,6 +783,16 @@ async function writeContractCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
+  // Looked up before the wallet lock, so a slow read never holds it. A private
+  // mempool send stays on its relay only.
+  const builderRpcUrls =
+    simulation !== undefined &&
+    !usePrivateMempool &&
+    signerMode.kind !== SIGNER_MODE.SAFE_ROLE &&
+    signerMode.kind !== SIGNER_MODE.SAFE
+      ? await lookupBuilderRpcUrls(chainId)
+      : undefined;
+
   return withNonceSession(txContext, walletAddress, async (session) => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
@@ -849,6 +881,7 @@ async function writeContractCoreImpl(
             workflowId,
             rpcManager,
             simulation,
+            builderRpcUrls,
           }
         );
       }
@@ -876,6 +909,7 @@ async function writeContractCoreImpl(
         result: undefined,
         executedCall,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
+        ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
       };
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {
