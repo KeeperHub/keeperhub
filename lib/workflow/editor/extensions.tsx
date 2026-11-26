@@ -27,6 +27,7 @@ import { ArrayInputField } from "@/components/workflow/config/array-input-field"
 import { CallListField } from "@/components/workflow/config/call-list-field";
 import {
   ChainSelectField,
+  OrgAwareChainSelectField,
   resolveSelectValue,
 } from "@/components/workflow/config/chain-select-field";
 import { CodeEditorField } from "@/components/workflow/config/code-editor-field";
@@ -47,6 +48,7 @@ import {
   ProtocolBoolField,
   protocolBoolFieldValue,
 } from "@/components/workflow/config/protocol-fields/protocol-bool-field";
+import { RpcConfigSelectField } from "@/components/workflow/config/rpc-config-select-field";
 import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
 import { integrationsAtom } from "@/lib/integrations-store";
@@ -55,12 +57,14 @@ import {
   serializeProtocolArrayValue,
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
+import { RPC_SELECTION_CONFIG_KEY } from "@/lib/rpc/engine/scope";
 import {
   registerBranding,
   registerFieldRenderer,
   registerIntegrationFormHandler,
 } from "@/lib/workflow/editor/extension-registry";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
+import { RPC_SELECTION_FIELD_TYPE } from "@/lib/workflow/rpc-selection-field";
 import { nodesAtom } from "@/lib/workflow/store";
 
 // ============================================================================
@@ -128,11 +132,16 @@ registerFieldRenderer(
     const value = field.showPrivateVariants
       ? resolveSelectValue(rawValue, config, true)
       : rawValue;
+    // Private entries depend on the node's RPC config, so only those fields
+    // load the organization's RPC setup.
+    const ChainSelect = field.showPrivateVariants
+      ? OrgAwareChainSelectField
+      : ChainSelectField;
 
     return (
       <div className="space-y-2" key={field.key}>
         <ProtocolFieldLabel field={field} />
-        <ChainSelectField
+        <ChainSelect
           allowedChainIds={field.allowedChainIds}
           chainTypeFilter={field.chainTypeFilter}
           disabled={disabled}
@@ -141,12 +150,33 @@ registerFieldRenderer(
           onUpdateConfig={
             field.showPrivateVariants ? onUpdateConfig : undefined
           }
+          rpcSelection={config[RPC_SELECTION_CONFIG_KEY]}
           showPrivateVariants={field.showPrivateVariants}
           value={value}
         />
       </div>
     );
   }
+);
+
+/**
+ * RPC Config Select Field
+ * Which RPC endpoints a node uses: auto, KeeperHub, or one of the
+ * organization's configs for the node's network
+ */
+registerFieldRenderer(
+  RPC_SELECTION_FIELD_TYPE,
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <div className="space-y-2" key={field.key}>
+      <ProtocolFieldLabel field={field} />
+      <RpcConfigSelectField
+        config={config}
+        disabled={disabled}
+        field={field}
+        onUpdateConfig={onUpdateConfig}
+      />
+    </div>
+  )
 );
 
 /**

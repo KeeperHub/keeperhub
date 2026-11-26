@@ -29,11 +29,18 @@ import {
   LOW_LATENCY_TRIGGER_TYPES,
   readExecutionPriority,
 } from "@/lib/workflow/execution-priority";
+import { rpcSelectionFieldGroup } from "@/lib/workflow/rpc-selection-field";
 import type { ActionConfigField } from "@/plugins/registry";
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { CronScheduleBuilder } from "./cron-schedule-builder";
 import { SchemaBuilder } from "./schema-builder";
 import { PythTriggerConfig } from "./pyth-trigger-config";
+
+// Event and Block triggers hold a listener on their network, so they pick its
+// RPC endpoints the way an action does.
+const TRIGGER_RPC_FIELDS: ActionConfigField[] = [
+  rpcSelectionFieldGroup("network"),
+];
 
 function TriggerOptionIcon({
   triggerType,
@@ -310,6 +317,12 @@ export function TriggerConfig({
                   Fire the workflow every N blocks on the selected network.
                 </p>
               </div>
+              <ActionConfigRenderer
+                config={config}
+                disabled={disabled}
+                fields={TRIGGER_RPC_FIELDS}
+                onUpdateConfig={handleConfigValue}
+              />
             </>
           );
         })()}
@@ -750,6 +763,12 @@ function EventTriggerFields({
           onUpdateConfig={onUpdateConfig}
         />
       )}
+      <ActionConfigRenderer
+        config={config}
+        disabled={disabled}
+        fields={TRIGGER_RPC_FIELDS}
+        onUpdateConfig={onUpdateConfig}
+      />
     </>
   );
 }

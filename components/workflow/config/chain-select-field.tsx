@@ -10,7 +10,12 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { sortChainsByName } from "@/lib/chains/sort-chains";
+import {
+  type OrgRpcEditorState,
+  privateMempoolVariant,
+} from "@/lib/workflow/editor/rpc-config-options";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
+import { useOrgRpcState } from "./use-org-rpc-state";
 
 type Chain = {
   id: string;
@@ -55,7 +60,16 @@ type ChainSelectFieldProps = {
    * Used by protocol actions to show only chains where the contract is deployed.
    */
   allowedChainIds?: string[];
+  /**
+   * The node's stored RPC selection. With showPrivateVariants, decides whether
+   * the private entry comes from the node's RPC config or KeeperHub's relay.
+   */
+  rpcSelection?: unknown;
+  /** The organization's RPC setup; without it only KeeperHub's relay counts. */
+  rpcState?: OrgRpcEditorState;
 };
+
+const NO_ORG_RPC: OrgRpcEditorState = { configs: [], ownRpcOnlyChains: [] };
 
 /**
  * Compute the display value for the select trigger. When a private variant is
@@ -82,6 +96,8 @@ export function ChainSelectField({
   showPrivateVariants,
   onUpdateConfig,
   allowedChainIds,
+  rpcSelection,
+  rpcState = NO_ORG_RPC,
 }: ChainSelectFieldProps) {
   const [chains, setChains] = useState<Chain[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -195,13 +211,30 @@ export function ChainSelectField({
   }
 
   function renderPrivateVariant(chain: Chain): React.ReactNode {
+    if (!showPrivateVariants) {
+      return null;
+    }
+    const variant = privateMempoolVariant(
+      {
+        chainId: chain.chainId,
+        name: chain.name,
+        hasPlatformRelay: chain.usePrivateMempoolRpc,
+      },
+      rpcSelection,
+      rpcState
+    );
+    if (!variant.offered) {
+      return null;
+    }
     return (
       <SelectItem
+        description={variant.disabledReason ?? undefined}
+        disabled={variant.disabledReason !== null}
         key={`${chain.chainId}-private`}
         value={`${chain.chainId}${PRIVATE_SUFFIX}`}
       >
         <div className="flex items-center gap-2">
-          <span>{chain.name} (Flashbots)</span>
+          <span>{variant.label}</span>
           <span className="text-muted-foreground text-xs">({chain.symbol})</span>
         </div>
       </SelectItem>
@@ -222,9 +255,7 @@ export function ChainSelectField({
             {mainnets.map((chain) => (
               <Fragment key={chain.chainId}>
                 {renderChainItem(chain)}
-                {showPrivateVariants &&
-                  chain.usePrivateMempoolRpc &&
-                  renderPrivateVariant(chain)}
+                {renderPrivateVariant(chain)}
               </Fragment>
             ))}
           </>
@@ -237,9 +268,7 @@ export function ChainSelectField({
             {testnets.map((chain) => (
               <Fragment key={chain.chainId}>
                 {renderChainItem(chain)}
-                {showPrivateVariants &&
-                  chain.usePrivateMempoolRpc &&
-                  renderPrivateVariant(chain)}
+                {renderPrivateVariant(chain)}
               </Fragment>
             ))}
           </>
@@ -250,3 +279,11 @@ export function ChainSelectField({
 }
 
 export { resolveSelectValue };
+
+/** A chain select whose private entries follow the organization's RPC setup. */
+export function OrgAwareChainSelectField(
+  props: Omit<ChainSelectFieldProps, "rpcState">
+): React.ReactNode {
+  const { state } = useOrgRpcState();
+  return <ChainSelectField {...props} rpcState={state} />;
+}
