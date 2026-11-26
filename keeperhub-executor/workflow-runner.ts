@@ -321,6 +321,7 @@ async function main(): Promise<void> {
     const result = await executeWorkflow(
       buildExecutorInput(workflow, {
         triggerInput: input,
+        fromBlockScheduler: triggerType === "block",
         executionId,
         organizationName,
       })

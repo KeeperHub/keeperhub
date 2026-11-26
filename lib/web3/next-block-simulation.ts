@@ -16,6 +16,7 @@ import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
 import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
+import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
 import { decodeRevertReason } from "@/lib/web3/decode-revert-error";
 import { ETHEREUM_L1_CHAIN_IDS } from "@/lib/web3/ethereum-l1";
@@ -28,6 +29,7 @@ import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
   parseSimulationSettings,
+  type TriggerBlock,
 } from "@/lib/web3/next-block-limits";
 import { extractRevertData, rpcErrorOf } from "@/lib/web3/revert-data";
 
@@ -39,6 +41,8 @@ export type NextBlockSimulationOptions = {
   // Reuse the block an earlier check predicted, so a batch's per-call check
   // and its send agree on one base block.
   basedOn?: NextBlockSimulation;
+  // The block that triggered the run: the check waits for the RPC to reach it.
+  triggerBlock?: TriggerBlock;
 };
 
 export type NextBlockSimulation = {
@@ -170,11 +174,14 @@ type SettingsResult =
 /** The step's settings, or the user error a bad value fails the step with. */
 export function readSimulationSettings(
   simulateAt: unknown,
-  timestampOffsetSec: unknown
+  timestampOffsetSec: unknown,
+  triggerBlock?: TriggerBlock
 ): SettingsResult {
   const parsed = parseSimulationSettings(simulateAt, timestampOffsetSec);
   if (parsed.ok) {
-    return parsed;
+    return parsed.options && triggerBlock
+      ? { ok: true, options: { ...parsed.options, triggerBlock } }
+      : parsed;
   }
   return {
     ok: false,
@@ -757,17 +764,56 @@ function predictedTime(
 
 const currentSeconds = (): number => Math.floor(Date.now() / MS_PER_SECOND);
 
+// Reads of latest one check may spend waiting for the trigger block, across
+// all retry attempts; once spent, a lagging RPC fails the attempt at once.
+const TRIGGER_WAIT_READS = 8;
+const TRIGGER_WAIT_MS = 250;
+
+type TriggerWait = { readsLeft: number };
+
+const newTriggerWait = (): TriggerWait => ({
+  readsLeft: TRIGGER_WAIT_READS,
+});
+
+// The RPC's latest block, once it has reached the block that triggered the run.
+async function latestReaching(
+  provider: ethers.JsonRpcProvider,
+  chainId: number,
+  trigger: TriggerBlock | undefined,
+  wait: TriggerWait
+): Promise<ethers.Block> {
+  for (;;) {
+    const latest = await provider.getBlock("latest");
+    if (!latest) {
+      throw new Error(
+        `Next-block simulation: the RPC returned no latest block (${RETRY_HINT})`
+      );
+    }
+    if (trigger?.chainId !== chainId || latest.number >= trigger.number) {
+      return latest;
+    }
+    wait.readsLeft -= 1;
+    if (wait.readsLeft <= 0) {
+      throw new Error(
+        `Next-block simulation: the RPC has not reached the block that triggered the run (${RETRY_HINT}). If this keeps happening, the RPC lags the block trigger: use another RPC for this network (see "RPC Preferences" in the API docs), or set "Simulate at" back to "Latest block"`
+      );
+    }
+    await sleep(TRIGGER_WAIT_MS);
+  }
+}
+
 async function prepare(
   provider: ethers.JsonRpcProvider,
   chainId: number,
-  options: NextBlockSimulationOptions
+  options: NextBlockSimulationOptions,
+  wait: TriggerWait
 ): Promise<Prepared> {
-  const latest = await provider.getBlock("latest");
-  if (!latest) {
-    throw new Error(
-      `Next-block simulation: the RPC returned no latest block (${RETRY_HINT})`
-    );
-  }
+  const latest = await latestReaching(
+    provider,
+    chainId,
+    options.triggerBlock,
+    wait
+  );
   const { basedOn } = options;
   // Reuse an earlier check's prediction only while nothing moved, so a wait
   // never sends on a stale check.
@@ -841,8 +887,14 @@ export async function simulateCallAtNextBlock(
   rpcManager: RpcProviderManager,
   request: NextBlockRequest & { operationType?: RpcOperationType }
 ): Promise<{ returnData: string; simulation: NextBlockSimulation }> {
+  const wait = newTriggerWait();
   return await rpcManager.executeWithFailover(async (provider) => {
-    const prepared = await prepare(provider, request.chainId, request.options);
+    const prepared = await prepare(
+      provider,
+      request.chainId,
+      request.options,
+      wait
+    );
     const tx = txForNode(request.tx.from, request.tx);
     const v1 = await trySimulateV1(provider, tx, prepared);
     if (v1) {
@@ -875,9 +927,11 @@ export async function simulateSendAtNextBlock(
   request: SendCheckRequest
 ): Promise<{ gasEstimate: bigint; simulation: NextBlockSimulation }> {
   const { gasLimit } = request;
+  // One trigger-block wait budget across the capped and uncapped re-checks.
+  const wait = newTriggerWait();
   let cappedError: unknown;
   try {
-    return await sendCheck(rpcManager, request, gasLimit);
+    return await sendCheck(rpcManager, request, gasLimit, wait);
   } catch (error) {
     if (gasLimit === undefined || !outOfGasCandidate(error)) {
       throw markCheckFailed(error);
@@ -897,7 +951,9 @@ export async function simulateSendAtNextBlock(
   try {
     uncapped = await sendCheck(
       rpcManager,
-      sameBlock(getNextBlockSimulation(cappedError))
+      sameBlock(getNextBlockSimulation(cappedError)),
+      undefined,
+      wait
     );
   } catch (uncappedError) {
     throw markCheckFailed(uncappedError);
@@ -907,7 +963,8 @@ export async function simulateSendAtNextBlock(
     return await sendCheck(
       rpcManager,
       sameBlock(uncapped.simulation),
-      gasLimit
+      gasLimit,
+      wait
     );
   } catch (again) {
     if (!outOfGasCandidate(again)) {
@@ -943,10 +1000,16 @@ function outOfGasCandidate(error: unknown): boolean {
 async function sendCheck(
   rpcManager: RpcProviderManager,
   request: NextBlockRequest,
-  gasLimit?: bigint
+  gasLimit: bigint | undefined,
+  wait: TriggerWait
 ): Promise<{ gasEstimate: bigint; simulation: NextBlockSimulation }> {
   return await rpcManager.executeWithFailover(async (provider) => {
-    const base = await prepare(provider, request.chainId, request.options);
+    const base = await prepare(
+      provider,
+      request.chainId,
+      request.options,
+      wait
+    );
     if (gasLimit !== undefined) {
       try {
         assertGasLimitFits(gasLimit, request.chainId, base.blockGasLimit);

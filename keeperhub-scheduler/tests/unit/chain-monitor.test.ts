@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChainMonitor } from "../../block-dispatcher/chain-monitor.js";
+import {
+  ChainMonitor,
+  parseNewHeadsHeader,
+} from "../../block-dispatcher/chain-monitor.js";
 import { metrics, registry } from "../../lib/metrics.js";
 import type { BlockWorkflow, ChainConfig } from "../../lib/types.js";
 
@@ -68,7 +71,7 @@ class MockProvider {
     hash: string;
     timestamp: number;
     parentHash: string;
-  }> {
+  } | null> {
     return {
       hash: `0x${blockNumber.toString(16).padStart(64, "0")}`,
       timestamp: Math.floor(Date.now() / 1000),
@@ -1476,6 +1479,8 @@ describe("ChainMonitor", () => {
       {};
     let latestMissing = false;
     let latestCalls = 0;
+    // Delay on each "latest" answer, to stop the monitor while a check awaits it.
+    let latestDelayMs = 0;
 
     class SlotProvider extends MockProvider {
       override async getBlock(tag: number | string): Promise<{
@@ -1492,6 +1497,9 @@ describe("ChainMonitor", () => {
         }
         if (tag === "latest") {
           latestCalls++;
+          if (latestDelayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, latestDelayMs));
+          }
           if (latestMissing) {
             return null;
           }
@@ -1577,6 +1585,7 @@ describe("ChainMonitor", () => {
       blockTimestamp = slotStart(S0 + 1);
       blocksByHash = {};
       latestMissing = false;
+      latestDelayMs = 0;
     });
 
     it("fires 4 s into an empty slot, never for a slot that began before connect", async () => {
@@ -1747,7 +1756,8 @@ describe("ChainMonitor", () => {
       await vi.advanceTimersByTimeAsync(11_000);
       latestMissing = true;
       pushHeader(slotStart(S0 + 1), { number: 500, hash: "0xgone" });
-      await vi.advanceTimersByTimeAsync(5000);
+      // Each failed fetch waits GET_BLOCK_RETRY_DELAY_MS before its second attempt.
+      await vi.advanceTimersByTimeAsync(7000);
       expect(keys()).toEqual([`slot:wf-1:1:${S0}`]);
       expect(await missedSlotRuns()).toHaveLength(0);
       expect(
@@ -1830,7 +1840,8 @@ describe("ChainMonitor", () => {
       latestMissing = true;
       latestCalls = 0;
       pushHeader(slotStart(S0 + 1), { number: 500, hash: "0xunknown" });
-      await vi.advanceTimersByTimeAsync(5000);
+      // Each failed fetch waits GET_BLOCK_RETRY_DELAY_MS before its second attempt.
+      await vi.advanceTimersByTimeAsync(7000);
       expect(keys()).toEqual([`slot:wf-1:1:${S0}`]);
       expect(await missedSlotRuns()).toHaveLength(0);
       expect(latestCalls).toBe(2); // one "latest" fetch (two attempts), none for the missed-slot check
@@ -1964,5 +1975,752 @@ describe("ChainMonitor", () => {
       await vi.advanceTimersByTimeAsync(24_000);
       expect(await missedSlotRuns()).toHaveLength(1);
     });
+
+    it("does not fire a missed-slot run when stopped while the check awaits the node", async () => {
+      const monitor = await startAt(inSlotS0(), [optedIn]);
+      latestDelayMs = 2000;
+      latestCalls = 0;
+      await vi.advanceTimersByTimeAsync(11_000); // slot S0 + 1's check is waiting on "latest"
+      expect(latestCalls).toBeGreaterThan(0);
+      await monitor.stop();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await missedSlotRuns()).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Block header cache and the getBlock fallback
+  // -------------------------------------------------------------------------
+
+  describe("block header cache and getBlock fallback", () => {
+    const BLOCK_TS = 0x6553f100;
+
+    // Hashes padded with "c" so a cached header is distinguishable from
+    // MockProvider.getBlock, which pads with "0".
+    function headerHash(blockNumber: number): string {
+      return `0x${blockNumber.toString(16).padStart(64, "c")}`;
+    }
+
+    function pushHeader(
+      provider: MockProvider,
+      blockNumber: number,
+      overrides?: Record<string, unknown>,
+    ): void {
+      provider.websocket.emit(
+        "message",
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "eth_subscription",
+          params: {
+            subscription: "0x1",
+            result: {
+              number: `0x${blockNumber.toString(16)}`,
+              hash: headerHash(blockNumber),
+              parentHash: headerHash(blockNumber - 1),
+              timestamp: `0x${BLOCK_TS.toString(16)}`,
+              ...overrides,
+            },
+          },
+        }),
+      );
+    }
+
+    // getBlock for the listed blocks never settles, the way ethers leaves a
+    // request pending when its socket is destroyed mid-flight. Each listed
+    // block hangs for its first `timesEach` requests, then answers.
+    class HangingProvider extends MockProvider {
+      private readonly hangsLeft: Map<number, number>;
+
+      constructor(
+        url: string,
+        hangOn: Set<number>,
+        timesEach = Number.POSITIVE_INFINITY,
+      ) {
+        super(url);
+        this.hangsLeft = new Map(
+          [...hangOn].map((blockNumber) => [blockNumber, timesEach]),
+        );
+      }
+
+      getBlock(blockNumber: number): Promise<{
+        hash: string;
+        timestamp: number;
+        parentHash: string;
+      } | null> {
+        const left = this.hangsLeft.get(blockNumber) ?? 0;
+        if (left > 0) {
+          this.hangsLeft.set(blockNumber, left - 1);
+          return new Promise(() => {
+            // never settles
+          });
+        }
+        return super.getBlock(blockNumber);
+      }
+    }
+
+    // getBlock for the listed blocks resolves null for its first `timesEach`
+    // requests, the way a node answers for a block it does not have yet.
+    class NullBlockProvider extends MockProvider {
+      private readonly nullsLeft: Map<number, number>;
+
+      constructor(
+        url: string,
+        nullOn: Set<number>,
+        timesEach = Number.POSITIVE_INFINITY,
+      ) {
+        super(url);
+        this.nullsLeft = new Map(
+          [...nullOn].map((blockNumber) => [blockNumber, timesEach]),
+        );
+      }
+
+      getBlock(blockNumber: number): Promise<{
+        hash: string;
+        timestamp: number;
+        parentHash: string;
+      } | null> {
+        const left = this.nullsLeft.get(blockNumber) ?? 0;
+        if (left > 0) {
+          this.nullsLeft.set(blockNumber, left - 1);
+          return Promise.resolve(null);
+        }
+        return super.getBlock(blockNumber);
+      }
+    }
+
+    async function dispatchedBlocks(): Promise<number[]> {
+      const { enqueueBlockTrigger } = await import(
+        "../../block-dispatcher/sqs-enqueue.js"
+      );
+      return vi
+        .mocked(enqueueBlockTrigger)
+        .mock.calls.map(([message]) => message.triggerData.blockNumber);
+    }
+
+    function everyBlock(): BlockWorkflow[] {
+      return [makeWorkflow({ blockInterval: 1 })];
+    }
+
+    beforeEach(() => {
+      vi.stubEnv("SOCKET_MAX_AGE_MS", String(60 * 60_000));
+      vi.stubEnv("GET_BLOCK_TIMEOUT_MS", "1000");
+      vi.stubEnv("GET_BLOCK_RETRY_DELAY_MS", "100");
+      vi.spyOn(console, "log").mockImplementation((): void => {
+        // suppress test output
+      });
+      vi.spyOn(console, "warn").mockImplementation((): void => {
+        // suppress test output
+      });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("dispatches from the pushed header without a getBlock call", async () => {
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      const provider = latestProvider();
+      const getBlock = vi.spyOn(provider, "getBlock");
+
+      pushHeader(provider, 10);
+      provider.emitBlock(10);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getBlock).not.toHaveBeenCalled();
+      const { enqueueBlockTrigger } = await import(
+        "../../block-dispatcher/sqs-enqueue.js"
+      );
+      expect(enqueueBlockTrigger).toHaveBeenCalledWith(
+        expect.objectContaining({
+          triggerData: {
+            blockNumber: 10,
+            blockHash: headerHash(10),
+            blockTimestamp: BLOCK_TS,
+            parentHash: headerHash(9),
+          },
+        }),
+      );
+      await monitor.stop();
+    });
+
+    it("falls back to getBlock when no header was pushed", async () => {
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      const provider = latestProvider();
+      const getBlock = vi.spyOn(provider, "getBlock");
+
+      provider.emitBlock(10);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getBlock).toHaveBeenCalledWith(10);
+      expect(await dispatchedBlocks()).toEqual([10]);
+      await monitor.stop();
+    });
+
+    it("falls back to getBlock when the pushed header is incomplete", async () => {
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      const provider = latestProvider();
+      const getBlock = vi.spyOn(provider, "getBlock");
+
+      pushHeader(provider, 10, { hash: undefined });
+      provider.emitBlock(10);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getBlock).toHaveBeenCalledWith(10);
+      await monitor.stop();
+    });
+
+    it("keeps processing after a getBlock that never settles", async () => {
+      // Both attempts for block 10 hang; the retry from the next push answers.
+      providerFactory = (url) => new HangingProvider(url, new Set([10]), 2);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      const provider = latestProvider();
+
+      provider.emitBlock(10);
+      await vi.advanceTimersByTimeAsync(0);
+      // Arrives while block 10 is still processing, so it is parked in
+      // pendingBlock. Without a bound on getBlock it would stay there.
+      provider.emitBlock(11);
+      // Two 1s timeouts and the 100ms pause between them.
+      await vi.advanceTimersByTimeAsync(2_200);
+
+      expect(monitor.getStatus().lastBlock).toBe(11);
+      expect(await dispatchedBlocks()).toEqual([10, 11]);
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to fetch block 10 after 2 attempts"),
+        "getBlock timeout after 1000ms",
+      );
+      await monitor.stop();
+    });
+
+    it("retries a null getBlock result after the retry delay", async () => {
+      providerFactory = (url) => new NullBlockProvider(url, new Set([10]), 1);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      const provider = latestProvider();
+      const getBlock = vi.spyOn(provider, "getBlock");
+
+      provider.emitBlock(10);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(getBlock).toHaveBeenCalledTimes(1);
+      expect(await dispatchedBlocks()).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(getBlock).toHaveBeenCalledTimes(2);
+      expect(await dispatchedBlocks()).toEqual([10]);
+      expect(monitor.getStatus().lastBlock).toBe(10);
+      expect(console.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("Failed to fetch block"),
+        expect.anything(),
+      );
+      await monitor.stop();
+    });
+
+    it("logs once when getBlock keeps returning null and holds before the block", async () => {
+      providerFactory = (url) => new NullBlockProvider(url, new Set([10]));
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      const provider = latestProvider();
+      const getBlock = vi.spyOn(provider, "getBlock");
+
+      provider.emitBlock(10);
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(getBlock).toHaveBeenCalledTimes(2);
+      const fetchWarnings = vi
+        .mocked(console.warn)
+        .mock.calls.filter(([message]) =>
+          String(message).includes("Failed to fetch block 10"),
+        );
+      expect(fetchWarnings).toEqual([
+        [
+          expect.stringContaining("Failed to fetch block 10 after 2 attempts"),
+          "getBlock returned null",
+        ],
+      ]);
+      expect(await dispatchedBlocks()).toEqual([]);
+      expect(monitor.getStatus().lastBlock).toBe(9);
+      await monitor.stop();
+    });
+
+    it("keeps processing when the socket closes while getBlock is in flight", async () => {
+      // Only the first provider hangs; the reconnect gets a healthy one.
+      providerFactory = (url) =>
+        providerInstances.length === 0
+          ? new HangingProvider(url, new Set([10]))
+          : new MockProvider(url);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      const firstProvider = latestProvider();
+
+      firstProvider.emitBlock(10);
+      await vi.advanceTimersByTimeAsync(0);
+      firstProvider.websocket.emit("close");
+      // Reconnect backoff (1s) and both getBlock attempts (1s each).
+      await vi.advanceTimersByTimeAsync(2_500);
+
+      const secondProvider = latestProvider();
+      expect(secondProvider).not.toBe(firstProvider);
+      secondProvider.emitBlock(12);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(monitor.getStatus().lastBlock).toBe(12);
+      expect(await dispatchedBlocks()).toEqual([10, 11, 12]);
+      await monitor.stop();
+    });
+
+    it("stops a backfill at a block that cannot be fetched and retries it on the next push", async () => {
+      providerFactory = (url) => new HangingProvider(url, new Set([102]), 2);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+        resumeFromBlock: 100,
+      });
+      await monitor.start();
+      const provider = latestProvider();
+
+      provider.emitBlock(104);
+      await vi.advanceTimersByTimeAsync(2_200);
+
+      expect(await dispatchedBlocks()).toEqual([101]);
+      expect(monitor.getStatus().lastBlock).toBe(101);
+
+      provider.emitBlock(105);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(await dispatchedBlocks()).toEqual([101, 102, 103, 104, 105]);
+      expect(monitor.getStatus().lastBlock).toBe(105);
+      await monitor.stop();
+    });
+
+    it("skips a block after GET_BLOCK_MAX_HOLD_ATTEMPTS failed attempts and dispatches later blocks in the same pass", async () => {
+      vi.spyOn(console, "error").mockImplementation((): void => {
+        // suppress test output
+      });
+      // Two getBlock calls per range attempt, three range attempts.
+      providerFactory = (url) => new HangingProvider(url, new Set([102]), 6);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+        resumeFromBlock: 100,
+      });
+      await monitor.start();
+      const provider = latestProvider();
+      const getBlock = vi.spyOn(provider, "getBlock");
+      for (let blockNumber = 103; blockNumber <= 106; blockNumber++) {
+        pushHeader(provider, blockNumber);
+      }
+
+      provider.emitBlock(104);
+      await vi.advanceTimersByTimeAsync(2_200);
+      provider.emitBlock(105);
+      await vi.advanceTimersByTimeAsync(2_200);
+      expect(await dispatchedBlocks()).toEqual([101]);
+      expect(monitor.getStatus().lastBlock).toBe(101);
+      expect(console.error).not.toHaveBeenCalled();
+
+      provider.emitBlock(106);
+      await vi.advanceTimersByTimeAsync(2_200);
+
+      expect(await dispatchedBlocks()).toEqual([101, 103, 104, 105, 106]);
+      expect(monitor.getStatus().lastBlock).toBe(106);
+      // Later blocks dispatched from their pushed headers.
+      expect(getBlock.mock.calls.map(([blockNumber]) => blockNumber)).toEqual([
+        101, 102, 102, 102, 102, 102, 102,
+      ]);
+      expect(console.error).toHaveBeenCalledTimes(1);
+      expect(console.error).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /Skipping block 102 permanently after 3 failed fetch attempts.*wf-1/,
+        ),
+      );
+      await monitor.stop();
+    });
+
+    it("resets the hold count once a held block is dispatched", async () => {
+      vi.spyOn(console, "error").mockImplementation((): void => {
+        // suppress test output
+      });
+      // 102 fails one range attempt; 104 fails two.
+      class FlakyProvider extends HangingProvider {
+        constructor(url: string) {
+          super(url, new Set([102]), 2);
+        }
+        private readonly failsLeft = new Map([[104, 4]]);
+
+        getBlock(blockNumber: number): Promise<{
+          hash: string;
+          timestamp: number;
+          parentHash: string;
+        } | null> {
+          const left = this.failsLeft.get(blockNumber) ?? 0;
+          if (left > 0) {
+            this.failsLeft.set(blockNumber, left - 1);
+            return Promise.resolve(null);
+          }
+          return super.getBlock(blockNumber);
+        }
+      }
+      providerFactory = (url) => new FlakyProvider(url);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+        resumeFromBlock: 100,
+      });
+      await monitor.start();
+      const provider = latestProvider();
+
+      provider.emitBlock(103);
+      await vi.advanceTimersByTimeAsync(2_200);
+      expect(monitor.getStatus().lastBlock).toBe(101);
+
+      provider.emitBlock(104);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(await dispatchedBlocks()).toEqual([101, 102, 103]);
+      expect(monitor.getStatus().lastBlock).toBe(103);
+
+      // Two more failures: would reach 3 if the count carried over from 102.
+      provider.emitBlock(105);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(monitor.getStatus().lastBlock).toBe(103);
+      expect(console.error).not.toHaveBeenCalled();
+
+      provider.emitBlock(106);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(await dispatchedBlocks()).toEqual([101, 102, 103, 104, 105, 106]);
+      expect(console.error).not.toHaveBeenCalled();
+      await monitor.stop();
+    });
+
+    it("does not count a failed attempt against a held block while reconnecting", async () => {
+      vi.spyOn(console, "error").mockImplementation((): void => {
+        // suppress test output
+      });
+      // Only the first provider fails block 101; the reconnect gets a healthy one.
+      providerFactory = (url) =>
+        providerInstances.length === 0
+          ? new NullBlockProvider(url, new Set([101]))
+          : new MockProvider(url);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+        resumeFromBlock: 100,
+      });
+      await monitor.start();
+      const firstProvider = latestProvider();
+
+      firstProvider.emitBlock(101);
+      firstProvider.emitBlock(102);
+      // First attempt fails with a provider connected and counts.
+      await vi.advanceTimersByTimeAsync(150);
+      firstProvider.emitBlock(103);
+      firstProvider.websocket.emit("close");
+      // The next two attempts fail during the reconnect and do not count.
+      await vi.advanceTimersByTimeAsync(300);
+      expect(monitor.getStatus().lastBlock).toBe(100);
+      expect(console.error).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      const secondProvider = latestProvider();
+      expect(secondProvider).not.toBe(firstProvider);
+      secondProvider.emitBlock(104);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(await dispatchedBlocks()).toEqual([101, 102, 103, 104]);
+      expect(console.error).not.toHaveBeenCalled();
+      await monitor.stop();
+    });
+
+    it("advances lastProcessedBlock after each backfilled block and counts the push once", async () => {
+      const gate: { release: (() => void) | null } = { release: null };
+      class DeferredProvider extends MockProvider {
+        getBlock(blockNumber: number): Promise<{
+          hash: string;
+          timestamp: number;
+          parentHash: string;
+        } | null> {
+          if (blockNumber !== 103) {
+            return super.getBlock(blockNumber);
+          }
+          return new Promise((resolve) => {
+            gate.release = (): void => {
+              resolve({
+                hash: headerHash(103),
+                timestamp: BLOCK_TS,
+                parentHash: headerHash(102),
+              });
+            };
+          });
+        }
+      }
+      providerFactory = (url) => new DeferredProvider(url);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+        resumeFromBlock: 100,
+      });
+      await monitor.start();
+
+      latestProvider().emitBlock(105);
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Block 103 is in flight: 101 and 102 are already recorded.
+      expect(monitor.getStatus().lastBlock).toBe(102);
+      expect(monitor.getStatus().blocksReceived).toBe(0);
+      expect(await registry.metrics()).toContain(
+        'keeperhub_block_dispatcher_last_processed_block{chain="TestChain"} 102',
+      );
+
+      gate.release?.();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(monitor.getStatus().lastBlock).toBe(105);
+      expect(monitor.getStatus().blocksReceived).toBe(1);
+      expect(await registry.metrics()).toContain(
+        'keeperhub_block_dispatcher_blocks_received_total{chain="TestChain"} 1',
+      );
+      await monitor.stop();
+    });
+
+    it("does not reconnect during a backfill that outlasts BLOCK_ADVANCE_TIMEOUT_MS", async () => {
+      vi.stubEnv("BLOCK_ADVANCE_TIMEOUT_MS", "1500");
+      class SlowProvider extends MockProvider {
+        getBlock(blockNumber: number): Promise<{
+          hash: string;
+          timestamp: number;
+          parentHash: string;
+        } | null> {
+          return new Promise((resolve) => {
+            setTimeout(() => resolve(super.getBlock(blockNumber)), 500);
+          });
+        }
+      }
+      providerFactory = (url) => new SlowProvider(url);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+        resumeFromBlock: 100,
+      });
+      await monitor.start();
+
+      // Six blocks at 500ms each: 3s, twice the block advance timeout.
+      latestProvider().emitBlock(106);
+      await vi.advanceTimersByTimeAsync(3_100);
+
+      expect(providerInstances).toHaveLength(1);
+      expect(await dispatchedBlocks()).toEqual([101, 102, 103, 104, 105, 106]);
+      expect(monitor.getStatus().lastBlock).toBe(106);
+      await monitor.stop();
+    });
+
+    it("keeps at most 256 headers and evicts the oldest first", async () => {
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      const provider = latestProvider();
+      const getBlock = vi.spyOn(provider, "getBlock");
+
+      for (let blockNumber = 1; blockNumber <= 300; blockNumber++) {
+        pushHeader(provider, blockNumber);
+      }
+      // 300 pushed, 256 kept: 45..300. Block 44 was evicted, 45 was not.
+      provider.emitBlock(44);
+      await vi.advanceTimersByTimeAsync(0);
+      provider.emitBlock(45);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getBlock.mock.calls).toEqual([[44]]);
+      expect(await dispatchedBlocks()).toEqual([44, 45]);
+      await monitor.stop();
+    });
+
+    it("clears cached headers on stop", async () => {
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      pushHeader(latestProvider(), 10);
+      await monitor.stop();
+
+      await monitor.start();
+      const provider = latestProvider();
+      const getBlock = vi.spyOn(provider, "getBlock");
+      provider.emitBlock(10);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getBlock).toHaveBeenCalledWith(10);
+      await monitor.stop();
+    });
+
+    it("does not dispatch from a getBlock that settles after stop, nor from a queued block", async () => {
+      let release: (() => void) | null = null;
+      class DeferredProvider extends MockProvider {
+        getBlock(blockNumber: number): Promise<{
+          hash: string;
+          timestamp: number;
+          parentHash: string;
+        } | null> {
+          if (blockNumber !== 10) {
+            return super.getBlock(blockNumber);
+          }
+          return new Promise((resolve) => {
+            release = (): void => {
+              resolve({
+                hash: headerHash(10),
+                timestamp: BLOCK_TS,
+                parentHash: headerHash(9),
+              });
+            };
+          });
+        }
+      }
+      providerFactory = (url) => new DeferredProvider(url);
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: everyBlock(),
+      });
+      await monitor.start();
+      const provider = latestProvider();
+
+      provider.emitBlock(10);
+      await vi.advanceTimersByTimeAsync(0);
+      provider.emitBlock(11);
+      await vi.advanceTimersByTimeAsync(0);
+      await monitor.stop();
+      expect(release).not.toBeNull();
+      release?.();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(await dispatchedBlocks()).toEqual([]);
+      expect(monitor.getStatus().lastBlock).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Resume after a previous monitor (reconciler recreate)
+  // -------------------------------------------------------------------------
+
+  describe("resumeFromBlock", () => {
+    beforeEach(() => {
+      vi.stubEnv("SOCKET_MAX_AGE_MS", String(60 * 60_000));
+      vi.spyOn(console, "log").mockImplementation((): void => {
+        // capture only; suppress test output
+      });
+      vi.spyOn(console, "warn").mockImplementation((): void => {
+        // suppress test output
+      });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    async function dispatchedBlocks(): Promise<number[]> {
+      const { enqueueBlockTrigger } = await import(
+        "../../block-dispatcher/sqs-enqueue.js"
+      );
+      return vi
+        .mocked(enqueueBlockTrigger)
+        .mock.calls.map(([message]) => message.triggerData.blockNumber);
+    }
+
+    it("backfills the blocks after the resume block on the first block received", async () => {
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: [makeWorkflow({ blockInterval: 1 })],
+        resumeFromBlock: 100,
+      });
+      await monitor.start();
+      latestProvider().emitBlock(103);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(await dispatchedBlocks()).toEqual([101, 102, 103]);
+      expect(monitor.getStatus().lastBlock).toBe(103);
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining("Resuming after block 100"),
+      );
+      await monitor.stop();
+    });
+
+    it("skips the backfill when the gap is over the backfill limit", async () => {
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: [makeWorkflow({ blockInterval: 1 })],
+        resumeFromBlock: 100,
+      });
+      await monitor.start();
+      latestProvider().emitBlock(250);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(await dispatchedBlocks()).toEqual([250]);
+      await monitor.stop();
+    });
+
+    it("starts fresh at the first block when no resume block is given", async () => {
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: [makeWorkflow({ blockInterval: 1 })],
+        resumeFromBlock: null,
+      });
+      await monitor.start();
+      latestProvider().emitBlock(103);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(await dispatchedBlocks()).toEqual([103]);
+      await monitor.stop();
+    });
+  });
+});
+
+describe("parseNewHeadsHeader", () => {
+  const hash = `0x${"ab".repeat(32)}`;
+  const parentHash = `0x${"cd".repeat(32)}`;
+  const valid = { number: "0x1a", hash, parentHash, timestamp: "0x6553f100" };
+
+  it("parses a complete header", () => {
+    expect(parseNewHeadsHeader(valid)).toEqual({
+      blockNumber: 26,
+      header: { hash, parentHash, timestamp: 0x6553f100 },
+    });
+  });
+
+  it.each([
+    ["null", null],
+    ["a string", "0x1a"],
+    ["a header without hash", { ...valid, hash: undefined }],
+    ["a header without parentHash", { ...valid, parentHash: undefined }],
+    ["a header without timestamp", { ...valid, timestamp: undefined }],
+    ["a short hash", { ...valid, hash: "0xabc" }],
+    ["a decimal number", { ...valid, number: "26" }],
+    ["a non-hex timestamp", { ...valid, timestamp: "0xzz" }],
+  ])("returns null for %s", (_label, input) => {
+    expect(parseNewHeadsHeader(input)).toBeNull();
   });
 });

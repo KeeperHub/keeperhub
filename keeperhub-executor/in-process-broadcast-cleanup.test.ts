@@ -348,3 +348,33 @@ describe("executeInProcess broadcast marker cleanup (issue #2289 blocking item)"
     );
   });
 });
+
+describe("executeInProcess trigger-block source", () => {
+  it.each([
+    ["block", true],
+    ["manual", false],
+    ["webhook", false],
+    ["event", false],
+  ] as const)("a %s run passes fromBlockScheduler %s", async (triggerType, expected) => {
+    const { executeWorkflow } = await import(
+      "../lib/workflow/executor/executor.workflow"
+    );
+    vi.mocked(executeWorkflow).mockImplementationOnce(async () => ({
+      success: true,
+      results: {},
+      outputs: {},
+    }));
+
+    await executeInProcess({
+      workflowId: "wf-1",
+      executionId: `exec-${triggerType}`,
+      input: { blockNumber: 101 },
+      triggerType,
+      db: {} as never,
+    });
+
+    expect(vi.mocked(executeWorkflow).mock.lastCall?.[0]).toMatchObject({
+      fromBlockScheduler: expected,
+    });
+  });
+});

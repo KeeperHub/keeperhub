@@ -748,6 +748,23 @@ describe("writeContractCore simulateAt next-block", () => {
     expect(result).toMatchObject({ success: true, simulation: SIMULATION });
   });
 
+  it("passes a Block-triggered run's trigger block to the adapter", async () => {
+    const triggerBlock = {
+      chainId: 16_602,
+      number: 101,
+    };
+    await writeContractCore({
+      ...baseInput,
+      simulateAt: "next-block",
+      _context: { organizationId: "org-1", triggerBlock },
+    });
+
+    const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      simulation?: unknown;
+    };
+    expect(optionsArg.simulation).toEqual({ triggerBlock });
+  });
+
   it("passes no simulation option by default", async () => {
     mockExecuteContractCall.mockResolvedValue({
       hash: "0xhash",

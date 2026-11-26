@@ -63,6 +63,7 @@ import {
   isOnChainPendingError,
   isOnChainRevertError,
 } from "@/lib/web3/onchain-revert";
+import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   type NextBlockSimulation,
   type NextBlockSimulationOptions,
@@ -130,6 +131,7 @@ export type BatchWriteContractCoreInput = {
     // skip the DB lookup below entirely; it exists only as a fallback for
     // callers that supply executionId without it.
     workflowId?: string;
+    triggerBlock?: TriggerBlock;
   };
 };
 
@@ -597,7 +599,8 @@ async function batchWriteContractCoreImpl(
 
   const simulationSettings = readSimulationSettings(
     simulateAt,
-    simulateTimestampOffsetSec
+    simulateTimestampOffsetSec,
+    _context?.triggerBlock
   );
   if (!simulationSettings.ok) {
     return simulationSettings.failure;

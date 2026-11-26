@@ -35,6 +35,12 @@ import {
 const NAMESPACE_FILE =
   "/var/run/secrets/kubernetes.io/serviceaccount/namespace";
 
+/** State handed to a new leader, read from the Lease as it acquired it. */
+export interface LeadershipContext {
+  /** Lease annotations the previous holder left behind. */
+  annotations: Readonly<Record<string, string>>;
+}
+
 export interface LeaderElectionConfig {
   /** Lease object name. Each dispatcher uses its own so they elect separately. */
   leaseName: string;
@@ -49,9 +55,14 @@ export interface LeaderElectionConfig {
   /** Seconds between acquire/renew attempts. */
   retryPeriodSeconds?: number;
   /** Called once when this instance becomes the leader. */
-  onStartedLeading: () => void | Promise<void>;
+  onStartedLeading: (context: LeadershipContext) => void | Promise<void>;
   /** Called when this instance loses leadership (renew failed, or on shutdown). */
   onStoppedLeading: () => void | Promise<void>;
+  /**
+   * Annotations to write onto the Lease with every renew and on release, so
+   * the next leader can read them. Rides the existing renew write.
+   */
+  getAnnotations?: () => Record<string, string>;
 }
 
 /** Handle returned by {@link runWithLeaderElection}. */
@@ -105,13 +116,18 @@ export class LeaderElector implements LeaderElectionHandle {
   private readonly leaseDurationSeconds: number;
   private readonly renewDeadlineMs: number;
   private readonly retryPeriodMs: number;
-  private readonly onStartedLeading: () => void | Promise<void>;
+  private readonly onStartedLeading: (
+    context: LeadershipContext,
+  ) => void | Promise<void>;
   private readonly onStoppedLeading: () => void | Promise<void>;
+  private readonly getAnnotations?: () => Record<string, string>;
 
   private leading = false;
   private stopped = false;
   /** Wall-clock ms of the last successful acquire/renew. */
   private lastRenewMs = 0;
+  /** Lease annotations as read when this instance last acquired the Lease. */
+  private acquiredAnnotations: Readonly<Record<string, string>> = {};
 
   constructor(config: LeaderElectionConfig) {
     const leaseDuration =
@@ -143,6 +159,7 @@ export class LeaderElector implements LeaderElectionHandle {
     this.retryPeriodMs = retryPeriod * 1000;
     this.onStartedLeading = config.onStartedLeading;
     this.onStoppedLeading = config.onStoppedLeading;
+    this.getAnnotations = config.getAnnotations;
   }
 
   isLeader(): boolean {
@@ -163,7 +180,11 @@ export class LeaderElector implements LeaderElectionHandle {
           console.log(
             `[LeaderElection] Acquired leadership of "${this.leaseName}"`,
           );
-          await this.safelyInvoke(this.onStartedLeading, "onStartedLeading");
+          const context = { annotations: this.acquiredAnnotations };
+          await this.safelyInvoke(
+            () => this.onStartedLeading(context),
+            "onStartedLeading",
+          );
         }
       } else if (this.leading) {
         // Keep leadership through transient failures until renewDeadline lapses.
@@ -199,6 +220,7 @@ export class LeaderElector implements LeaderElectionHandle {
       const now = new V1MicroTime();
 
       if (!lease) {
+        this.acquiredAnnotations = {};
         await this.api.createNamespacedLease({
           namespace: this.namespace,
           body: {
@@ -225,6 +247,12 @@ export class LeaderElector implements LeaderElectionHandle {
       if (!heldByUs && !expired) {
         // Someone else holds a still-valid Lease.
         return false;
+      }
+
+      if (this.leading) {
+        this.applyAnnotations(lease);
+      } else {
+        this.acquiredAnnotations = { ...lease.metadata?.annotations };
       }
 
       lease.spec = {
@@ -284,6 +312,7 @@ export class LeaderElector implements LeaderElectionHandle {
       if (!lease || lease.spec?.holderIdentity !== this.identity) {
         return;
       }
+      this.applyAnnotations(lease);
       lease.spec = {
         ...lease.spec,
         holderIdentity: undefined,
@@ -299,6 +328,25 @@ export class LeaderElector implements LeaderElectionHandle {
     } catch (error) {
       console.warn(
         `[LeaderElection] Failed to release lease "${this.leaseName}" (it will expire naturally):`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  /** Merge the caller's annotations into the Lease; a failure skips them. */
+  private applyAnnotations(lease: V1Lease): void {
+    if (!this.getAnnotations) {
+      return;
+    }
+    try {
+      const annotations = this.getAnnotations();
+      lease.metadata = {
+        ...lease.metadata,
+        annotations: { ...lease.metadata?.annotations, ...annotations },
+      };
+    } catch (error) {
+      console.warn(
+        `[LeaderElection] Failed to collect annotations for "${this.leaseName}", renewing without them:`,
         error instanceof Error ? error.message : error,
       );
     }
@@ -338,12 +386,14 @@ export function runWithLeaderElection(
       "[LeaderElection] Disabled (LEADER_ELECTION_ENABLED != true); running as sole leader",
     );
     let leading = true;
-    void Promise.resolve(config.onStartedLeading()).catch((error: unknown) => {
-      console.error(
-        "[LeaderElection] onStartedLeading callback threw:",
-        error instanceof Error ? error.message : error,
-      );
-    });
+    void Promise.resolve(config.onStartedLeading({ annotations: {} })).catch(
+      (error: unknown) => {
+        console.error(
+          "[LeaderElection] onStartedLeading callback threw:",
+          error instanceof Error ? error.message : error,
+        );
+      },
+    );
     return {
       isLeader: () => leading,
       stop: async () => {
