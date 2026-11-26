@@ -1306,7 +1306,7 @@ async function seedChains() {
   //
   // Disable rather than delete: chains are referenced by workflows, executions
   // and supported tokens, so removing a row would orphan live data. A disabled
-  // row is invisible to resolveRpcConfig (it filters on isEnabled) which is the
+  // row is refused by the RPC engine as a disabled chain, which is the
   // behaviour we want, and stays available for historical lookups.
   const seededChainIds = DEFAULT_CHAINS.map((c) => c.chainId);
 

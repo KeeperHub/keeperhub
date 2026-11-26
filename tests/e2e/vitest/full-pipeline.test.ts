@@ -42,7 +42,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   chains,
   organization,
-  userRpcPreferences,
   users,
   workflowExecutions,
   workflowSchedules,
@@ -67,8 +66,6 @@ const TEST_ORG_ID = `${TEST_PREFIX}org`;
 const TEST_MEMBER_ID = `${TEST_PREFIX}member`;
 const TEST_QUEUE_NAME = "keeperhub-pipeline-test-queue";
 
-// Test RPC URLs
-const CUSTOM_PRIMARY_RPC = "https://chain.techops.services/eth-sepolia";
 const TEST_ADDRESS = "0xaa00000000000000000000000000000000000000";
 
 // Message types matching the pipeline
@@ -98,7 +95,6 @@ describe.skipIf(SKIP_INFRA_TESTS)("Full Pipeline E2E", () => {
         workflowExecutions,
         workflowSchedules,
         chains,
-        userRpcPreferences,
       },
     });
 
@@ -199,9 +195,6 @@ describe.skipIf(SKIP_INFRA_TESTS)("Full Pipeline E2E", () => {
       await queryClient`DELETE FROM workflow_executions WHERE workflow_id LIKE ${`${TEST_WORKFLOW_PREFIX}%`}`;
       await queryClient`DELETE FROM workflow_schedules WHERE id LIKE ${`${TEST_SCHEDULE_PREFIX}%`}`;
       await queryClient`DELETE FROM workflows WHERE id LIKE ${`${TEST_WORKFLOW_PREFIX}%`}`;
-      await db
-        .delete(userRpcPreferences)
-        .where(eq(userRpcPreferences.userId, TEST_USER_ID));
 
       // Purge test queue
       await sqsClient.send(new PurgeQueueCommand({ QueueUrl: testQueueUrl }));
@@ -223,9 +216,6 @@ describe.skipIf(SKIP_INFRA_TESTS)("Full Pipeline E2E", () => {
       await queryClient`DELETE FROM workflows WHERE id LIKE ${`${TEST_WORKFLOW_PREFIX}%`}`;
       await queryClient`DELETE FROM member WHERE organization_id = ${TEST_ORG_ID}`;
       await queryClient`DELETE FROM organization WHERE id = ${TEST_ORG_ID}`;
-      await db
-        .delete(userRpcPreferences)
-        .where(eq(userRpcPreferences.userId, TEST_USER_ID));
       await sqsClient.send(new DeleteQueueCommand({ QueueUrl: testQueueUrl }));
     } catch (error) {
       console.warn("Cleanup warning:", error);
@@ -426,86 +416,6 @@ describe.skipIf(SKIP_INFRA_TESTS)("Full Pipeline E2E", () => {
 
         expect(execution[0]?.status).toBe("success");
         expect(execution[0]?.completedAt).toBeDefined();
-      },
-      PIPELINE_TIMEOUT
-    );
-
-    it(
-      "should use user RPC preferences through the full pipeline",
-      async () => {
-        const workflowId = `${TEST_WORKFLOW_PREFIX}manual_rpc_pref`;
-        const executionId = `${TEST_EXECUTION_PREFIX}manual_rpc_pref`;
-
-        // Step 1: Set user RPC preferences
-        await db.insert(userRpcPreferences).values({
-          userId: TEST_USER_ID,
-          chainId: 11_155_111,
-          primaryRpcUrl: CUSTOM_PRIMARY_RPC,
-          fallbackRpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
-        });
-
-        // Step 2: Create workflow
-        await createCheckBalanceWorkflow(workflowId);
-
-        // Step 3: Send to SQS
-        const message: ScheduleMessage = {
-          workflowId,
-          executionId,
-          triggerTime: new Date().toISOString(),
-          triggerType: "manual",
-        };
-
-        await sqsClient.send(
-          new SendMessageCommand({
-            QueueUrl: testQueueUrl,
-            MessageBody: JSON.stringify(message),
-          })
-        );
-
-        // Step 4: Receive and process
-        const receiveResult = await sqsClient.send(
-          new ReceiveMessageCommand({
-            QueueUrl: testQueueUrl,
-            MaxNumberOfMessages: 1,
-            WaitTimeSeconds: 5,
-          })
-        );
-
-        await sqsClient.send(
-          new DeleteMessageCommand({
-            QueueUrl: testQueueUrl,
-            ReceiptHandle: receiveResult.Messages?.[0].ReceiptHandle,
-          })
-        );
-
-        // Step 5: Create execution record
-        await db.insert(workflowExecutions).values({
-          id: executionId,
-          workflowId,
-          userId: TEST_USER_ID,
-          status: "pending",
-          input: { triggerType: "manual" },
-          startedAt: new Date(),
-        });
-
-        // Step 6: Run workflow-runner
-        const result = await runWorkflowRunner(workflowId, executionId, {
-          timeout: PIPELINE_TIMEOUT,
-        });
-
-        // Step 7: Verify user RPC preferences were used
-        expect(result.exitCode).toBe(0);
-        expect(result.stdout).toContain(
-          "Using user RPC preferences for userId"
-        );
-
-        const execution = await db
-          .select()
-          .from(workflowExecutions)
-          .where(eq(workflowExecutions.id, executionId))
-          .limit(1);
-
-        expect(execution[0]?.status).toBe("success");
       },
       PIPELINE_TIMEOUT
     );

@@ -110,7 +110,7 @@ describe("isViewerForRequest", () => {
     mockGetOrgRole.mockResolvedValue("viewer");
     await expect(
       isViewerForRequest(
-        request("/api/user/rpc-preferences/1", {
+        request("/api/user/wallet/withdraw", {
           "x-organization-id": "personal",
         }),
         "u-header-escape",

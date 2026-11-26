@@ -1,13 +1,13 @@
 ---
 title: "User API"
-description: "KeeperHub User API - manage user profile, wallet, and RPC preferences."
+description: "KeeperHub User API - manage user profile and wallet."
 ---
 
 # User API
 
 Manage user profile and preferences.
 
-> **Authentication.** Profile and wallet read operations in this section accept either a session cookie or an organization API key (`kh_`). Mutating operations require **session authentication** and reject API keys with `401`: profile mutation, password change, forgot-password, account deactivation, RPC preferences, and every wallet write operation (withdraw, share, refresh-share, export-key, active wallet switch, fee estimation). Address book entries are organization-scoped and accept either method. See [Authentication](/api/authentication#endpoint-scope) for the full scope rules.
+> **Authentication.** Profile and wallet read operations in this section accept either a session cookie or an organization API key (`kh_`). Mutating operations require **session authentication** and reject API keys with `401`: profile mutation, password change, forgot-password, account deactivation, and every wallet write operation (withdraw, share, refresh-share, export-key, active wallet switch, fee estimation). Address book entries are organization-scoped and accept either method. See [Authentication](/api/authentication#endpoint-scope) for the full scope rules.
 
 ## Get User Profile
 
@@ -82,77 +82,6 @@ address and `null` otherwise.
 When the organization has no wallet yet, the response is `{ "hasWallet": false, "message": "No wallet found for this organization" }`.
 
 Balances are not included here. Fetch them from `GET /api/user/wallet/balances`.
-
-## RPC Preferences
-
-Manage custom RPC endpoints per chain.
-
-### List RPC Preferences
-
-```http
-GET /api/user/rpc-preferences
-```
-
-### Response
-
-Returns two arrays. `preferences` lists the user's saved overrides; `resolved` lists the effective RPC config for every chain after merging overrides with platform defaults. `source` is `"user"` when a preference is in effect, `"default"` otherwise.
-
-```json
-{
-  "preferences": [
-    {
-      "id": "pref_abc123",
-      "chainId": 1,
-      "primaryRpcUrl": "https://custom-rpc.example.com",
-      "fallbackRpcUrl": "https://fallback.example.com",
-      "createdAt": "2026-05-01T12:00:00.000Z",
-      "updatedAt": "2026-05-01T12:00:00.000Z"
-    }
-  ],
-  "resolved": [
-    {
-      "chainId": 1,
-      "chainName": "Ethereum Mainnet",
-      "primaryRpcUrl": "https://custom-rpc.example.com",
-      "fallbackRpcUrl": "https://fallback.example.com",
-      "primaryWssUrl": null,
-      "fallbackWssUrl": null,
-      "source": "user"
-    }
-  ]
-}
-```
-
-### Get Chain RPC Preference
-
-```http
-GET /api/user/rpc-preferences/{chainId}
-```
-
-### Set or Update Chain RPC Preference
-
-```http
-PUT /api/user/rpc-preferences/{chainId}
-```
-
-#### Request Body
-
-```json
-{
-  "primaryRpcUrl": "https://custom-rpc.example.com",
-  "fallbackRpcUrl": "https://fallback.example.com"
-}
-```
-
-`fallbackRpcUrl` is optional. To clear an existing preference, use the DELETE endpoint below instead of sending an empty body.
-
-### Delete Chain RPC Preference
-
-```http
-DELETE /api/user/rpc-preferences/{chainId}
-```
-
-Reverts to default RPC endpoints for the chain.
 
 ## Change Password
 
