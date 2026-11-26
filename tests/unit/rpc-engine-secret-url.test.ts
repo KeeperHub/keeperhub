@@ -12,28 +12,30 @@ describe("SecretUrl", () => {
 
   it("masks the URL in every string conversion", () => {
     const url = SecretUrl.parse(KEYED);
-    const masked = "https://eth-mainnet.example.com/••••";
+    const masked = "https://••••";
 
     expect(url.masked).toBe(masked);
     expect(String(url)).toBe(masked);
     expect(`${url}`).toBe(masked);
     expect(JSON.stringify({ url })).toBe(JSON.stringify({ url: masked }));
-    expect(inspect({ url })).not.toContain("abcdef0123456789");
+    expect(inspect({ url })).not.toContain("example");
   });
 
-  it("masks query strings and credentials", () => {
-    expect(
-      SecretUrl.parse("https://rpc.example.com?apikey=secret").masked
-    ).toBe("https://rpc.example.com/••••");
-    expect(SecretUrl.parse("https://user:pass@rpc.example.com").masked).toBe(
-      "https://rpc.example.com/••••"
-    );
-  });
-
-  it("leaves a bare host unmasked", () => {
-    expect(SecretUrl.parse("https://rpc.example.com/").masked).toBe(
-      "https://rpc.example.com"
-    );
+  it.each([
+    ["a key in the path", "https://eth-mainnet.g.example.com/v2/k3yk3yk3y"],
+    ["a key in the query", "https://rpc.example.com/?dkey=k3yk3yk3y"],
+    ["credentials", "https://user:k3yk3yk3y@rpc.example.com"],
+    [
+      "an endpoint name in the subdomain",
+      "wss://k3yk3yk3y.example.com:8546/ws",
+    ],
+    ["an IP address", "https://203.0.113.7:8545/k3yk3yk3y"],
+  ])("keeps nothing but the scheme for %s", (_case, raw) => {
+    const url = SecretUrl.parse(raw);
+    expect(url.masked).toMatch(/^(https?|wss?):\/\/••••$/);
+    expect(url.masked).not.toContain("k3y");
+    expect(url.masked).not.toContain("example");
+    expect(url.masked).not.toContain("203.0.113.7");
   });
 
   it("derives the transport from the scheme", () => {

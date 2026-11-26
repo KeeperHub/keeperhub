@@ -1,6 +1,9 @@
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 import { resolveRoute } from "../resolve-route";
-import type { RpcRouteErrorCode } from "../route-error";
+import {
+  ORG_SETTING_ROUTE_ERRORS,
+  type RpcRouteErrorCode,
+} from "../route-error";
 import {
   orgScope,
   parseRpcSelection,
@@ -9,7 +12,6 @@ import {
 import type { PlatformChainRecord } from "../sources/platform-source";
 import {
   type OrgRpcConfig,
-  type OrgRpcPolicy,
   type PrivateMempoolRequest,
   RpcPurpose,
   type RpcSelection,
@@ -20,6 +22,12 @@ const NODE_TYPE_ACTION = "action";
 const NETWORK_CONFIG_KEY = "network";
 const TRIGGER_TYPE_CONFIG_KEY = "triggerType";
 const PRIVATE_MEMPOOL_CONFIG_KEY = "usePrivateMempool";
+const ACTION_TYPE_CONFIG_KEY = "actionType";
+
+/** Whether an action type calls its chain over RPC; unknown types count. */
+export type ActionUsesRpc = (actionType: string) => boolean;
+
+const EVERY_ACTION_USES_RPC: ActionUsesRpc = () => true;
 
 /** Triggers that hold a long-lived listener on their chain. */
 const SUBSCRIBING_TRIGGERS: ReadonlySet<string> = new Set([
@@ -64,7 +72,8 @@ function literalChainId(value: unknown): number | null {
 
 function nodePurpose(
   type: unknown,
-  config: Record<string, unknown>
+  config: Record<string, unknown>,
+  actionUsesRpc: ActionUsesRpc
 ): RpcPurpose | null {
   if (type === NODE_TYPE_TRIGGER) {
     return SUBSCRIBING_TRIGGERS.has(String(config[TRIGGER_TYPE_CONFIG_KEY]))
@@ -72,6 +81,10 @@ function nodePurpose(
       : null;
   }
   if (type === NODE_TYPE_ACTION) {
+    const actionType = config[ACTION_TYPE_CONFIG_KEY];
+    if (typeof actionType === "string" && !actionUsesRpc(actionType)) {
+      return null;
+    }
     return config[PRIVATE_MEMPOOL_CONFIG_KEY] === true
       ? RpcPurpose.WRITE
       : RpcPurpose.READ;
@@ -84,7 +97,10 @@ function nodePurpose(
  * known at run time, so they are skipped here and the resolver refuses them
  * then if they are not covered.
  */
-export function chainUsagesOf(workflow: CoverageWorkflow): NodeChainUsage[] {
+export function chainUsagesOf(
+  workflow: CoverageWorkflow,
+  actionUsesRpc: ActionUsesRpc = EVERY_ACTION_USES_RPC
+): NodeChainUsage[] {
   if (!Array.isArray(workflow.nodes)) {
     return [];
   }
@@ -95,7 +111,7 @@ export function chainUsagesOf(workflow: CoverageWorkflow): NodeChainUsage[] {
       continue;
     }
     const chainId = literalChainId(config[NETWORK_CONFIG_KEY]);
-    const purpose = nodePurpose(node.data?.type, config);
+    const purpose = nodePurpose(node.data?.type, config, actionUsesRpc);
     if (chainId === null || purpose === null) {
       continue;
     }
@@ -125,7 +141,8 @@ export type CoverageGap = Omit<
 export type CoverageInput = {
   organizationId: string;
   usages: readonly NodeChainUsage[];
-  policy: OrgRpcPolicy;
+  /** Chains the organization serves only with its own endpoints. */
+  ownRpcOnlyChains: ReadonlySet<number>;
   configs: readonly OrgRpcConfig[];
   platform: ReadonlyMap<number, PlatformChainRecord>;
 };
@@ -144,11 +161,14 @@ export function findCoverageGaps(input: CoverageInput): CoverageGap[] {
       scope: orgScope(input.organizationId, usage.selection),
       chain: record?.chain ?? null,
       platform: record?.endpoints ?? null,
-      org: { policy: input.policy, configs: input.configs },
+      org: {
+        policy: { ownRpcOnly: input.ownRpcOnlyChains.has(usage.chainId) },
+        configs: input.configs,
+      },
       purpose: usage.purpose,
       privateMempool: usage.privateMempool,
     });
-    if (!result.ok) {
+    if (!result.ok && ORG_SETTING_ROUTE_ERRORS.has(result.error.code)) {
       const {
         selection: _selection,
         privateMempool: _private,

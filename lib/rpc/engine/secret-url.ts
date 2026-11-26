@@ -11,15 +11,13 @@ const SCHEME_TRANSPORT: Readonly<Record<string, RpcTransport>> = {
 };
 
 const MASK = "••••";
-const ROOT_PATH = "/";
 const IPV6_BRACKETS = /^\[|\]$/g;
 
 /** Hash used to identify an endpoint without holding its URL. */
 export const FINGERPRINT_HASH = "sha256";
 export const FINGERPRINT_ENCODING = "hex";
-
 /**
- * An RPC endpoint URL that may carry a credential in its path or query.
+ * An RPC endpoint URL that may carry a credential in its host, path or query.
  *
  * Every string conversion (template literals, JSON, util.inspect, logger
  * payloads) yields the masked form, so the URL cannot reach a log line or a
@@ -39,12 +37,9 @@ export class SecretUrl {
     this.transport = transport;
     this.host = parsed.host;
     this.hostname = parsed.hostname.replace(IPV6_BRACKETS, "");
-    const hasSecretPart =
-      (parsed.pathname.length > 0 && parsed.pathname !== ROOT_PATH) ||
-      parsed.search.length > 0 ||
-      parsed.username.length > 0 ||
-      parsed.password.length > 0;
-    this.masked = `${parsed.protocol}//${parsed.host}${hasSecretPart ? `/${MASK}` : ""}`;
+    // Only the scheme survives: providers put keys in the path, the query,
+    // credentials and the subdomain, so no other part of the URL is safe.
+    this.masked = `${parsed.protocol}//${MASK}`;
     this.fingerprint = createHash(FINGERPRINT_HASH)
       .update(parsed.toString())
       .digest(FINGERPRINT_ENCODING);

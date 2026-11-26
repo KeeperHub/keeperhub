@@ -1,5 +1,5 @@
-import { RpcTransport } from "../types";
-import type { RpcUrlCheckFailure } from "./verify";
+import { RpcChainType, RpcTransport } from "../types";
+import type { RpcUrlCheckFailure } from "./codes";
 
 /** The URLs one organization RPC config can hold. */
 export const RpcConfigUrlSlot = {
@@ -15,6 +15,17 @@ export type RpcConfigUrlSlot =
 export const RPC_CONFIG_URL_SLOTS: readonly RpcConfigUrlSlot[] =
   Object.values(RpcConfigUrlSlot);
 
+/** Slots a chain family can use. Solana configs hold HTTP endpoints only. */
+export const RPC_CONFIG_SLOTS_BY_CHAIN_TYPE: Readonly<
+  Record<RpcChainType, readonly RpcConfigUrlSlot[]>
+> = {
+  [RpcChainType.EVM]: RPC_CONFIG_URL_SLOTS,
+  [RpcChainType.SOLANA]: [
+    RpcConfigUrlSlot.HTTP_PRIMARY,
+    RpcConfigUrlSlot.HTTP_FALLBACK,
+  ],
+};
+
 /** The transport each slot must use. */
 export const SLOT_TRANSPORT: Readonly<Record<RpcConfigUrlSlot, RpcTransport>> =
   {
@@ -29,9 +40,6 @@ export const SLOT_TRANSPORT: Readonly<Record<RpcConfigUrlSlot, RpcTransport>> =
 export type RpcConfigUrls = Partial<Record<RpcConfigUrlSlot, string>> & {
   [RpcConfigUrlSlot.HTTP_PRIMARY]: string;
 };
-
-/** Masked URLs by slot, safe to return to any member. */
-export type RpcConfigMaskedUrls = Partial<Record<RpcConfigUrlSlot, string>>;
 
 export type RpcUrlCheck = {
   ok: boolean;

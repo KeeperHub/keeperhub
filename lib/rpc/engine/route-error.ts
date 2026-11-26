@@ -12,6 +12,23 @@ export const RpcRouteErrorCode = {
 export type RpcRouteErrorCode =
   (typeof RpcRouteErrorCode)[keyof typeof RpcRouteErrorCode];
 
+/**
+ * Refusals caused by the organization's own RPC settings: a pinned config
+ * that cannot serve, or "own RPC only" without a fitting config. The other
+ * codes come from KeeperHub's chain setup, which no organization config can
+ * fix, so coverage checks and trigger routing ignore them.
+ */
+export const ORG_SETTING_ROUTE_ERRORS: ReadonlySet<RpcRouteErrorCode> = new Set(
+  [
+    RpcRouteErrorCode.CONFIG_NOT_FOUND,
+    RpcRouteErrorCode.CONFIG_CHAIN_MISMATCH,
+    RpcRouteErrorCode.CONFIG_DISABLED,
+    RpcRouteErrorCode.NOT_COVERED,
+    RpcRouteErrorCode.PLATFORM_FORBIDDEN,
+    RpcRouteErrorCode.NO_PRIVATE_URL,
+  ]
+);
+
 const MESSAGES: Record<RpcRouteErrorCode, (chainId: number) => string> = {
   [RpcRouteErrorCode.CHAIN_UNAVAILABLE]: (chainId) =>
     `Chain ${chainId} is not supported or is disabled`,
@@ -22,11 +39,11 @@ const MESSAGES: Record<RpcRouteErrorCode, (chainId: number) => string> = {
   [RpcRouteErrorCode.CONFIG_DISABLED]: () =>
     "The selected RPC configuration is disabled. Enable it or pick another one.",
   [RpcRouteErrorCode.NOT_COVERED]: (chainId) =>
-    `Your organization only allows its own RPC endpoints, and none is set up for chain ${chainId} for this kind of call.`,
+    `Chain ${chainId} is set to use only your organization's endpoints, and none of them can serve this kind of call. Add one in Settings > RPC endpoints.`,
   [RpcRouteErrorCode.PLATFORM_FORBIDDEN]: () =>
-    "Your organization only allows its own RPC endpoints, so the KeeperHub default cannot be used.",
+    "This network is set to use only your organization's endpoints, so the KeeperHub default cannot be used.",
   [RpcRouteErrorCode.NO_PRIVATE_URL]: (chainId) =>
-    `Your organization only allows its own RPC endpoints, and no private transaction URL is set up for chain ${chainId}.`,
+    `Chain ${chainId} is set to use only your organization's endpoints, and none of them has a private transaction URL.`,
   [RpcRouteErrorCode.NO_SUBSCRIBE_ENDPOINT]: (chainId) =>
     `No WebSocket endpoint is configured for chain ${chainId}.`,
   [RpcRouteErrorCode.WRONG_CHAIN_FAMILY]: (chainId) =>

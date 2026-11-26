@@ -6,22 +6,21 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { organization } from "@/lib/db/schema";
-import type {
-  RpcConfigMaskedUrls,
-  RpcConfigVerification,
-} from "@/lib/rpc/engine/org/url-slots";
+import type { RpcConfigVerification } from "@/lib/rpc/engine/org/url-slots";
 import type { RpcOrigin, RpcTransport } from "@/lib/rpc/engine/types";
 import { generateId } from "@/lib/utils/id";
 
 /**
  * An organization's own RPC endpoints for one chain. The URLs carry API keys,
- * so they live in one encrypted column; members only ever see `maskedUrls`.
+ * so they live only in one encrypted column; nothing derived from them is
+ * stored or returned, only which slots are set.
  * At most one config per chain is the default that workflows use on auto.
  */
 export const organizationRpcConfigs = pgTable(
@@ -38,7 +37,6 @@ export const organizationRpcConfigs = pgTable(
     isDefault: boolean("is_default").notNull().default(false),
     enabled: boolean("enabled").notNull().default(true),
     encryptedUrls: text("encrypted_urls").notNull(),
-    maskedUrls: jsonb("masked_urls").$type<RpcConfigMaskedUrls>().notNull(),
     verification: jsonb("verification")
       .$type<RpcConfigVerification>()
       .notNull()
@@ -69,18 +67,27 @@ export type OrganizationRpcConfigRow =
 export type NewOrganizationRpcConfigRow =
   typeof organizationRpcConfigs.$inferInsert;
 
-/** Organization-wide RPC policy. No row means the defaults. */
-export const organizationRpcPolicy = pgTable("organization_rpc_policy", {
-  organizationId: text("organization_id")
-    .primaryKey()
-    .references(() => organization.id, { onDelete: "cascade" }),
-  ownRpcOnly: boolean("own_rpc_only").notNull().default(false),
-  changedBy: text("changed_by"),
-  changedAt: timestamp("changed_at").notNull().defaultNow(),
-});
+/**
+ * An organization's RPC policy for one chain. With `ownRpcOnly` the chain is
+ * served only by the organization's own configs, never KeeperHub's. No row
+ * means the default: KeeperHub endpoints fill in where there is no config.
+ */
+export const organizationRpcChainPolicy = pgTable(
+  "organization_rpc_chain_policy",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    chainId: integer("chain_id").notNull(),
+    ownRpcOnly: boolean("own_rpc_only").notNull().default(false),
+    changedBy: text("changed_by"),
+    changedAt: timestamp("changed_at").notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.organizationId, table.chainId] })]
+);
 
-export type OrganizationRpcPolicyRow =
-  typeof organizationRpcPolicy.$inferSelect;
+export type OrganizationRpcChainPolicyRow =
+  typeof organizationRpcChainPolicy.$inferSelect;
 
 /**
  * Hourly RPC usage per organization and endpoint. `configId` is null for

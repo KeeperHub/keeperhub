@@ -1217,11 +1217,11 @@ export {
 } from "./schema-payments";
 export {
   type NewOrganizationRpcConfigRow,
+  type OrganizationRpcChainPolicyRow,
   type OrganizationRpcConfigRow,
-  type OrganizationRpcPolicyRow,
   type OrganizationRpcUsageRow,
+  organizationRpcChainPolicy,
   organizationRpcConfigs,
-  organizationRpcPolicy,
   organizationRpcUsageHourly,
 } from "./schema-rpc";
 export {

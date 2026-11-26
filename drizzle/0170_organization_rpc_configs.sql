@@ -6,7 +6,6 @@ CREATE TABLE "organization_rpc_configs" (
 	"is_default" boolean DEFAULT false NOT NULL,
 	"enabled" boolean DEFAULT true NOT NULL,
 	"encrypted_urls" text NOT NULL,
-	"masked_urls" jsonb NOT NULL,
 	"verification" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"created_by" text,
 	"updated_by" text,
@@ -14,11 +13,13 @@ CREATE TABLE "organization_rpc_configs" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "organization_rpc_policy" (
-	"organization_id" text PRIMARY KEY NOT NULL,
+CREATE TABLE "organization_rpc_chain_policy" (
+	"organization_id" text NOT NULL,
+	"chain_id" integer NOT NULL,
 	"own_rpc_only" boolean DEFAULT false NOT NULL,
 	"changed_by" text,
-	"changed_at" timestamp DEFAULT now() NOT NULL
+	"changed_at" timestamp DEFAULT now() NOT NULL,
+	CONSTRAINT "organization_rpc_chain_policy_organization_id_chain_id_pk" PRIMARY KEY("organization_id","chain_id")
 );
 --> statement-breakpoint
 CREATE TABLE "organization_rpc_usage_hourly" (
@@ -43,7 +44,7 @@ CREATE TABLE "organization_rpc_usage_hourly" (
 --> statement-breakpoint
 ALTER TABLE "organization_rpc_configs" ADD CONSTRAINT "organization_rpc_configs_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
-ALTER TABLE "organization_rpc_policy" ADD CONSTRAINT "organization_rpc_policy_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "organization_rpc_chain_policy" ADD CONSTRAINT "organization_rpc_chain_policy_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
 ALTER TABLE "organization_rpc_usage_hourly" ADD CONSTRAINT "organization_rpc_usage_hourly_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint

@@ -7,6 +7,7 @@ import {
   organizationRpcConfigs,
   organizationRpcUsageHourly,
 } from "../../../lib/db/schema-rpc";
+import { RpcConfigUrlSlot } from "../../../lib/rpc/engine/org/url-slots";
 import { WorkflowTriggerEnum } from "../../../lib/workflow/store";
 
 vi.mock("server-only", () => ({}));
@@ -209,6 +210,7 @@ describe.skipIf(SKIP)("organization RPC configs (Postgres)", () => {
     const refused = await service.setOrgRpcPolicy({
       organizationId: ORG_ID,
       userId: USER_ID,
+      chainId: SEPOLIA,
       ownRpcOnly: true,
     });
     expect(refused).toMatchObject({
@@ -231,9 +233,13 @@ describe.skipIf(SKIP)("organization RPC configs (Postgres)", () => {
     const accepted = await service.setOrgRpcPolicy({
       organizationId: ORG_ID,
       userId: USER_ID,
+      chainId: SEPOLIA,
       ownRpcOnly: true,
     });
-    expect(accepted).toMatchObject({ ok: true, policy: { ownRpcOnly: true } });
+    expect(accepted).toMatchObject({
+      ok: true,
+      policy: { chainId: SEPOLIA, ownRpcOnly: true },
+    });
   });
 
   it("refuses to delete the config a workflow depends on", async () => {
@@ -282,5 +288,69 @@ describe.skipIf(SKIP)("organization RPC configs (Postgres)", () => {
       latencyMsSum: 50,
       latencyMsMax: 30,
     });
+  });
+  it("returns and stores nothing from a URL but its encrypted form", async () => {
+    const leaks = [
+      "pathkey0123456789abcdef",
+      "querykey0123456789abcdef",
+      "userpass0123456789abcdef",
+      "subkey0123456789abcdef",
+      "leakhost",
+      "203.0.113.7",
+    ];
+    const result = await service.createOrgRpcConfig({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      chainId: SEPOLIA,
+      name: "Every position",
+      urls: {
+        httpPrimary: `https://${leaks[3]}.${leaks[4]}.example.com/v2/${leaks[0]}`,
+        httpFallback: `https://rpc.${leaks[4]}.example.com/?apikey=${leaks[1]}`,
+        wssPrimary: `wss://user:${leaks[2]}@ws.${leaks[4]}.example.com/`,
+        privateTx: `https://${leaks[5]}:8545/`,
+      },
+    });
+    if (!result.ok) {
+      throw new Error(`create failed: ${result.code}`);
+    }
+    const configId = result.config.id;
+    const updated = await service.updateOrgRpcConfig({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      configId,
+      urls: { wssFallback: `wss://${leaks[5]}/${leaks[0]}` },
+    });
+    const retested = await service.retestOrgRpcConfig({
+      organizationId: ORG_ID,
+      configId,
+    });
+    const [row] = await db
+      .select()
+      .from(organizationRpcConfigs)
+      .where(eq(organizationRpcConfigs.id, configId));
+    const { encryptedUrls, ...plainColumns } = row;
+
+    const exposed = JSON.stringify([
+      result,
+      updated,
+      retested,
+      await service.listOrgRpcConfigs(ORG_ID),
+      await service.getOrgRpcPolicyView(ORG_ID),
+      plainColumns,
+    ]);
+    for (const leak of [...leaks, "example.com", "wss://", "https://"]) {
+      expect(exposed).not.toContain(leak);
+      expect(encryptedUrls).not.toContain(leak);
+    }
+    const view = (await service.listOrgRpcConfigs(ORG_ID)).find(
+      (config) => config.id === configId
+    );
+    expect(view?.slots).toEqual([
+      RpcConfigUrlSlot.HTTP_PRIMARY,
+      RpcConfigUrlSlot.HTTP_FALLBACK,
+      RpcConfigUrlSlot.WSS_PRIMARY,
+      RpcConfigUrlSlot.WSS_FALLBACK,
+      RpcConfigUrlSlot.PRIVATE_TX,
+    ]);
   });
 });

@@ -21,6 +21,7 @@ import type { OrganizationRpcConfigRow } from "@/lib/db/schema-rpc";
 import {
   decodeRpcConfigUrls,
   encodeRpcConfigUrls,
+  filledRpcConfigSlots,
   orgRpcConfigFromRow,
 } from "@/lib/rpc/engine/org/codec";
 import { RpcConfigUrlSlot } from "@/lib/rpc/engine/org/url-slots";
@@ -50,19 +51,21 @@ describe("RPC config codec", () => {
   };
 
   it("round-trips URLs through encryption", () => {
-    const encoded = encodeRpcConfigUrls(urls);
-    expect(encoded.encryptedUrls).not.toContain(SECRET);
-    expect(decodeRpcConfigUrls(encoded.encryptedUrls)).toEqual(urls);
+    const encryptedUrls = encodeRpcConfigUrls(urls);
+    expect(encryptedUrls).not.toContain(SECRET);
+    expect(decodeRpcConfigUrls(encryptedUrls)).toEqual(urls);
   });
 
-  it("only exposes masked URLs", () => {
-    const { maskedUrls } = encodeRpcConfigUrls(urls);
-    expect(JSON.stringify(maskedUrls)).not.toContain(SECRET);
-    expect(maskedUrls[RpcConfigUrlSlot.HTTP_FALLBACK]).toBeUndefined();
+  it("exposes only which slots are set", () => {
+    const slots = filledRpcConfigSlots(encodeRpcConfigUrls(urls));
+    expect(slots).toEqual([
+      RpcConfigUrlSlot.HTTP_PRIMARY,
+      RpcConfigUrlSlot.WSS_PRIMARY,
+    ]);
   });
 
   it("builds resolver configs from stored rows", () => {
-    const encoded = encodeRpcConfigUrls(urls);
+    const encryptedUrls = encodeRpcConfigUrls(urls);
     const row: OrganizationRpcConfigRow = {
       id: "cfg_main",
       organizationId: "org_1",
@@ -70,7 +73,7 @@ describe("RPC config codec", () => {
       name: "Main",
       isDefault: true,
       enabled: true,
-      ...encoded,
+      encryptedUrls,
       verification: {},
       createdBy: null,
       updatedBy: null,

@@ -29,7 +29,7 @@ export type RpcAuditAction =
   (typeof RpcAuditAction)[keyof typeof RpcAuditAction];
 
 const AUDIT_RESOURCE_CONFIG = "organization_rpc_config";
-const AUDIT_RESOURCE_POLICY = "organization_rpc_policy";
+const AUDIT_RESOURCE_POLICY = "organization_rpc_chain_policy";
 
 export const RpcAccess = {
   READ: "read",
@@ -73,7 +73,10 @@ export const updateRpcConfigBody = z.object({
     .optional(),
 });
 
-export const rpcPolicyBody = z.object({ ownRpcOnly: z.boolean() });
+export const rpcPolicyBody = z.object({
+  chainId: z.number().int().positive(),
+  ownRpcOnly: z.boolean(),
+});
 
 const ACCESS_RULES: Readonly<
   Record<RpcAccess, { roles: typeof ORG_ANY_MEMBER; scope: OAuthScope }>

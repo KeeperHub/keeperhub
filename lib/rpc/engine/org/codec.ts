@@ -4,28 +4,32 @@ import { SecretUrl } from "../secret-url";
 import type { OrgRpcConfig } from "../types";
 import {
   RPC_CONFIG_URL_SLOTS,
-  type RpcConfigMaskedUrls,
+  type RpcConfigUrlSlot,
   type RpcConfigUrls,
 } from "./url-slots";
 
-export type EncodedRpcConfigUrls = {
-  encryptedUrls: string;
-  maskedUrls: RpcConfigMaskedUrls;
-};
-
-/** Encrypt a config's URLs for storage and derive what members may see. */
-export function encodeRpcConfigUrls(urls: RpcConfigUrls): EncodedRpcConfigUrls {
+/**
+ * Encrypt a config's URLs for storage. Each URL is parsed first so a
+ * malformed one is refused before anything is written. Nothing derived from
+ * a URL leaves this function except the ciphertext.
+ */
+export function encodeRpcConfigUrls(urls: RpcConfigUrls): string {
   const stored: Partial<RpcConfigUrls> = {};
-  const maskedUrls: RpcConfigMaskedUrls = {};
   for (const slot of RPC_CONFIG_URL_SLOTS) {
     const raw = urls[slot];
     if (raw) {
-      const url = SecretUrl.parse(raw);
-      stored[slot] = url.reveal();
-      maskedUrls[slot] = url.masked;
+      stored[slot] = SecretUrl.parse(raw).reveal();
     }
   }
-  return { encryptedUrls: encrypt(JSON.stringify(stored)), maskedUrls };
+  return encrypt(JSON.stringify(stored));
+}
+
+/** Which URL slots a stored config fills. Safe to show to any member. */
+export function filledRpcConfigSlots(
+  encryptedUrls: string
+): RpcConfigUrlSlot[] {
+  const urls = decodeRpcConfigUrls(encryptedUrls);
+  return RPC_CONFIG_URL_SLOTS.filter((slot) => Boolean(urls[slot]));
 }
 
 export function decodeRpcConfigUrls(encryptedUrls: string): RpcConfigUrls {

@@ -6,44 +6,52 @@ import { isUniqueViolation } from "@/lib/db/errors";
 import { workflows } from "@/lib/db/schema";
 import {
   type OrganizationRpcConfigRow,
+  organizationRpcChainPolicy,
   organizationRpcConfigs,
-  organizationRpcPolicy,
 } from "@/lib/db/schema-rpc";
+import { actionUsesRpc } from "@/lib/workflow/rpc-selection-field";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
+import { findActionById } from "@/plugins/registry";
 import { orgRpcSource, platformRpcSource } from "../runtime";
-import { loadOrgRpcConfigs, loadOrgRpcPolicy } from "../sources/db-org-source";
+import {
+  loadOrgRpcConfigs,
+  loadOwnRpcOnlyChains,
+} from "../sources/db-org-source";
 import type { PlatformChainRecord } from "../sources/platform-source";
-import type { OrgRpcConfig, OrgRpcPolicy } from "../types";
+import type { OrgRpcConfig } from "../types";
 import {
   decodeRpcConfigUrls,
   encodeRpcConfigUrls,
+  filledRpcConfigSlots,
   orgRpcConfigFromRow,
 } from "./codec";
+import { OrgRpcErrorCode } from "./codes";
+
+/**
+ * Whether an action calls its chain over RPC, from its plugin definition.
+ * Unknown action types count as RPC users so coverage errs on the safe side.
+ */
+function actionTypeUsesRpc(actionType: string): boolean {
+  const action = findActionById(actionType);
+  return action ? actionUsesRpc(action.configFields) : true;
+}
+
 import {
   type CoverageGap,
+  type CoverageWorkflow,
   chainUsagesOf,
   findCoverageGaps,
   type NodeChainUsage,
 } from "./coverage";
 import {
   RPC_CONFIG_URL_SLOTS,
-  type RpcConfigMaskedUrls,
   RpcConfigUrlSlot,
   type RpcConfigUrls,
   type RpcConfigVerification,
 } from "./url-slots";
 import { verifyRpcConfigUrls } from "./verify";
 
-export const OrgRpcErrorCode = {
-  INVALID_INPUT: "INVALID_INPUT",
-  CHAIN_UNAVAILABLE: "CHAIN_UNAVAILABLE",
-  NOT_FOUND: "NOT_FOUND",
-  NAME_TAKEN: "NAME_TAKEN",
-  VERIFICATION_FAILED: "VERIFICATION_FAILED",
-  COVERAGE_GAPS: "COVERAGE_GAPS",
-} as const;
-export type OrgRpcErrorCode =
-  (typeof OrgRpcErrorCode)[keyof typeof OrgRpcErrorCode];
+export { OrgRpcErrorCode } from "./codes";
 
 const ERROR_STATUS: Readonly<Record<OrgRpcErrorCode, number>> = {
   [OrgRpcErrorCode.INVALID_INPUT]: 400,
@@ -73,14 +81,17 @@ function failure(
   return { ok: false, status: ERROR_STATUS[code], code, message, ...extra };
 }
 
-/** What any member may see about a config. Never holds a URL. */
+/**
+ * What any member may see about a config. Holds nothing derived from a URL:
+ * not the URL, a part of it, or its host. Only which slots are set.
+ */
 export type OrgRpcConfigView = {
   id: string;
   chainId: number;
   name: string;
   isDefault: boolean;
   enabled: boolean;
-  maskedUrls: RpcConfigMaskedUrls;
+  slots: RpcConfigUrlSlot[];
   verification: RpcConfigVerification;
   createdAt: string;
   updatedAt: string;
@@ -93,7 +104,7 @@ function toView(row: OrganizationRpcConfigRow): OrgRpcConfigView {
     name: row.name,
     isDefault: row.isDefault,
     enabled: row.enabled,
-    maskedUrls: row.maskedUrls,
+    slots: filledRpcConfigSlots(row.encryptedUrls),
     verification: row.verification,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -146,7 +157,7 @@ async function loadOrgUsages(
     .where(
       and(eq(workflows.organizationId, organizationId), workflowNotDeleted())
     );
-  return rows.flatMap(chainUsagesOf);
+  return rows.flatMap((row) => chainUsagesOf(row, actionTypeUsesRpc));
 }
 
 async function loadPlatformRecords(
@@ -165,7 +176,10 @@ async function loadPlatformRecords(
   return byChain;
 }
 
-type CoverageState = { policy: OrgRpcPolicy; configs: readonly OrgRpcConfig[] };
+type CoverageState = {
+  ownRpcOnlyChains: ReadonlySet<number>;
+  configs: readonly OrgRpcConfig[];
+};
 
 function gapKey(gap: CoverageGap): string {
   return JSON.stringify([gap.workflowId, gap.nodeId, gap.chainId, gap.code]);
@@ -206,8 +220,8 @@ export async function currentCoverageGaps(
   if (usages.length === 0) {
     return [];
   }
-  const [policy, configs, platform] = await Promise.all([
-    loadOrgRpcPolicy(organizationId),
+  const [ownRpcOnlyChains, configs, platform] = await Promise.all([
+    loadOwnRpcOnlyChains(organizationId),
     loadOrgRpcConfigs(organizationId),
     loadPlatformRecords(usages),
   ]);
@@ -215,9 +229,66 @@ export async function currentCoverageGaps(
     organizationId,
     usages,
     platform,
-    policy,
+    ownRpcOnlyChains,
     configs,
   });
+}
+
+/**
+ * Nodes of one workflow that its organization's RPC setup leaves without a
+ * route, counting only gaps from a pinned config or own RPC only. With
+ * `previousNodes`, gaps the stored version already has are left out, so a
+ * save is refused only for what it changes.
+ */
+export async function workflowCoverageGaps(
+  organizationId: string,
+  workflow: CoverageWorkflow,
+  previousNodes?: unknown
+): Promise<CoverageGap[]> {
+  const usages = chainUsagesOf(workflow, actionTypeUsesRpc);
+  if (usages.length === 0) {
+    return [];
+  }
+  const [ownRpcOnlyChains, configs, platform] = await Promise.all([
+    loadOwnRpcOnlyChains(organizationId),
+    loadOrgRpcConfigs(organizationId),
+    loadPlatformRecords(usages),
+  ]);
+  const state = { organizationId, platform, ownRpcOnlyChains, configs };
+  const gaps = findCoverageGaps({ ...state, usages });
+  if (gaps.length === 0 || previousNodes === undefined) {
+    return gaps;
+  }
+  const before = new Set(
+    findCoverageGaps({
+      ...state,
+      usages: chainUsagesOf(
+        { ...workflow, nodes: previousNodes },
+        actionTypeUsesRpc
+      ),
+    }).map(gapKey)
+  );
+  return gaps.filter((gap) => !before.has(gapKey(gap)));
+}
+
+/** The refusal for a workflow save or check that leaves nodes without a route. */
+export async function workflowCoverageRefusal(
+  organizationId: string,
+  workflow: CoverageWorkflow,
+  previousNodes?: unknown
+): Promise<OrgRpcFailure | null> {
+  const gaps = await workflowCoverageGaps(
+    organizationId,
+    workflow,
+    previousNodes
+  );
+  return gaps.length > 0
+    ? failure(
+        OrgRpcErrorCode.COVERAGE_GAPS,
+        "Some steps would have no RPC endpoint to use. Pick an RPC config for each one listed.",
+        { gaps }
+      )
+    : null;
 }
 
 async function refuseNewGaps(
@@ -225,14 +296,14 @@ async function refuseNewGaps(
   proposeConfigs: (configs: OrgRpcConfig[]) => OrgRpcConfig[],
   message: string
 ): Promise<OrgRpcFailure | null> {
-  const [policy, configs] = await Promise.all([
-    loadOrgRpcPolicy(organizationId),
+  const [ownRpcOnlyChains, configs] = await Promise.all([
+    loadOwnRpcOnlyChains(organizationId),
     loadOrgRpcConfigs(organizationId),
   ]);
   const gaps = await newCoverageGaps(
     organizationId,
-    { policy, configs },
-    { policy, configs: proposeConfigs(configs) }
+    { ownRpcOnlyChains, configs },
+    { ownRpcOnlyChains, configs: proposeConfigs(configs) }
   );
   return gaps.length > 0
     ? failure(OrgRpcErrorCode.COVERAGE_GAPS, message, { gaps })
@@ -319,7 +390,7 @@ export async function createOrgRpcConfig(
 
   const isDefault =
     input.isDefault ?? !(await hasDefault(input.organizationId, input.chainId));
-  const encoded = encodeRpcConfigUrls(input.urls);
+  const encryptedUrls = encodeRpcConfigUrls(input.urls);
   try {
     const row = await db.transaction(async (tx) => {
       const [inserted] = await tx
@@ -330,7 +401,7 @@ export async function createOrgRpcConfig(
           name,
           isDefault: false,
           enabled: input.enabled ?? true,
-          ...encoded,
+          encryptedUrls,
           verification: checked.verification,
           createdBy: input.userId,
           updatedBy: input.userId,
@@ -469,7 +540,7 @@ export async function updateOrgRpcConfig(
     name: name ?? row.name,
     enabled: input.enabled ?? row.enabled,
     isDefault: input.isDefault ?? row.isDefault,
-    ...encodeRpcConfigUrls(fullUrls),
+    encryptedUrls: encodeRpcConfigUrls(fullUrls),
     verification,
   };
   const next = orgRpcConfigFromRow(nextRow);
@@ -503,7 +574,6 @@ export async function updateOrgRpcConfig(
           enabled: nextRow.enabled,
           isDefault: nextRow.isDefault,
           encryptedUrls: nextRow.encryptedUrls,
-          maskedUrls: nextRow.maskedUrls,
           verification,
           updatedBy: input.userId,
           updatedAt: new Date(),
@@ -578,71 +648,122 @@ export async function retestOrgRpcConfig(input: {
 
 // Policy --------------------------------------------------------------------
 
-export type OrgRpcPolicyView = OrgRpcPolicy & {
-  /** Nodes that would have no route under own RPC only. */
+/** One chain's policy, and what turning own RPC only on would leave out. */
+export type OrgRpcChainPolicyView = {
+  chainId: number;
+  ownRpcOnly: boolean;
+  /** Nodes on this chain that would have no route under own RPC only. */
   gaps: CoverageGap[];
 };
 
+export type OrgRpcPolicyView = { chains: OrgRpcChainPolicyView[] };
+
+/** Gaps on one chain if it were served only by the organization's configs. */
+function gapsIfOwnRpcOnly(
+  organizationId: string,
+  chainId: number,
+  usages: readonly NodeChainUsage[],
+  configs: readonly OrgRpcConfig[],
+  platform: ReadonlyMap<number, PlatformChainRecord>
+): CoverageGap[] {
+  return findCoverageGaps({
+    organizationId,
+    usages: usages.filter((usage) => usage.chainId === chainId),
+    platform,
+    ownRpcOnlyChains: new Set([chainId]),
+    configs,
+  });
+}
+
+/**
+ * The policy of every chain the organization has a config on or enforces,
+ * with the nodes that would block turning own RPC only on for it.
+ */
 export async function getOrgRpcPolicyView(
   organizationId: string
 ): Promise<OrgRpcPolicyView> {
-  const [policy, configs, usages] = await Promise.all([
-    loadOrgRpcPolicy(organizationId),
+  const [ownRpcOnlyChains, configs, usages] = await Promise.all([
+    loadOwnRpcOnlyChains(organizationId),
     loadOrgRpcConfigs(organizationId),
     loadOrgUsages(organizationId),
   ]);
   const platform = await loadPlatformRecords(usages);
-  const gaps = findCoverageGaps({
-    organizationId,
-    usages,
-    platform,
-    policy: { ownRpcOnly: true },
-    configs,
-  });
-  return { ...policy, gaps };
+  const chainIds = new Set([
+    ...ownRpcOnlyChains,
+    ...configs.map((config) => config.chainId),
+  ]);
+  return {
+    chains: [...chainIds]
+      .sort((a, b) => a - b)
+      .map((chainId) => ({
+        chainId,
+        ownRpcOnly: ownRpcOnlyChains.has(chainId),
+        gaps: gapsIfOwnRpcOnly(
+          organizationId,
+          chainId,
+          usages,
+          configs,
+          platform
+        ),
+      })),
+  };
 }
 
 /**
- * Turn own RPC only on or off. Turning it on is refused while any workflow
- * node would be left without one of the organization's endpoints.
+ * Turn own RPC only on or off for one chain. Turning it on is refused while
+ * any workflow node on that chain would be left without one of the
+ * organization's endpoints.
  */
 export async function setOrgRpcPolicy(input: {
   organizationId: string;
   userId: string;
+  chainId: number;
   ownRpcOnly: boolean;
-}): Promise<OrgRpcResult<{ policy: OrgRpcPolicy }>> {
+}): Promise<
+  OrgRpcResult<{ policy: { chainId: number; ownRpcOnly: boolean } }>
+> {
   if (input.ownRpcOnly) {
+    if (!(await loadEnabledChain(input.chainId))) {
+      return failure(
+        OrgRpcErrorCode.CHAIN_UNAVAILABLE,
+        `Chain ${input.chainId} is not supported.`
+      );
+    }
     const [usages, configs] = await Promise.all([
       loadOrgUsages(input.organizationId),
       loadOrgRpcConfigs(input.organizationId),
     ]);
     const platform = await loadPlatformRecords(usages);
-    const gaps = findCoverageGaps({
-      organizationId: input.organizationId,
+    const gaps = gapsIfOwnRpcOnly(
+      input.organizationId,
+      input.chainId,
       usages,
-      platform,
-      policy: { ownRpcOnly: true },
       configs,
-    });
+      platform
+    );
     if (gaps.length > 0) {
       return failure(
         OrgRpcErrorCode.COVERAGE_GAPS,
-        "Add an RPC config for every chain these workflows use first.",
+        "Add an RPC config for this chain that covers these workflows first.",
         { gaps }
       );
     }
   }
   const now = new Date();
   await db
-    .insert(organizationRpcPolicy)
+    .insert(organizationRpcChainPolicy)
     .values({
       organizationId: input.organizationId,
+      chainId: input.chainId,
       ownRpcOnly: input.ownRpcOnly,
       changedBy: input.userId,
       changedAt: now,
     })
     .onConflictDoUpdate({
-      target: organizationRpcPolicy.organizationId,
+      target: [
+        organizationRpcChainPolicy.organizationId,
+        organizationRpcChainPolicy.chainId,
+      ],
       set: {
         ownRpcOnly: input.ownRpcOnly,
         changedBy: input.userId,
@@ -650,5 +771,8 @@ export async function setOrgRpcPolicy(input: {
       },
     });
   orgRpcSource.invalidate(input.organizationId);
-  return { ok: true, policy: { ownRpcOnly: input.ownRpcOnly } };
+  return {
+    ok: true,
+    policy: { chainId: input.chainId, ownRpcOnly: input.ownRpcOnly },
+  };
 }

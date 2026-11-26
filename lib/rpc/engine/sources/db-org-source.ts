@@ -1,8 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
+  organizationRpcChainPolicy,
   organizationRpcConfigs,
-  organizationRpcPolicy,
 } from "@/lib/db/schema-rpc";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { orgRpcConfigFromRow } from "../org/codec";
@@ -21,16 +21,38 @@ export type CachedOrgRpcSource = OrgRpcSource & {
   invalidate(organizationId: string): void;
 };
 
-/** Read the organization's policy; no row means the defaults. */
+/** The organization's policy on one chain; no row means the defaults. */
 export async function loadOrgRpcPolicy(
-  organizationId: string
+  organizationId: string,
+  chainId: number
 ): Promise<OrgRpcPolicy> {
   const [row] = await db
-    .select({ ownRpcOnly: organizationRpcPolicy.ownRpcOnly })
-    .from(organizationRpcPolicy)
-    .where(eq(organizationRpcPolicy.organizationId, organizationId))
+    .select({ ownRpcOnly: organizationRpcChainPolicy.ownRpcOnly })
+    .from(organizationRpcChainPolicy)
+    .where(
+      and(
+        eq(organizationRpcChainPolicy.organizationId, organizationId),
+        eq(organizationRpcChainPolicy.chainId, chainId)
+      )
+    )
     .limit(1);
   return { ownRpcOnly: row?.ownRpcOnly ?? false };
+}
+
+/** The chains on which the organization uses only its own endpoints. */
+export async function loadOwnRpcOnlyChains(
+  organizationId: string
+): Promise<Set<number>> {
+  const rows = await db
+    .select({ chainId: organizationRpcChainPolicy.chainId })
+    .from(organizationRpcChainPolicy)
+    .where(
+      and(
+        eq(organizationRpcChainPolicy.organizationId, organizationId),
+        eq(organizationRpcChainPolicy.ownRpcOnly, true)
+      )
+    );
+  return new Set(rows.map((row) => row.chainId));
 }
 
 /**
@@ -92,7 +114,7 @@ export function createDbOrgRpcSource(
         return hit.state;
       }
       const [policy, configs] = await Promise.all([
-        loadOrgRpcPolicy(organizationId),
+        loadOrgRpcPolicy(organizationId, chainId),
         loadOrgRpcConfigs(organizationId, chainId),
       ]);
       const state: OrgRpcState =

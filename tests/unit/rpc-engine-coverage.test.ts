@@ -126,6 +126,18 @@ describe("chainUsagesOf", () => {
     });
   });
 
+  it("skips actions that do not call their chain over RPC", () => {
+    const nodes = [
+      action("explorer", { network: String(MAINNET), actionType: "explore" }),
+      action("read", { network: String(MAINNET), actionType: "read" }),
+    ];
+    const usages = chainUsagesOf(
+      { id: "wf_1", name: "Flow", nodes },
+      (actionType) => actionType !== "explore"
+    );
+    expect(usages.map((usage) => usage.nodeId)).toEqual(["read"]);
+  });
+
   it("tolerates malformed node lists", () => {
     expect(chainUsagesOf({ id: "wf", name: "Flow", nodes: null })).toEqual([]);
   });
@@ -143,7 +155,7 @@ describe("findCoverageGaps", () => {
     const gaps = findCoverageGaps({
       organizationId: ORG_ID,
       usages: usages([action("a1", { network: String(MAINNET) })]),
-      policy: { ownRpcOnly: false },
+      ownRpcOnlyChains: new Set<number>(),
       configs: [],
       platform,
     });
@@ -157,7 +169,7 @@ describe("findCoverageGaps", () => {
         action("a1", { network: String(MAINNET) }),
         action("a2", { network: String(BASE) }),
       ]),
-      policy: { ownRpcOnly: true },
+      ownRpcOnlyChains: new Set([MAINNET, BASE, 137]),
       configs: [config()],
       platform,
     });
@@ -171,13 +183,29 @@ describe("findCoverageGaps", () => {
     ]);
   });
 
+  it("only checks chains that are set to own RPC only", () => {
+    const gaps = findCoverageGaps({
+      organizationId: ORG_ID,
+      usages: usages([
+        action("a1", { network: String(MAINNET) }),
+        action("a2", { network: String(BASE) }),
+      ]),
+      ownRpcOnlyChains: new Set([MAINNET]),
+      configs: [],
+      platform,
+    });
+    expect(gaps.map((gap) => [gap.nodeId, gap.chainId])).toEqual([
+      ["a1", MAINNET],
+    ]);
+  });
+
   it("needs a WebSocket URL for listening triggers", () => {
     const gaps = findCoverageGaps({
       organizationId: ORG_ID,
       usages: usages([
         trigger("t1", WorkflowTriggerEnum.BLOCK, String(MAINNET)),
       ]),
-      policy: { ownRpcOnly: true },
+      ownRpcOnlyChains: new Set([MAINNET, BASE, 137]),
       configs: [config()],
       platform,
     });
@@ -190,7 +218,7 @@ describe("findCoverageGaps", () => {
       usages: usages([
         trigger("t1", WorkflowTriggerEnum.BLOCK, String(MAINNET)),
       ]),
-      policy: { ownRpcOnly: true },
+      ownRpcOnlyChains: new Set([MAINNET, BASE, 137]),
       configs: [config({ wssPrimary: url("wss://org.example.com/key") })],
       platform,
     });
@@ -206,13 +234,24 @@ describe("findCoverageGaps", () => {
           [RPC_SELECTION_CONFIG_KEY]: "cfg_gone",
         }),
       ]),
-      policy: { ownRpcOnly: false },
+      ownRpcOnlyChains: new Set<number>(),
       configs: [config()],
       platform,
     });
     expect(gaps.map((gap) => gap.code)).toEqual([
       RpcRouteErrorCode.CONFIG_NOT_FOUND,
     ]);
+  });
+
+  it("ignores chains KeeperHub has disabled, which no config can fix", () => {
+    const gaps = findCoverageGaps({
+      organizationId: ORG_ID,
+      usages: usages([action("a1", { network: "137" })]),
+      ownRpcOnlyChains: new Set([MAINNET, BASE, 137]),
+      configs: [config()],
+      platform,
+    });
+    expect(gaps).toEqual([]);
   });
 
   it("flags nodes pinned to KeeperHub under own RPC only", () => {
@@ -224,7 +263,7 @@ describe("findCoverageGaps", () => {
           [RPC_SELECTION_CONFIG_KEY]: RpcSelectionMode.PLATFORM,
         }),
       ]),
-      policy: { ownRpcOnly: true },
+      ownRpcOnlyChains: new Set([MAINNET, BASE, 137]),
       configs: [config()],
       platform,
     });

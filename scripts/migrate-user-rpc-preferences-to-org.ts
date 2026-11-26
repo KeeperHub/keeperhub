@@ -143,9 +143,9 @@ async function main(): Promise<void> {
       continue;
     }
 
-    let encoded: ReturnType<typeof encodeRpcConfigUrls>;
+    let encryptedUrls: string;
     try {
-      encoded = encodeRpcConfigUrls(urlsOf(preference));
+      encryptedUrls = encodeRpcConfigUrls(urlsOf(preference));
     } catch {
       skipped.push({
         preferenceId: preference.id,
@@ -170,7 +170,7 @@ async function main(): Promise<void> {
           name: MIGRATED_CONFIG_NAME,
           isDefault: !existing.hasDefault,
           enabled: true,
-          ...encoded,
+          encryptedUrls,
           verification: {},
           createdBy: preference.userId,
           updatedBy: preference.userId,

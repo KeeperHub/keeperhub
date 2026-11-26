@@ -1,7 +1,7 @@
 import "server-only";
 
 import { logWarn } from "@/lib/logging";
-import { RpcRouteError, RpcRouteErrorCode } from "./route-error";
+import { ORG_SETTING_ROUTE_ERRORS, RpcRouteError } from "./route-error";
 import { getRpcEngine } from "./runtime";
 import {
   parseRpcSelection,
@@ -18,20 +18,6 @@ import {
 } from "./types";
 
 const NETWORK_CONFIG_KEY = "network";
-
-/**
- * Refusals that come from the organization's own settings. A trigger hit by
- * one must not fall back to KeeperHub's endpoints, so it is not listened to.
- * Anything else (unknown chain, no WebSocket on the chain) keeps today's
- * handling in the services.
- */
-const ORG_SETTING_REFUSALS: ReadonlySet<RpcRouteErrorCode> = new Set([
-  RpcRouteErrorCode.NOT_COVERED,
-  RpcRouteErrorCode.PLATFORM_FORBIDDEN,
-  RpcRouteErrorCode.CONFIG_NOT_FOUND,
-  RpcRouteErrorCode.CONFIG_DISABLED,
-  RpcRouteErrorCode.CONFIG_CHAIN_MISMATCH,
-]);
 
 /** One endpoint of a trigger route, as the trigger services receive it. */
 export type TriggerRouteEndpoint = {
@@ -119,7 +105,7 @@ async function routeOne<T extends TriggerWorkflow>(
     if (!(error instanceof RpcRouteError)) {
       throw error;
     }
-    if (!ORG_SETTING_REFUSALS.has(error.code)) {
+    if (!ORG_SETTING_ROUTE_ERRORS.has(error.code)) {
       return workflow;
     }
     logWarn("[Trigger Routes] Trigger has no RPC route; not listening", {

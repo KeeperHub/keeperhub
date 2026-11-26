@@ -6,7 +6,9 @@ import { safeEthersGetUrl } from "../../safe-ethers-fetch";
 import { SOLANA_GENESIS_HASHES } from "../../solana-chains";
 import { SecretUrl } from "../secret-url";
 import { type RpcChain, RpcChainType, RpcTransport } from "../types";
+import { RpcUrlCheckFailure } from "./codes";
 import {
+  RPC_CONFIG_SLOTS_BY_CHAIN_TYPE,
   RPC_CONFIG_URL_SLOTS,
   RpcConfigUrlSlot,
   type RpcConfigUrls,
@@ -15,27 +17,7 @@ import {
   SLOT_TRANSPORT,
 } from "./url-slots";
 
-export const RpcUrlCheckFailure = {
-  INVALID_URL: "INVALID_URL",
-  WRONG_SCHEME: "WRONG_SCHEME",
-  SLOT_NOT_SUPPORTED: "SLOT_NOT_SUPPORTED",
-  NOT_PUBLIC: "NOT_PUBLIC",
-  UNREACHABLE: "UNREACHABLE",
-  WRONG_CHAIN: "WRONG_CHAIN",
-} as const;
-export type RpcUrlCheckFailure =
-  (typeof RpcUrlCheckFailure)[keyof typeof RpcUrlCheckFailure];
-
-/** Slots a chain family can use. Solana configs hold HTTP endpoints only. */
-const SLOTS_BY_CHAIN_TYPE: Readonly<
-  Record<RpcChainType, ReadonlySet<RpcConfigUrlSlot>>
-> = {
-  [RpcChainType.EVM]: new Set(RPC_CONFIG_URL_SLOTS),
-  [RpcChainType.SOLANA]: new Set([
-    RpcConfigUrlSlot.HTTP_PRIMARY,
-    RpcConfigUrlSlot.HTTP_FALLBACK,
-  ]),
-};
+export { RpcUrlCheckFailure } from "./codes";
 
 const PROBE_TIMEOUT_MS = 10_000;
 
@@ -162,7 +144,7 @@ export async function verifyRpcUrl(
   const { slot, chain } = input;
   const checkedAt = new Date().toISOString();
 
-  if (!SLOTS_BY_CHAIN_TYPE[chain.chainType].has(slot)) {
+  if (!RPC_CONFIG_SLOTS_BY_CHAIN_TYPE[chain.chainType].includes(slot)) {
     return failed(
       RpcUrlCheckFailure.SLOT_NOT_SUPPORTED,
       `${chain.name} configs do not take this kind of URL.`,

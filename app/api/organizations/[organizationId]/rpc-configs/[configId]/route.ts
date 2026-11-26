@@ -60,7 +60,7 @@ export async function PATCH(
         name: result.config.name,
         isDefault: result.config.isDefault,
         enabled: result.config.enabled,
-        maskedUrls: result.config.maskedUrls,
+        slots: result.config.slots,
       },
     });
     return NextResponse.json({ config: result.config });

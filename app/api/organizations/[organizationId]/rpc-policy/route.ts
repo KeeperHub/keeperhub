@@ -61,6 +61,7 @@ export async function PUT(
     const result = await setOrgRpcPolicy({
       organizationId,
       userId: caller.userId,
+      chainId: parsed.data.chainId,
       ownRpcOnly: parsed.data.ownRpcOnly,
     });
     if (!result.ok) {
@@ -73,7 +74,10 @@ export async function PUT(
       organizationId,
       action: RpcAuditAction.POLICY_CHANGED,
       resourceId: organizationId,
-      after: { ownRpcOnly: result.policy.ownRpcOnly },
+      after: {
+        chainId: result.policy.chainId,
+        ownRpcOnly: result.policy.ownRpcOnly,
+      },
     });
     return NextResponse.json(result.policy);
   } catch (error) {
