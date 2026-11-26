@@ -21,6 +21,12 @@ export { RpcUrlCheckFailure } from "./codes";
 
 const PROBE_TIMEOUT_MS = 10_000;
 
+/** The only scheme accepted for each transport. */
+const SECURE_SCHEME: Readonly<Record<RpcTransport, string>> = {
+  [RpcTransport.HTTP]: "https:",
+  [RpcTransport.WSS]: "wss:",
+};
+
 /** URL schemes the public-host check understands, for each WebSocket scheme. */
 const WS_TO_HTTP_SCHEME: Readonly<Record<string, string>> = {
   "ws:": "http:",
@@ -163,8 +169,9 @@ export async function verifyRpcUrl(
     );
   }
 
+  // Organization URLs usually carry an API key, so only encrypted schemes.
   const transport = SLOT_TRANSPORT[slot];
-  if (url.transport !== transport) {
+  if (new URL(url.reveal()).protocol !== SECURE_SCHEME[transport]) {
     return failed(
       RpcUrlCheckFailure.WRONG_SCHEME,
       transport === RpcTransport.WSS

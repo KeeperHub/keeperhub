@@ -89,6 +89,16 @@ describe("verifyRpcUrl", () => {
     expect(check.code).toBe(RpcUrlCheckFailure.WRONG_SCHEME);
   });
 
+  it.each([
+    [RpcConfigUrlSlot.HTTP_PRIMARY, "http://rpc.example.com/v2/key"],
+    [RpcConfigUrlSlot.WSS_PRIMARY, "ws://rpc.example.com/v2/key"],
+  ])("refuses an unencrypted URL in %s", async (slot, url) => {
+    const live = probe();
+    const check = await verifyRpcUrl({ slot, url, chain: mainnet }, live);
+    expect(check.code).toBe(RpcUrlCheckFailure.WRONG_SCHEME);
+    expect(live.assertPublic).not.toHaveBeenCalled();
+  });
+
   it("refuses private hosts before calling them", async () => {
     const live = probe({
       assertPublic: vi.fn().mockRejectedValue(

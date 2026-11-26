@@ -29,6 +29,7 @@ Paste each URL in full, including the API key if your provider puts it in the UR
 
 Before a config is saved, KeeperHub calls each URL and confirms that:
 
+- the URL uses `https://`, or `wss://` for WebSocket endpoints
 - the host is reachable on the public internet
 - the endpoint answers for the chain you selected (by chain ID on EVM chains, by genesis hash on Solana)
 
