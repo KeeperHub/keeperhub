@@ -1434,6 +1434,7 @@ describe("ChainMonitor", () => {
       createPhantomExecution.mockResolvedValueOnce({
         alreadyExisted: false,
         skipped: true,
+        skipCheck: "failed",
       });
       const monitor = new ChainMonitor({
         chain: makeChain(),
@@ -1462,6 +1463,42 @@ describe("ChainMonitor", () => {
       expect(await failedCount()).toBe(before + 1);
       await monitor.stop();
     });
+
+    it.each(["workflow_gone", "workflow_inactive"] as const)(
+      "does not enqueue or count a failed check when the workflow cannot run (%s)",
+      async (skipCheck) => {
+        createPhantomExecution.mockResolvedValueOnce({
+          alreadyExisted: false,
+          skipped: true,
+          skipCheck,
+        });
+        const monitor = new ChainMonitor({
+          chain: makeChain(),
+          workflows: [makeWorkflow({ blockInterval: 1, skipIfRunning: true })],
+        });
+        await monitor.start();
+        const { enqueueBlockTrigger } = await import(
+          "../../block-dispatcher/sqs-enqueue.js"
+        );
+        vi.mocked(enqueueBlockTrigger).mockClear();
+        const metric = registry.getSingleMetric(
+          "keeperhub_block_dispatcher_skip_check_failed_total",
+        );
+        const total = async (): Promise<number> =>
+          ((await metric?.get())?.values ?? []).reduce(
+            (sum, v) => sum + v.value,
+            0,
+          );
+        const before = await total();
+
+        latestProvider().emitBlock(10);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(enqueueBlockTrigger).not.toHaveBeenCalled();
+        expect(await total()).toBe(before);
+        await monitor.stop();
+      },
+    );
   });
 
   describe("missed-slot runs", () => {

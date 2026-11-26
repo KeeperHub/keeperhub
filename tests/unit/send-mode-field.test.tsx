@@ -270,7 +270,7 @@ describe("Send as field", () => {
       container.querySelector('[data-testid="send-mode-unsupported-notice"]')
         ?.textContent
     ).toContain(
-      "Batch Write Contract can't send through the private relay yet, so this step fails before sending."
+      'saved with the old "(Flashbots)" network, so it still sends through the private relay. Batch Write Contract checks its calls with eth_call, which a relay such as Flashbots Protect refuses, so on such a relay it fails before sending.'
     );
     expect(
       container.querySelector('[data-testid="send-mode-legacy-notice"]')
@@ -549,7 +549,7 @@ describe("old flags and chains without a relay", () => {
       .querySelector("#sendMode")
       ?.getAttribute("aria-describedby");
     expect(document.getElementById(String(describedBy))?.textContent).toContain(
-      "Batch Write Contract can't send through the private relay yet"
+      "Batch Write Contract checks its calls with eth_call"
     );
     act(() => button("Use Normal transaction")?.click());
     // Announced only after focus has moved, so it is not cut off.
@@ -823,9 +823,9 @@ describe("canvas badge", () => {
       actionType: "web3/batch-write-contract",
       usePrivateMempool: true,
     });
-    // Ethereum has a relay, so the old flag on Batch fails there.
+    // Ethereum has a relay, so the old flag on Batch runs its eth_call check there.
     expect(marker?.textContent).toContain(
-      "Batch Write Contract can't send through the private relay yet, so this step fails before sending."
+      'saved with the old "(Flashbots)" network, so it still sends through the private relay. Batch Write Contract checks its calls with eth_call, which a relay such as Flashbots Protect refuses, so on such a relay it fails before sending.'
     );
   });
 

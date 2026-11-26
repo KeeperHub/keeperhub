@@ -1,6 +1,7 @@
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
   inArray,
@@ -36,11 +37,16 @@ type SkipCheckedInsert = {
   alreadyExisted: boolean;
 };
 
+// Literals, not parameters, so the partial idx_workflow_executions_live_started matches under generic plans.
+const ACTIVE_STATUS_LIST = sql.raw(
+  ACTIVE_RUN_STATUSES.map((status) => `'${status}'`).join(", ")
+);
+
 /** Live, not reaped, and not another caller's run (trigger_source 'mcp'). */
 function liveRunOf(workflowId: string): SQL | undefined {
   return and(
     eq(workflowExecutions.workflowId, workflowId),
-    inArray(workflowExecutions.status, [...ACTIVE_RUN_STATUSES]),
+    sql`${workflowExecutions.status} IN (${ACTIVE_STATUS_LIST})`,
     isNull(workflowExecutions.deletedAt),
     sql`${workflowExecutions.triggerSource} IS DISTINCT FROM 'mcp'`
   );
@@ -62,7 +68,7 @@ async function findBlockingRun(
   const cutoff = new Date(
     now.getTime() - staleExecutionThresholdMinutes() * 60 * 1000
   );
-  // workflow_id + started_at range: idx_workflow_executions_workflow_started serves it.
+  // Live rows only: idx_workflow_executions_live_started (workflow_id, started_at) serves it.
   const [recent] = await tx
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)
@@ -72,14 +78,15 @@ async function findBlockingRun(
   if (recent) {
     return recent.id;
   }
-  // Older live rows: few, so the planner can use the status index (no ORDER BY
-  // asks for started_at order). Capped so the id list below stays bounded.
+  // Older live rows, through the same partial index. The newest first, so a run
+  // still progressing is not left out by the cap that bounds the id list below.
   const candidates = await tx
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)
     .where(
       and(liveRunOf(workflowId), lte(workflowExecutions.startedAt, cutoff))
     )
+    .orderBy(desc(workflowExecutions.startedAt))
     .limit(OLDER_LIVE_ROWS_MAX);
   if (candidates.length === 0) {
     return null;

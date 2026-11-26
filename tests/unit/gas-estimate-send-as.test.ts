@@ -22,6 +22,11 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: vi.fn(),
 }));
 
+vi.mock("@/lib/safe/signer-resolver", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/safe/signer-resolver")>()),
+  resolveSignerForNode: vi.fn().mockResolvedValue({ kind: "eoa" }),
+}));
+
 import { POST } from "@/app/api/gas/estimate/route";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { PrivateRelayUnavailableError } from "@/lib/rpc/providers";
@@ -71,12 +76,13 @@ describe("editor gas estimate and Send as", () => {
   });
 
   it("says why when the network has no relay", async () => {
+    // Only an explicit sendMode is refused there; the old flag alone estimates publicly.
     vi.mocked(getRpcProvider).mockRejectedValue(
       new PrivateRelayUnavailableError("no relay here")
     );
     const response = await estimate("transfer-funds", {
       ...TRANSFER,
-      usePrivateMempool: true,
+      sendMode: "private-relay",
     });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: "no relay here" });
@@ -113,6 +119,36 @@ describe("editor gas estimate and Send as", () => {
 
     expect(response.status).toBe(200);
     expect(order).toEqual(["public read", "relay"]);
+  });
+
+  it("estimates an old Batch Write Contract flag through the relay, as it runs", async () => {
+    estimateGas.mockClear();
+    const poke = JSON.stringify([
+      {
+        type: "function",
+        name: "poke",
+        inputs: [],
+        outputs: [],
+        stateMutability: "nonpayable",
+      },
+    ]);
+    const response = await estimate("batch-write-contract", {
+      calls: JSON.stringify([
+        {
+          contractAddress: "0x3333333333333333333333333333333333333333",
+          abi: poke,
+          abiFunction: "poke",
+          args: [],
+        },
+      ]),
+      usePrivateMempool: true,
+    });
+    expect(vi.mocked(getRpcProvider).mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+    expect(response.status).toBe(200);
+    expect(estimateGas).toHaveBeenCalledOnce();
   });
 
   it("refuses the relay on Batch Write Contract without any RPC", async () => {

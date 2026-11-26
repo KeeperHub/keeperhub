@@ -16,10 +16,12 @@ import { sleep } from "@/lib/sleep";
  *
  * 600s, chosen between two real limits rather than to be short:
  *
- *   - Above 186s, one primary-then-fallback RPC failover round (3 attempts x
- *     30s + 1s + 2s backoff per endpoint, see lib/rpc/providers and the
- *     DEFAULT_OPTIONS note in nonce-manager.ts). A receipt read riding out a
- *     degraded primary must not be cut short by its own deadline.
+ *   - Well above 186s, one primary-then-fallback RPC failover round (3
+ *     attempts x 30s + 1s + 2s backoff per endpoint, see lib/rpc/providers and
+ *     the DEFAULT_OPTIONS note in nonce-manager.ts). pollReceipt cuts every
+ *     read at this overall deadline (and a relay read at its own shorter cap),
+ *     so only a read started in the last round's worth of time is cut short;
+ *     earlier reads get their whole failover round.
  *   - Below the reaper's 30-minute default, so we record the pending row
  *     while the step is still ours to finalize.
  *

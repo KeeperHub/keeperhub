@@ -15,7 +15,7 @@
  * dispatch whose phantom fails is skipped rather than run unchecked.
  */
 
-import { apiRequest, apiRequestWithAttempts } from "./http-client.js";
+import { ApiError, apiRequest, apiRequestWithAttempts } from "./http-client.js";
 
 /** Trigger sources the scheduler reports for phantom attribution. */
 export type PhantomTriggerSource = "schedule" | "block";
@@ -25,6 +25,12 @@ export type SchedulerErrorCode = "CS-0001" | "BS-0001" | "N-0002";
 
 /** Why the platform refused to create the phantom. */
 export type PhantomRefusalReason = "plan_feature" | "execution_limit";
+
+/**
+ * Why a skip-if-running dispatch was not checked: the workflow is gone or may
+ * not run (answers, not faults), or the check itself failed.
+ */
+export type SkipCheckOutcome = "workflow_gone" | "workflow_inactive" | "failed";
 
 /** Result of a phantom pre-create attempt. */
 export interface PhantomCreateResult {
@@ -47,10 +53,38 @@ export interface PhantomCreateResult {
   refused?: PhantomRefusalReason;
   /**
    * Do not enqueue: the dispatch is recorded as skipped (a live run, or a refused
-   * phantom), or, with no executionId, the skip-if-running check failed.
+   * phantom), or, with no executionId, the skip-if-running check did not run.
    */
   skipped?: boolean;
+  /** Set with `skipped` and no executionId: why the check did not run. */
+  skipCheck?: SkipCheckOutcome;
 }
+
+/** The platform's coded answer that this workflow cannot run, if the error is one. */
+function workflowCannotRun(
+  error: unknown,
+): "workflow_gone" | "workflow_inactive" | undefined {
+  if (!(error instanceof ApiError)) {
+    return;
+  }
+  let code: unknown;
+  try {
+    code = (JSON.parse(error.body) as { code?: unknown }).code;
+  } catch {
+    return;
+  }
+  if (error.status === 404 && code === "WORKFLOW_NOT_FOUND") {
+    return "workflow_gone";
+  }
+  if (error.status === 403 && code === "WORKFLOW_INACTIVE") {
+    return "workflow_inactive";
+  }
+  return;
+}
+
+// A workflow that cannot run is logged once per workflow per interval, not per block.
+const CANNOT_RUN_LOG_INTERVAL_MS = 10 * 60 * 1000;
+const cannotRunLoggedAt = new Map<string, number>();
 
 // Skip-if-running fails closed: without the platform's check, a run could overlap the live one.
 function skipCheckFailed(
@@ -58,11 +92,26 @@ function skipCheckFailed(
   dispatchKey: string | undefined,
   cause: unknown,
 ): PhantomCreateResult {
+  const cannotRun = workflowCannotRun(cause);
+  if (cannotRun) {
+    const now = Date.now();
+    const last = cannotRunLoggedAt.get(workflowId);
+    if (last === undefined || now - last >= CANNOT_RUN_LOG_INTERVAL_MS) {
+      if (cannotRunLoggedAt.size >= 10_000) {
+        cannotRunLoggedAt.clear();
+      }
+      cannotRunLoggedAt.set(workflowId, now);
+      console.log(
+        `[Phantom] Not dispatching workflow ${workflowId}: the platform says it cannot run (${cannotRun})`,
+      );
+    }
+    return { alreadyExisted: false, skipped: true, skipCheck: cannotRun };
+  }
   console.error(
     `[Phantom] Skip-if-running check failed for workflow ${workflowId}, not dispatching ${dispatchKey ?? "(no key)"}:`,
     cause,
   );
-  return { alreadyExisted: false, skipped: true };
+  return { alreadyExisted: false, skipped: true, skipCheck: "failed" };
 }
 
 /**

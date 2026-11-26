@@ -893,7 +893,7 @@ export class ChainMonitor {
     // overlap on failover, or both process the same block, collide on the
     // unique index so only one enqueue lands. The in-memory lastProcessedBlock
     // dedup only guards a single instance, so this is what covers 2 replicas.
-    const { executionId, alreadyExisted, refused, skipped } =
+    const { executionId, alreadyExisted, refused, skipped, skipCheck } =
       await createPhantomExecution(wf.id, "block", wf.userId, dispatchKey, {
         skipIfRunning: wf.skipIfRunning === true,
       });
@@ -921,7 +921,7 @@ export class ChainMonitor {
         console.log(
           `[BlockMonitor:${this.chainName}] Not enqueuing ${dispatchKey}: the platform recorded it as skipped`,
         );
-      } else {
+      } else if (skipCheck === "failed") {
         // No id: the skip-if-running check failed, already logged as an error.
         metrics.recordSkipCheckFailed(this.chainName);
       }

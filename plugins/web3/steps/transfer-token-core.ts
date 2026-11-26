@@ -362,6 +362,7 @@ async function transferTokenCoreImpl(
     chainId,
     userId,
     log: { tag: "[Transfer Token]", action: "transfer-token" },
+    withReadRpc: true,
   });
   if (!resolved.ok) {
     return { success: false, ...resolved.failure };

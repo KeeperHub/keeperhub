@@ -9,11 +9,6 @@ const UNREACHED_CODES: ReadonlySet<string> = new Set([
 const REFUSED_TEXT = /econnrefused|connection refused/i;
 const UNREACHED_TEXT = /enotfound/i;
 
-type Reading = {
-  /** The request follows redirects (the managed RPC path does; extra URLs do not). */
-  followsRedirects: boolean;
-};
-
 /** Why a request never reached a node. */
 type NeverReached = "refused" | "unreachable";
 
@@ -51,19 +46,15 @@ function socketCode(error: unknown): NeverReached | undefined {
 }
 
 /**
- * Why the request never reached a node, if it is known. A followed redirect
- * can fail on a later hop after an earlier one took the bytes, so on that path
- * only refusal text (such as our failover summary) counts, never a code.
+ * Why the request never reached a node, if it is known. Neither the RPC
+ * transport nor extra URLs follow redirects, so a refusal code or text means
+ * the one endpoint asked never took the bytes. The text is trusted only off a
+ * node's or gateway's answer: it is the socket error's or our failover summary's.
  */
-export function neverReached(
-  error: unknown,
-  { followsRedirects }: Reading
-): NeverReached | undefined {
-  if (!followsRedirects) {
-    const code = socketCode(error);
-    if (code) {
-      return code;
-    }
+export function neverReached(error: unknown): NeverReached | undefined {
+  const code = socketCode(error);
+  if (code) {
+    return code;
   }
   if (nodeAnswered(error) || httpAnswered(error)) {
     return;
@@ -72,15 +63,13 @@ export function neverReached(
   if (REFUSED_TEXT.test(message)) {
     return "refused";
   }
-  return !followsRedirects && UNREACHED_TEXT.test(message)
-    ? "unreachable"
-    : undefined;
+  return UNREACHED_TEXT.test(message) ? "unreachable" : undefined;
 }
 
 /**
  * The request never reached a node. The one reading for the route, the
  * pre-broadcast verdict, the failover's all-refused flag and extras.
  */
-export function isConnectionRefusal(error: unknown, reading: Reading): boolean {
-  return neverReached(error, reading) !== undefined;
+export function isConnectionRefusal(error: unknown): boolean {
+  return neverReached(error) !== undefined;
 }

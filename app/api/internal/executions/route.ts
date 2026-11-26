@@ -12,7 +12,10 @@ import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logWarn } from "@/lib/logging";
 import { recordWorkflowExecutionSkipped } from "@/lib/metrics/collectors/prometheus";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
-import { withBackstopCapture } from "@/lib/security/backstop-capture";
+import {
+  isBackstopRejection,
+  withBackstopCapture,
+} from "@/lib/security/backstop-capture";
 import {
   buildAttribution,
   type TriggerSource,
@@ -144,7 +147,10 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // KEEP-440: never create an execution for a soft-deleted workflow.
   if (!workflow || workflow.deletedAt) {
-    return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
+    return NextResponse.json(
+      { error: "Workflow not found", code: "WORKFLOW_NOT_FOUND" },
+      { status: 404 }
+    );
   }
 
   // KEEP-693: the cron scheduler does not know the workflow owner, so userId is
@@ -220,14 +226,31 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // Block Trigger "Skip if the previous run is still running": the dispatcher asks.
   if (isPhantom && body.skipIfRunning === true && dispatchKeyValue) {
-    const result = await withBackstopCapture(
-      { workflowId, userId: ownerId, source },
-      () =>
-        insertPhantomUnlessRunning(db, {
-          ...values,
-          dispatchKey: dispatchKeyValue,
-        })
-    );
+    let result: Awaited<ReturnType<typeof insertPhantomUnlessRunning>>;
+    try {
+      result = await withBackstopCapture(
+        { workflowId, userId: ownerId, source },
+        () =>
+          insertPhantomUnlessRunning(db, {
+            ...values,
+            dispatchKey: dispatchKeyValue,
+          })
+      );
+    } catch (error) {
+      // The database refuses runs of this workflow (owner deactivated, or deleted since):
+      // an answer, so the dispatcher does not count a failed skip check.
+      if (isBackstopRejection(error)) {
+        return NextResponse.json(
+          {
+            error:
+              "This workflow may not run (owner deactivated or workflow deleted)",
+            code: "WORKFLOW_INACTIVE",
+          },
+          { status: 403 }
+        );
+      }
+      throw error;
+    }
     return NextResponse.json(
       {
         executionId: result.id,

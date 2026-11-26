@@ -548,6 +548,40 @@ describe("the legacy key beside sendMode, and drafts", () => {
     expect(flag(nodes[0])).toBe("true");
   });
 
+  it("keeps a step saved with sendMode alone unchanged after its chain loses the relay", async () => {
+    // Saved through the API with sendMode alone: the server filled the flag.
+    const sent = [
+      write("a", { ...CALL, network: "1", sendMode: "private-relay" }),
+    ];
+    expect((await validateWorkflowNodesForSave(sent)).issues).toEqual([]);
+    const stored = structuredClone(sent);
+    expect(flag(stored[0])).toBe(true);
+    // The relay is turned off for chain 1, then the client resends its own copy.
+    rows.value = [{ chainId: 1, usePrivateMempoolRpc: false }];
+    const resent = [
+      write("a", { ...CALL, network: "1", sendMode: "private-relay" }),
+    ];
+    const result = await validateWorkflowNodesForSave(resent, {
+      savedNodes: stored,
+    });
+    expect(result.issues).toEqual([]);
+    expect(flag(resent[0])).toBe(true);
+    // Only the server's own fill counts as unchanged: a stored loose flag does not.
+    const loose = [
+      write("a", {
+        ...CALL,
+        network: "1",
+        sendMode: "private-relay",
+        usePrivateMempool: "true",
+      }),
+    ];
+    const changed = await validateWorkflowNodesForSave(
+      [write("a", { ...CALL, network: "1", sendMode: "private-relay" })],
+      { savedNodes: loose }
+    );
+    expect(changed.issues[0]?.message).toContain("not available on chain 1");
+  });
+
   it("saves a stored unknown sendMode left as it was; refuses a new one", async () => {
     const unknown = { network: "1", sendMode: "Private-Relay" };
     const saved = [write("a", { ...CALL, ...unknown })];

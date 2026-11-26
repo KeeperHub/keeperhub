@@ -29,7 +29,7 @@ export function deliveryOfBroadcastError(
   if (isDuplicateHashMessage(message)) {
     return "accepted";
   }
-  if (knownRefusal || isConnectionRefusal(error, { followsRedirects: true })) {
+  if (knownRefusal || isConnectionRefusal(error)) {
     return "refused";
   }
   const rpcError = rpcErrorOf(error);
@@ -38,9 +38,10 @@ export function deliveryOfBroadcastError(
 
 /**
  * Route for a send the managed endpoints did not accept outright: public
- * when a public endpoint took or may have taken the bytes, then the relay.
+ * when a public endpoint took or may have taken the bytes, then the relay
+ * once it took them (an answer, or the hash found after no clear answer).
  * When nobody did but the hash exists anyway, fall back to the manager's
- * own route. Undefined means nothing was delivered.
+ * own route. Undefined means no endpoint is known to hold the transaction.
  */
 export function routeFromEvidence(
   rpcManager: RpcProviderManager,
@@ -55,8 +56,11 @@ export function routeFromEvidence(
   ) {
     return "public";
   }
+  // "private-relay" says the relay accepted it: a pending send it never answered is not that.
+  const relayTook = (delivery: Delivery): boolean =>
+    delivery === "accepted" || (found && delivery === "unknown");
   if (
-    attempts.some((a) => a.route === "private-relay" && delivered(a.delivery))
+    attempts.some((a) => a.route === "private-relay" && relayTook(a.delivery))
   ) {
     return "private-relay";
   }

@@ -38,6 +38,7 @@ vi.mock("@/lib/rpc/provider-factory", async () => {
       });
       return {
         primaryRpcUrl: config?.primaryRpcUrl,
+        fallbackRpcUrl: config?.fallbackRpcUrl,
         hasPrivateRelayPrimary: () => config?.primaryIsPrivateRelay === true,
         assertPrivateRelayChain: () => {
           state.chainChecks += 1;
@@ -164,7 +165,7 @@ describe("getSendRpcProvider: every step's route", () => {
     expect(state.calls).toBe(0);
   });
 
-  it("refuses any relay use a step cannot make (Batch), strict: false included", async () => {
+  it("refuses sendMode private-relay on a step that cannot use it (Batch), strict: false included", async () => {
     const reason =
       "Batch Write Contract can't send through the private relay yet";
     for (const input of [
@@ -179,17 +180,58 @@ describe("getSendRpcProvider: every step's route", () => {
     }
     // A required relay is refused before any RPC is resolved.
     expect(state.calls).toBe(0);
-    // The old flag alone uses the relay only on Ethereum, strict: false included.
-    for (const input of [
-      { usePrivateMempool: true },
-      { usePrivateMempool: true, strict: false },
-      { usePrivateMempool: "false" },
-    ]) {
-      expect((await outcome(ETHEREUM, input, reason)).outcome).toBe("refused");
-      expect((await outcome(BASE, input, reason)).outcome).toBe("public");
-    }
-    // Refused before the relay is asked which chain it serves.
     expect(state.chainChecks).toBe(0);
+  });
+
+  // The old flag alone on such a step runs as before Send as, on every kind of chain.
+  const RELAY_FLAG_NO_URL = {
+    ...ETHEREUM,
+    chainId: 11_155_111,
+    name: "Sepolia",
+    defaultPrivateRpcUrl: null,
+  };
+  it.each([
+    ["a chain with a relay", ETHEREUM, "relay"],
+    ["a chain without one", BASE, "public"],
+    ["a chain with the flag on but no relay URL", RELAY_FLAG_NO_URL, "public"],
+  ] as const)(
+    "keeps an old Batch flag's route on %s",
+    async (_label, chain, route) => {
+      const reason =
+        "Batch Write Contract can't send through the private relay yet";
+      for (const input of [
+        { usePrivateMempool: true },
+        { usePrivateMempool: true, strict: false },
+        { usePrivateMempool: "false" },
+      ]) {
+        const result = await outcome(chain, input, reason);
+        expect(result).toMatchObject({ outcome: route, relayRequested: true });
+      }
+    }
+  );
+
+  it("builds an old Batch flag's relay manager as before: strict unless strict: false", async () => {
+    const reason =
+      "Batch Write Contract can't send through the private relay yet";
+    state.chain = ETHEREUM;
+    const strict = await getSendRpcProvider(
+      { usePrivateMempool: true },
+      { chainId: 1, relayRefusal: reason }
+    );
+    const loose = await getSendRpcProvider(
+      { usePrivateMempool: true, strict: false },
+      { chainId: 1, relayRefusal: reason }
+    );
+    expect(strict.rpcManager).toMatchObject({
+      primaryRpcUrl: "https://relay.example",
+      fallbackRpcUrl: undefined,
+    });
+    expect(loose.rpcManager).toMatchObject({
+      primaryRpcUrl: "https://relay.example",
+      fallbackRpcUrl: "https://public.example/eth",
+    });
+    // The relay is asked which chain it serves, as for every relay send.
+    expect(state.chainChecks).toBe(2);
   });
 
   it("checks the relay's chain once it is the route", async () => {

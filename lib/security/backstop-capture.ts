@@ -36,7 +36,7 @@ const PG_RAISE_INSUFFICIENT_PRIVILEGE = "42501";
 
 type PgError = { code?: unknown };
 
-function isBackstopRejection(err: unknown): boolean {
+export function isBackstopRejection(err: unknown): boolean {
   // Drizzle (and the underlying postgres driver) wrap the raised
   // PostgresError before it reaches this catch, so the 42501 SQLSTATE sits
   // on a nested `cause` rather than the top-level error -- a bare

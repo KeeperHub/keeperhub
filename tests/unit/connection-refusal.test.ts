@@ -15,8 +15,6 @@ const nodeAnswer = (message: string): Error =>
   Object.assign(new Error(`could not coalesce error (${message})`), {
     info: { error: { code: -32_000, message } },
   });
-const SEND = { followsRedirects: true };
-const NO_REDIRECTS = { followsRedirects: false };
 
 // An HTTP answer from a gateway, as ethers keeps it (SERVER_ERROR).
 const gatewayAnswer = (body: string): Error =>
@@ -29,9 +27,8 @@ describe("isConnectionRefusal", () => {
   it.each([
     ["ECONNREFUSED in text", new Error("connect ECONNREFUSED 127.0.0.1:8545")],
     ["connection refused in text", "primary: connection refused"],
-  ])("counts %s as never sent on every path", (_label, error) => {
-    expect(isConnectionRefusal(error, SEND)).toBe(true);
-    expect(isConnectionRefusal(error, NO_REDIRECTS)).toBe(true);
+  ])("counts %s as never sent", (_label, error) => {
+    expect(isConnectionRefusal(error)).toBe(true);
   });
 
   it.each([
@@ -42,14 +39,10 @@ describe("isConnectionRefusal", () => {
       Object.assign(new Error("blocked"), { code: "SSRF_BLOCKED" }),
     ],
     ["ENOTFOUND in text", new Error("getaddrinfo ENOTFOUND rpc.example")],
-  ])(
-    "counts %s as never sent only where no redirect is followed",
-    (_label, error) => {
-      // A redirect hop can fail this way after an earlier hop took the bytes.
-      expect(isConnectionRefusal(error, SEND)).toBe(false);
-      expect(isConnectionRefusal(error, NO_REDIRECTS)).toBe(true);
-    }
-  );
+  ])("counts %s as never sent: no redirect is followed", (_label, error) => {
+    // Neither the RPC transport nor extra URLs follow redirects, so no earlier hop took the bytes.
+    expect(isConnectionRefusal(error)).toBe(true);
+  });
 
   it.each([
     ["a timeout", new Error("timeout after 30000ms")],
@@ -67,33 +60,38 @@ describe("isConnectionRefusal", () => {
       "a gateway's 503 body naming a refused upstream",
       gatewayAnswer("delayed connect error: Connection refused"),
     ],
+    [
+      "a redirect the transport refused to follow",
+      Object.assign(
+        new Error(
+          "RPC endpoint answered with a redirect, which is not followed"
+        ),
+        { cause: new TypeError("fetch failed") }
+      ),
+    ],
     ["nothing", undefined],
   ])("does not count %s", (_label, error) => {
-    expect(isConnectionRefusal(error, SEND)).toBe(false);
-    expect(isConnectionRefusal(error, NO_REDIRECTS)).toBe(false);
+    expect(isConnectionRefusal(error)).toBe(false);
   });
 });
 
 describe("neverReached", () => {
-  it("tells a refusal from an unreached host where no redirect is followed", () => {
-    expect(neverReached(wrapped("ECONNREFUSED"), NO_REDIRECTS)).toBe("refused");
-    expect(neverReached(wrapped("ENOTFOUND"), NO_REDIRECTS)).toBe(
-      "unreachable"
-    );
+  it("tells a refusal from an unreached host", () => {
+    expect(neverReached(wrapped("ECONNREFUSED"))).toBe("refused");
+    expect(neverReached(wrapped("ENOTFOUND"))).toBe("unreachable");
     expect(
       neverReached(
-        Object.assign(new Error("blocked"), { code: "SSRF_BLOCKED" }),
-        NO_REDIRECTS
+        Object.assign(new Error("blocked"), { code: "SSRF_BLOCKED" })
       )
     ).toBe("unreachable");
-    expect(neverReached(wrapped("ECONNRESET"), NO_REDIRECTS)).toBeUndefined();
+    expect(neverReached(wrapped("ECONNRESET"))).toBeUndefined();
   });
 });
 
 describe("isDefinitelyPreBroadcastNetworkError", () => {
-  it("keeps the key for a refusal code on a cause: a redirect hop may have sent", () => {
+  it("releases the key for a refusal code on a cause: no redirect is followed", () => {
     expect(isDefinitelyPreBroadcastNetworkError(wrapped("ECONNREFUSED"))).toBe(
-      false
+      true
     );
   });
 
@@ -105,15 +103,15 @@ describe("isDefinitelyPreBroadcastNetworkError", () => {
     ).toBe(false);
   });
 
-  it("does not release the key for an unresolved host or an SSRF block", () => {
+  it("releases the key for an unresolved host or an SSRF block", () => {
     expect(isDefinitelyPreBroadcastNetworkError(wrapped("ENOTFOUND"))).toBe(
-      false
+      true
     );
     expect(
       isDefinitelyPreBroadcastNetworkError(
         Object.assign(new Error("blocked"), { code: "SSRF_BLOCKED" })
       )
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("needs every endpoint of a failover summary refused", () => {

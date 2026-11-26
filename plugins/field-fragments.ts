@@ -221,12 +221,12 @@ export function sendRouteOutputFields(): OutputField[] {
     {
       field: "route",
       description:
-        "How KeeperHub routed the send on an EVM network: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as) or sponsored (gas-sponsored). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent; more values may be added.",
+        "How KeeperHub routed the send on an EVM network: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as) or sponsored (gas-sponsored). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent, or when only the private relay was tried and it never confirmed taking the transaction; more values may be added.",
     },
     {
       field: "included",
       description:
-        "True when the transaction was seen in a block (one confirmation, not final); it may have reverted, so check error too. False when it was sent but is not in a block. Absent when nothing was sent.",
+        "True when the transaction was seen in a block (one confirmation, not final); it may have reverted, so check error too. False when it was sent but is not in a block. Absent when route is absent.",
     },
   ];
 }

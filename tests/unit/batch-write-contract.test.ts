@@ -366,24 +366,30 @@ describe("batch-write-contract - happy path", () => {
 });
 
 describe("batch-write-contract - old (Flashbots) relay configs", () => {
-  it("fails an old true flag on a chain with a relay, as a user error, before sending", async () => {
-    mockGetRpcProvider.mockResolvedValueOnce({
+  it("sends an old true flag through the relay on a chain with one, as before Send as", async () => {
+    const relayReads = vi.fn((fn: (provider: unknown) => unknown) => fn({}));
+    const relay = {
       resolveActiveRpcUrl: () => Promise.resolve("https://relay.example"),
-      executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
+      executeWithFailover: relayReads,
       hasPrivateRelayPrimary: () => true,
-    });
-    const { rpcRelayErrorClass } = await vi.importActual<
-      typeof import("@/lib/rpc/providers")
-    >("@/lib/rpc/providers");
-    mockRpcRelayErrorClass.mockImplementationOnce(rpcRelayErrorClass);
+      assertPrivateRelayChain: vi.fn().mockResolvedValue(undefined),
+    };
+    mockGetRpcProvider.mockResolvedValueOnce(relay);
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
     const result = await batchWriteContractCore(
       baseInput({ usePrivateMempool: true })
     );
-    expect(result).toMatchObject({ success: false, errorClass: "user" });
-    expect((result as { error: string }).error).toContain(
-      "Batch Write Contract can't send through the private relay yet"
-    );
-    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+    expect(result.success).toBe(true);
+    // The per-call check and the send both go through the relay manager.
+    expect(relayReads).toHaveBeenCalled();
+    const sendOptions = mockExecuteContractCall.mock.calls[0]?.[3] as
+      | { rpcManager: unknown }
+      | undefined;
+    expect(sendOptions?.rpcManager).toBe(relay);
   });
 
   it("sends an old true flag publicly on a chain without a relay, as before", async () => {

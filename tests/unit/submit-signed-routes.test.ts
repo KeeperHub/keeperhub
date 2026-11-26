@@ -247,14 +247,61 @@ describe("send route reporting", () => {
     expect(report.route).toBe("private-relay");
   });
 
-  it("keeps the hash when the managed RPC's refusal is only a socket code", async () => {
-    // A followed redirect can be refused on a later hop after an earlier one took the bytes.
+  it("releases the key when the managed RPC's refusal is only a socket code", async () => {
+    // The RPC transport follows no redirect: a refused connection sent nothing.
     stubManaged({ broadcast: refusedConnection });
+    const report: SendReport = {};
 
-    const out = await send(manager({}));
+    const out = await send(manager({}), report);
 
-    expect(out.error).not.toBeInstanceOf(PreBroadcastNetworkError);
+    expect(out.error).toBeInstanceOf(PreBroadcastNetworkError);
+    expect(sendReportFields(report)).toEqual({});
+  });
+
+  it("releases the key when a strict relay refuses the connection, with no route", async () => {
+    const { broadcastCalls } = stubManaged({ broadcast: refusedConnection });
+    const report: SendReport = {};
+
+    const out = await send(
+      manager({ primary: RELAY_URL, relay: true }),
+      report
+    );
+
+    expect(broadcastCalls).toEqual([RELAY_URL]);
+    expect(out.error).toBeInstanceOf(PreBroadcastNetworkError);
+    expect(sendReportFields(report)).toEqual({});
+  });
+
+  it("reports no route for a pending send the strict relay never answered", async () => {
+    stubManaged({
+      broadcast: () => Promise.reject(makeError("request timeout", "TIMEOUT")),
+    });
+    const report: SendReport = {};
+
+    const out = await send(
+      manager({ primary: RELAY_URL, relay: true }),
+      report
+    );
+
+    // It may still land, so the hash is kept, but the relay never said it took it.
     expect(isOnChainPendingError(out.error)).toBe(true);
+    expect(sendReportFields(report)).toEqual({});
+  });
+
+  it("reports private-relay once the hash is found after the relay gave no answer", async () => {
+    stubManaged({
+      broadcast: () => Promise.reject(makeError("request timeout", "TIMEOUT")),
+      seen: seenTx(),
+    });
+    const report: SendReport = {};
+
+    const out = await send(
+      manager({ primary: RELAY_URL, relay: true }),
+      report
+    );
+
+    expect(out.error).toBeUndefined();
+    expect(report.route).toBe("private-relay");
   });
 
   it("keeps the hash when a gateway's error body names a refused upstream", async () => {
@@ -568,6 +615,24 @@ describe("broadcast to extra RPCs", () => {
     expect((out.error as { transactionHash?: string }).transactionHash).toBe(
       HASH
     );
+  });
+
+  it("fails as a nonce conflict after a dead primary refused the connection", async () => {
+    const fallback = "https://fallback.example";
+    // A refused connection sent nothing, so the fallback's nonce answer is the real one.
+    const { broadcastCalls } = stubManaged({
+      broadcast: (url) =>
+        url === fallback
+          ? Promise.reject(rpcRefusal("nonce too low"))
+          : refusedConnection(),
+    });
+    const report: SendReport = {};
+
+    const out = await send(manager({ fallback }), report);
+
+    expect(broadcastCalls).toEqual([PUBLIC_URL, fallback]);
+    expect(out.error).toBeInstanceOf(NonceConflictError);
+    expect(sendReportFields(report)).toEqual({});
   });
 
   it("asks extras not to follow redirects, so the signed bytes go nowhere else", async () => {

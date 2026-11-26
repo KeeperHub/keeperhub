@@ -73,7 +73,16 @@ function savedById(
   return saved;
 }
 
-/** Same action, network and Send as keys as stored: let through as saved. */
+/** `usePrivateMempool` as a save stores it: a missing one is filled from a known `sendMode`. */
+function storedLegacyFlag(config: Config): unknown {
+  const flag = config[LEGACY_PRIVATE_MEMPOOL_KEY];
+  const mode = config[SEND_MODE_KEY];
+  return flag === undefined && isSendMode(mode)
+    ? mode === SEND_MODE.PRIVATE_RELAY
+    : flag;
+}
+
+/** Same action, network and Send as keys as stored (the server's own fill included): let through as saved. */
 function unchangedFromSaved(
   config: Config,
   before: Config | undefined,
@@ -84,10 +93,7 @@ function unchangedFromSaved(
     before.actionType === config.actionType &&
     Object.is(before[networkField], config[networkField]) &&
     Object.is(before[SEND_MODE_KEY], config[SEND_MODE_KEY]) &&
-    Object.is(
-      before[LEGACY_PRIVATE_MEMPOOL_KEY],
-      config[LEGACY_PRIVATE_MEMPOOL_KEY]
-    )
+    Object.is(storedLegacyFlag(before), storedLegacyFlag(config))
   );
 }
 

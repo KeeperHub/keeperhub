@@ -37,7 +37,7 @@ import {
 
 const ANVIL_URL = process.env.ANVIL_URL ?? "http://localhost:8546";
 // A port just freed: a deterministic ECONNREFUSED "dead primary". The RPC path
-// follows redirects, so it still reads as "may have sent" (the hash is kept).
+// follows no redirect, so the refusal means nothing was sent there.
 async function closedPortUrl(): Promise<string> {
   const server = createServer();
   await new Promise<void>((resolve) => {
@@ -198,17 +198,15 @@ describe.skipIf(shouldSkip)(
       expect(error).toBeInstanceOf(NonceConflictError);
     });
 
-    // The dead primary's refusal is not proof of "never sent", so the
-    // conflict ends pending with our hash. Each failover round first burns
-    // the retry budget on the dead primary, hence the longer timeout.
-    it("keeps the hash on a nonce conflict after a dead primary", {
+    // The dead primary refused the connection, so it holds nothing: the real
+    // conflict is reported. Each failover round first burns the retry budget
+    // on the dead primary, hence the longer timeout.
+    it("throws NonceConflictError on a nonce conflict after a dead primary", {
       timeout: 90_000,
     }, async () => {
-      const { error, expectedHash } = await sendOnConsumedNonce(rpcManager);
-      expect(isOnChainPendingError(error)).toBe(true);
-      expect((error as { transactionHash?: string }).transactionHash).toBe(
-        expectedHash
-      );
+      const { error } = await sendOnConsumedNonce(rpcManager);
+      expect(error).toBeInstanceOf(NonceConflictError);
+      expect(isOnChainPendingError(error)).toBe(false);
     });
   }
 );

@@ -761,8 +761,7 @@ export class RpcProviderManager {
         lastError = error instanceof Error ? error : new Error(String(error));
         attemptCount += 1;
         allAttemptsConnectionRefused =
-          allAttemptsConnectionRefused &&
-          isConnectionRefusal(error, { followsRedirects: true });
+          allAttemptsConnectionRefused && isConnectionRefusal(error);
         this.recordFailure(providerType, operationType);
         this.metricsCollector.recordErrorType(
           this.config.chainName,

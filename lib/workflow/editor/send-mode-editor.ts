@@ -67,9 +67,15 @@ function actionLabel(config: Record<string, unknown>): string {
     : "This action";
 }
 
-/** An old flag on an action without the relay, on a network not known (a template, or a failed list). */
-function legacyUnsupportedNotice(config: Record<string, unknown>): string {
-  return `${actionLabel(config)} can't send through the private relay yet, so this step may fail before sending: it fails on a network with a private relay and sends to the public mempool elsewhere. Set Send as to Normal transaction to send publicly on every network.`;
+/** An old flag on an action without the relay option: it runs as before, on the relay where there is one. */
+function legacyUnsupportedNotice(
+  config: Record<string, unknown>,
+  chainKnown: boolean
+): string {
+  const where = chainKnown
+    ? "the private relay"
+    : "the private relay where its network has one, otherwise the public mempool";
+  return `This step was saved with the old "(Flashbots)" network, so it still sends through ${where}. ${actionLabel(config)} checks its calls with eth_call, which a relay such as Flashbots Protect refuses, so on such a relay it fails before sending. Set Send as to Normal transaction to send publicly, or split the calls into Write Contract steps to keep them private.`;
 }
 
 function actionFields(config: Record<string, unknown>) {
@@ -349,12 +355,13 @@ export function sendModeWarning(
   // publicly, on any action, as it always did.
   const legacy = isLegacyPrivateRelayConfig(config);
   const unsupported = unsupportedSendMode(config.actionType, mode);
-  if (unsupported && !(legacy && noRelay)) {
+  if (unsupported && !legacy) {
+    return { text: unsupported, unsupported: true, fails: true };
+  }
+  // The old flag still uses the relay; with strict: false its eth_call check falls back to the public RPC.
+  if (unsupported && !noRelay && config.strict !== false) {
     return {
-      text:
-        legacy && chain === undefined
-          ? legacyUnsupportedNotice(config)
-          : unsupported,
+      text: legacyUnsupportedNotice(config, chain !== undefined),
       unsupported: true,
       fails: true,
     };

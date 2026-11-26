@@ -367,7 +367,7 @@ describe("an old (Flashbots) flag where the network does not resolve", () => {
     );
   });
 
-  it("warns on Batch, which a save refuses with the old flag there", async () => {
+  it("warns on Batch, which a save refuses with the old flag there, that it still uses a relay", async () => {
     setEditorSendModeChains(CHAINS);
     await render({
       actionType: "web3/batch-write-contract",
@@ -378,9 +378,11 @@ describe("an old (Flashbots) flag where the network does not resolve", () => {
       '[data-testid="send-mode-unsupported-notice"]'
     );
     expect(warning?.textContent).toContain(
-      "Batch Write Contract can't send through the private relay yet, so this step may fail before sending: it fails on a network with a private relay and sends to the public mempool elsewhere."
+      "so it still sends through the private relay where its network has one, otherwise the public mempool."
     );
-    expect(warning?.textContent).not.toContain("fails before sending.");
+    expect(warning?.textContent).toContain(
+      "on such a relay it fails before sending."
+    );
     expect(warning?.className).toContain("bg-destructive/5");
   });
 });

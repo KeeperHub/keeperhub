@@ -46,6 +46,8 @@ vi.mock("@/lib/billing/dispatch-admission", () => ({
 // withBackstopCapture wraps the insert; just run the callback.
 vi.mock("@/lib/security/backstop-capture", () => ({
   withBackstopCapture: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
+  isBackstopRejection: (error: unknown) =>
+    (error as { code?: unknown } | null)?.code === "42501",
 }));
 
 // Record the source buildAttribution was called with so trigger-source
@@ -436,6 +438,27 @@ describe("POST /api/internal/executions", () => {
       );
       expect(insertedValues?.status).toBe("running");
       expect(insertPhantomUnlessRunning).not.toHaveBeenCalled();
+    });
+
+    it("answers a workflow the database refuses to run with a coded 403", async () => {
+      insertPhantomUnlessRunning.mockRejectedValueOnce(
+        Object.assign(new Error("Workflow owner is deactivated"), {
+          code: "42501",
+        })
+      );
+      const response = await POST(blockDispatch(true));
+      expect(response.status).toBe(403);
+      expect((await response.json()).code).toBe("WORKFLOW_INACTIVE");
+
+      insertPhantomUnlessRunning.mockRejectedValueOnce(new Error("boom"));
+      await expect(POST(blockDispatch(true))).rejects.toThrow("boom");
+    });
+
+    it("answers a deleted workflow with a coded 404", async () => {
+      mockWorkflow = null;
+      const response = await POST(blockDispatch(true));
+      expect(response.status).toBe(404);
+      expect((await response.json()).code).toBe("WORKFLOW_NOT_FOUND");
     });
 
     it("flags a dispatch-key conflict with a skipped row as skipped", async () => {

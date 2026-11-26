@@ -111,12 +111,12 @@ export type BatchWriteContractCoreInput = {
   // Optional maxFeePerGas ceiling (in gwei). The send is refused when it is
   // below the current base fee.
   maxFeeGwei?: string;
-  // "Send as" and the old flag (any stored value), read by relayUseOf in
-  // getSendRpcProvider. A step that asks for the relay is never sponsored.
+  // sendMode "private-relay" is refused before sending (relayRefusal). The old
+  // flag alone (any stored value) still uses the relay where the chain has one.
   sendMode?: string;
   usePrivateMempool?: unknown;
-  // false: a relay failure other than a revert is retried on the public RPC, and
-  // sendMode "private-relay" on a chain without a relay sends publicly.
+  // Only with that old flag on a relay chain: false keeps the public RPC as
+  // fallback, so a relay failure other than a revert is retried there.
   strict?: boolean;
   web3Connection?: string;
   // See WriteContractCoreInput: "next-block" simulates as of the next block.
@@ -637,8 +637,9 @@ async function batchWriteContractCoreImpl(
       errorClass: ExecutionErrorType.SYSTEM,
     };
   }
-  // A batch that would use the relay is refused before sending, as the editor
-  // says; an old flag on a chain without a relay sends publicly.
+  // sendMode "private-relay" is refused before sending. The old flag alone runs as
+  // before Send as: the relay where the chain has one (its eth_call check can then
+  // fail, as the editor warns), else public.
   const resolved = await resolveWriteRpc(input, {
     chainId,
     userId,

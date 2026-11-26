@@ -119,8 +119,10 @@ export function isPreBroadcastNetworkError(
  * disambiguate by on-chain lookup:
  *   1. getTransactionReceipt(expectedHash) -> if found, tx mined; success.
  *   2. getTransaction(expectedHash)        -> if found, in mempool; success.
- *   3. Neither found AND a duplicate-hash reply (or a nonce conflict while an
- *      extra URL may have sent) -> OnChainPendingError with the hash.
+ *   3. Neither found AND a duplicate-hash reply, or a nonce conflict while a
+ *      copy may have gone out (an extra URL, or an earlier managed attempt
+ *      with no clear answer, such as a timeout) -> OnChainPendingError with
+ *      the hash. A refused connection is a clear answer: nothing went out.
  *   4. Neither found AND error looks like nonce conflict -> NonceConflictError.
  *   5. Neither found AND other error      -> reconcile by certainty: a
  *      definite pre-broadcast refusal is tagged PreBroadcastNetworkError,
@@ -219,8 +221,7 @@ export async function submitSignedTransactionWithFailover(
         populated.nonce,
         err,
         // An extra, or an earlier managed attempt without a clear answer (a
-        // timeout, a server error, or a refused connection on the RPC path),
-        // may hold our bytes.
+        // timeout or a server error, not a refused connection), may hold our bytes.
         extraDeliveries.includes("unknown") ||
           attempts.some((attempt) => attempt.delivery === "unknown")
       );
@@ -429,12 +430,10 @@ export function isDefinitelyPreBroadcastNetworkError(error: unknown): boolean {
   // answer never counts.
   if (endpointFailures.length > 0) {
     return endpointFailures.every(
-      (part) =>
-        !HTTP_ANSWER_TEXT.test(part) &&
-        isConnectionRefusal(part, { followsRedirects: true })
+      (part) => !HTTP_ANSWER_TEXT.test(part) && isConnectionRefusal(part)
     );
   }
-  return isConnectionRefusal(error, { followsRedirects: true });
+  return isConnectionRefusal(error);
 }
 
 /**

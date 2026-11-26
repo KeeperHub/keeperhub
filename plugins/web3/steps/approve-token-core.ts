@@ -236,6 +236,7 @@ async function approveTokenCoreImpl(
     chainId,
     userId,
     log: { tag: "[Approve Token]", action: "approve-token" },
+    withReadRpc: true,
   });
   if (!resolved.ok) {
     return { success: false, ...resolved.failure };

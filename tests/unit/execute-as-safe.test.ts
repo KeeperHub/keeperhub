@@ -1,4 +1,4 @@
-import type { ethers } from "ethers";
+import { ethers } from "ethers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -72,6 +72,7 @@ vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => ({
 // Import module under test AFTER mocks
 // ---------------------------------------------------------------------------
 
+import { RpcProviderManager } from "@/lib/rpc/providers";
 import {
   type ExecuteAsSafeOptions,
   executeContractCallAsRole,
@@ -324,39 +325,44 @@ describe.each(cases)("%s", (_name, invoke) => {
   });
 
   it("reads from the fallback when an endpoint dies mid-wait", async () => {
-    const dead = {
-      estimateGas: vi.fn().mockResolvedValue(BigInt(50_000)),
-      getTransactionReceipt: vi.fn().mockRejectedValue(
-        Object.assign(new Error("connect ECONNREFUSED"), {
-          code: "ECONNREFUSED",
-        })
-      ),
-    };
-    const alive = {
-      getTransactionReceipt: vi.fn().mockResolvedValue(makeReceipt(1)),
-    };
-    // The failover: the dead primary first, then the fallback.
-    const failover = vi.fn(
-      async (op: (p: unknown) => Promise<unknown>, kind?: string) => {
-        if (kind !== "read") {
-          return op(dead);
-        }
-        try {
-          return await op(dead);
-        } catch {
-          return op(alive);
-        }
-      }
-    );
-    const rpcManager = {
-      executeWithFailover: failover,
-      getProvider: () => dead,
-      hasPrivateRelayPrimary: () => false,
-    } as unknown as ExecuteAsSafeOptions["rpcManager"];
+    const primary = "https://primary.example";
+    const fallback = "https://fallback.example";
+    const receiptReads: string[] = [];
+    // A real manager with two stub endpoints: its own failover picks the fallback.
+    const estimate = vi
+      .spyOn(ethers.JsonRpcProvider.prototype, "estimateGas")
+      .mockResolvedValue(BigInt(50_000));
+    const receipt = vi
+      .spyOn(ethers.JsonRpcProvider.prototype, "getTransactionReceipt")
+      .mockImplementation(function (this: ethers.JsonRpcProvider) {
+        const url = this._getConnection().url;
+        receiptReads.push(url);
+        return url === primary
+          ? Promise.reject(
+              Object.assign(new Error("connect ECONNREFUSED"), {
+                code: "ECONNREFUSED",
+              })
+            )
+          : Promise.resolve(makeReceipt(1));
+      });
+    const rpcManager = new RpcProviderManager({
+      config: {
+        primaryRpcUrl: primary,
+        fallbackRpcUrl: fallback,
+        maxRetries: 1,
+        chainName: "safe-test",
+        chainId: 1,
+      },
+    });
 
-    await invoke({ chainId: 1, workflowId: "wf-1", rpcManager });
+    try {
+      await invoke({ chainId: 1, workflowId: "wf-1", rpcManager });
+    } finally {
+      estimate.mockRestore();
+      receipt.mockRestore();
+    }
 
-    expect(alive.getTransactionReceipt).toHaveBeenCalledWith(TX_HASH);
+    expect(receiptReads).toEqual([primary, fallback]);
     expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
   });
 

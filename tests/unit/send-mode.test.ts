@@ -780,15 +780,15 @@ describe("canvas marker for a step Send as stops", () => {
       false,
     ],
     [
-      "Batch relay strict: false",
+      "Batch old flag on Ethereum, strict: false (its check may use the public RPC)",
       {
         actionType: BATCH,
         network: "1",
         usePrivateMempool: true,
         strict: false,
       },
-      true,
       false,
+      true,
     ],
     [
       "relay on Base, strict: false (sends publicly)",
@@ -1067,7 +1067,9 @@ describe("editor repairs and edge values", () => {
     expect(
       sendModeWarning({ ...before, actionType: "web3/batch-write-contract" })
         ?.text
-    ).toContain("so this step may fail before sending");
+    ).toContain(
+      "still sends through the private relay where its network has one, otherwise the public mempool"
+    );
   });
 
   it("drops the old flag with Send as when the new action has no Send as", () => {

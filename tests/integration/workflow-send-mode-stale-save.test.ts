@@ -9,6 +9,7 @@ vi.mock("server-only", () => ({}));
 const store = vi.hoisted(() => ({
   nodes: [] as unknown[],
   writes: 0,
+  relayOn: true,
 }));
 
 const schema = vi.hoisted(() => ({
@@ -60,7 +61,7 @@ function fromTable(table: unknown): Record<string, unknown> {
       ? [
           {
             chainId: 1,
-            usePrivateMempoolRpc: true,
+            usePrivateMempoolRpc: store.relayOn,
             defaultPrivateRpcUrl: "https://relay.example",
           },
         ]
@@ -219,6 +220,7 @@ function storedKeys(): Record<string, unknown> {
 describe.each(routes)("%s with Send as keys", (_name, save) => {
   beforeEach(() => {
     store.writes = 0;
+    store.relayOn = true;
   });
 
   it.each([
@@ -273,5 +275,25 @@ describe.each(routes)("%s with Send as keys", (_name, save) => {
         usePrivateMempool: true,
       });
     }
+  });
+
+  it("lets a step saved with sendMode alone through unchanged after its chain loses the relay", async () => {
+    store.nodes = [];
+    const created = await save(writeNode({ sendMode: "private-relay" }));
+    expect(created.status).toBe(200);
+    expect(storedKeys()).toEqual({
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+    });
+    // An admin turns the relay off; the client resends its own copy, without the filled flag.
+    store.relayOn = false;
+    const resent = await save(
+      writeNode({ sendMode: "private-relay" }, "other")
+    );
+    expect(resent.status).toBe(200);
+    expect(storedKeys()).toEqual({
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+    });
   });
 });

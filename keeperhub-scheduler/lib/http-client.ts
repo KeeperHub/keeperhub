@@ -25,6 +25,19 @@ export interface ApiResponse<T> {
   attempts: number;
 }
 
+/** A non-2xx answer from the platform, with its status and body for callers that tell answers apart. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: string;
+
+  constructor(label: string, status: number, body: string) {
+    super(`API ${label} failed: ${status} ${body}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 type AttemptOutcome<T> =
   | { kind: "ok"; data: T }
   | { kind: "retry"; error: unknown }
@@ -86,7 +99,7 @@ async function attemptRequest<T>(
     return { kind: "ok", data: (await response.json()) as T };
   }
   const text = await response.text();
-  const error = new Error(`API ${label} failed: ${response.status} ${text}`);
+  const error = new ApiError(label, response.status, text);
   return { kind: response.status >= 500 ? "retry" : "fail", error };
 }
 

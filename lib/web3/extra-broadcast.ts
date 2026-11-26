@@ -111,7 +111,7 @@ async function sendRaw(
     });
   } catch (error) {
     // No redirect is followed, so an unresolved or blocked host never got the bytes.
-    const reason = neverReached(error, { followsRedirects: false });
+    const reason = neverReached(error);
     if (reason) {
       return {
         delivery: "refused",

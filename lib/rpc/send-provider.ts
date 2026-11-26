@@ -29,7 +29,9 @@ type SendRpc = {
 
 /**
  * The manager a write step sends through. Before anything is sent it refuses an
- * unknown `sendMode`, a relay the chain or step (`relayRefusal`) cannot use, or one serving another chain.
+ * unknown `sendMode`, a relay the chain cannot offer, `sendMode: "private-relay"`
+ * on a step that cannot use it (`relayRefusal`), or a relay serving another chain.
+ * The old flag alone uses the relay where the chain has one, on any step, as before.
  */
 export async function getSendRpcProvider(
   input: SendAsInput,
@@ -50,11 +52,7 @@ export async function getSendRpcProvider(
     strict: input.strict,
     relayOptional: relay === "if-available",
   });
-  const onRelay = relay !== "none" && rpcManager.hasPrivateRelayPrimary();
-  if (onRelay && options.relayRefusal) {
-    throw new PrivateRelayUnavailableError(options.relayRefusal);
-  }
-  if (onRelay) {
+  if (relay !== "none" && rpcManager.hasPrivateRelayPrimary()) {
     await rpcManager.assertPrivateRelayChain();
   }
   return { rpcManager, relayRequested: relay !== "none" };
@@ -74,33 +72,51 @@ export function assertSendAsWithoutRelay(
   }
 }
 
-type WriteRpc = SendRpc & {
+type WriteRpc = SendRpc & { rpcUrl: string };
+
+type ReadingWriteRpc = WriteRpc & {
   /** Reads with no transaction data (token reads, the trace); the send stays on rpcManager. */
   readRpc: RpcProviderManager;
-  rpcUrl: string;
 };
 
 type WriteRpcFailure = { error: string; errorClass?: ExecutionErrorType };
+
+type WriteRpcResult<T> =
+  | { ok: true; rpc: T }
+  | { ok: false; failure: WriteRpcFailure };
+
+type WriteRpcOptions = {
+  chainId: number;
+  userId?: string;
+  relayRefusal?: string;
+  log: { tag: string; action: string };
+  fallbackClass?: ExecutionErrorType;
+  /** Also resolve `readRpc`; only steps that read with it ask, so others never fail on it. */
+  withReadRpc?: boolean;
+};
 
 /**
  * Everything a write step's send needs from the RPC layer. A failure is logged
  * and returned with its class: the relay's own, else `fallbackClass`.
  */
+export function resolveWriteRpc(
+  input: SendAsInput,
+  options: WriteRpcOptions & { withReadRpc: true }
+): Promise<WriteRpcResult<ReadingWriteRpc>>;
+export function resolveWriteRpc(
+  input: SendAsInput,
+  options: WriteRpcOptions
+): Promise<WriteRpcResult<WriteRpc>>;
 export async function resolveWriteRpc(
   input: SendAsInput,
-  options: {
-    chainId: number;
-    userId?: string;
-    relayRefusal?: string;
-    log: { tag: string; action: string };
-    fallbackClass?: ExecutionErrorType;
-  }
-): Promise<
-  { ok: true; rpc: WriteRpc } | { ok: false; failure: WriteRpcFailure }
-> {
+  options: WriteRpcOptions
+): Promise<WriteRpcResult<WriteRpc | ReadingWriteRpc>> {
   try {
     const send = await getSendRpcProvider(input, options);
     const rpcUrl = await send.rpcManager.resolveActiveRpcUrl();
+    if (!options.withReadRpc) {
+      return { ok: true, rpc: { ...send, rpcUrl } };
+    }
     const readRpc = await readRpcFor(send.rpcManager, options);
     return { ok: true, rpc: { ...send, readRpc, rpcUrl } };
   } catch (error) {

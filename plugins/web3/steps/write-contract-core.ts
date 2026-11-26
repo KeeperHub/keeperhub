@@ -460,6 +460,7 @@ async function writeContractCoreImpl(
     chainId,
     userId,
     log: { tag: "[Write Contract]", action: "write-contract" },
+    withReadRpc: true,
     fallbackClass: ExecutionErrorType.SYSTEM,
   });
   if (!resolved.ok) {
