@@ -100,6 +100,14 @@ const mockDbQuery = {
 const mockMemberLimit = vi.fn();
 const mockIncrementCounter = vi.fn();
 
+// The RPC coverage check reads organization RPC tables this db stub lacks;
+// its refusals are covered in workflow-rpc-coverage-refusal.test.ts.
+const mockCoverageResponse = vi.fn();
+vi.mock("@/lib/rpc/engine/org/http", () => ({
+  workflowCoverageResponse: (...args: unknown[]) =>
+    mockCoverageResponse(...args),
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     query: mockDbQuery,
@@ -312,6 +320,36 @@ describe("POST /api/workflows/import", () => {
     insertedRows.length = 0;
     mockDbQuery.workflows.findFirst.mockResolvedValue(storedWorkflow);
     mockMemberLimit.mockResolvedValue([{ id: "member-1" }]);
+  });
+
+  it("refuses an import whose steps the organization's RPC settings leave without a route", async () => {
+    mockCoverageResponse.mockResolvedValueOnce(
+      Response.json({ error: "no route" }, { status: 409 })
+    );
+    const exportPayload = buildWorkflowExportV1({
+      name: "imported wf",
+      description: "imported description",
+      nodes: [
+        storedWorkflow.nodes[0] as unknown as WorkflowNode,
+        validImportActionNode as unknown as WorkflowNode,
+      ],
+      edges: storedWorkflow.edges.slice(0, 1) as WorkflowEdge[],
+    });
+
+    const { POST } = await import("@/app/api/workflows/import/route");
+    const response = await POST(
+      new Request("http://localhost/api/workflows/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(exportPayload),
+      })
+    );
+
+    expect(response.status).toBe(409);
+    expect(mockCoverageResponse).toHaveBeenCalledWith(
+      orgId,
+      expect.objectContaining({ name: "imported wf" })
+    );
   });
 
   it("creates a new workflow row owned by the caller", async () => {

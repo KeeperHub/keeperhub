@@ -51,8 +51,7 @@ import {
   type WorkflowNodeForValidation,
 } from "@/lib/workflow/validation/action-config";
 import { findInvalidTemplateTokens } from "@/lib/workflow/validation/template-syntax";
-import { failureResponse } from "@/lib/rpc/engine/org/http";
-import { workflowCoverageRefusal } from "@/lib/rpc/engine/org/service";
+import { workflowCoverageResponse } from "@/lib/rpc/engine/org/http";
 import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 async function fetchWorkflowPublicTags(
   workflowId: string
@@ -639,7 +638,7 @@ export async function PATCH(
 
       // A save that would leave a node without an RPC route is refused here
       // rather than failing at run time; gaps already stored are not blamed.
-      const rpcRefusal = await workflowCoverageRefusal(
+      const rpcRefusal = await workflowCoverageResponse(
         existingWorkflow.organizationId,
         {
           id: existingWorkflow.id,
@@ -649,7 +648,7 @@ export async function PATCH(
         existingWorkflow.nodes
       );
       if (rpcRefusal) {
-        return failureResponse(rpcRefusal);
+        return rpcRefusal;
       }
     }
 

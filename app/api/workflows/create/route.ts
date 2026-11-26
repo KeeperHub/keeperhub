@@ -35,6 +35,7 @@ import {
   formatActionConfigValidationResponse,
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
+import { workflowCoverageResponse } from "@/lib/rpc/engine/org/http";
 function createDefaultNodes() {
   const triggerId = nanoid();
   const actionId = nanoid();
@@ -292,6 +293,17 @@ export async function POST(request: Request) {
 
     // Generate workflow ID first
     const workflowId = generateId();
+
+    // Steps the organization's RPC settings would leave without a route are
+    // refused here, as on update, rather than failing at run time.
+    const rpcRefusal = await workflowCoverageResponse(organizationId, {
+      id: workflowId,
+      name: workflowName,
+      nodes,
+    });
+    if (rpcRefusal) {
+      return rpcRefusal;
+    }
 
     const [newWorkflow] = await db
       .insert(workflows)

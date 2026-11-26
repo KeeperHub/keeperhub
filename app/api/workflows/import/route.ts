@@ -30,6 +30,7 @@ import {
   formatActionConfigValidationResponse,
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
+import { workflowCoverageResponse } from "@/lib/rpc/engine/org/http";
 
 const versionedBodySchema = z
   .object({ version: z.unknown() })
@@ -186,6 +187,15 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
 
     const workflowId = generateId();
+    const rpcRefusal = await workflowCoverageResponse(organizationId, {
+      id: workflowId,
+      name: exportPayload.workflow.name,
+      nodes: sanitized.nodes,
+    });
+    if (rpcRefusal) {
+      return rpcRefusal;
+    }
+
     const [newWorkflow] = await db
       .insert(workflows)
       .values({

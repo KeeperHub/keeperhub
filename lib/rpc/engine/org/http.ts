@@ -16,7 +16,8 @@ import {
 } from "@/lib/middleware/require-org-role";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
-import type { OrgRpcFailure } from "./service";
+import type { CoverageWorkflow } from "./coverage";
+import { type OrgRpcFailure, workflowCoverageRefusal } from "./service";
 import { RpcConfigUrlSlot } from "./url-slots";
 
 export const RpcAuditAction = {
@@ -118,6 +119,24 @@ export function failureResponse(failure: OrgRpcFailure): NextResponse {
     },
     { status: failure.status }
   );
+}
+
+/**
+ * The refusal for saving a workflow whose steps would have no RPC route, or
+ * null when it may be saved. `previousNodes` is the stored version, whose own
+ * gaps are not blamed on this save; leave it out for a new workflow.
+ */
+export async function workflowCoverageResponse(
+  organizationId: string,
+  workflow: CoverageWorkflow,
+  previousNodes?: unknown
+): Promise<NextResponse | null> {
+  const refusal = await workflowCoverageRefusal(
+    organizationId,
+    workflow,
+    previousNodes
+  );
+  return refusal ? failureResponse(refusal) : null;
 }
 
 export function invalidBodyResponse(error: z.ZodError): NextResponse {

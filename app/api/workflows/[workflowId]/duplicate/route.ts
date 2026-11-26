@@ -18,6 +18,7 @@ import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import { clearStrayToggles } from "@/lib/workflow/validation/action-config";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import { stripOrgRpcSelection } from "@/lib/workflow/strip-org-rpc-selection";
+import { workflowCoverageResponse } from "@/lib/rpc/engine/org/http";
 // Node type for type-safe node manipulation
 type WorkflowNodeLike = {
   id: string;
@@ -231,6 +232,15 @@ export async function POST(
 
     // Create the duplicated workflow
     const newWorkflowId = generateId();
+    const rpcRefusal = await workflowCoverageResponse(organizationId, {
+      id: newWorkflowId,
+      name: workflowName,
+      nodes: newNodes,
+    });
+    if (rpcRefusal) {
+      return rpcRefusal;
+    }
+
     const [newWorkflow] = await db
       .insert(workflows)
       .values({
