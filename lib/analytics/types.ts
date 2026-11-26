@@ -7,6 +7,7 @@
 
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import type { RpcOrigin } from "@/lib/rpc/engine/types";
 
 export type { TransactionHashEntry } from "@/lib/db/schema";
 
@@ -259,9 +260,75 @@ export type StepLog = {
   gasCostWei: string | null;
   /** True when KeeperHub sponsored the gas for this step's transaction. */
   sponsored: boolean;
+  /** Who operated the endpoint that served the step's RPC calls; null when none ran. */
+  rpcOrigin: RpcOrigin | null;
+  /** The organization config that served the step, when `rpcOrigin` is org. */
+  rpcConfigId: string | null;
+  /** Name of that config; null once the config has been removed. */
+  rpcConfigName: string | null;
+  /** True when the step finished on a fallback endpoint. */
+  rpcFailedOver: boolean;
 };
 
 export type AnalyticsStreamEvent = {
   type: "summary" | "new-run" | "run-updated" | "heartbeat";
   data: AnalyticsSummary | UnifiedRun | { timestamp: string };
+};
+
+/** RPC request totals for one window. Latency figures are null with no requests. */
+export type RpcUsageTotals = {
+  requests: number;
+  errors: number;
+  timeouts: number;
+  rateLimited: number;
+  failovers: number;
+  avgLatencyMs: number | null;
+  maxLatencyMs: number | null;
+  wsConnects: number;
+  wsReconnects: number;
+  eventsReceived: number;
+};
+
+export type RpcUsageSummary = RpcUsageTotals & {
+  /** Requests served by the organization's own endpoints. */
+  ownRequests: number;
+  /** Requests served by KeeperHub endpoints. */
+  platformRequests: number;
+};
+
+export type RpcUsageBucket = {
+  timestamp: string;
+  ownRequests: number;
+  platformRequests: number;
+  errors: number;
+};
+
+/** One endpoint (an organization config, or KeeperHub) on one chain. */
+export type RpcUsageBreakdownRow = RpcUsageTotals & {
+  origin: RpcOrigin;
+  /** Null for KeeperHub endpoints. */
+  configId: string | null;
+  /** Null for KeeperHub endpoints and for configs that have been removed. */
+  configName: string | null;
+  /** True when the row belongs to a config that no longer exists. */
+  configRemoved: boolean;
+  chainId: number;
+  chainName: string | null;
+};
+
+/** A chain the organization serves only with its own endpoints. */
+export type RpcOwnOnlyChainUsage = {
+  chainId: number;
+  chainName: string | null;
+  /** Requests KeeperHub endpoints served on this chain in the range. */
+  platformRequests: number;
+};
+
+export type RpcUsageResponse = {
+  summary: RpcUsageSummary;
+  /** Chains set to own RPC only, with what KeeperHub served on each. */
+  ownRpcOnlyChains: RpcOwnOnlyChainUsage[];
+  buckets: RpcUsageBucket[];
+  intervalMs: number;
+  breakdown: RpcUsageBreakdownRow[];
 };

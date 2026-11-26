@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  type AnyColumn,
   and,
   count,
   desc,
@@ -26,6 +27,7 @@ import {
   gasCreditUsage,
   organizationSpendCaps,
 } from "@/lib/db/schema-extensions";
+import { organizationRpcConfigs } from "@/lib/db/schema-rpc";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ERROR_STATUSES } from "@/lib/errors/execution-status";
 import {
@@ -1132,7 +1134,7 @@ async function computeTimeSeries(
  * Generated in SQL, stepping in the viewer's local wall clock, so a day is
  * still a day across a DST transition.
  */
-async function bucketSkeleton(
+export async function bucketSkeleton(
   rangeStart: Date,
   rangeEnd: Date,
   intervalMs: number,
@@ -1215,12 +1217,10 @@ function truncLocal(
  * chart. The column is moved into the viewer's zone before truncating and the
  * bucket start is handed back as a real instant.
  */
-function bucketSql(
+export function bucketSql(
   sqlInterval: BucketSqlInterval,
   timeZone: string
-): (
-  col: typeof workflowExecutions.startedAt | typeof directExecutions.createdAt
-) => ReturnType<typeof sql> {
+): (col: AnyColumn) => ReturnType<typeof sql> {
   return (col) => {
     const local = sql`(${col} AT TIME ZONE 'UTC' AT TIME ZONE ${timeZone})`;
     return sql`((${truncLocal(sqlInterval, local)}) AT TIME ZONE ${timeZone})`;
@@ -2247,6 +2247,10 @@ export async function getStepLogs(
         AND ${gasCreditUsage.chainId}::text = ${stepNetwork}
       )`,
       stepGasWei: sql<string | null>`${stepOwnGasWei}::text`,
+      rpcOrigin: workflowExecutionLogs.rpcOrigin,
+      rpcConfigId: workflowExecutionLogs.rpcConfigId,
+      rpcConfigName: organizationRpcConfigs.name,
+      rpcFailedOver: workflowExecutionLogs.rpcFailedOver,
     })
     .from(workflowExecutionLogs)
     .innerJoin(
@@ -2254,6 +2258,14 @@ export async function getStepLogs(
       eq(workflowExecutionLogs.executionId, workflowExecutions.id)
     )
     .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+    // A removed config leaves the step attributed with no name to show.
+    .leftJoin(
+      organizationRpcConfigs,
+      and(
+        eq(organizationRpcConfigs.id, workflowExecutionLogs.rpcConfigId),
+        eq(organizationRpcConfigs.organizationId, workflows.organizationId)
+      )
+    )
     .where(
       and(
         eq(workflowExecutionLogs.executionId, executionId),
@@ -2282,6 +2294,10 @@ export async function getStepLogs(
     // Only ledger-backed gas is sponsored; a step's own receipt means the
     // organization's wallet paid for it.
     sponsored: row.sponsoredGasWei !== null,
+    rpcOrigin: row.rpcOrigin,
+    rpcConfigId: row.rpcConfigId,
+    rpcConfigName: row.rpcConfigName,
+    rpcFailedOver: row.rpcFailedOver === true,
   }));
 }
 

@@ -86,24 +86,31 @@
     },
     {
       "method": "GET",
+      "path": "/api/analytics/rpc-usage",
+      "route_file": "app/api/analytics/rpc-usage/route.ts",
+      "source": "docs/api/analytics.md",
+      "line": 155
+    },
+    {
+      "method": "GET",
       "path": "/api/analytics/runs",
       "route_file": "app/api/analytics/runs/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 155
+      "line": 227
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs/{executionId}/steps",
       "route_file": "app/api/analytics/runs/[id]/steps/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 286
+      "line": 358
     },
     {
       "method": "GET",
       "path": "/api/analytics/spend-cap",
       "route_file": "app/api/analytics/spend-cap/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 335
+      "line": 413
     },
     {
       "method": "GET",
@@ -111,7 +118,7 @@
       "route_file": "app/api/analytics/stream/route.ts",
       "streaming": true,
       "source": "docs/api/analytics.md",
-      "line": 360
+      "line": 438
     },
     {
       "method": "GET",

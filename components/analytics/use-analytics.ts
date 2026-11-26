@@ -10,6 +10,7 @@ import {
 import type {
   AnalyticsSummary,
   NetworkBreakdown,
+  RpcUsageResponse,
   RunFacets,
   TimeSeriesResponse,
 } from "@/lib/analytics/types";
@@ -26,6 +27,7 @@ import {
   analyticsNetworksAtom,
   analyticsProjectIdAtom,
   analyticsRangeAtom,
+  analyticsRpcUsageAtom,
   analyticsRunsAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
@@ -138,6 +140,7 @@ export function useAnalytics(): UseAnalyticsReturn {
   const setTimeSeries = useSetAtom(analyticsTimeSeriesAtom);
   const setTimeSeriesInterval = useSetAtom(analyticsTimeSeriesIntervalAtom);
   const setNetworks = useSetAtom(analyticsNetworksAtom);
+  const setRpcUsage = useSetAtom(analyticsRpcUsageAtom);
   const setRuns = useSetAtom(analyticsRunsAtom);
   const setFacets = useSetAtom(analyticsFacetsAtom);
   const setLastUpdated = useSetAtom(analyticsLastUpdatedAtom);
@@ -203,12 +206,15 @@ export function useAnalytics(): UseAnalyticsReturn {
     const networksPromise = fetch(`/api/analytics/networks?${baseQuery}`, {
       signal,
     });
+    const rpcUsagePromise = fetch(`/api/analytics/rpc-usage?${baseQuery}`, {
+      signal,
+    });
     const runsPromise = fetch(`/api/analytics/runs?${runsQuery}`, { signal });
     const facetsPromise = fetch(`/api/analytics/facets?${facetsQuery}`, {
       signal,
     });
 
-    let pendingCount = 5;
+    let pendingCount = 6;
     const ctx: FetchContext = {
       aborted: false,
       onAbort: (message: string): void => {
@@ -284,6 +290,16 @@ export function useAnalytics(): UseAnalyticsReturn {
         )
       ),
       wrapSection(
+        processSection<RpcUsageResponse>(
+          rpcUsagePromise,
+          "RPC usage",
+          ctx,
+          (data) => {
+            setRpcUsage(data);
+          }
+        )
+      ),
+      wrapSection(
         processSection<WireRunsResponse>(runsPromise, "Runs", ctx, (data) => {
           setRuns(normalizeRunsResponse(data));
         })
@@ -319,6 +335,7 @@ export function useAnalytics(): UseAnalyticsReturn {
     setTimeSeries,
     setTimeSeriesInterval,
     setNetworks,
+    setRpcUsage,
     setRuns,
     setFacets,
     setLastUpdated,

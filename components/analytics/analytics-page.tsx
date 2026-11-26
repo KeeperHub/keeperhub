@@ -14,6 +14,7 @@ import { useSession } from "@/lib/auth-client";
 import { AnalyticsHeader } from "./analytics-header";
 import { EmptyState } from "./empty-state";
 import { KpiCards } from "./kpi-cards";
+import { RpcUsageSection } from "./rpc-usage-section";
 import { RunsFilters } from "./runs-filters";
 import { RunsTable } from "./runs-table";
 import { TimeSeriesChart } from "./time-series-chart";
@@ -97,6 +98,7 @@ export function AnalyticsPage(): ReactNode {
 
           <KpiCards />
           <TimeSeriesChart />
+          <RpcUsageSection />
 
           <RunsFilters />
           <RunsTable />
