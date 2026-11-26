@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/card";
 import { WorkflowMiniMap } from "@/components/hub/workflow-mini-map";
 import { api, type SavedWorkflow } from "@/lib/api-client";
-import { authClient, useSession, signInAnonymously } from "@/lib/auth-client";
+import { signInAnonymously, useSession } from "@/lib/auth-client";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 
