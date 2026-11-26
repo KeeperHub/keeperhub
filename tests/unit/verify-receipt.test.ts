@@ -29,9 +29,10 @@ const solanaExecuteWithFailover =
     ) => Promise<unknown>
   >();
 
-const { rpcEvm, rpcSolana } = vi.hoisted(() => ({
+const { rpcEvm, rpcSolana, orgLoad } = vi.hoisted(() => ({
   rpcEvm: vi.fn(),
   rpcSolana: vi.fn(),
+  orgLoad: vi.fn(),
 }));
 
 vi.mock("@/lib/rpc/engine", async () => ({
@@ -39,6 +40,7 @@ vi.mock("@/lib/rpc/engine", async () => ({
   ...(await vi.importActual("@/lib/rpc/engine/scope")),
   ...(await vi.importActual("@/lib/rpc/engine/route-error")),
   rpc: { evm: rpcEvm, solana: rpcSolana },
+  orgRpcSource: { load: orgLoad },
 }));
 vi.mock("@/lib/rpc/solana-chains", () => ({
   isSolanaChain: (chainId: number) => isSolanaChain(chainId),
@@ -54,6 +56,8 @@ import {
 const SCOPE = orgScope("org-1");
 
 function useEngineManagers(): void {
+  orgLoad.mockReset();
+  orgLoad.mockResolvedValue({ policy: { ownRpcOnly: false }, configs: [] });
   rpcEvm.mockReset();
   rpcEvm.mockResolvedValue({
     manager: { executeWithFailover, getFallbackProvider },
@@ -247,6 +251,31 @@ describe("verifyExecutionReceipts", () => {
     );
     expect(allVerified).toBe(false);
     expect(results[0].status).toBe("timeout");
+  });
+
+  it("reads through another enabled config when the scope's route is not covered", async () => {
+    orgLoad.mockResolvedValue({
+      policy: { ownRpcOnly: true },
+      configs: [
+        { id: "cfg-off", enabled: false },
+        { id: "cfg-pinned", enabled: true },
+      ],
+    });
+    rpcEvm.mockRejectedValueOnce(
+      new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, CHAIN_ID)
+    );
+    executeWithFailover.mockResolvedValue(makeReceipt(1));
+
+    const { allVerified } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE
+    );
+
+    expect(allVerified).toBe(true);
+    expect(rpcEvm).toHaveBeenCalledTimes(2);
+    expect(rpcEvm.mock.calls[1]?.[0]).toMatchObject({
+      selection: { mode: "config", configId: "cfg-pinned" },
+    });
   });
 
   it("groups hashes by chainId, building one manager per distinct chain", async () => {

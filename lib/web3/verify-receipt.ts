@@ -16,7 +16,14 @@
 import "server-only";
 import type { Connection, SignatureStatus } from "@solana/web3.js";
 import { ethers } from "ethers";
-import { RpcRouteError, type RpcScope, rpc } from "@/lib/rpc/engine";
+import {
+  orgRpcSource,
+  RpcRouteError,
+  type RpcScope,
+  RpcScopeKind,
+  RpcSelectionMode,
+  rpc,
+} from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import type { SolanaProviderManager } from "@/lib/rpc/providers/solana";
 import { isSolanaChain } from "@/lib/rpc/solana-chains";
@@ -137,38 +144,72 @@ const VERIFY_TUNING = {
 } as const;
 
 /**
- * A manager on the scope's own route with the verification budget above. A
- * chain the scope cannot route (unknown chain, not covered under own RPC
- * only) yields null, which reads as unreadable rather than failed.
+ * The scope's own route first, then each enabled config the organization
+ * holds on the chain. A receipt is public, so any endpoint the organization
+ * trusts can read it, even when the step that sent it pinned a config the
+ * scope here does not name.
  */
-async function buildVerificationManager(
+async function verificationScopes(
+  scope: RpcScope,
+  chainId: number
+): Promise<RpcScope[]> {
+  if (scope.kind !== RpcScopeKind.ORG) {
+    return [scope];
+  }
+  const { configs } = await orgRpcSource.load(scope.organizationId, chainId);
+  const pinned =
+    scope.selection.mode === RpcSelectionMode.CONFIG
+      ? scope.selection.configId
+      : null;
+  const others = configs
+    .filter((config) => config.enabled && config.id !== pinned)
+    .map(
+      (config): RpcScope => ({
+        ...scope,
+        selection: { mode: RpcSelectionMode.CONFIG, configId: config.id },
+      })
+    );
+  return [scope, ...others];
+}
+
+/**
+ * A manager with the verification budget above on the first scope that can
+ * route the chain. A chain none can route (unknown chain, not covered under
+ * own RPC only) yields null, which reads as unreadable rather than failed.
+ */
+async function firstRoutableManager<TManager>(
+  scope: RpcScope,
+  chainId: number,
+  open: (candidate: RpcScope) => Promise<{ manager: TManager }>
+): Promise<TManager | null> {
+  for (const candidate of await verificationScopes(scope, chainId)) {
+    try {
+      return (await open(candidate)).manager;
+    } catch (error) {
+      if (!(error instanceof RpcRouteError)) {
+        throw error;
+      }
+    }
+  }
+  return null;
+}
+
+function buildVerificationManager(
   scope: RpcScope,
   chainId: number
 ): Promise<RpcProviderManager | null> {
-  try {
-    const client = await rpc.evm(scope, chainId, { tuning: VERIFY_TUNING });
-    return client.manager;
-  } catch (error) {
-    if (error instanceof RpcRouteError) {
-      return null;
-    }
-    throw error;
-  }
+  return firstRoutableManager(scope, chainId, (candidate) =>
+    rpc.evm(candidate, chainId, { tuning: VERIFY_TUNING })
+  );
 }
 
-async function buildSolanaVerificationManager(
+function buildSolanaVerificationManager(
   scope: RpcScope,
   chainId: number
 ): Promise<SolanaProviderManager | null> {
-  try {
-    const client = await rpc.solana(scope, chainId, { tuning: VERIFY_TUNING });
-    return client.manager;
-  } catch (error) {
-    if (error instanceof RpcRouteError) {
-      return null;
-    }
-    throw error;
-  }
+  return firstRoutableManager(scope, chainId, (candidate) =>
+    rpc.solana(candidate, chainId, { tuning: VERIFY_TUNING })
+  );
 }
 
 type ReceiptLookup = {
