@@ -256,6 +256,37 @@ describe.skipIf(SKIP)("organization RPC configs (Postgres)", () => {
     });
   });
 
+  it("refuses a new default that would leave workflows without a route", async () => {
+    const refused = await service.createOrgRpcConfig({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      chainId: SEPOLIA,
+      name: "No socket",
+      urls: urls("nosocket"),
+      isDefault: true,
+    });
+    expect(refused).toMatchObject({
+      ok: false,
+      code: service.OrgRpcErrorCode.COVERAGE_GAPS,
+      gaps: [expect.objectContaining({ nodeId: "trigger", chainId: SEPOLIA })],
+    });
+
+    const disabled = await service.createOrgRpcConfig({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      chainId: SEPOLIA,
+      name: "Disabled default",
+      urls: urls("disabled"),
+      isDefault: true,
+      enabled: false,
+    });
+    expect(disabled).toMatchObject({
+      ok: false,
+      code: service.OrgRpcErrorCode.INVALID_INPUT,
+    });
+    expect(await defaults()).toEqual(["Archive"]);
+  });
+
   it("adds usage counts across flushes, including KeeperHub rows", async () => {
     const accumulator = runtime.rpcUsageAccumulator;
     const key = {

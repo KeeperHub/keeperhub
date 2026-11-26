@@ -35,21 +35,34 @@ export function decodeRpcConfigUrls(encryptedUrls: string): RpcConfigUrls {
   return JSON.parse(decrypt(encryptedUrls)) as RpcConfigUrls;
 }
 
-/** Turn a stored row into the shape the resolver works with. */
-export function orgRpcConfigFromRow(
-  row: OrganizationRpcConfigRow
+/** The fields of a config besides its URLs. */
+export type OrgRpcConfigFields = Pick<
+  OrgRpcConfig,
+  "id" | "name" | "chainId" | "enabled" | "isDefault"
+>;
+
+/** A config in the shape the resolver works with, from its plain URLs. */
+export function orgRpcConfigFromUrls(
+  fields: OrgRpcConfigFields,
+  urls: RpcConfigUrls
 ): OrgRpcConfig {
-  const urls = decodeRpcConfigUrls(row.encryptedUrls);
   return {
-    id: row.id,
-    name: row.name,
-    chainId: row.chainId,
-    enabled: row.enabled,
-    isDefault: row.isDefault,
+    id: fields.id,
+    name: fields.name,
+    chainId: fields.chainId,
+    enabled: fields.enabled,
+    isDefault: fields.isDefault,
     httpPrimary: SecretUrl.parse(urls.httpPrimary),
     httpFallback: SecretUrl.parseOptional(urls.httpFallback),
     wssPrimary: SecretUrl.parseOptional(urls.wssPrimary),
     wssFallback: SecretUrl.parseOptional(urls.wssFallback),
     privateTx: SecretUrl.parseOptional(urls.privateTx),
   };
+}
+
+/** Turn a stored row into the shape the resolver works with. */
+export function orgRpcConfigFromRow(
+  row: OrganizationRpcConfigRow
+): OrgRpcConfig {
+  return orgRpcConfigFromUrls(row, decodeRpcConfigUrls(row.encryptedUrls));
 }

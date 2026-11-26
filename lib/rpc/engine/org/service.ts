@@ -25,6 +25,7 @@ import {
   encodeRpcConfigUrls,
   filledUrlSlots,
   orgRpcConfigFromRow,
+  orgRpcConfigFromUrls,
 } from "./codec";
 import { OrgRpcErrorCode } from "./codes";
 
@@ -332,6 +333,9 @@ async function refuseNewGaps(
 
 // Configs -------------------------------------------------------------------
 
+/** Stands in for a config's id in a coverage check before it is inserted. */
+const PROPOSED_CONFIG_ID = "proposed";
+
 export type CreateOrgRpcConfigInput = {
   organizationId: string;
   userId: string;
@@ -408,8 +412,43 @@ export async function createOrgRpcConfig(
     );
   }
 
+  const enabled = input.enabled ?? true;
+  if (input.isDefault && !enabled) {
+    return failure(
+      OrgRpcErrorCode.INVALID_INPUT,
+      "A disabled config cannot be the default."
+    );
+  }
   const isDefault =
-    input.isDefault ?? !(await hasDefault(input.organizationId, input.chainId));
+    input.isDefault ??
+    (enabled && !(await hasDefault(input.organizationId, input.chainId)));
+  if (isDefault) {
+    const proposed = orgRpcConfigFromUrls(
+      {
+        id: PROPOSED_CONFIG_ID,
+        name,
+        chainId: input.chainId,
+        enabled,
+        isDefault,
+      },
+      input.urls
+    );
+    const refused = await refuseNewGaps(
+      input.organizationId,
+      (configs) => [
+        ...configs.map((config) =>
+          config.chainId === input.chainId
+            ? { ...config, isDefault: false }
+            : config
+        ),
+        proposed,
+      ],
+      "Making this config the default would leave workflows without an RPC endpoint."
+    );
+    if (refused) {
+      return refused;
+    }
+  }
   const encryptedUrls = encodeRpcConfigUrls(input.urls);
   try {
     const row = await db.transaction(async (tx) => {
@@ -420,7 +459,7 @@ export async function createOrgRpcConfig(
           chainId: input.chainId,
           name,
           isDefault: false,
-          enabled: input.enabled ?? true,
+          enabled,
           encryptedUrls,
           verification: checked.verification,
           createdBy: input.userId,
