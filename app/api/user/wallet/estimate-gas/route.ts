@@ -132,7 +132,8 @@ export async function POST(request: Request) {
           const mult = await resolveForWrite(
             (op) => op(provider),
             chainId,
-            tokenAddress
+            tokenAddress,
+            rpcManager.cacheKey
           );
           if (!mult.ok) {
             throw mult.error;

@@ -259,7 +259,12 @@ async function tradeStockTokenCoreImpl(
   // Shares convert to raw units; USDG does not scale. A sell is sized in
   // shares and a buy's minimum is expressed in shares, so both cross the
   // multiplier and both must be converted or the trade is off by it.
-  const multiplier = await resolveForWrite(runFailover, chainId, token.address);
+  const multiplier = await resolveForWrite(
+    runFailover,
+    chainId,
+    token.address,
+    rpcManager.cacheKey
+  );
   if (!multiplier.ok) {
     return refuse(getErrorMessage(multiplier.error));
   }

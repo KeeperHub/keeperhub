@@ -156,7 +156,8 @@ async function checkEvmTokenBalance(
     const uiMultiplier = await resolveForDisplay(
       (op) => adapter.executeWithFailover(rpcManager, op),
       chainId,
-      tokenAddress
+      tokenAddress,
+      rpcManager.cacheKey
     );
     const balance = await adapter.executeWithFailover(
       rpcManager,

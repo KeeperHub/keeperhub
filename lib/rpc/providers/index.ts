@@ -239,9 +239,19 @@ export type RpcProviderManagerOptions = {
    */
   telemetry?: RpcTelemetrySink;
   onFailoverStateChange?: FailoverStateChangeCallback;
+  /** The engine's route key, naming the endpoints this manager reads from. */
+  cacheKey?: string;
 };
 
+let unkeyedManagers = 0;
+
 export class RpcProviderManager {
+  /**
+   * Names the endpoints behind this manager without revealing them. Caches of
+   * on-chain answers key on it, so one route's answer is never reused for
+   * another route's caller.
+   */
+  readonly cacheKey: string;
   private primaryProvider: ethers.JsonRpcProvider | null = null;
   private fallbackProvider: ethers.JsonRpcProvider | null = null;
   private readonly config: Required<
@@ -264,8 +274,11 @@ export class RpcProviderManager {
       metricsCollector = noopMetricsCollector,
       telemetry,
       onFailoverStateChange,
+      cacheKey,
     } = options;
     this.onFailoverStateChange = onFailoverStateChange;
+    unkeyedManagers += cacheKey ? 0 : 1;
+    this.cacheKey = cacheKey ?? `manager-${unkeyedManagers}`;
 
     this.config = {
       primaryRpcUrl: config.primaryRpcUrl,
@@ -821,6 +834,7 @@ export function createRpcProviderManager(
       metricsCollector: options.metricsCollector,
       telemetry: options.telemetry,
       onFailoverStateChange: options.onFailoverStateChange,
+      cacheKey: options.cacheKey,
     });
     managerCache.set(cacheKey, manager);
     manager.reportCreated();

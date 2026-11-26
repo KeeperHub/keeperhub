@@ -51,9 +51,24 @@ const transient = () =>
 const run = <T>(op: (p: never) => Promise<T>): Promise<T> =>
   op(undefined as never);
 
+const ROUTE = "route-a";
+
 beforeEach(() => {
   __clearUiMultiplierCache();
   mockContract.mockReset();
+});
+
+describe("cache scope", () => {
+  it("does not reuse one route's verdict for another route's caller", async () => {
+    mockContract.mockRejectedValueOnce(absent());
+    await resolveForWrite(run, 4663, CRWD, "org-route");
+
+    mockContract.mockResolvedValueOnce(FOUR);
+    await expect(resolveForWrite(run, 4663, CRWD, ROUTE)).resolves.toEqual({
+      ok: true,
+      multiplier: FOUR,
+    });
+  });
 });
 
 describe("conversions", () => {
@@ -102,12 +117,12 @@ describe("convertAmountForWrite", () => {
 describe("resolveForDisplay", () => {
   it("returns the on-chain multiplier", async () => {
     mockContract.mockResolvedValue(FOUR);
-    await expect(resolveForDisplay(run, 4663, CRWD)).resolves.toBe(FOUR);
+    await expect(resolveForDisplay(run, 4663, CRWD, ROUTE)).resolves.toBe(FOUR);
   });
 
   it("falls back to unit for a plain ERC-20", async () => {
     mockContract.mockRejectedValue(absent());
-    await expect(resolveForDisplay(run, 4663, USDG)).resolves.toBe(
+    await expect(resolveForDisplay(run, 4663, USDG, ROUTE)).resolves.toBe(
       UI_MULTIPLIER_UNIT
     );
   });
@@ -116,14 +131,16 @@ describe("resolveForDisplay", () => {
     vi.useFakeTimers();
     try {
       mockContract.mockResolvedValueOnce(FOUR);
-      await resolveForDisplay(run, 4663, CRWD);
+      await resolveForDisplay(run, 4663, CRWD, ROUTE);
       expect(mockContract).toHaveBeenCalledTimes(1);
 
       vi.advanceTimersByTime(10 * 60 * 1000);
       mockContract.mockRejectedValue(transient());
 
       // The refresh must actually be attempted, or this asserts nothing.
-      await expect(resolveForDisplay(run, 4663, CRWD)).resolves.toBe(FOUR);
+      await expect(resolveForDisplay(run, 4663, CRWD, ROUTE)).resolves.toBe(
+        FOUR
+      );
       expect(mockContract).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -132,27 +149,27 @@ describe("resolveForDisplay", () => {
 
   it("caches the absent verdict so a plain ERC-20 pays once", async () => {
     mockContract.mockRejectedValue(absent());
-    await resolveForDisplay(run, 4663, USDG);
-    await resolveForDisplay(run, 4663, USDG);
+    await resolveForDisplay(run, 4663, USDG, ROUTE);
+    await resolveForDisplay(run, 4663, USDG, ROUTE);
     expect(mockContract).toHaveBeenCalledTimes(1);
   });
 
   it("does NOT cache a transient failure", async () => {
     mockContract.mockRejectedValueOnce(transient());
-    await expect(resolveForDisplay(run, 4663, CRWD)).resolves.toBe(
+    await expect(resolveForDisplay(run, 4663, CRWD, ROUTE)).resolves.toBe(
       UI_MULTIPLIER_UNIT
     );
     // A five-second blip must not pin the token to unit for the process.
     mockContract.mockResolvedValue(FOUR);
-    await expect(resolveForDisplay(run, 4663, CRWD)).resolves.toBe(FOUR);
+    await expect(resolveForDisplay(run, 4663, CRWD, ROUTE)).resolves.toBe(FOUR);
   });
 
   it("de-duplicates concurrent first reads", async () => {
     mockContract.mockResolvedValue(FOUR);
     await Promise.all([
-      resolveForDisplay(run, 4663, CRWD),
-      resolveForDisplay(run, 4663, CRWD),
-      resolveForDisplay(run, 4663, CRWD),
+      resolveForDisplay(run, 4663, CRWD, ROUTE),
+      resolveForDisplay(run, 4663, CRWD, ROUTE),
+      resolveForDisplay(run, 4663, CRWD, ROUTE),
     ]);
     expect(mockContract).toHaveBeenCalledTimes(1);
   });
@@ -161,23 +178,23 @@ describe("resolveForDisplay", () => {
 describe("resolveForWrite", () => {
   it("refuses when the multiplier cannot be read", async () => {
     mockContract.mockRejectedValue(transient());
-    const result = await resolveForWrite(run, 4663, CRWD);
+    const result = await resolveForWrite(run, 4663, CRWD, ROUTE);
     // Falling back to unit here would move 4x the intended amount.
     expect(result.ok).toBe(false);
   });
 
   it("accepts the permanent absent verdict without a call", async () => {
     mockContract.mockRejectedValue(absent());
-    await resolveForWrite(run, 4663, USDG);
-    const second = await resolveForWrite(run, 4663, USDG);
+    await resolveForWrite(run, 4663, USDG, ROUTE);
+    const second = await resolveForWrite(run, 4663, USDG, ROUTE);
     expect(second).toEqual({ ok: true, multiplier: UI_MULTIPLIER_UNIT });
     expect(mockContract).toHaveBeenCalledTimes(1);
   });
 
   it("re-reads a positive multiplier rather than trusting the cache", async () => {
     mockContract.mockResolvedValue(FOUR);
-    await resolveForWrite(run, 4663, CRWD);
-    await resolveForWrite(run, 4663, CRWD);
+    await resolveForWrite(run, 4663, CRWD, ROUTE);
+    await resolveForWrite(run, 4663, CRWD, ROUTE);
     // updateMultiplier is callable at will, so a signature must not be built
     // on a value cached for a display.
     expect(mockContract).toHaveBeenCalledTimes(2);
@@ -185,7 +202,7 @@ describe("resolveForWrite", () => {
 
   it("treats a zero multiplier as absent rather than dividing by zero", async () => {
     mockContract.mockResolvedValue(BigInt(0));
-    await expect(resolveForWrite(run, 4663, CRWD)).resolves.toEqual({
+    await expect(resolveForWrite(run, 4663, CRWD, ROUTE)).resolves.toEqual({
       ok: true,
       multiplier: UI_MULTIPLIER_UNIT,
     });
@@ -202,7 +219,7 @@ describe("chain scoping", () => {
 
   it("never probes a chain that cannot host one", async () => {
     mockContract.mockRejectedValue(transient());
-    await expect(resolveForDisplay(run, 1, DAI)).resolves.toBe(
+    await expect(resolveForDisplay(run, 1, DAI, ROUTE)).resolves.toBe(
       UI_MULTIPLIER_UNIT
     );
     expect(mockContract).not.toHaveBeenCalled();
@@ -212,7 +229,7 @@ describe("chain scoping", () => {
     // The whole point of the scoping: a transient RPC failure must not block a
     // DAI transfer on Ethereum, where an ERC-8056 token cannot exist.
     mockContract.mockRejectedValue(transient());
-    await expect(resolveForWrite(run, 1, DAI)).resolves.toEqual({
+    await expect(resolveForWrite(run, 1, DAI, ROUTE)).resolves.toEqual({
       ok: true,
       multiplier: UI_MULTIPLIER_UNIT,
     });

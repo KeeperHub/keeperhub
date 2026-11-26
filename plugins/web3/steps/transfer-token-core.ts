@@ -472,7 +472,8 @@ async function transferTokenCoreImpl(
       const multiplier = await resolveForWrite(
         (op) => rpcManager.executeWithFailover(op),
         chainId,
-        tokenAddress
+        tokenAddress,
+        rpcManager.cacheKey
       );
       if (!multiplier.ok) {
         return { success: false, error: getErrorMessage(multiplier.error) };
@@ -629,7 +630,8 @@ async function transferTokenCoreImpl(
       const multiplierResult = await resolveForWrite(
         (op) => rpcManager.executeWithFailover(op),
         chainId,
-        tokenAddress
+        tokenAddress,
+        rpcManager.cacheKey
       );
       if (!multiplierResult.ok) {
         return {

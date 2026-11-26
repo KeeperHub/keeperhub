@@ -115,7 +115,8 @@ async function stepHandler(
     const uiMultiplier = await resolveForDisplay(
       (op) => adapter.executeWithFailover(rpcManager, op),
       chainId,
-      tokenAddress
+      tokenAddress,
+      rpcManager.cacheKey
     );
 
     const [allowanceRaw, decimals, symbol] = await adapter.executeWithFailover(

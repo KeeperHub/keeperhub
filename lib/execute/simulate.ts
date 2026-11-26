@@ -1081,7 +1081,8 @@ export async function simulateTokenTransfer(
   const multiplier = await resolveForWrite(
     (op) => rpc.executeWithFailover(op),
     chainId,
-    resolvedTokenAddress
+    resolvedTokenAddress,
+    rpc.cacheKey
   );
   if (!multiplier.ok) {
     return simulationFailure(
