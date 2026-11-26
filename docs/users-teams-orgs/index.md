@@ -10,4 +10,5 @@ KeeperHub provides multi-level access management for individuals, teams, and org
 - [Users](/users-teams-orgs/users) -- Account management and personal settings
 - [Teams](/users-teams-orgs/teams) -- Team creation and collaboration
 - [Organizations](/users-teams-orgs/organizations) -- Organization-level management
+- [RPC Endpoints](/users-teams-orgs/rpc-endpoints): Use your own RPC providers
 - [Permissions](/users-teams-orgs/permissions) -- Role-based access control

@@ -3,5 +3,6 @@ export default {
   users: "User Management",
   teams: "Team Collaboration",
   organizations: "Organizations",
+  "rpc-endpoints": "RPC Endpoints",
   permissions: "Access Control",
 };
