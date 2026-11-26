@@ -53,6 +53,20 @@ describe("buildExecutorInput", () => {
   });
 });
 
+describe("fromBlockScheduler", () => {
+  it("is set only when the dispatcher says so, never from triggerInput", () => {
+    expect(
+      buildExecutorInput(WORKFLOW, {
+        triggerInput: { fromBlockScheduler: true, blockNumber: 101 },
+      }).fromBlockScheduler
+    ).toBeUndefined();
+    expect(
+      buildExecutorInput(WORKFLOW, { fromBlockScheduler: true })
+        .fromBlockScheduler
+    ).toBe(true);
+  });
+});
+
 describe("caller-supplied trigger input", () => {
   // The MCP call route builds this synchronously after committing the
   // execution row (and payment), so a throw strands the run.

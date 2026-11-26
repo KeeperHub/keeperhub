@@ -34,6 +34,7 @@ import { getAbiFunctionKey } from "@/lib/abi/function-key";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { formatContractError } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
+import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   type NextBlockSimulation,
   getNextBlockSimulation,
@@ -80,7 +81,11 @@ export type ReadContractCoreInput = {
   simulateAt?: SimulateAt;
   // Block time (slot length) in seconds; unset = the chain's measured one.
   simulateTimestampOffsetSec?: string | number;
-  _context?: { executionId?: string; organizationId?: string };
+  _context?: {
+    executionId?: string;
+    organizationId?: string;
+    triggerBlock?: TriggerBlock;
+  };
   [RPC_SELECTION_CONFIG_KEY]?: unknown;
 };
 
@@ -137,6 +142,7 @@ async function readContractInner(
     errorAbis,
     simulateAt,
     simulateTimestampOffsetSec,
+    _context,
   } = input;
 
   if (!abiFunction || abiFunction.trim() === "") {
@@ -200,7 +206,8 @@ async function readContractInner(
 
   const simulationSettings = readSimulationSettings(
     simulateAt,
-    simulateTimestampOffsetSec
+    simulateTimestampOffsetSec,
+    _context?.triggerBlock
   );
   if (!simulationSettings.ok) {
     return simulationSettings.failure;

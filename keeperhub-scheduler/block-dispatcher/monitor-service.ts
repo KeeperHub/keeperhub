@@ -5,6 +5,11 @@
  * reconcile loop refetches the workflows, starts and stops monitors, and
  * recreates a monitor whose config changed or that reports not alive.
  * Workflows on an organization route get a silent monitor per route key.
+ *
+ * The service also keeps the last fully processed block per chain. Any new
+ * monitor for that chain resumes from it, whether it replaces a dead monitor,
+ * retries after a failed start, or runs under a new leader that was seeded
+ * from the previous leader's progress.
  */
 
 import { RECONCILE_INTERVAL_MS } from "../lib/config.js";
@@ -52,6 +57,7 @@ function routeChanged(current: RpcRoute, next: RpcRoute): boolean {
 
 export class BlockMonitorService {
   private readonly monitors: Map<number, ChainMonitor> = new Map();
+  private readonly resumeBlocks: Map<number, number> = new Map();
   private readonly routeMonitors: Map<string, RouteMonitor> = new Map();
   // Last block a dropped route monitor processed, so its replacement backfills.
   private readonly routeResumeBlocks: Map<string, number> = new Map();
@@ -59,10 +65,33 @@ export class BlockMonitorService {
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private isShuttingDown = false;
 
-  async start(): Promise<void> {
+  /**
+   * Start reconciling. `resumeFrom` is the progress handed over by the
+   * previous leader; per chain the later of it and what this process already
+   * knows wins, both being blocks a monitor fully processed.
+   */
+  async start(
+    resumeFrom: ReadonlyMap<number, number> = new Map(),
+  ): Promise<void> {
     // Reset the shutdown flag so the service is restartable: on failover the
     // same process may lose leadership (stop()) and later regain it (start()).
     this.isShuttingDown = false;
+
+    for (const [chainId, block] of resumeFrom) {
+      const known = this.resumeBlocks.get(chainId);
+      if (known === undefined || block > known) {
+        this.resumeBlocks.set(chainId, block);
+      }
+    }
+    if (resumeFrom.size > 0) {
+      console.log(
+        `[BlockMonitorService] Seeded resume blocks for ${resumeFrom.size} chain(s): ${[
+          ...resumeFrom,
+        ]
+          .map(([chainId, block]) => `${chainId}@${block}`)
+          .join(", ")}`,
+      );
+    }
 
     console.log(
       `[BlockMonitorService] Starting (reconcile every ${RECONCILE_INTERVAL_MS}ms)`,
@@ -90,6 +119,7 @@ export class BlockMonitorService {
       this.reconcileTimer = null;
     }
 
+    this.captureProgress();
     const stopResults = await Promise.allSettled(
       [...this.monitors.values()].map((monitor) => monitor.stop()),
     );
@@ -111,6 +141,12 @@ export class BlockMonitorService {
     console.log("[BlockMonitorService] Stopped");
   }
 
+  /** Last fully processed block per chain, for handing over to a new leader. */
+  getResumeBlocks(): ReadonlyMap<number, number> {
+    this.captureProgress();
+    return new Map(this.resumeBlocks);
+  }
+
   getHealth(): {
     healthy: boolean;
     status: HealthStatus;
@@ -130,6 +166,13 @@ export class BlockMonitorService {
       const activeChainIds = new Set(grouped.keys());
 
       await this.removeStaleMonitors(activeChainIds);
+      // A chain that comes back later must not backfill blocks it had no
+      // workflows for.
+      for (const chainId of this.resumeBlocks.keys()) {
+        if (!activeChainIds.has(chainId)) {
+          this.resumeBlocks.delete(chainId);
+        }
+      }
       await this.syncActiveMonitors(grouped);
       await this.syncRouteMonitors(routed);
 
@@ -176,20 +219,34 @@ export class BlockMonitorService {
       if (!existing) {
         await this.startNewMonitor(chainId, chain, workflows);
       } else if (existing.hasConfigChanged(chain)) {
-        const resumeFromBlock = existing.getStatus().lastBlock;
+        this.recordProgress(chainId, existing);
         await existing.stop();
-        await this.startNewMonitor(chainId, chain, workflows, resumeFromBlock);
+        await this.startNewMonitor(chainId, chain, workflows);
       } else if (!existing.isAlive()) {
         const status = existing.getStatus();
         console.warn(
           `[BlockMonitorService] Monitor for ${chain.name} (${chainId}) is dead, restarting (lastBlock=${status.lastBlock}, blocksReceived=${status.blocksReceived}, hasSubscription=${status.hasSubscription}, reconnecting=${status.reconnecting})`,
         );
+        this.recordProgress(chainId, existing);
         await existing.stop();
         this.monitors.delete(chainId);
-        await this.startNewMonitor(chainId, chain, workflows, status.lastBlock);
+        await this.startNewMonitor(chainId, chain, workflows);
       } else {
         existing.updateWorkflows(workflows);
       }
+    }
+  }
+
+  private captureProgress(): void {
+    for (const [chainId, monitor] of this.monitors) {
+      this.recordProgress(chainId, monitor);
+    }
+  }
+
+  private recordProgress(chainId: number, monitor: ChainMonitor): void {
+    const { lastBlock } = monitor.getStatus();
+    if (lastBlock !== null) {
+      this.resumeBlocks.set(chainId, lastBlock);
     }
   }
 
@@ -197,10 +254,11 @@ export class BlockMonitorService {
     chainId: number,
     chain: ChainConfig,
     workflows: BlockWorkflow[],
-    resumeFromBlock: number | null = null,
   ): Promise<void> {
+    // Kept across a failed start so the next attempt still backfills.
+    const resumeFromBlock = this.resumeBlocks.get(chainId) ?? null;
     console.log(
-      `[BlockMonitorService] Starting monitor for ${chain.name} (${chainId}) with ${workflows.length} workflow(s), primaryWss=${chain.defaultPrimaryWss ? "configured" : "MISSING"}, fallbackWss=${chain.defaultFallbackWss ? "configured" : "MISSING"}`,
+      `[BlockMonitorService] Starting monitor for ${chain.name} (${chainId}) with ${workflows.length} workflow(s), resumeFromBlock=${resumeFromBlock ?? "none"}, primaryWss=${chain.defaultPrimaryWss ? "configured" : "MISSING"}, fallbackWss=${chain.defaultFallbackWss ? "configured" : "MISSING"}`,
     );
     const monitor = new ChainMonitor({ chain, workflows, resumeFromBlock });
     this.monitors.set(chainId, monitor);
