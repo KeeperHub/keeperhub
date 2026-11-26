@@ -162,6 +162,7 @@
     "vaul": "^1.1.2",
     "viem": "^2.58.2",
     "workflow": "4.8.16",
+    "ws": "^8.23.0",
     "zod": "^4.6.7",
     "zodiac-roles-deployments": "3.3.0",
     "zodiac-roles-sdk": "3.4.8"
@@ -194,8 +195,7 @@
     "ultracite": "6.5.1",
     "viem": "^2.58.2",
     "vite": "^7.3.8",
-    "vitest": "^4.1.12",
-    "ws": "^8.23.0"
+    "vitest": "^4.1.12"
   },
   "pnpm": {
     "neverBuiltDependencies_comment": "prisma is an unused optional dep of better-auth's prisma adapter; we use drizzle. Skip its preinstall which requires Node 20.19+.",

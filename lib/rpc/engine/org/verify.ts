@@ -1,6 +1,7 @@
 import { Connection } from "@solana/web3.js";
 import { ethers, type WebSocketLike } from "ethers";
-import { SsrfBlockedError } from "@/lib/safe-fetch";
+import WebSocket from "ws";
+import { SsrfBlockedError, validatingLookup } from "@/lib/safe-fetch";
 import { safeSolanaFetch } from "../../providers/solana";
 import { safeEthersGetUrl } from "../../safe-ethers-fetch";
 import { SOLANA_GENESIS_HASHES } from "../../solana-chains";
@@ -55,28 +56,46 @@ function withTimeout<T>(promise: Promise<T>): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function evmProvider(
+type EvmProbeClient = {
+  provider: ethers.JsonRpcProvider | ethers.WebSocketProvider;
+  /** Rejects when the socket fails, which ethers does not report itself. */
+  failed: Promise<never>;
+};
+
+const NEVER: Promise<never> = new Promise<never>(() => undefined);
+
+function evmProbeClient(
   url: string,
   transport: RpcTransport,
   chainId: number
-): ethers.JsonRpcProvider | ethers.WebSocketProvider {
+): EvmProbeClient {
   const network = ethers.Network.from(chainId);
   if (transport === RpcTransport.WSS) {
-    // The platform WebSocket reports connection errors as events instead of
-    // throwing, so a refused socket cannot take the process down.
-    const createSocket = (): WebSocketLike =>
-      new WebSocket(url) as unknown as WebSocketLike;
-    return new ethers.WebSocketProvider(createSocket, network, {
+    let fail: (error: Error) => void = () => undefined;
+    const failed = new Promise<never>((_, reject) => {
+      fail = reject;
+    });
+    failed.catch(() => undefined);
+    // Every address is checked again at connect time, so a DNS answer that
+    // changed after the save-time check cannot point the socket inward.
+    const createSocket = (): WebSocketLike => {
+      const socket = new WebSocket(url, { lookup: validatingLookup });
+      socket.on("error", fail);
+      return socket as unknown as WebSocketLike;
+    };
+    const provider = new ethers.WebSocketProvider(createSocket, network, {
       staticNetwork: true,
     });
+    return { provider, failed };
   }
   const request = new ethers.FetchRequest(url);
   request.timeout = PROBE_TIMEOUT_MS;
   request.getUrlFunc = safeEthersGetUrl;
-  return new ethers.JsonRpcProvider(request, network, {
+  const provider = new ethers.JsonRpcProvider(request, network, {
     staticNetwork: true,
     batchMaxCount: 1,
   });
+  return { provider, failed: NEVER };
 }
 
 export const liveRpcProbe: RpcProbe = {
@@ -90,13 +109,13 @@ export const liveRpcProbe: RpcProbe = {
     chainId: number,
     readsBlocks: boolean
   ): Promise<bigint> {
-    const provider = evmProvider(url, transport, chainId);
+    const { provider, failed } = evmProbeClient(url, transport, chainId);
+    const call = (method: string): Promise<unknown> =>
+      withTimeout(Promise.race([provider.send(method, []), failed]));
     try {
-      const answered = await withTimeout(
-        provider.send(EVM_CHAIN_ID_METHOD, []) as Promise<string>
-      );
+      const answered = (await call(EVM_CHAIN_ID_METHOD)) as string;
       if (readsBlocks) {
-        await withTimeout(provider.send(EVM_BLOCK_NUMBER_METHOD, []));
+        await call(EVM_BLOCK_NUMBER_METHOD);
       }
       return BigInt(answered);
     } finally {

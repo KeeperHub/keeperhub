@@ -327,6 +327,9 @@ importers:
       workflow:
         specifier: 4.8.16
         version: 4.8.16(@nestjs/common@11.2.11(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.11(@nestjs/common@11.2.11(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2))(@opentelemetry/api@1.9.1)(@swc/cli@0.7.10(@swc/core@1.15.3(@swc/helpers@0.5.24))(bare-buffer@3.7.3)(chokidar@4.0.3))(@swc/core@1.15.3(@swc/helpers@0.5.24))(@swc/helpers@0.5.24)(confbox@0.3.1)(dotenv@17.4.2)(giget@3.3.1)(jiti@2.7.0)(magic-string@1.4.5)(mlly@1.8.2)(next@16.4.6(@babel/core@7.29.13)(@opentelemetry/api@1.9.1)(@playwright/test@1.65.1)(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(typescript@5.9.3)(ws@8.23.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))
+      ws:
+        specifier: ^8.23.0
+        version: 8.23.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -418,9 +421,6 @@ importers:
       vitest:
         specifier: ^4.1.12
         version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)(jsdom@27.4.0(@noble/hashes@2.4.0)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(vite@7.3.8(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.3)(tsx@4.23.15)(yaml@2.9.1))
-      ws:
-        specifier: ^8.23.0
-        version: 8.23.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
 
   sandbox:
     devDependencies:
