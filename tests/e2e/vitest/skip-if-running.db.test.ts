@@ -319,6 +319,43 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
     expect(row.dispatchKey).toBe(`skipped-behind:${progressing.id}`);
   });
 
+  it("the cap keeps the newest older live rows: a progressing run newer than 1,005 stalled ones is found", async () => {
+    const workflowId = await workflowWithRun(null);
+    // More stalled rows than the cap, all older than the progressing run.
+    await db.insert(schema.workflowExecutions).values(
+      Array.from({ length: 1005 }, (_, i) => ({
+        workflowId,
+        userId: USER_ID,
+        status: "pending" as const,
+        triggerSource: "block",
+        startedAt: new Date(Date.now() - (120 + i) * 60_000),
+      }))
+    );
+    const [progressing] = await db
+      .insert(schema.workflowExecutions)
+      .values({
+        workflowId,
+        userId: USER_ID,
+        status: "running",
+        triggerSource: "block",
+        startedAt: new Date(Date.now() - 60 * 60_000),
+      })
+      .returning({ id: schema.workflowExecutions.id });
+    await db.insert(schema.workflowExecutionLogs).values({
+      executionId: progressing.id,
+      nodeId: "step",
+      nodeName: "Step",
+      nodeType: "action",
+      status: "success",
+      startedAt: new Date(Date.now() - 61_000),
+      completedAt: new Date(Date.now() - 60_000),
+    });
+    const result = await dispatch(workflowId, 702);
+    expect(result.skipped).toBe(true);
+    const [row] = await skipRows(workflowId);
+    expect(row.dispatchKey).toBe(`skipped-behind:${progressing.id}`);
+  });
+
   it("a key skipped behind a run past the stale limit is still not run after it finishes", async () => {
     const workflowId = await workflowWithRun("running", 50 * 60_000);
     await stepCompleted(workflowId, 60_000);

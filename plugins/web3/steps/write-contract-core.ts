@@ -26,14 +26,14 @@ import { db } from "@/lib/db";
 import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
 import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
 import { getTransactionUrl } from "@/lib/explorer";
-import { ErrorCategory, logUserError } from "@/lib/logging";
+import { ErrorCategory, logSystemWarn, logUserError } from "@/lib/logging";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import {
   getOrganizationWalletAddress,
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { type RpcProviderManager, rpcRelayErrorClass } from "@/lib/rpc/providers";
 import { readRpcFor } from "@/lib/rpc/read-provider";
 import { resolveWriteRpc } from "@/lib/rpc/send-provider";
 import {
@@ -479,12 +479,20 @@ async function writeContractCoreImpl(
     hash: string,
     options: TraceExecutedCallOptions
   ): Promise<ExecutedCall | undefined> => {
+    let readRpc: RpcProviderManager;
     try {
-      const readRpc = await readRpcFor(rpcManager, { chainId, userId });
-      return await traceExecutedCallWithFailover(readRpc, hash, options);
-    } catch {
+      readRpc = await readRpcFor(rpcManager, { chainId, userId });
+    } catch (error) {
+      logSystemWarn(
+        ErrorCategory.NETWORK_RPC,
+        "[Write Contract] Read RPC unavailable after the send, trace skipped",
+        error,
+        { plugin_name: "web3", action_name: "write-contract", chain_id: String(chainId) }
+      );
       return;
     }
+    // The trace swallows its own failures.
+    return await traceExecutedCallWithFailover(readRpc, hash, options);
   };
 
   if (maxFeeOverride !== undefined) {

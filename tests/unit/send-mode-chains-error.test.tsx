@@ -381,7 +381,7 @@ describe("an old (Flashbots) flag where the network does not resolve", () => {
       "so it still sends through the private relay where its network has one, otherwise the public mempool."
     );
     expect(warning?.textContent).toContain(
-      "on such a relay it fails before sending."
+      "on a relay that refuses it (such as Flashbots Protect) it fails before sending."
     );
     expect(warning?.className).toContain("bg-destructive/5");
   });

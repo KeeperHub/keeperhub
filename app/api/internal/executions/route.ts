@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { checkDispatchAdmission } from "@/lib/billing/dispatch-admission";
@@ -107,19 +107,16 @@ const INACTIVE_MESSAGES = {
  * its organization or that organization's owner deactivated), checked before
  * the insert so its trigger is not the answer. Deletion is checked by the caller.
  */
-async function inactiveMessage(workflow: {
-  organizationId: string;
+function inactiveMessage(workflow: {
   deactivatedAt: Date | null;
-}): Promise<string | undefined> {
-  const [org] = await db
-    .select({ deactivatedAt: organization.deactivatedAt })
-    .from(organization)
-    .where(eq(organization.id, workflow.organizationId))
-    .limit(1);
+  orgDeactivatedAt: string | Date | null;
+}): string | undefined {
   const executability = getWorkflowExecutability({
     enabled: true,
     deactivatedAt: workflow.deactivatedAt,
-    orgDeactivatedAt: org?.deactivatedAt ?? null,
+    orgDeactivatedAt: workflow.orgDeactivatedAt
+      ? new Date(workflow.orgDeactivatedAt)
+      : null,
   });
   if (executability.executable) {
     return;
@@ -176,6 +173,15 @@ export async function POST(request: Request): Promise<NextResponse> {
       edges: true,
       userId: true,
     },
+    // For the skip check below, in the same query (a raw timestamp string).
+    // Plain names inside: the query rewrites every column object to the workflows alias.
+    extras: {
+      orgDeactivatedAt: sql<
+        string | Date | null
+      >`(SELECT org.deactivated_at FROM ${organization} org WHERE org.id = "workflows"."organization_id")`.as(
+        "org_deactivated_at"
+      ),
+    },
   });
 
   // KEEP-440: never create an execution for a soft-deleted workflow.
@@ -198,7 +204,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   // The skip check is an answer the dispatcher counts: refuse an inactive
   // workflow here, so a raw 42501 from the insert stays a failure (500).
   if (skipIfRunning) {
-    const inactive = await inactiveMessage(workflow);
+    const inactive = inactiveMessage(workflow);
     if (inactive) {
       return NextResponse.json(
         { error: inactive, code: "WORKFLOW_INACTIVE" },

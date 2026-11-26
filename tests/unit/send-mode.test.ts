@@ -780,15 +780,21 @@ describe("canvas marker for a step Send as stops", () => {
       false,
     ],
     [
-      "Batch old flag on Ethereum, strict: false (its check still runs on the relay)",
+      "Batch old flag on Ethereum, strict default (its check is refused on the relay)",
+      { actionType: BATCH, network: "1", usePrivateMempool: true },
+      true,
+      false,
+    ],
+    [
+      "Batch old flag on Ethereum, strict: false at Latest (check on the regular RPC, sent privately)",
       {
         actionType: BATCH,
         network: "1",
         usePrivateMempool: true,
         strict: false,
       },
-      true,
       false,
+      true,
     ],
     [
       "Batch old flag on Ethereum, strict: false, Simulate at Next block",
@@ -863,6 +869,42 @@ describe("canvas marker for a step Send as stops", () => {
     expect(sendsPrivately(config)).toBe(badge);
     // Never both a warning marker and the PRIVATE badge.
     expect(fails && badge).toBe(false);
+  });
+
+  it("says when an old Batch flag fails and when strict: false lets it run", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const old = { actionType: BATCH, network: "1", usePrivateMempool: true };
+    const saved =
+      'This step was saved with the old "(Flashbots)" network, so it still sends through Ethereum\'s private relay.';
+    const fix =
+      "Set Send as to Normal transaction to send publicly, or split the calls into Write Contract steps to keep them private.";
+    expect(sendModeWarning(old)).toEqual({
+      text: `${saved} Batch Write Contract checks its calls with eth_call first, which the private relay refuses, so every run fails before sending. ${fix}`,
+      unsupported: true,
+      fails: true,
+    });
+    expect(
+      sendModeWarning({ ...old, strict: false, simulateAt: "next-block" })
+    ).toEqual({
+      text: `${saved} Batch Write Contract checks its calls as of the next block first, which the private relay refuses, and strict: false does not move that check elsewhere, so every run fails before sending. ${fix}`,
+      unsupported: true,
+      fails: true,
+    });
+    expect(sendModeWarning({ ...old, strict: false })).toEqual({
+      text: `${saved} The relay refuses Batch Write Contract's eth_call check, so with strict: false that check runs on Ethereum's regular RPC (your calls are public there), and the transaction still goes through the private relay.`,
+      unsupported: true,
+      fails: false,
+      sendsPrivately: true,
+    });
+    // Only boolean false lifts it, as the run reads it.
+    expect(sendModeWarning({ ...old, strict: "false" })?.fails).toBe(true);
+    // A templated network: a note, no marker, no PRIVATE badge (it may have no relay).
+    const templated = { ...old, strict: false, network: "{{@x:X.chain}}" };
+    expect(sendModeWarning(templated)).toMatchObject({ fails: false });
+    expect(sendModeWarning(templated)?.text).toContain(
+      "strict: false runs that check on the network's regular RPC"
+    );
+    expect(sendsPrivately(templated)).toBe(false);
   });
 });
 

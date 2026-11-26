@@ -117,7 +117,8 @@ export type BatchWriteContractCoreInput = {
   sendMode?: string;
   usePrivateMempool?: unknown;
   // Only with that old flag on a relay chain: false gives the relay manager a
-  // public fallback, as before; its eth_call check is not proven to reach it.
+  // public fallback, which the eth_call check reaches at Latest (an HTTP refusal
+  // such as Protect's 403 is retried there), never at Next block.
   strict?: boolean;
   web3Connection?: string;
   // See WriteContractCoreInput: "next-block" simulates as of the next block.

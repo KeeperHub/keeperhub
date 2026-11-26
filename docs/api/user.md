@@ -87,7 +87,7 @@ Balances are not included here. Fetch them from `GET /api/user/wallet/balances`.
 
 Manage custom RPC endpoints per chain.
 
-Redirects are not followed; use the final https:// URL. On an EVM chain, every call to a URL that answers with a redirect (for example an http:// URL that redirects to https://) fails; with no working fallback URL, the step fails with an error that names your RPC preference.
+Redirects are not followed; use the final https:// URL. On an EVM chain, every call to a URL that answers with a redirect (for example an http:// URL that redirects to https://) fails; when every URL in your RPC preference redirects, the step fails with an error that names it.
 
 ### List RPC Preferences
 

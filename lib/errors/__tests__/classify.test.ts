@@ -423,6 +423,25 @@ describe("classifyExecutionError", () => {
     });
   });
 
+  describe("user: the user's own RPC preference redirected", () => {
+    it.each([
+      "Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address",
+      "Failed to check balance: Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address",
+    ])("%s: configuration + user", (message) => {
+      const r = classifyExecutionError(message);
+      expect(r.errorCategory).toBe(ErrorCategory.CONFIGURATION);
+      expect(r.errorType).toBe("user");
+    });
+
+    it("does not match the phrase quoted inside another error", () => {
+      const r = classifyExecutionError(
+        "RPC failed on both endpoints. Primary: execution reverted: Your RPC preference for X answered with a redirect"
+      );
+      expect(r.errorType).toBe("system");
+      expect(r.code).toBe("N-0001");
+    });
+  });
+
   describe("system: KeeperHub-managed RPC failures", () => {
     it("RPC failed on both endpoints: network_rpc + system", () => {
       const r = classifyExecutionError(

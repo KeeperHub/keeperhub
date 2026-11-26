@@ -40,7 +40,7 @@ export class RpcRedirectError extends Error {
 }
 
 export const RPC_REDIRECT_MESSAGE =
-  "RPC endpoint answered with a redirect, which is not followed; set the RPC URL to the final https:// address";
+  "RPC endpoint answered with a redirect, which is not followed";
 
 /** Every endpoint tried was the user's own RPC preference and it redirected. */
 export class RpcUserEndpointError extends Error {

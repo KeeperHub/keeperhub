@@ -162,7 +162,9 @@ describe("the RPC transport does not follow redirects", () => {
     });
     await expect(
       manager.executeWithFailover((provider) => provider.getBlockNumber())
-    ).rejects.toThrow("set the RPC URL to the final https:// address");
+    ).rejects.toThrow(
+      "RPC endpoint answered with a redirect, which is not followed"
+    );
     expect(redirectHits).toHaveLength(1);
   });
 

@@ -65,6 +65,8 @@ let mockWorkflow: {
   organizationId: string | null;
   deletedAt: Date | null;
   deactivatedAt?: Date | null;
+  // Read in the same query (extras), as the raw timestamp string.
+  orgDeactivatedAt?: string | null;
   nodes: unknown[];
   userId: string;
 } | null;
@@ -76,8 +78,6 @@ let updatedSet: Record<string, unknown> | null;
 let mockInsertReturning: Array<{ id: string }> = [{ id: "exec_created" }];
 // Rows the dedup fallback SELECT resolves to when the insert conflicted.
 let mockSelectResult: Array<{ id: string; status?: string }> = [];
-// The organization row the skip check reads.
-let mockOrgRows: Array<{ deactivatedAt: Date | null }> = [];
 // Rows the PATCH terminal UPDATE's .returning() resolves to; seed with
 // workflowId + previousStatus to exercise the counter-emission gate.
 let mockUpdateReturning: Array<{
@@ -123,7 +123,11 @@ vi.mock("@/lib/db", () => ({
         where: () => ({
           limit: () =>
             Promise.resolve(
-              table?.__name === "organization" ? mockOrgRows : mockSelectResult
+              table?.__name === "organization"
+                ? Promise.reject(
+                    new Error("organization is read in the workflow query")
+                  )
+                : mockSelectResult
             ),
         }),
       }),
@@ -223,13 +227,13 @@ describe("POST /api/internal/executions", () => {
     mockWorkflow = {
       organizationId: "org_1",
       deletedAt: null,
+      orgDeactivatedAt: null,
       nodes: [],
       userId: "wf_owner",
     };
     insertedValues = null;
     mockInsertReturning = [{ id: "exec_created" }];
     mockSelectResult = [];
-    mockOrgRows = [{ deactivatedAt: null }];
     enforceExecutionLimit.mockResolvedValue({ blocked: false });
     enforceWorkflowFeatures.mockResolvedValue({ blocked: false });
     checkDispatchAdmission.mockResolvedValue(null);
@@ -469,7 +473,13 @@ describe("POST /api/internal/executions", () => {
     });
 
     it("answers a deactivated organization (or owner) with a coded 403 before the insert", async () => {
-      mockOrgRows = [{ deactivatedAt: new Date() }];
+      mockWorkflow = {
+        organizationId: "org_1",
+        deletedAt: null,
+        orgDeactivatedAt: "2026-01-02 03:04:05",
+        nodes: [],
+        userId: "wf_owner",
+      };
       const response = await POST(blockDispatch(true));
       expect(response.status).toBe(403);
       expect(await response.json()).toEqual({

@@ -270,7 +270,7 @@ describe("Send as field", () => {
       container.querySelector('[data-testid="send-mode-unsupported-notice"]')
         ?.textContent
     ).toContain(
-      'saved with the old "(Flashbots)" network, so it still sends through Ethereum\'s private relay. Batch Write Contract checks its calls with eth_call first, which the private relay (Flashbots Protect) refuses, so every run fails before sending.'
+      'saved with the old "(Flashbots)" network, so it still sends through Ethereum\'s private relay. Batch Write Contract checks its calls with eth_call first, which the private relay refuses, so every run fails before sending.'
     );
     expect(
       container.querySelector('[data-testid="send-mode-legacy-notice"]')
@@ -825,8 +825,24 @@ describe("canvas badge", () => {
     });
     // Ethereum has a relay, so the old flag on Batch runs its eth_call check there.
     expect(marker?.textContent).toContain(
-      'saved with the old "(Flashbots)" network, so it still sends through Ethereum\'s private relay. Batch Write Contract checks its calls with eth_call first, which the private relay (Flashbots Protect) refuses, so every run fails before sending.'
+      'saved with the old "(Flashbots)" network, so it still sends through Ethereum\'s private relay. Batch Write Contract checks its calls with eth_call first, which the private relay refuses, so every run fails before sending.'
     );
+    // strict: false at Latest: the check runs on the regular RPC, the send stays private.
+    const latest = await badge({
+      actionType: "web3/batch-write-contract",
+      usePrivateMempool: true,
+      strict: false,
+    });
+    expect(latest.marker).toBeNull();
+    expect(latest.private).not.toBeNull();
+    const nextBlock = await badge({
+      actionType: "web3/batch-write-contract",
+      usePrivateMempool: true,
+      strict: false,
+      simulateAt: "next-block",
+    });
+    expect(nextBlock.marker).not.toBeNull();
+    expect(nextBlock.private).toBeNull();
   });
 
   it("shows PRIVATE on a relay step and nothing on a strict: false public send", async () => {

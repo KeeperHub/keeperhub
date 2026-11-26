@@ -1,4 +1,5 @@
 import { isToggleValue } from "@/lib/utils";
+import { simulatesNextBlock } from "@/lib/web3/next-block-limits";
 import {
   availableSendModes,
   isLegacyPrivateRelayConfig,
@@ -67,18 +68,49 @@ function actionLabel(config: Record<string, unknown>): string {
     : "This action";
 }
 
+/**
+ * How an old flag's eth_call check meets a relay that refuses it: `fails` by
+ * default and at Next block; with `strict: false` at Latest it runs on the regular RPC.
+ */
+type LegacyCheck = "fails" | "next-block" | "public-check";
+
+function legacyCheckOf(config: Record<string, unknown>): LegacyCheck {
+  if (config.strict !== false) {
+    return "fails";
+  }
+  return simulatesNextBlock(config) ? "next-block" : "public-check";
+}
+
 /** An old flag on an action without the relay option: it runs as before, on the relay where there is one. */
 function legacyUnsupportedNotice(
   config: Record<string, unknown>,
-  chainName: string | undefined
+  chainName: string | undefined,
+  check: LegacyCheck
 ): string {
   const saved = `This step was saved with the old "(Flashbots)" network, so it still sends through`;
+  const label = actionLabel(config);
   const fix =
     "Set Send as to Normal transaction to send publicly, or split the calls into Write Contract steps to keep them private.";
   if (chainName !== undefined) {
-    return `${saved} ${chainName}'s private relay. ${actionLabel(config)} checks its calls with eth_call first, which the private relay (Flashbots Protect) refuses, so every run fails before sending. ${fix}`;
+    const sent = `${saved} ${chainName}'s private relay.`;
+    if (check === "public-check") {
+      return `${sent} The relay refuses ${label}'s eth_call check, so with strict: false that check runs on ${chainName}'s regular RPC (your calls are public there), and the transaction still goes through the private relay.`;
+    }
+    const why =
+      check === "next-block"
+        ? "checks its calls as of the next block first, which the private relay refuses, and strict: false does not move that check elsewhere"
+        : "checks its calls with eth_call first, which the private relay refuses";
+    return `${sent} ${label} ${why}, so every run fails before sending. ${fix}`;
   }
-  return `${saved} the private relay where its network has one, otherwise the public mempool. ${actionLabel(config)} checks its calls with eth_call, which a relay such as Flashbots Protect refuses, so on such a relay it fails before sending. ${fix}`;
+  const sent = `${saved} the private relay where its network has one, otherwise the public mempool.`;
+  if (check === "public-check") {
+    return `${sent} On a relay that refuses ${label}'s eth_call check (such as Flashbots Protect), strict: false runs that check on the network's regular RPC (your calls are public there), and the transaction still goes through the relay.`;
+  }
+  const why =
+    check === "next-block"
+      ? "checks its calls as of the next block first; on a relay that refuses that (such as Flashbots Protect) it fails before sending, strict: false included."
+      : "checks its calls with eth_call first; on a relay that refuses it (such as Flashbots Protect) it fails before sending.";
+  return `${sent} ${label} ${why} ${fix}`;
 }
 
 function actionFields(config: Record<string, unknown>) {
@@ -279,6 +311,8 @@ type SendModeWarning = {
   fails: boolean;
   /** The keys disagree or name no mode: fixed by the warning's buttons. */
   keys?: boolean;
+  /** A note only: the step still sends through the relay. */
+  sendsPrivately?: boolean;
 };
 
 /** "Keep <mode>" is offered on a keys warning: the step and chain offer the shown mode. */
@@ -361,15 +395,21 @@ export function sendModeWarning(
   if (unsupported && !legacy) {
     return { text: unsupported, unsupported: true, fails: true };
   }
-  // The old flag runs its eth_call check on the relay; a public fallback with strict: false is not proven.
+  // The old flag runs its eth_call check on the relay. A refusal over HTTP is
+  // retried on the strict: false fallback, except at Next block (unsupported).
   if (unsupported && !noRelay) {
+    const check = legacyCheckOf(config);
     return {
       text: legacyUnsupportedNotice(
         config,
-        chain && (chain.name ?? "this network")
+        chain && (chain.name ?? "this network"),
+        check
       ),
       unsupported: true,
-      fails: true,
+      fails: check !== "public-check",
+      // A templated network may have no relay: no PRIVATE badge there.
+      ...(check === "public-check" &&
+        chain !== undefined && { sendsPrivately: true }),
     };
   }
   if (!noRelay) {
@@ -507,7 +547,7 @@ export function sendsPrivately(config: Record<string, unknown>): boolean {
     return false;
   }
   const warning = sendModeWarning(config);
-  if (warning === undefined) {
+  if (warning === undefined || warning.sendsPrivately) {
     return true;
   }
   if (!(warning.keys && sendModeConflict(config))) {

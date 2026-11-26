@@ -31,6 +31,9 @@ const ACTIVE_STATUS_LIST = sql.raw(
   ACTIVE_RUN_STATUSES.map((status) => `'${status}'`).join(", ")
 );
 
+// Older live rows probed for a step per dispatch: about 20-30 ms at the cap (EXPLAIN, generic plan).
+const OLDER_LIVE_ROWS_MAX = 1000;
+
 /** Live, not reaped, and not another caller's run (trigger_source 'mcp'). */
 function liveRunOf(workflowId: string): SQL | undefined {
   return and(
@@ -43,8 +46,8 @@ function liveRunOf(workflowId: string): SQL | undefined {
 
 /**
  * A live run of the workflow, or null: the oldest one started within the stale
- * limit, else the oldest older one still progressing (a step completed since),
- * which the reaper also spares.
+ * limit, else the oldest still progressing (a step completed since, which the
+ * reaper also spares) among the newest OLDER_LIVE_ROWS_MAX older ones.
  */
 async function findBlockingRun(
   tx: Pick<Transaction, "select">,
@@ -64,19 +67,26 @@ async function findBlockingRun(
   if (recent) {
     return recent.id;
   }
-  // Every older live row, through the same partial index, each probing
-  // idx_exec_logs_execution_id for a step completed since: no cap can hide one.
-  const [older] = await tx
-    .select({ id: workflowExecutions.id })
+  // The newest OLDER_LIVE_ROWS_MAX older live rows (same partial index), each
+  // probing idx_exec_logs_execution_id: stalled rows never reaped pile up oldest.
+  const candidates = tx
+    .select({
+      id: workflowExecutions.id,
+      startedAt: workflowExecutions.startedAt,
+    })
     .from(workflowExecutions)
     .where(
-      and(
-        liveRunOf(workflowId),
-        lte(workflowExecutions.startedAt, cutoff),
-        completedStepSince(cutoff)
-      )
+      and(liveRunOf(workflowId), lte(workflowExecutions.startedAt, cutoff))
     )
-    .orderBy(asc(workflowExecutions.startedAt))
+    // NULLS LAST as in the index, so its scan stops at the cap instead of sorting.
+    .orderBy(sql`${workflowExecutions.startedAt} DESC NULLS LAST`)
+    .limit(OLDER_LIVE_ROWS_MAX)
+    .as("older_live");
+  const [older] = await tx
+    .select({ id: candidates.id })
+    .from(candidates)
+    .where(completedStepSince(cutoff, candidates.id))
+    .orderBy(asc(candidates.startedAt))
     .limit(1);
   return older?.id ?? null;
 }

@@ -308,7 +308,7 @@ vi.mock("@/lib/web3/transaction-manager", () => ({
 }));
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import { logUserError } from "@/lib/logging";
+import { ErrorCategory, logSystemWarn, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import {
@@ -479,6 +479,12 @@ describe("writeContractCore executedCall on direct send", () => {
     }
     expect(vi.mocked(getRpcProvider)).toHaveBeenCalledTimes(2);
     expect(mockTraceExecutedCall).not.toHaveBeenCalled();
+    expect(vi.mocked(logSystemWarn)).toHaveBeenCalledWith(
+      ErrorCategory.NETWORK_RPC,
+      "[Write Contract] Read RPC unavailable after the send, trace skipped",
+      expect.any(Error),
+      expect.objectContaining({ action_name: "write-contract" })
+    );
   });
 
   it("omits executedCall when trace returns undefined (graceful degradation)", async () => {

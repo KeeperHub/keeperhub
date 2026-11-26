@@ -231,6 +231,19 @@ type EndpointFailure = {
   allAttemptsRedirected?: boolean;
 };
 
+/** Only the flags the failover summary reads, not the attempt's result or text. */
+function endpointFailure(
+  endpoint: EndpointFailure["endpoint"],
+  attempt: Omit<EndpointFailure, "endpoint">
+): EndpointFailure {
+  return {
+    endpoint,
+    transport: attempt.transport,
+    allAttemptsConnectionRefused: attempt.allAttemptsConnectionRefused,
+    allAttemptsRedirected: attempt.allAttemptsRedirected,
+  };
+}
+
 export type RpcProviderManagerOptions = {
   config: RpcProviderConfig;
   metricsCollector?: RpcMetricsCollector;
@@ -468,8 +481,8 @@ export class RpcProviderManager {
 
         // Both failed -- throw without redundant retry
         const failures = [
-          { endpoint: "fallback" as const, ...fallbackResult },
-          { endpoint: "primary" as const, ...primaryResult },
+          endpointFailure("fallback", fallbackResult),
+          endpointFailure("primary", primaryResult),
         ];
         // A platform fault (error level, system-error metric) unless the user's
         // own URL redirected. The Sentry event only reaches Sentry from the
@@ -544,8 +557,8 @@ export class RpcProviderManager {
       }
 
       const failures = [
-        { endpoint: "primary" as const, ...primaryResult },
-        { endpoint: "fallback" as const, ...fallbackResult },
+        endpointFailure("primary", primaryResult),
+        endpointFailure("fallback", fallbackResult),
       ];
       this.reportBothFailed(
         failures,
@@ -559,7 +572,7 @@ export class RpcProviderManager {
 
     throw this.failoverError(
       `RPC failed on primary endpoint: ${primaryResult.error}`,
-      [{ endpoint: "primary", ...primaryResult }]
+      [endpointFailure("primary", primaryResult)]
     );
   }
 

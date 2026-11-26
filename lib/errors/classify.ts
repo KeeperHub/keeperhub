@@ -334,9 +334,10 @@ const RULES: readonly Rule[] = [
   })),
 
   // User-config: the user's own RPC preference redirected (never followed).
-  // Above the RPC rules so a wrapped `Failed to check balance:` form stays user.
+  // Anchored to the error and its known wrapper, so quoted text cannot match.
   {
-    pattern: /Your RPC preference for .+ answered with a redirect/i,
+    pattern:
+      /^(Failed to check balance:\s*)?Your RPC preference for .+ answered with a redirect/i,
     errorCategory: ErrorCategory.CONFIGURATION,
     errorType: ExecutionErrorType.USER,
     code: null,
