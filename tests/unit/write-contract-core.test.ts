@@ -128,6 +128,14 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: vi.fn().mockReturnValue(1),
 }));
 
+const { mockGetChainBuilderRpcUrls } = vi.hoisted(() => ({
+  mockGetChainBuilderRpcUrls: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/rpc/config-service", () => ({
+  getChainBuilderRpcUrls: (...args: unknown[]) =>
+    mockGetChainBuilderRpcUrls(...args),
+}));
+
 vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: vi.fn().mockResolvedValue({
     resolveActiveRpcUrl: vi.fn().mockResolvedValue("https://rpc.example.com"),
@@ -811,6 +819,51 @@ describe("writeContractCore simulateAt next-block", () => {
 
     const options = vi.mocked(executeContractCallAsRole).mock.calls[0]?.[3];
     expect(options?.simulation).toEqual({});
+  });
+
+  it("looks up block builders for a next-block send and reports the broadcast", async () => {
+    const builderRpcUrls = { titan: "https://titan.example" };
+    const broadcast = {
+      broadcastAt: "2026-11-25T17:42:05.000Z",
+      via: "primary",
+      builders: [{ name: "titan", accepted: true }],
+    };
+    mockGetChainBuilderRpcUrls.mockResolvedValueOnce(builderRpcUrls);
+    mockExecuteContractCall.mockResolvedValueOnce({
+      hash: "0xhash",
+      gasUsed: BigInt(21_000),
+      effectiveGasPrice: BigInt(1_000_000_000),
+      simulation: SIMULATION,
+      broadcast,
+    });
+
+    const result = await writeContractCore({
+      ...baseInput,
+      simulateAt: "next-block",
+    });
+
+    expect(mockGetChainBuilderRpcUrls).toHaveBeenCalledWith(1);
+    const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      builderRpcUrls?: unknown;
+    };
+    expect(optionsArg.builderRpcUrls).toEqual(builderRpcUrls);
+    expect(result).toMatchObject({ success: true, broadcast });
+  });
+
+  it("does not look up block builders without next-block simulation", async () => {
+    await writeContractCore(baseInput);
+
+    expect(mockGetChainBuilderRpcUrls).not.toHaveBeenCalled();
+  });
+
+  it("keeps a private-mempool send off the block builders", async () => {
+    await writeContractCore({
+      ...baseInput,
+      usePrivateMempool: true,
+      simulateAt: "next-block",
+    });
+
+    expect(mockGetChainBuilderRpcUrls).not.toHaveBeenCalled();
   });
 
   it("simulates on the private-mempool relay, the same RPC that sends", async () => {
