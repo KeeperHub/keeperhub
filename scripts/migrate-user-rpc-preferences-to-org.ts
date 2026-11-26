@@ -4,15 +4,15 @@
  * Before organization configs existed, a user could store their own primary,
  * fallback and WebSocket URLs per chain, and only some workflow paths honoured
  * them. Each such row becomes a config in every organization where that user
- * is an owner or admin, named MIGRATED_CONFIG_NAME. It becomes the chain's
- * default only when the organization has none, and "own RPC only" is left off,
- * so nothing that runs today changes route without someone choosing it.
+ * is an owner or admin, named MIGRATED_CONFIG_NAME. It is never made the
+ * chain's default and "own RPC only" is left off, so no workflow changes route
+ * until an owner or admin makes it the default from settings.
  *
- * URLs are stored encrypted and never printed. Rows whose user manages no
- * organization, whose chain is unknown or disabled, or whose URL is malformed
- * are skipped and reported by id. The new configs carry no verification
- * result yet: run "Test" on each from settings, or the config API, after the
- * move.
+ * Every URL first passes the same check as a config saved from settings: a
+ * public host that answers for the row's chain. URLs are stored encrypted and
+ * never printed. Rows whose user manages no organization, whose chain is
+ * unknown or disabled, or whose URLs fail the check are skipped and reported
+ * by id.
  *
  * Idempotent: a chain that already has a config with the migrated name in an
  * organization is skipped. A LIVE run against a non-local DB requires --yes.
@@ -28,14 +28,18 @@
 
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { chains, member, userRpcPreferences } from "@/lib/db/schema";
+import { member, userRpcPreferences } from "@/lib/db/schema";
 import { organizationRpcConfigs } from "@/lib/db/schema-rpc";
 import { ORG_MANAGERS } from "@/lib/middleware/require-org-role";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { encodeRpcConfigUrls } from "@/lib/rpc/engine/org/codec";
 import {
   RpcConfigUrlSlot,
   type RpcConfigUrls,
 } from "@/lib/rpc/engine/org/url-slots";
+import { verifyRpcConfigUrls } from "@/lib/rpc/engine/org/verify";
+import { platformRpcSource } from "@/lib/rpc/engine/runtime";
+import type { RpcChain } from "@/lib/rpc/engine/types";
 import { isLocalDb } from "@/scripts/lib/local-db";
 
 const MIGRATED_CONFIG_NAME = "Migrated from user settings";
@@ -43,7 +47,7 @@ const MIGRATED_CONFIG_NAME = "Migrated from user settings";
 const SkipReason = {
   NO_MANAGED_ORGANIZATION: "user is not an owner or admin of any organization",
   CHAIN_UNAVAILABLE: "chain is unknown or disabled",
-  INVALID_URL: "a stored URL is malformed",
+  FAILED_CHECK: "a stored URL is not public or does not answer for its chain",
 } as const;
 type SkipReason = (typeof SkipReason)[keyof typeof SkipReason];
 
@@ -81,23 +85,17 @@ async function managedOrganizations(userId: string): Promise<string[]> {
   return rows.map((row) => row.organizationId);
 }
 
-async function enabledChainIds(): Promise<Set<number>> {
-  const rows = await db
-    .select({ chainId: chains.chainId })
-    .from(chains)
-    .where(eq(chains.isEnabled, true));
-  return new Set(rows.map((row) => row.chainId));
+async function enabledChain(chainId: number): Promise<RpcChain | null> {
+  const record = await platformRpcSource.load(chainId);
+  return record?.chain.isEnabled ? record.chain : null;
 }
 
 async function existingConfigs(
   organizationId: string,
   chainId: number
-): Promise<{ migrated: boolean; hasDefault: boolean }> {
+): Promise<{ migrated: boolean }> {
   const rows = await db
-    .select({
-      name: organizationRpcConfigs.name,
-      isDefault: organizationRpcConfigs.isDefault,
-    })
+    .select({ name: organizationRpcConfigs.name })
     .from(organizationRpcConfigs)
     .where(
       and(
@@ -105,29 +103,27 @@ async function existingConfigs(
         eq(organizationRpcConfigs.chainId, chainId)
       )
     );
-  return {
-    migrated: rows.some((row) => row.name === MIGRATED_CONFIG_NAME),
-    hasDefault: rows.some((row) => row.isDefault),
-  };
+  return { migrated: rows.some((row) => row.name === MIGRATED_CONFIG_NAME) };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (!(args.dryRun || args.yes || isLocalDb())) {
-    console.error(
-      "Refusing a live run against a non-local database without --yes."
+    logUserError(
+      ErrorCategory.VALIDATION,
+      "[RPC Preference Migration] Refusing a live run against a non-local database without --yes"
     );
     process.exit(1);
   }
 
   const preferences = await db.select().from(userRpcPreferences);
-  const chainIds = await enabledChainIds();
   const skipped: { preferenceId: string; reason: SkipReason }[] = [];
   let created = 0;
   let alreadyMigrated = 0;
 
   for (const preference of preferences) {
-    if (!chainIds.has(preference.chainId)) {
+    const chain = await enabledChain(preference.chainId);
+    if (!chain) {
       skipped.push({
         preferenceId: preference.id,
         reason: SkipReason.CHAIN_UNAVAILABLE,
@@ -143,16 +139,16 @@ async function main(): Promise<void> {
       continue;
     }
 
-    let encryptedUrls: string;
-    try {
-      encryptedUrls = encodeRpcConfigUrls(urlsOf(preference));
-    } catch {
+    const urls = urlsOf(preference);
+    const checked = await verifyRpcConfigUrls(urls, chain);
+    if (!checked.ok) {
       skipped.push({
         preferenceId: preference.id,
-        reason: SkipReason.INVALID_URL,
+        reason: SkipReason.FAILED_CHECK,
       });
       continue;
     }
+    const encryptedUrls = encodeRpcConfigUrls(urls);
 
     for (const organizationId of organizations) {
       const existing = await existingConfigs(
@@ -168,10 +164,10 @@ async function main(): Promise<void> {
           organizationId,
           chainId: preference.chainId,
           name: MIGRATED_CONFIG_NAME,
-          isDefault: !existing.hasDefault,
+          isDefault: false,
           enabled: true,
           encryptedUrls,
-          verification: {},
+          verification: checked.verification,
           createdBy: preference.userId,
           updatedBy: preference.userId,
         });
@@ -197,9 +193,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error(
-    "[migrate-user-rpc-preferences] failed:",
-    error instanceof Error ? error.message : "unknown error"
+  logSystemError(
+    ErrorCategory.DATABASE,
+    "[RPC Preference Migration] Failed",
+    error instanceof Error ? error : new Error("unknown error")
   );
   process.exit(1);
 });
