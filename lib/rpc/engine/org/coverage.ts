@@ -29,10 +29,14 @@ export type ActionUsesRpc = (actionType: string) => boolean;
 
 const EVERY_ACTION_USES_RPC: ActionUsesRpc = () => true;
 
-/** Triggers that hold a long-lived listener on their chain. */
+/**
+ * Triggers that hold a long-lived listener on their chain. Keep in step with
+ * the triggers /api/workflows/events and the block dispatcher listen for.
+ */
 const SUBSCRIBING_TRIGGERS: ReadonlySet<string> = new Set([
   WorkflowTriggerEnum.EVENT,
   WorkflowTriggerEnum.BLOCK,
+  WorkflowTriggerEnum.TEMPO_PAYMENT,
 ]);
 
 /** One node's use of a chain, as the coverage check sees it. */

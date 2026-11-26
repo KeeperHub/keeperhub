@@ -199,6 +199,21 @@ describe("findCoverageGaps", () => {
     ]);
   });
 
+  it("counts Tempo payment triggers as listeners that need a WebSocket URL", () => {
+    const gaps = findCoverageGaps({
+      organizationId: ORG_ID,
+      usages: usages([
+        trigger("t1", WorkflowTriggerEnum.TEMPO_PAYMENT, String(MAINNET)),
+      ]),
+      ownRpcOnlyChains: new Set([MAINNET]),
+      configs: [config()],
+      platform,
+    });
+    expect(gaps.map((gap) => [gap.nodeId, gap.code])).toEqual([
+      ["t1", RpcRouteErrorCode.NOT_COVERED],
+    ]);
+  });
+
   it("needs a WebSocket URL for listening triggers", () => {
     const gaps = findCoverageGaps({
       organizationId: ORG_ID,
