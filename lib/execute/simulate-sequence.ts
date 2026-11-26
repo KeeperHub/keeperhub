@@ -284,10 +284,13 @@ async function runWithStateOverrides(
             tx,
             "latest",
             traceOptions,
-          ]) as Promise<{ post?: Record<string, Record<string, unknown>> }>,
+          ]) as Promise<{
+            pre?: Record<string, Record<string, unknown>>;
+            post?: Record<string, Record<string, unknown>>;
+          }>,
         "preflight"
       );
-      mergeDiffIntoOverrides(overrides, diff?.post ?? {});
+      mergeDiffIntoOverrides(overrides, diff?.pre ?? {}, diff?.post ?? {});
     } catch (err) {
       // Without the diff the next call sees state as if this one never ran,
       // which is the behaviour this whole path exists to avoid. Stop rather
@@ -343,13 +346,48 @@ function extractDataFromError(err: unknown): string | undefined {
  * overrides take the same values under `stateDiff`. Balances and nonces carry
  * across unchanged.
  */
-function mergeDiffIntoOverrides(
+export function mergeDiffIntoOverrides(
   overrides: Record<string, Record<string, unknown>>,
+  pre: Record<string, Record<string, unknown>>,
   post: Record<string, Record<string, unknown>>
 ): void {
-  for (const [address, state] of Object.entries(post)) {
-    const key = address.toLowerCase();
+  const preByLower = Object.fromEntries(
+    Object.entries(pre).map(([addr, s]) => [addr.toLowerCase(), s])
+  );
+  const postByLower = Object.fromEntries(
+    Object.entries(post).map(([addr, s]) => [addr.toLowerCase(), s])
+  );
+  const touched = new Set([
+    ...Object.keys(preByLower),
+    ...Object.keys(postByLower),
+  ]);
+
+  for (const key of touched) {
+    const preState = preByLower[key];
+    const state = postByLower[key];
     const entry = overrides[key] ?? {};
+
+    if (!state) {
+      entry.balance = "0x0";
+      entry.nonce = "0x0";
+      entry.code = "0x";
+      const cleared: Record<string, string> = {
+        ...((entry.stateDiff as Record<string, string>) ?? {}),
+      };
+      for (const slot of Object.keys(cleared)) {
+        cleared[slot] = ethers.ZeroHash;
+      }
+      const preSlots = (preState?.storage as Record<string, string> | undefined) ?? {};
+      for (const slot of Object.keys(preSlots)) {
+        cleared[slot] = ethers.ZeroHash;
+      }
+      if (Object.keys(cleared).length > 0) {
+        entry.stateDiff = cleared;
+      }
+      overrides[key] = entry;
+      continue;
+    }
+
     if (state.balance !== undefined) {
       entry.balance = state.balance;
     }
@@ -362,12 +400,23 @@ function mergeDiffIntoOverrides(
     if (state.code !== undefined) {
       entry.code = state.code;
     }
-    const storage = state.storage as Record<string, string> | undefined;
-    if (storage) {
-      entry.stateDiff = {
-        ...((entry.stateDiff as Record<string, string>) ?? {}),
-        ...storage,
-      };
+
+    const preStorage = (preState?.storage as Record<string, string> | undefined) ?? {};
+    const postStorage = (state.storage as Record<string, string> | undefined) ?? {};
+    const nextStateDiff: Record<string, string> = {
+      ...((entry.stateDiff as Record<string, string>) ?? {}),
+    };
+    // geth prestateTracer (diffMode: true) omits slots cleared to zero from post.storage
+    for (const slot of Object.keys(preStorage)) {
+      if (!(slot in postStorage)) {
+        nextStateDiff[slot] = ethers.ZeroHash;
+      }
+    }
+    for (const [slot, val] of Object.entries(postStorage)) {
+      nextStateDiff[slot] = val;
+    }
+    if (Object.keys(nextStateDiff).length > 0) {
+      entry.stateDiff = nextStateDiff;
     }
     overrides[key] = entry;
   }
