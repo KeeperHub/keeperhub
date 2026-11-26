@@ -258,9 +258,12 @@ type FindManyOpts = {
 };
 
 const EXECUTION_ORG_ID = "org_1";
+const { findOrganizationIdMock } = vi.hoisted(() => ({
+  findOrganizationIdMock: vi.fn(),
+}));
 vi.mock("@/lib/workflow/executor/helpers", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/workflow/executor/helpers")>()),
-  getOrganizationIdFromExecution: vi.fn(async () => EXECUTION_ORG_ID),
+  findOrganizationIdForExecution: findOrganizationIdMock,
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -315,7 +318,8 @@ vi.mock("@/lib/db", () => ({
 
 import { db } from "@/lib/db";
 import { logSystemError, logSystemWarn } from "@/lib/logging";
-import { orgScope } from "@/lib/rpc/engine/scope";
+import { orgScope, platformScope } from "@/lib/rpc/engine/scope";
+import { PlatformRpcPurpose } from "@/lib/rpc/engine/types";
 import {
   logStepCompleteDb,
   logWorkflowCompleteDb,
@@ -341,6 +345,7 @@ function getLogUpdate(): UpdateCall | undefined {
 // Tests exercising the KEEP-966 gate itself override with
 // mockResolvedValueOnce / mockImplementationOnce.
 beforeEach(() => {
+  findOrganizationIdMock.mockResolvedValue(EXECUTION_ORG_ID);
   verifyExecutionReceiptsMock.mockImplementation(
     (hashes: Array<{ hash: string; chainId: number }>) =>
       Promise.resolve({
@@ -939,6 +944,29 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
         verifiedAt: "2026-01-01T00:00:00.000Z",
       },
     ]);
+
+    clearExecution(executionId);
+  });
+
+  it("verifies on KeeperHub's endpoints when the run has no organization", async () => {
+    const executionId = "exec_without_organization";
+    findOrganizationIdMock.mockResolvedValueOnce(null);
+    recordTransactionHashIfPresent(
+      ctx({ executionId, nodeId: "swap-1", nodeName: "Swap" }),
+      { transactionHash: "0xccc", chainId: 1, network: "mainnet" }
+    );
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "success",
+      startTime: Date.now() - 1000,
+    });
+
+    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith(
+      [{ hash: "0xccc", chainId: 1 }],
+      platformScope(PlatformRpcPurpose.NO_ORGANIZATION)
+    );
+    expect(getExecUpdate()?.set.status).toBe("success");
 
     clearExecution(executionId);
   });

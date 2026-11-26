@@ -57,7 +57,7 @@ import {
   type ReceiptVerificationResult,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
-import { getOrganizationIdFromExecution } from "@/lib/workflow/executor/helpers";
+import { findOrganizationIdForExecution } from "@/lib/workflow/executor/helpers";
 import { pollForCompletedOutput } from "@/lib/workflow/executor/poll-for-output";
 import {
   EXCEEDED_MAX_RETRIES_REGEX,
@@ -377,6 +377,16 @@ type ReconcileTransactionHashesResult =
     };
 
 /**
+ * Receipts are read on the routes of the organization that owns the run, or
+ * on KeeperHub's when the run has none.
+ */
+async function executionRpcScope(executionId: string): Promise<RpcScope> {
+  return rpcScopeForOrganization(
+    await findOrganizationIdForExecution(executionId)
+  );
+}
+
+/**
  * KEEP-966: independently re-verify every claimed transaction hash against
  * the chain before a workflow execution is allowed to finalize as success.
  * Shared by logWorkflowCompleteDb and selfHealWorkflowAfterLateStepCommit --
@@ -385,13 +395,6 @@ type ReconcileTransactionHashesResult =
  * `hashes`. Fail-closed: a hash missing chainId (cannot be verified at all)
  * fails the whole batch, same as a hash that positively fails verification.
  */
-/** Receipts are read on the routes of the organization that owns the run. */
-async function executionRpcScope(executionId: string): Promise<RpcScope> {
-  return rpcScopeForOrganization(
-    await getOrganizationIdFromExecution(executionId)
-  );
-}
-
 async function reconcileTransactionHashes(
   executionId: string,
   hashes: TransactionHashEntry[]
