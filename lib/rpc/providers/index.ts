@@ -12,6 +12,7 @@ import {
 import { RpcChainType, RpcOrigin, RpcRoutePosition } from "../engine/types";
 import { safeEthersGetUrl } from "../safe-ethers-fetch";
 import { redactAllUrls, scrubRpcUrls } from "../scrub-rpc-urls";
+import { BoundedCache } from "./bounded-cache";
 import {
   isNonRetryableError,
   isTransportFailure,
@@ -771,8 +772,11 @@ export class RpcProviderManager {
   }
 }
 
-// Cache managers by RPC URL combination to persist failover state across requests
-const managerCache = new Map<string, RpcProviderManager>();
+// Managers are cached per route to keep failover state across requests. The
+// engine adds one per organization route, so the cache is bounded; a dropped
+// manager holds no timers and is freed once no call still uses it.
+const MANAGER_CACHE_LIMIT = 1000;
+const managerCache = new BoundedCache<RpcProviderManager>(MANAGER_CACHE_LIMIT);
 
 export type CreateRpcProviderManagerOptions = {
   primaryRpcUrl: string;

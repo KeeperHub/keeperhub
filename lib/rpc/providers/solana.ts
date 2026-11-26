@@ -11,6 +11,7 @@ import {
 } from "../engine/telemetry/sink";
 import { RpcChainType, RpcOrigin, RpcRoutePosition } from "../engine/types";
 import { redactAllUrls, scrubRpcUrls } from "../scrub-rpc-urls";
+import { BoundedCache } from "./bounded-cache";
 import { RPC_CONNECTION_ERROR_PATTERNS } from "./index";
 
 /**
@@ -512,7 +513,11 @@ export class SolanaProviderManager {
 }
 
 // Cache managers by RPC URL combination to persist failover state across requests
-const solanaManagerCache = new Map<string, SolanaProviderManager>();
+// Bounded for the same reason as the EVM manager cache.
+const SOLANA_MANAGER_CACHE_LIMIT = 500;
+const solanaManagerCache = new BoundedCache<SolanaProviderManager>(
+  SOLANA_MANAGER_CACHE_LIMIT
+);
 
 export type CreateSolanaProviderManagerOptions = {
   primaryRpcUrl: string;
