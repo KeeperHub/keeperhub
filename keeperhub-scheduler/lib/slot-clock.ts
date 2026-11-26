@@ -1,5 +1,5 @@
 // Chains with a fixed 12 s slot clock: chain id -> genesis time (unix seconds).
-// Keep in sync with SLOT_CLOCK_CHAIN_IDS in lib/workflow/block-trigger-switches.ts (the app).
+// The app's ETHEREUM_L1_CHAIN_IDS (lib/web3/ethereum-l1.ts); an app test checks they agree.
 export const SLOT_CLOCK_GENESIS: Readonly<Record<number, number>> = {
   1: 1_606_824_023,
   11155111: 1_655_733_600,

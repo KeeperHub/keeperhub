@@ -20,10 +20,15 @@ export function chainHasPrivateRelay(row: {
 }
 
 /** How to switch a step to Normal, in the editor's words and the API's. */
-export const USE_NORMAL_HINT =
+const USE_NORMAL_HINT =
   'Set Send as to Normal transaction (sendMode: "transaction").';
 
-export type SendModeOption = {
+/** The run-time refusal of Private relay on a chain without one. */
+export function noPrivateRelayMessage(chainName: string): string {
+  return `This step is set to Send as: Private relay, but ${chainName} has no private relay. ${USE_NORMAL_HINT}`;
+}
+
+type SendModeOption = {
   value: SendMode;
   label: string;
   /** For the closed field and hints; the menu shows `label`. */
@@ -138,10 +143,6 @@ export function resolveSendMode(config: SendModeConfig): SendMode {
     : SEND_MODE.TRANSACTION;
 }
 
-export function usesPrivateRelay(config: SendModeConfig): boolean {
-  return resolveSendMode(config) === SEND_MODE.PRIVATE_RELAY;
-}
-
 /** Saved with the old "(Flashbots)" network entry and not edited since. */
 export function isLegacyPrivateRelayConfig(config: SendModeConfig): boolean {
   return (
@@ -157,14 +158,6 @@ export function hasLegacyFlagOnly(config: SendModeConfig): boolean {
   );
 }
 
-/** A legacy flag that is truthy but not `true`, e.g. the string "false". */
-export function isLooseLegacyFlag(config: SendModeConfig): boolean {
-  return (
-    isLegacyPrivateRelayConfig(config) &&
-    typeof config.usePrivateMempool !== "boolean"
-  );
-}
-
 export function sendModeOption(mode: SendMode): SendModeOption {
   return (
     SEND_MODE_OPTIONS.find((option) => option.value === mode) ??
@@ -173,32 +166,17 @@ export function sendModeOption(mode: SendMode): SendModeOption {
 }
 
 /**
- * The mode a config sends with on `chain` (undefined when not known): a loose
- * legacy flag on a chain without the relay sends as Normal, as it always did.
+ * How a step asks for the relay at run time: not at all, required (`sendMode`;
+ * refused where there is none unless `strict` is false), or only where there is
+ * one (the legacy flag alone, which sends publicly elsewhere, as it always did).
  */
-export function sendModeOn(
-  config: SendModeConfig,
-  chain: SendModeChain | undefined
-): SendMode {
-  const mode = resolveSendMode(config);
-  return chain !== undefined &&
-    isLooseLegacyFlag(config) &&
-    !sendModeOption(mode).availableOn(chain)
-    ? SEND_MODE.TRANSACTION
-    : mode;
-}
-
-/**
- * How a step asks for the relay at run time: not at all, required (refused where
- * there is none unless `strict` is false), or only where there is one (loose flag).
- */
-export type RelayUse = "none" | "required" | "if-available";
+type RelayUse = "none" | "required" | "if-available";
 
 export function relayUseOf(config: SendModeConfig): RelayUse {
   if (resolveSendMode(config) !== SEND_MODE.PRIVATE_RELAY) {
     return "none";
   }
-  return isLooseLegacyFlag(config) ? "if-available" : "required";
+  return isLegacyPrivateRelayConfig(config) ? "if-available" : "required";
 }
 
 export function availableSendModes(

@@ -82,6 +82,39 @@ describe("editor gas estimate and Send as", () => {
     expect(await response.json()).toMatchObject({ error: "no relay here" });
   });
 
+  it("reads token decimals on the public RPC before, not inside, the relay's failover", async () => {
+    const order: string[] = [];
+    const relay = {
+      hasPrivateRelayPrimary: () => true,
+      assertPrivateRelayChain: () => Promise.resolve(),
+      executeWithFailover: (fn: (provider: unknown) => unknown) => {
+        order.push("relay");
+        return fn({ estimateGas });
+      },
+    };
+    const reads = {
+      hasPrivateRelayPrimary: () => false,
+      executeWithFailover: () => {
+        order.push("public read");
+        return Promise.resolve(6);
+      },
+    };
+    vi.mocked(getRpcProvider)
+      .mockResolvedValueOnce(relay as never)
+      .mockResolvedValueOnce(reads as never);
+
+    const response = await estimate("transfer-token", {
+      ...TRANSFER,
+      tokenConfig: JSON.stringify({
+        customToken: { address: "0x3333333333333333333333333333333333333333" },
+      }),
+      sendMode: "private-relay",
+    });
+
+    expect(response.status).toBe(200);
+    expect(order).toEqual(["public read", "relay"]);
+  });
+
   it("refuses the relay on Batch Write Contract without any RPC", async () => {
     const response = await estimate("batch-write-contract", {
       calls: "[]",

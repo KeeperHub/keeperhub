@@ -14,6 +14,7 @@ import {
   clearedFieldsNotice,
   isFieldEditable,
 } from "@/lib/workflow/editor/config-update";
+import { setEditorSendModeChains } from "@/lib/workflow/editor/send-mode-chains";
 import { sponsorGasField } from "@/plugins/field-fragments";
 
 let container: HTMLDivElement;
@@ -213,13 +214,13 @@ describe("applyConfigUpdate: fees locked while sponsored", () => {
     const second = applyConfigUpdate(
       first.batch,
       optimism,
-      "usePrivateMempool",
-      true
+      "sendMode",
+      "private-relay"
     );
     expect(second.config).toEqual({
       ...optimism,
       network: "1",
-      usePrivateMempool: true,
+      sendMode: "private-relay",
     });
   });
 
@@ -303,13 +304,18 @@ describe("applyConfigUpdate: fees locked while sponsored", () => {
     const second = applyConfigUpdate(
       first.batch,
       optimism,
-      "usePrivateMempool",
-      true
+      "sendMode",
+      "private-relay"
     );
     expect(second.batch.cleared).toEqual([]);
   });
 
   it("clears once a batch ends sponsored", () => {
+    // An old flag reads by its chain: Private relay on Ethereum, which has one.
+    setEditorSendModeChains([
+      { chainId: 1, usePrivateMempoolRpc: true },
+      { chainId: 8453, usePrivateMempoolRpc: false },
+    ]);
     const flashbots = {
       actionType: WRITE,
       network: "1",
@@ -325,6 +331,7 @@ describe("applyConfigUpdate: fees locked while sponsored", () => {
     );
     expect(second.config.maxFeeGwei).toBe("");
     expect(second.config.priorityFeeGwei).toBe("");
+    setEditorSendModeChains(undefined);
   });
 });
 

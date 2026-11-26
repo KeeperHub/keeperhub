@@ -8,7 +8,11 @@ import { solidityTypeToFieldType } from "@/lib/solidity-type-fields";
 import type { IntegrationType } from "@/lib/types/integration";
 import { getReadContractOutputFields } from "@/lib/workflow/editor/action-output-fields";
 
-import { sendModeField, sponsorGasField } from "@/plugins/field-fragments";
+import {
+  sendModeField,
+  sendRouteOutputFields,
+  sponsorGasField,
+} from "@/plugins/field-fragments";
 import {
   createProtocolIconComponent,
   ProtocolIcon,
@@ -689,6 +693,7 @@ function buildOutputFieldsFromAction(
       field: "transactionLink",
       description: "Explorer link to transaction",
     });
+    outputs.push(...sendRouteOutputFields());
   }
 
   return outputs;

@@ -56,8 +56,8 @@ export function sendModeField(actionType?: string): ActionConfigFieldBase {
   return {
     editorRenderer: "send-mode",
     helpTip: noRelay
-      ? `How the transaction goes out. "transaction" (the default) sends it to the public mempool. "private-relay" and usePrivateMempool: true are refused at save. ${noRelay}`
-      : 'How the transaction goes out. "transaction" (the default) sends it to the public mempool. "private-relay" sends it through the network\'s private relay (Flashbots Protect on Ethereum), only on networks that have one, and is never gas-sponsored. A config with usePrivateMempool: true and no sendMode reads as "private-relay".',
+      ? `How the transaction goes out. "transaction" (the default) sends it to the public mempool. "private-relay" is refused at save, and so is usePrivateMempool: true on a network with a private relay. ${noRelay}`
+      : 'How the transaction goes out. "transaction" (the default) sends it to the public mempool. "private-relay" sends it through the network\'s private relay (Flashbots Protect on Ethereum), only on networks that have one, and is never gas-sponsored. A config with usePrivateMempool: true and no sendMode uses the private relay where the network has one and the public mempool elsewhere, never sponsored.',
     key: SEND_MODE_KEY,
     label: "Send as",
     networkField: "network",
@@ -213,6 +213,22 @@ export function transferErrorOutput(): OutputField {
     description: "Error message if the transfer failed",
     field: "error",
   };
+}
+
+/** Where a write was sent and whether it is in a block, on every EVM write action. */
+export function sendRouteOutputFields(): OutputField[] {
+  return [
+    {
+      field: "route",
+      description:
+        "How KeeperHub routed the send on an EVM network: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as) or sponsored (gas-sponsored). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent; more values may be added.",
+    },
+    {
+      field: "included",
+      description:
+        "True when the transaction was seen in a block (one confirmation, not final); it may have reverted, so check error too. False when it was sent but is not in a block. Absent when nothing was sent.",
+    },
+  ];
 }
 
 export function receiptChainIdOutput(): OutputField {

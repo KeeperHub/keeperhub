@@ -51,7 +51,6 @@ import {
 } from "@/components/workflow/config/send-mode-field";
 import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
-import { useSendModeChains } from "@/lib/hooks/use-send-mode-chains";
 import { integrationsAtom } from "@/lib/integrations-store";
 import {
   normalizeProtocolArrayValue,
@@ -117,11 +116,6 @@ registerFieldRenderer(
   }
 );
 
-/**
- * Chain Select Field
- * Dynamic dropdown that fetches enabled chains from /api/chains
- * Respects isEnabled flag from the database
- */
 /** A network select; a network without the current Send as choice sets it to Normal, with Undo. */
 function NetworkSelectField({
   field,
@@ -129,8 +123,7 @@ function NetworkSelectField({
   onUpdateConfig,
   disabled,
 }: FieldRendererContext) {
-  useSendModeChains();
-  const { notice, apply, undo } = useEditorNotice(
+  const { notice, apply, undo, canUndo, close } = useEditorNotice(
     "network",
     config,
     onUpdateConfig,
@@ -156,7 +149,12 @@ function NetworkSelectField({
       <div aria-atomic="false" aria-live="polite" role="status">
         {notice && (
           <EditorChangeNotice
-            action={{ label: "Undo", onClick: undo }}
+            action={
+              disabled || !canUndo
+                ? undefined
+                : { label: "Undo", onClick: undo }
+            }
+            onClose={close}
             testId="network-send-mode-notice"
             text={notice.text}
           />

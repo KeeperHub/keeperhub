@@ -5,7 +5,7 @@ import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
   chainHasPrivateRelay,
   hasLegacyFlagOnly,
-  isLooseLegacyFlag,
+  isLegacyPrivateRelayConfig,
   isSendMode,
   LEGACY_PRIVATE_MEMPOOL_KEY,
   legacyFlagTypeIssue,
@@ -33,7 +33,7 @@ type Config = Record<string, unknown>;
 export type SendModeSaveOptions = {
   // The workflow's nodes as stored, when an existing workflow is saved.
   savedNodes?: readonly Node[];
-  // An import keeps old "(Flashbots)" steps as they were exported.
+  // An import keeps old "(Flashbots)" steps as they were exported (no stored copy to compare).
   keepLegacy?: boolean;
 };
 
@@ -124,13 +124,32 @@ export function reconcileSendModeKeys(
   }
 }
 
+/**
+ * Fills a missing `usePrivateMempool` beside a known `sendMode`, for older executors. Mutates `nodes`.
+ * A sent key is kept: a stored conflict stays as stored, so a stale client cannot flip the mode.
+ */
+export function writeLegacySendModeKey(nodes: readonly Node[]): void {
+  for (const node of nodes) {
+    const config = node.data?.config;
+    const mode = config?.[SEND_MODE_KEY];
+    if (
+      config &&
+      isSendMode(mode) &&
+      sendModeNetworkField(config) &&
+      config[LEGACY_PRIVATE_MEMPOOL_KEY] === undefined
+    ) {
+      config[LEGACY_PRIVATE_MEMPOOL_KEY] = mode === SEND_MODE.PRIVATE_RELAY;
+    }
+  }
+}
+
 type Candidate = {
   index: number;
   node: Node;
   chainId: number | undefined;
   mode: SendMode;
-  // A loose legacy flag sends as Normal on a chain without the relay.
-  loose: boolean;
+  // The old flag alone sends publicly on a chain without the relay.
+  legacy: boolean;
   // Why the step cannot send with `mode`, unless kept as stored.
   unsupported?: string;
 };
@@ -212,7 +231,7 @@ function nodeIssues(
       // A network set by a template is checked when the step runs.
       chainId: chainIdOf(config[networkField]),
       mode,
-      loose: isLooseLegacyFlag(config),
+      legacy: isLegacyPrivateRelayConfig(config),
       unsupported: reason
         ? `Send as "${mode}" is not available on this step. ${reason}`
         : undefined,
@@ -225,10 +244,10 @@ function candidateIssue(
   candidate: Candidate,
   row: SendModeChain | undefined
 ): ActionConfigValidationIssue | undefined {
-  const { index, node, chainId, mode, loose, unsupported } = candidate;
+  const { index, node, chainId, mode, legacy, unsupported } = candidate;
   const available =
     chainId === undefined || sendModeOption(mode).availableOn(row);
-  if (loose && !available) {
+  if (legacy && !available) {
     return;
   }
   if (unsupported) {

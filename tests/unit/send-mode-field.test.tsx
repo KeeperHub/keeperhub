@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { createStore, Provider } from "jotai";
-import { act, useState } from "react";
+import { createStore, Provider, useAtomValue } from "jotai";
+import { act, useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -9,19 +9,31 @@ vi.mock("server-only", () => ({}));
 import "@/lib/workflow/editor/extensions";
 import { ActionConfigRenderer } from "@/components/workflow/config/action-config-renderer";
 import {
-  legacyRelayNotice,
+  useActionSwitchNotice,
   useEditorNotice,
 } from "@/components/workflow/config/send-mode-field";
-import { SendModeBadge } from "@/components/workflow/nodes/action-node";
+import { SendModeBadge } from "@/components/workflow/nodes/send-mode-badge";
+import {
+  applyConfigUpdate,
+  type ConfigUpdateBatch,
+  editorConfigValue,
+} from "@/lib/workflow/editor/config-update";
 import { setEditorSendModeChains } from "@/lib/workflow/editor/send-mode-chains";
 import {
   chooseNetwork,
   pickSendMode,
-  SPONSOR_ON_NOTICE,
 } from "@/lib/workflow/editor/send-mode-editor";
-import { currentWorkflowIdAtom, selectedNodeAtom } from "@/lib/workflow/store";
+import {
+  currentWorkflowIdAtom,
+  nodesAtom,
+  selectedNodeAtom,
+  updateNodeDataAtom,
+  type WorkflowNode,
+} from "@/lib/workflow/store";
 import { type ActionConfigField, findActionById } from "@/plugins/registry";
 
+const SPONSOR_ON_NOTICE =
+  "Send as changed to Normal transaction (public mempool): only normal sends can be sponsored.";
 const EVM = { chainType: "evm", isTestnet: false, isEnabled: true };
 const CHAINS = [
   {
@@ -86,24 +98,49 @@ function relevantFields(actionType: string): ActionConfigField[] {
   return out;
 }
 
-function Harness({ initial }: { initial: Record<string, unknown> }) {
+let harnessWrite: (key: string, value: unknown) => void = () => undefined;
+
+// Writes as the editor does: the plugin adapter's coercion, then one same-tick batch.
+function Harness({
+  initial,
+  disabled,
+}: {
+  initial: Record<string, unknown>;
+  disabled?: boolean;
+}) {
   const [config, setConfig] = useState(initial);
+  const batch = useRef<ConfigUpdateBatch | null>(null);
   latest = config;
   const fields = relevantFields(String(initial.actionType));
+  const write = (key: string, value: unknown): void =>
+    setConfig((current) => {
+      const next = applyConfigUpdate(
+        batch.current,
+        current,
+        key,
+        editorConfigValue(value)
+      );
+      batch.current = next.batch;
+      queueMicrotask(() => {
+        batch.current = null;
+      });
+      return next.config;
+    });
+  harnessWrite = write;
   return (
     <ActionConfigRenderer
       config={config}
+      disabled={disabled}
       fields={fields}
-      onUpdateConfig={(key, value) =>
-        setConfig((current) => ({ ...current, [key]: value }))
-      }
+      onUpdateConfig={write}
     />
   );
 }
 
 async function render(
   initial: Record<string, unknown>,
-  ids = { workflow: "wf-1", node: "node-1" }
+  ids = { workflow: "wf-1", node: "node-1" },
+  disabled?: boolean
 ): Promise<void> {
   const store = createStore();
   store.set(currentWorkflowIdAtom, ids.workflow);
@@ -111,7 +148,7 @@ async function render(
   await act(async () => {
     root.render(
       <Provider store={store}>
-        <Harness initial={initial} />
+        <Harness disabled={disabled} initial={initial} />
       </Provider>
     );
     await Promise.resolve();
@@ -145,10 +182,13 @@ function button(label: string, within: ParentNode = container) {
   );
 }
 
-// Focus moves after the change renders.
-async function settle(): Promise<void> {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+// Focus and the announcement follow the change by a tick or two.
+async function settle(check: () => void): Promise<void> {
+  await vi.waitFor(async () => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    check();
   });
 }
 
@@ -186,7 +226,6 @@ describe("Send as field", () => {
     const notice = container.querySelector(
       '[data-testid="send-mode-legacy-notice"]'
     );
-    expect(notice?.textContent).toBe(legacyRelayNotice("Ethereum"));
     expect(notice?.textContent).toBe(
       'Ethereum (Flashbots) is now Ethereum with "Send as" set to Private relay. This step sends exactly as before.'
     );
@@ -265,6 +304,15 @@ describe("Send as field", () => {
     expect(
       window.localStorage.getItem("kh:send-as-legacy-notice:wf-9:n")
     ).toBeNull();
+  });
+
+  it("does not say it sends as before once the network changed", async () => {
+    await render({ ...WRITE, network: "8453", usePrivateMempool: true });
+    expect(byTestId("send-mode-legacy-notice")).toBeNull();
+    act(() => harnessWrite("network", "1"));
+    expect(byTestId("send-mode-legacy-notice")?.textContent).toBe(
+      'Ethereum (Flashbots) is now Ethereum with "Send as" set to Private relay.'
+    );
   });
 
   it("closes the one-time notice for good on Dismiss", async () => {
@@ -358,6 +406,35 @@ describe("Sponsor gas and Send as", () => {
     expect(notice()).toBeNull();
   });
 
+  it("Reset on a Private relay step clears Sponsor gas and keeps Private relay", async () => {
+    const start = {
+      ...WRITE,
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+      sponsorGas: "yes",
+    };
+    // Advanced opens by itself: it holds a value to fix.
+    await render(start);
+    // A stray value shows Reset, not the "Off because" line.
+    expect(byTestId("sponsor-gas-send-as-hint")).toBeNull();
+    const reset = [...container.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.startsWith("Reset to default")
+    );
+    expect(reset?.textContent).toContain("Reset to default (off)");
+    act(() => reset?.click());
+    expect(latest).toEqual({ ...start, sponsorGas: undefined });
+    expect(container.querySelector("#sendMode")?.textContent).toBe(
+      "Private relay"
+    );
+    expect(byTestId("sponsor-gas-send-mode-notice")).toBeNull();
+    expect(
+      container.querySelector("#sponsorGas")?.getAttribute("aria-checked")
+    ).toBe("false");
+    expect(byTestId("sponsor-gas-send-as-hint")?.textContent).toContain(
+      "Off because Send as is Private relay"
+    );
+  });
+
   it("turning Sponsor gas off leaves Send as alone", async () => {
     await render({ ...WRITE, sendMode: "transaction" });
     openAdvanced();
@@ -374,19 +451,29 @@ describe("Sponsor gas and Send as", () => {
 });
 
 describe("old flags and chains without a relay", () => {
-  it.each(["false", 1, "yes"])(
-    "shows %j on Base as Normal: no field, badge, notice or forced Sponsor gas",
+  it.each([true, "false", 1, "yes"])(
+    "says %j on Base sends publicly, unsponsored as before, with a one-click Normal",
     async (flag) => {
       const legacy = { ...WRITE, network: "8453", usePrivateMempool: flag };
       await render(legacy);
-      expect(field()).toBeNull();
+      const notice = byTestId("send-mode-unavailable-notice");
+      expect(notice?.textContent).toContain(
+        "Base has no private relay, so this step sends to the public mempool."
+      );
+      // Neutral, not the failing warning.
+      expect(notice?.className).toContain("bg-muted/50");
       expect(byTestId("send-mode-legacy-notice")).toBeNull();
-      expect(byTestId("send-mode-unavailable-notice")).toBeNull();
       openAdvanced();
       const toggle = container.querySelector("#sponsorGas");
-      expect(toggle?.getAttribute("aria-checked")).toBe("true");
-      expect(byTestId("sponsor-gas-send-as-hint")).toBeNull();
+      expect(toggle?.getAttribute("aria-checked")).toBe("false");
+      expect(byTestId("sponsor-gas-send-as-hint")).not.toBeNull();
       expect(latest).toEqual(legacy);
+
+      act(() => button("Use Normal transaction", notice ?? container)?.click());
+      expect(latest).toMatchObject({
+        sendMode: "transaction",
+        usePrivateMempool: false,
+      });
     }
   );
 
@@ -401,8 +488,13 @@ describe("old flags and chains without a relay", () => {
     }
   );
 
-  it("warns that a real true on Base fails, and fixes it in one click", async () => {
-    const legacy = { ...WRITE, network: "8453", usePrivateMempool: true };
+  it("warns that Private relay on Base fails, and fixes it in one click", async () => {
+    const legacy = {
+      ...WRITE,
+      network: "8453",
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+    };
     await render(legacy);
     const warning = byTestId("send-mode-unavailable-notice");
     expect(warning?.textContent).toContain(
@@ -425,12 +517,14 @@ describe("old flags and chains without a relay", () => {
       usePrivateMempool: false,
       sponsorGas: false,
     });
-    await settle();
+    const status = (): Element | null =>
+      container.querySelector('[role="status"].sr-only');
+    await settle(() =>
+      expect(status()?.textContent).toBe("Send as set to Normal transaction.")
+    );
     expect(field()).toBeNull();
     expect(document.activeElement?.id).toBe("network");
-    const status = container.querySelector('[role="status"].sr-only');
-    expect(status?.textContent).toBe("Send as set to Normal transaction.");
-    expect(status?.getAttribute("aria-atomic")).toBe("false");
+    expect(status()?.getAttribute("aria-atomic")).toBe("false");
   });
 
   it("says a strict: false step goes public instead", async () => {
@@ -462,11 +556,98 @@ describe("old flags and chains without a relay", () => {
     expect(container.textContent).not.toContain(
       "Send as set to Normal transaction."
     );
-    await settle();
-    expect(document.activeElement?.id).toBe("network");
-    expect(container.textContent).toContain(
-      "Send as set to Normal transaction."
+    await settle(() =>
+      expect(container.textContent).toContain(
+        "Send as set to Normal transaction."
+      )
     );
+    expect(document.activeElement?.id).toBe("network");
+  });
+});
+
+describe("Send as keys to fix", () => {
+  it("says so plainly and keeps the shown mode in one click", async () => {
+    await render({
+      ...WRITE,
+      sendMode: "private-relay",
+      usePrivateMempool: false,
+    });
+    const notice = byTestId("send-mode-unavailable-notice");
+    expect(notice?.textContent).toContain(
+      "This step's saved Send as settings disagree. It runs as Private relay; saving keeps them as they are, but a new network or action needs the fix first. Pick Use Normal transaction or Keep Private relay to fix it."
+    );
+    expect(notice?.className).toContain("bg-destructive/5");
+    expect(button("Use Normal transaction", notice ?? container)).toBeDefined();
+
+    act(() => button("Keep Private relay", notice ?? container)?.click());
+    expect(latest).toMatchObject({
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+    });
+    expect(byTestId("send-mode-unavailable-notice")).toBeNull();
+    await settle(() => expect(document.activeElement?.id).toBe("sendMode"));
+  });
+
+  it("says a stray Sponsor gas value stays off on a private relay step", async () => {
+    await render({
+      ...WRITE,
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+      sponsorGas: "yes",
+    });
+    // A group holding a stray value opens by itself.
+    const hint = container.querySelector("#sponsorGas-stray");
+    expect(hint?.textContent).toContain(
+      "When the step runs, it is off with these settings."
+    );
+    expect(hint?.textContent).not.toContain("it is on unless");
+    // The switch draws what the text says: off.
+    expect(
+      container.querySelector("#sponsorGas")?.getAttribute("aria-checked")
+    ).toBe("false");
+  });
+
+  it("draws a stray Sponsor gas value on a Normal step by its rule", async () => {
+    await render({ ...WRITE, sendMode: "transaction", sponsorGas: "yes" });
+    expect(container.querySelector("#sponsorGas-stray")?.textContent).toContain(
+      "it is on unless"
+    );
+    expect(
+      container.querySelector("#sponsorGas")?.getAttribute("aria-checked")
+    ).toBe("true");
+  });
+
+  it("does not offer to keep a mode this network does not offer", async () => {
+    await render({
+      ...WRITE,
+      network: "8453",
+      sendMode: "private-relay",
+      usePrivateMempool: false,
+    });
+    const notice = byTestId("send-mode-unavailable-notice");
+    expect(notice?.textContent).toContain(
+      "Base has no private relay, so this step fails before sending. Pick Use Normal transaction to fix it."
+    );
+    expect(button("Use Normal transaction", notice ?? container)).toBeDefined();
+    expect(button("Keep Private relay", notice ?? container)).toBeUndefined();
+  });
+
+  it("offers only Normal when the shown mode is Normal, and keeps focus on Send as", async () => {
+    await render({ ...WRITE, sendMode: "Private-Relay" });
+    const notice = byTestId("send-mode-unavailable-notice");
+    expect(notice?.textContent).toContain(
+      "This step's saved Send as value is not a known choice, so the step fails before sending."
+    );
+    expect(
+      button("Keep Normal transaction", notice ?? container)
+    ).toBeUndefined();
+    act(() => button("Use Normal transaction", notice ?? container)?.click());
+    expect(latest).toMatchObject({
+      sendMode: "transaction",
+      usePrivateMempool: false,
+    });
+    // Ethereum offers Private relay, so the field stays and keeps focus.
+    await settle(() => expect(document.activeElement?.id).toBe("sendMode"));
   });
 });
 
@@ -484,8 +665,7 @@ describe("notice focus", () => {
     );
     const notice = byTestId("sponsor-gas-send-mode-notice");
     act(() => button("Undo", notice ?? container)?.click());
-    await settle();
-    expect(document.activeElement?.id).toBe("sponsorGas");
+    await settle(() => expect(document.activeElement?.id).toBe("sponsorGas"));
   });
 
   it("focuses Send as after the one-time notice is dismissed", async () => {
@@ -497,8 +677,7 @@ describe("notice focus", () => {
         )
         ?.click()
     );
-    await settle();
-    expect(document.activeElement?.id).toBe("sendMode");
+    await settle(() => expect(document.activeElement?.id).toBe("sendMode"));
   });
 
   it("does not re-read buttons in the live regions", async () => {
@@ -518,10 +697,16 @@ type Api = {
 };
 const api = {} as Api;
 
-function SlotHarness({ initial }: { initial: Record<string, unknown> }) {
+function SlotHarness({
+  initial,
+  coerce = (value: unknown): unknown => value,
+}: {
+  initial: Record<string, unknown>;
+  coerce?: (value: unknown) => unknown;
+}) {
   const [config, setConfig] = useState(initial);
   const update = (key: string, value: unknown) =>
-    setConfig((current) => ({ ...current, [key]: value }));
+    setConfig((current) => ({ ...current, [key]: coerce(value) }));
   api.config = config;
   api.send = useEditorNotice("send-mode", config, update, "sendMode");
   api.net = useEditorNotice("network", config, update, "network");
@@ -529,13 +714,16 @@ function SlotHarness({ initial }: { initial: Record<string, unknown> }) {
   return null;
 }
 
-async function renderSlot(initial: Record<string, unknown>): Promise<void> {
+async function renderSlot(
+  initial: Record<string, unknown>,
+  coerce?: (value: unknown) => unknown
+): Promise<void> {
   const store = createStore();
   store.set(selectedNodeAtom, "n1");
   await act(async () => {
     root.render(
       <Provider store={store}>
-        <SlotHarness initial={initial} />
+        <SlotHarness coerce={coerce} initial={initial} />
       </Provider>
     );
     await Promise.resolve();
@@ -619,7 +807,7 @@ describe("canvas badge", () => {
   it("marks a step that fails before sending, with no PRIVATE badge", async () => {
     const { marker, private: badgeEl } = await badge({
       network: "8453",
-      usePrivateMempool: true,
+      sendMode: "private-relay",
     });
     expect(badgeEl).toBeNull();
     expect(marker?.textContent).toBe(
@@ -635,8 +823,9 @@ describe("canvas badge", () => {
       actionType: "web3/batch-write-contract",
       usePrivateMempool: true,
     });
+    // Ethereum has a relay, so the old flag on Batch fails there.
     expect(marker?.textContent).toContain(
-      "Batch Write Contract can't send through the private relay yet"
+      "Batch Write Contract can't send through the private relay yet, so this step fails before sending."
     );
   });
 
@@ -649,5 +838,160 @@ describe("canvas badge", () => {
     });
     expect(publicSend.marker).toBeNull();
     expect(publicSend.private).toBeNull();
+    // The old flag alone on Base sends publicly: neither marker nor badge.
+    const oldFlag = await badge({ network: "8453", usePrivateMempool: true });
+    expect(oldFlag.marker).toBeNull();
+    expect(oldFlag.private).toBeNull();
+  });
+});
+
+describe("read-only and failure states", () => {
+  it("shows a viewer the notices without their actions", async () => {
+    await render(
+      { ...WRITE, network: "8453", sendMode: "private-relay" },
+      { workflow: "wf-1", node: "node-1" },
+      true
+    );
+    const warning = byTestId("send-mode-unavailable-notice");
+    expect(warning?.textContent).toContain("fails before sending");
+    expect(warning?.querySelector("button")).toBeNull();
+    expect(button("Use Normal transaction")).toBeUndefined();
+  });
+
+  it("Undo writes null and numbers back through the editor's adapter without making strings", async () => {
+    for (const stored of [
+      { usePrivateMempool: null, sponsorGas: null },
+      { usePrivateMempool: 0, sponsorGas: 1 },
+    ]) {
+      act(() => root.unmount());
+      root = createRoot(container);
+      await renderSlot({ ...WRITE, ...stored }, editorConfigValue);
+      act(() => api.send.apply(pickSendMode(api.config, "private-relay")));
+      expect(api.send.notice?.text).toContain("Sponsor gas turned off");
+      act(() => api.send.undo());
+      expect(api.config.usePrivateMempool).not.toBe("null");
+      expect(api.config.usePrivateMempool).not.toBe("0");
+      expect(api.config.sponsorGas).not.toBe("null");
+      expect(api.config.sponsorGas).not.toBe("1");
+      // Normal again, as before the pick.
+      expect(api.config.sendMode).toBeUndefined();
+      expect(Boolean(api.config.usePrivateMempool)).toBe(false);
+    }
+  });
+
+  let editSwitched: (key: string, value: unknown) => void = () => undefined;
+  let pickIntegration: () => void = () => undefined;
+
+  // The editor's node store, with the shared hook the panel and overlay call.
+  async function renderSwitch(
+    before: Record<string, unknown>,
+    after: Record<string, unknown>
+  ): Promise<void> {
+    const store = createStore();
+    store.set(selectedNodeAtom, "node-1");
+    store.set(nodesAtom, [
+      {
+        id: "node-1",
+        position: { x: 0, y: 0 },
+        data: { label: "Step", type: "action", config: after },
+      } as WorkflowNode,
+    ]);
+    const write = (key: string, value: unknown): void => {
+      const config = store.get(nodesAtom)[0]?.data.config ?? {};
+      store.set(updateNodeDataAtom, {
+        id: "node-1",
+        data: { config: { ...config, [key]: editorConfigValue(value) } },
+      });
+    };
+    function Switcher() {
+      const config = useAtomValue(nodesAtom)[0]?.data.config ?? {};
+      latest = config;
+      const note = useActionSwitchNotice();
+      editSwitched = write;
+      pickIntegration = () => {
+        write("integrationId", "picked");
+        note({
+          nodeId: "node-1",
+          key: "integrationId",
+          before: after,
+          after: { ...after, integrationId: "picked" },
+        });
+      };
+      useEffect(() => {
+        note({ nodeId: "node-1", key: "actionType", before, after });
+      }, [note]);
+      return (
+        <ActionConfigRenderer
+          config={config}
+          fields={relevantFields(String(config.actionType))}
+          onUpdateConfig={write}
+        />
+      );
+    }
+    await act(async () => {
+      root.render(
+        <Provider store={store}>
+          <Switcher />
+        </Provider>
+      );
+      await Promise.resolve();
+    });
+  }
+
+  const RELAY_WRITE = {
+    ...WRITE,
+    sendMode: "private-relay",
+    usePrivateMempool: true,
+    contractAddress: "0xabc",
+  };
+  const BATCH = {
+    actionType: "web3/batch-write-contract",
+    network: "1",
+    sendMode: "transaction",
+    usePrivateMempool: false,
+  };
+
+  it("shows the action switch notice under Network; Undo puts back the whole step", async () => {
+    await renderSwitch(RELAY_WRITE, BATCH);
+    const notice = byTestId("network-send-mode-notice");
+    expect(notice?.textContent).toContain(
+      "Batch Write Contract can't send through the private relay yet."
+    );
+    act(() => button("Undo", notice ?? container)?.click());
+    expect(latest).toEqual(RELAY_WRITE);
+    expect(byTestId("network-send-mode-notice")).toBeNull();
+    await settle(() => expect(document.activeElement?.id).toBe("network"));
+  });
+
+  it("closes the action switch notice, and drops it once the new step is edited", async () => {
+    await renderSwitch(RELAY_WRITE, BATCH);
+    const notice = byTestId("network-send-mode-notice");
+    const dismiss = notice?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Dismiss"]'
+    );
+    act(() => dismiss?.click());
+    expect(byTestId("network-send-mode-notice")).toBeNull();
+    expect(latest).toEqual(BATCH);
+    // The close button went with the notice; focus is on Network.
+    await settle(() => expect(document.activeElement?.id).toBe("network"));
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    await renderSwitch(RELAY_WRITE, BATCH);
+    expect(byTestId("network-send-mode-notice")).not.toBeNull();
+    // A form fill (an empty list) keeps it.
+    act(() => editSwitched("calls", "[]"));
+    expect(byTestId("network-send-mode-notice")).not.toBeNull();
+    // An edit on the new step: Undo would lose it, so the notice goes.
+    act(() => editSwitched("calls", '[{"contractAddress":"0x1"}]'));
+    expect(byTestId("network-send-mode-notice")).toBeNull();
+  });
+
+  it("drops the action switch notice on a manual integration pick", async () => {
+    await renderSwitch(RELAY_WRITE, BATCH);
+    expect(byTestId("network-send-mode-notice")).not.toBeNull();
+    act(() => pickIntegration());
+    expect(byTestId("network-send-mode-notice")).toBeNull();
+    expect(latest.integrationId).toBe("picked");
   });
 });

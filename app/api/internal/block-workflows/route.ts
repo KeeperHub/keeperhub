@@ -7,8 +7,11 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import type { WorkflowNode } from "@/lib/workflow/store";
 
-// Extra broadcast URLs can carry provider keys and nothing here needs them.
-function chainColumnsWithoutBroadcastUrls() {
+// Extra broadcast URLs are left out: no block dispatcher reads them.
+function chainColumnsWithoutBroadcastUrls(): Omit<
+  (typeof chains)["_"]["columns"],
+  "broadcastRpcUrls"
+> {
   const { broadcastRpcUrls: _broadcastRpcUrls, ...columns } =
     getTableColumns(chains);
   return columns;

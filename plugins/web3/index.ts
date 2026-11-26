@@ -15,6 +15,7 @@ import {
   executedCallSponsoredOutput,
   readFailOnErrorField,
   sendModeField,
+  sendRouteOutputFields,
   receiptChainIdOutput,
   simulateAtField,
   simulateTimestampOffsetField,
@@ -57,20 +58,6 @@ const SINGLE_EVENT_SHOW_WHEN: ShowWhen = {
     { field: "queryMode", notEquals: "address-list" },
   ],
 };
-
-// Where a write was sent and whether it is in a block. Shared by both write actions.
-const SEND_ROUTE_OUTPUT_FIELDS = [
-  {
-    field: "route",
-    description:
-      "How KeeperHub routed the send: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as) or sponsored (gas-sponsored). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent; more values may be added.",
-  },
-  {
-    field: "included",
-    description:
-      "True when the transaction was seen in a block (one confirmation, not final); it may have reverted, so check error too. False when it was sent but is not in a block. Absent when nothing was sent.",
-  },
-];
 
 // Batch Write Contract is never sponsored, so its fee settings are always
 // editable. Write Contract locks them while the node would be sponsored.
@@ -319,6 +306,7 @@ const web3Plugin: IntegrationPlugin = {
           description: "The transaction hash of the successful transfer",
         },
         receiptChainIdOutput(),
+        ...sendRouteOutputFields(),
         transferErrorOutput(),
       ],
       configFields: [
@@ -399,6 +387,7 @@ const web3Plugin: IntegrationPlugin = {
         executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
+        ...sendRouteOutputFields(),
         transferErrorOutput(),
       ],
       configFields: [
@@ -1866,7 +1855,7 @@ const web3Plugin: IntegrationPlugin = {
           description:
             "With Next block, the predicted block the per-call check before the send ran against. It differs from simulation when a new block or slot came before the send, which then checked again.",
         },
-        ...SEND_ROUTE_OUTPUT_FIELDS,
+        ...sendRouteOutputFields(),
       ],
       configFields: [
         evmNetworkField(),
@@ -1972,6 +1961,7 @@ const web3Plugin: IntegrationPlugin = {
         executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
+        ...sendRouteOutputFields(),
         {
           field: "error",
           description: "Error message if the approval failed",
@@ -2165,7 +2155,7 @@ const web3Plugin: IntegrationPlugin = {
         executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
-        ...SEND_ROUTE_OUTPUT_FIELDS,
+        ...sendRouteOutputFields(),
         {
           field: "error",
           description:

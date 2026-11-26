@@ -1,5 +1,6 @@
 import "server-only";
 import { ethers, isError } from "ethers";
+import { isConnectionRefusal } from "@/lib/rpc/connection-refusal";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { sleep } from "@/lib/sleep";
 import {
@@ -118,8 +119,8 @@ export function isPreBroadcastNetworkError(
  * disambiguate by on-chain lookup:
  *   1. getTransactionReceipt(expectedHash) -> if found, tx mined; success.
  *   2. getTransaction(expectedHash)        -> if found, in mempool; success.
- *   3. Neither found AND a duplicate-hash reply -> OnChainPendingError with
- *      the hash: the transaction is in a pool, never a nonce conflict.
+ *   3. Neither found AND a duplicate-hash reply (or a nonce conflict while an
+ *      extra URL may have sent) -> OnChainPendingError with the hash.
  *   4. Neither found AND error looks like nonce conflict -> NonceConflictError.
  *   5. Neither found AND other error      -> reconcile by certainty: a
  *      definite pre-broadcast refusal is tagged PreBroadcastNetworkError,
@@ -217,7 +218,11 @@ export async function submitSignedTransactionWithFailover(
         expectedHash,
         populated.nonce,
         err,
-        extraDeliveries.includes("unknown")
+        // An extra, or an earlier managed attempt without a clear answer (a
+        // timeout, a server error, or a refused connection on the RPC path),
+        // may hold our bytes.
+        extraDeliveries.includes("unknown") ||
+          attempts.some((attempt) => attempt.delivery === "unknown")
       );
       report.route = routeIf(true);
       // Mined already, or no start block (no extras): nothing to watch for.
@@ -322,7 +327,7 @@ async function reconcile(
   expectedHash: string,
   nonce: number | null | undefined,
   originalError: unknown,
-  extraMayHaveSent = false
+  mayHaveSent = false
 ): Promise<BroadcastResult> {
   let receipt: ethers.TransactionReceipt | null;
   let pending: ethers.TransactionResponse | null;
@@ -352,7 +357,11 @@ async function reconcile(
   if (receipt) {
     throw pendingBroadcast(expectedHash, originalError);
   }
-  if (isDuplicateHashMessage(errorMessage(originalError))) {
+  // A copy that may have gone out (extra or earlier attempt) explains "nonce too low" too.
+  if (
+    isDuplicateHashMessage(errorMessage(originalError)) ||
+    (mayHaveSent && isNonceConflictError(originalError))
+  ) {
     throw pendingBroadcast(expectedHash, originalError);
   }
   if (isNonceConflictError(originalError)) {
@@ -369,10 +378,7 @@ async function reconcile(
   // than rethrowing a bare error whose text a downstream catch would have to
   // re-interpret. Timeouts/dropped replies are deliberately NOT in this list
   // because the node may have accepted the signed bytes first.
-  if (
-    !extraMayHaveSent &&
-    isDefinitelyPreBroadcastNetworkError(originalError)
-  ) {
+  if (!mayHaveSent && isDefinitelyPreBroadcastNetworkError(originalError)) {
     throw new PreBroadcastNetworkError(
       errorMessage(originalError),
       originalError
@@ -393,17 +399,14 @@ function pendingBroadcast(
 }
 
 const RPC_FAILOVER_ENDPOINT_SPLIT = /\b(?:primary|fallback):\s*/i;
+// ethers' SERVER_ERROR text: an HTTP answer whose body is a gateway's.
+const HTTP_ANSWER_TEXT = /code=server_error|server response/;
 
 /**
- * Message-level heuristic for "the broadcast request never left the box".
- *
- * Apply this only where the error's provenance is already established -- a
- * catch that wraps the broadcast call alone, like the reconcile ladder above
- * or the Tempo send catch in tempo-tx-core.ts. In a catch covering more
- * than the send, an unrelated ECONNREFUSED (receipt poll, bookkeeping
- * insert) reads identically, and text-matching there is what lets a live
- * transaction look safe to retry. Past the send boundary, test the
- * PreBroadcastNetworkError marker instead.
+ * "The broadcast request never left the box": the failover's all-refused flag
+ * when present, else every endpoint of our failover summary refused (text).
+ * Use only in a catch around the broadcast call alone (reconcile ladder,
+ * Tempo send); past it, test the PreBroadcastNetworkError marker instead.
  */
 export function isDefinitelyPreBroadcastNetworkError(error: unknown): boolean {
   if (error instanceof Error && "allAttemptsConnectionRefused" in error) {
@@ -422,17 +425,16 @@ export function isDefinitelyPreBroadcastNetworkError(error: unknown): boolean {
     .map((part) => part.trim())
     .filter(Boolean);
 
+  // Our failover summary: every endpoint must have refused, and an HTTP
+  // answer never counts.
   if (endpointFailures.length > 0) {
-    return endpointFailures.every(isConnectionRefusal);
+    return endpointFailures.every(
+      (part) =>
+        !HTTP_ANSWER_TEXT.test(part) &&
+        isConnectionRefusal(part, { followsRedirects: true })
+    );
   }
-
-  return isConnectionRefusal(message);
-}
-
-function isConnectionRefusal(message: string): boolean {
-  return (
-    message.includes("econnrefused") || message.includes("connection refused")
-  );
+  return isConnectionRefusal(error, { followsRedirects: true });
 }
 
 /**

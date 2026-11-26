@@ -60,7 +60,7 @@ import {
   updateNodeDataAtom,
   workflowNotFoundAtom,
 } from "@/lib/workflow/store";
-import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
+import { configTransformFor } from "@/lib/workflow/editor/action-type-transition";
 import {
   applyConfigUpdate,
   CLEARED_FIELDS_TOAST_ID,
@@ -71,6 +71,7 @@ import { findActionById } from "@/plugins/registry";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { ActionConfig } from "./config/action-config";
 import { ActionGrid } from "./config/action-grid";
+import { useActionSwitchNotice } from "./config/send-mode-field";
 
 import { TriggerConfig } from "./config/trigger-config";
 import { WorkflowRuns } from "./workflow-runs";
@@ -175,6 +176,7 @@ export const PanelInner = () => {
     currentWorkflowTagIdAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
+  const noteConfigWrite = useActionSwitchNotice();
   // Viewers of the workflow's org cannot edit but may read its run and
   // version history.
   const isViewer = useAtomValue(isWorkflowViewerAtom);
@@ -536,7 +538,8 @@ export const PanelInner = () => {
     key: string,
     value: string | boolean | Record<string, unknown> | undefined
   ): void => {
-    if (selectedNode) {
+    // Viewers see the form read-only; nothing they click may change the node.
+    if (selectedNode && isOwner) {
       // An action type change prunes leftovers from the previous action and
       // seeds the new action's defaults so showWhen conditions and validation
       // evaluate immediately. See buildConfigForActionTypeChange for details.
@@ -545,10 +548,9 @@ export const PanelInner = () => {
         selectedNode.data.config ?? {},
         key,
         value,
-        key === "actionType" && typeof value === "string"
-          ? (config) => buildConfigForActionTypeChange(value, config)
-          : undefined
+        configTransformFor(key, value)
       );
+      const before = selectedNode.data.config ?? {};
 
       pendingConfigRef.current = batch;
       queueMicrotask(() => {
@@ -562,6 +564,22 @@ export const PanelInner = () => {
         }
       });
       updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
+      const nodeId = selectedNode.id;
+      noteConfigWrite({
+        nodeId,
+        key,
+        before,
+        after: newConfig,
+        // Undo also cancels the new action's integration auto-select.
+        onUndo: () => {
+          autoSelectAbortControllersRef.current[nodeId]?.abort();
+          setPendingIntegrationNodes((prev: Set<string>) => {
+            const next = new Set(prev);
+            next.delete(nodeId);
+            return next;
+          });
+        },
+      });
 
       // When action type changes, auto-select integration if only one exists
       if (key === "actionType" && typeof value === "string") {

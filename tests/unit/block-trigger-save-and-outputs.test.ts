@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { SLOT_CLOCK_GENESIS } from "@/keeperhub-scheduler/lib/slot-clock";
+import { ETHEREUM_L1_CHAIN_IDS } from "@/lib/web3/ethereum-l1";
 import {
-  blockSwitchOn,
   isSkipIfRunningSupported,
   isSlotClockChain,
   missedSlotRunsApply,
@@ -79,13 +80,21 @@ describe("Block Trigger switch helpers", () => {
     expect(isSkipIfRunningSupported("103")).toBe(false);
   });
 
-  it('reads true and "true" alike, anything else as off', () => {
+  it('reads the switch true and "true" alike, anything else as off', () => {
+    const at = (runOnMissedSlot: unknown): boolean =>
+      missedSlotRunsApply({ network: "1", runOnMissedSlot });
     for (const on of [true, "true"]) {
-      expect(blockSwitchOn({ s: on }, "s")).toBe(true);
+      expect(at(on)).toBe(true);
     }
     for (const off of [false, "false", "", undefined, "yes", 1]) {
-      expect(blockSwitchOn({ s: off }, "s")).toBe(false);
+      expect(at(off)).toBe(false);
     }
+  });
+
+  it("uses the scheduler's slot-clock chains", () => {
+    expect(Object.keys(SLOT_CLOCK_GENESIS).map(Number).sort()).toEqual(
+      [...ETHEREUM_L1_CHAIN_IDS].sort()
+    );
   });
 
   it("applies missed-slot runs with the option on, a slot clock and Block Interval 1", () => {

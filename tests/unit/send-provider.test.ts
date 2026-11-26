@@ -74,21 +74,26 @@ const BASE = {
 
 type Outcome = "relay" | "public" | "refused";
 // [keys, Ethereum, Base, never sponsored on Base]
-const CASES: [Record<string, unknown>, Outcome, Outcome][] = [
-  [{ usePrivateMempool: true }, "relay", "refused"],
-  [{ sendMode: "private-relay" }, "relay", "refused"],
-  [{ sendMode: "private-relay", usePrivateMempool: true }, "relay", "refused"],
-  // Old non-boolean values send as before: relay where there is one.
-  [{ usePrivateMempool: "false" }, "relay", "public"],
-  [{ usePrivateMempool: 1 }, "relay", "public"],
-  [{ usePrivateMempool: "yes" }, "relay", "public"],
-  [{ usePrivateMempool: "true" }, "relay", "public"],
-  [{ usePrivateMempool: 0 }, "public", "public"],
-  [{ usePrivateMempool: "" }, "public", "public"],
-  [{ usePrivateMempool: null }, "public", "public"],
-  [{ usePrivateMempool: false }, "public", "public"],
-  [{}, "public", "public"],
-  [{ sendMode: "transaction" }, "public", "public"],
+const CASES: [Record<string, unknown>, Outcome, Outcome, boolean][] = [
+  // The old flag alone: the relay where there is one, else public and unsponsored, as before.
+  [{ usePrivateMempool: true }, "relay", "public", true],
+  [{ sendMode: "private-relay" }, "relay", "refused", true],
+  [
+    { sendMode: "private-relay", usePrivateMempool: true },
+    "relay",
+    "refused",
+    true,
+  ],
+  [{ usePrivateMempool: "false" }, "relay", "public", true],
+  [{ usePrivateMempool: 1 }, "relay", "public", true],
+  [{ usePrivateMempool: "yes" }, "relay", "public", true],
+  [{ usePrivateMempool: "true" }, "relay", "public", true],
+  [{ usePrivateMempool: 0 }, "public", "public", false],
+  [{ usePrivateMempool: "" }, "public", "public", false],
+  [{ usePrivateMempool: null }, "public", "public", false],
+  [{ usePrivateMempool: false }, "public", "public", false],
+  [{}, "public", "public", false],
+  [{ sendMode: "transaction" }, "public", "public", false],
 ];
 
 async function outcome(
@@ -117,25 +122,28 @@ beforeEach(() => {
 });
 
 describe("getSendRpcProvider: every step's route", () => {
-  it.each(CASES)("%j: Ethereum %s, Base %s", async (input, onEth, onBase) => {
-    const eth = await outcome(ETHEREUM, input);
-    expect(eth.outcome).toBe(onEth);
-    expect(eth.relayRequested).toBe(onEth === "relay");
+  it.each(CASES)(
+    "%j: Ethereum %s, Base %s",
+    async (input, onEth, onBase, unsponsored) => {
+      const eth = await outcome(ETHEREUM, input);
+      expect(eth.outcome).toBe(onEth);
+      expect(eth.relayRequested).toBe(onEth === "relay");
 
-    const base = await outcome(BASE, input);
-    expect(base.outcome).toBe(onBase);
-    if (onBase === "refused") {
-      expect(base.error).toBeInstanceOf(PrivateRelayUnavailableError);
-      expect(rpcRelayErrorClass(base.error)).toBe("user");
-    } else {
-      // Public on Base, so sponsorship stays possible.
-      expect(base.relayRequested).toBe(false);
+      const base = await outcome(BASE, input);
+      expect(base.outcome).toBe(onBase);
+      if (onBase === "refused") {
+        expect(base.error).toBeInstanceOf(PrivateRelayUnavailableError);
+        expect(rpcRelayErrorClass(base.error)).toBe("user");
+      } else {
+        // A step that asked for the relay was never sponsored, and still is not.
+        expect(base.relayRequested).toBe(unsponsored);
+      }
     }
-  });
+  );
 
   it("sends a strict: false relay request publicly where there is none, never sponsored", async () => {
     const base = await outcome(BASE, {
-      usePrivateMempool: true,
+      sendMode: "private-relay",
       strict: false,
     });
     expect(base).toMatchObject({ outcome: "public", relayRequested: true });
@@ -160,9 +168,8 @@ describe("getSendRpcProvider: every step's route", () => {
     const reason =
       "Batch Write Contract can't send through the private relay yet";
     for (const input of [
-      { usePrivateMempool: true },
-      { usePrivateMempool: true, strict: false },
       { sendMode: "private-relay" },
+      { sendMode: "private-relay", strict: false },
     ]) {
       for (const chain of [ETHEREUM, BASE]) {
         const result = await outcome(chain, input, reason);
@@ -172,13 +179,15 @@ describe("getSendRpcProvider: every step's route", () => {
     }
     // A required relay is refused before any RPC is resolved.
     expect(state.calls).toBe(0);
-    // An old non-boolean flag uses the relay only on Ethereum.
-    expect(
-      (await outcome(ETHEREUM, { usePrivateMempool: "false" }, reason)).outcome
-    ).toBe("refused");
-    expect(
-      (await outcome(BASE, { usePrivateMempool: "false" }, reason)).outcome
-    ).toBe("public");
+    // The old flag alone uses the relay only on Ethereum, strict: false included.
+    for (const input of [
+      { usePrivateMempool: true },
+      { usePrivateMempool: true, strict: false },
+      { usePrivateMempool: "false" },
+    ]) {
+      expect((await outcome(ETHEREUM, input, reason)).outcome).toBe("refused");
+      expect((await outcome(BASE, input, reason)).outcome).toBe("public");
+    }
     // Refused before the relay is asked which chain it serves.
     expect(state.chainChecks).toBe(0);
   });

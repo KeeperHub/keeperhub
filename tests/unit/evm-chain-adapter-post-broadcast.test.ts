@@ -17,7 +17,7 @@ import {
   isOnChainPendingError,
   isOnChainRevertError,
 } from "@/lib/web3/onchain-revert";
-import { isDefinitelyPreSend } from "@/lib/web3/pre-send";
+import { broadcastAttemptedOf } from "@/lib/web3/pre-send";
 import type { SendReport } from "@/lib/web3/submit-signed";
 
 const FROM = "0x2c9F694183A4240B6431771F6c714a8106179dF5";
@@ -435,7 +435,9 @@ describe("EvmChainAdapter send report and fixed gas limit", () => {
       rpcManager: withManager(h),
     });
 
-    expect(isDefinitelyPreSend(error)).toBe(true);
+    expect(broadcastAttemptedOf(error, undefined, { kind: "unknown" })).toBe(
+      false
+    );
     expect((error as Error).message).toBe(TOO_LOW);
     expect((error as Error).cause).toBe(capped);
     // Capped, uncapped and capped again, all at one pinned block.
@@ -445,11 +447,32 @@ describe("EvmChainAdapter send report and fixed gas limit", () => {
   });
 
   it.each([
-    // A decoded reason (ethers decodes Error(string)) is quoted.
+    // Decoded as everywhere else in the app (decodeRevertReason), and quoted.
     [
       "a decoded reason",
-      Object.assign(outOfGas("0x08c379a0"), { reason: "STF" }),
-      ", reverting with STF,",
+      outOfGas(
+        ethers.concat([
+          "0x08c379a0",
+          ethers.AbiCoder.defaultAbiCoder().encode(["string"], ["STF"]),
+        ])
+      ),
+      ", reverting with Error(STF),",
+    ],
+    [
+      "a decoded reason nested under .info.error",
+      Object.assign(new Error("out of gas"), {
+        code: "CALL_EXCEPTION",
+        info: {
+          error: {
+            message: "out of gas",
+            data: ethers.concat([
+              "0x08c379a0",
+              ethers.AbiCoder.defaultAbiCoder().encode(["string"], ["STF"]),
+            ]),
+          },
+        },
+      }),
+      ", reverting with Error(STF),",
     ],
     // Raw custom-error data with no ABI entry is not.
     ["undecodable data", outOfGas("0xdeadbeef"), ""],
@@ -499,7 +522,9 @@ describe("EvmChainAdapter send report and fixed gas limit", () => {
       expect((error as Error).message).toBe(
         `Gas Limit ${fixed} is above the network's limit of ${limit}. Lower it or leave it empty.`
       );
-      expect(isDefinitelyPreSend(error)).toBe(true);
+      expect(broadcastAttemptedOf(error, undefined, { kind: "unknown" })).toBe(
+        false
+      );
       expect(providerOf(h).call).not.toHaveBeenCalled();
     }
   );

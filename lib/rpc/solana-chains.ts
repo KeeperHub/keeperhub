@@ -10,7 +10,8 @@
  */
 
 // Solana chain IDs (non-EVM)
-const SOLANA_CHAIN_IDS = new Set([101, 103]);
+export const SOLANA_CHAIN_ID_LIST: readonly number[] = [101, 103];
+const SOLANA_CHAIN_IDS = new Set(SOLANA_CHAIN_ID_LIST);
 
 /**
  * Check if a chain ID is a Solana chain

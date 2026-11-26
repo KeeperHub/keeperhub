@@ -17,9 +17,10 @@ import { ErrorCategory, logUserError } from "@/lib/logging";
 import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
 import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getErrorMessage } from "@/lib/utils";
+import { decodeRevertReason } from "@/lib/web3/decode-revert-error";
+import { ETHEREUM_L1_CHAIN_IDS } from "@/lib/web3/ethereum-l1";
 import {
   assertGasLimitFits,
-  decodedRevertReason,
   GasLimitTooLowError,
   hasOutOfGasEvidence,
 } from "@/lib/web3/gas-limit-error";
@@ -28,7 +29,7 @@ import {
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
   parseSimulationSettings,
 } from "@/lib/web3/next-block-limits";
-import { extractRevertData } from "@/lib/web3/revert-data";
+import { extractRevertData, rpcErrorOf } from "@/lib/web3/revert-data";
 
 export type SimulateAt = "latest" | "next-block";
 
@@ -122,14 +123,6 @@ const RPC_ADVICE =
 const RETRY_HINT =
   "a temporary RPC error, retried automatically; the next run or a re-run tries again";
 const DETAIL_MAX_CHARS = 200;
-
-function rpcErrorOf(error: unknown): { code?: number; message?: string } {
-  const e = error as {
-    info?: { error?: { code?: number; message?: string } };
-    error?: { code?: number; message?: string };
-  };
-  return e.info?.error ?? e.error ?? {};
-}
 
 // The node's own message (also from an HTTP 4xx body), else ethers' short
 // message, which unlike the full one carries no request URL. Any URL a relay
@@ -369,10 +362,10 @@ function nodeAnswer(error: unknown): NodeAnswer {
       viaHttp: true,
     };
   }
-  const { code, message = "" } = rpcErrorOf(error);
+  const { code, message } = rpcErrorOf(error) ?? {};
   return {
     code,
-    message,
+    message: typeof message === "string" ? message : "",
     revertData: extractRevertData(error),
     viaHttp: false,
   };
@@ -714,12 +707,10 @@ function preparedFrom(simulation: NextBlockSimulation): Prepared {
 
 const MS_PER_SECOND = 1000;
 // Beacon chains keep to fixed wall-clock slots and leave a missed slot's
-// timestamp unused: Ethereum, Sepolia, Holesky, Hoodi (12 s), Gnosis, Chiado (5 s).
+// timestamp unused: Ethereum L1 and Holesky (12 s), Gnosis and Chiado (5 s).
+// Wider than the Block Trigger slot clock, which needs genesis times and 12 s slots.
 const BEACON_SLOT_SECONDS = new Map<number, number>([
-  [1, 12],
-  [11_155_111, 12],
-  [17_000, 12],
-  [560_048, 12],
+  ...[...ETHEREUM_L1_CHAIN_IDS, 17_000].map((id): [number, number] => [id, 12]),
   [100, 5],
   [10_200, 5],
 ]);
@@ -865,10 +856,6 @@ export async function simulateCallAtNextBlock(
   }, request.operationType ?? "read");
 }
 
-/**
- * The revert check and gas estimate for a send, as of the next block:
- * eth_estimateGas with block overrides, else eth_simulateV1 gas.
- */
 type SendCheckRequest = NextBlockRequest & {
   gasLimit?: bigint;
   // Names a custom error in the Gas Limit message, as at `latest`.
@@ -876,11 +863,12 @@ type SendCheckRequest = NextBlockRequest & {
 };
 
 /**
- * The send check at the next block. With a fixed Gas Limit: above the
- * network's limit is too high (by numbers, in sendCheck); a capped failure
- * with out-of-gas evidence is run uncapped (a real revert throws there) and
- * capped again: failing again means too low. Any other failure is the
- * node's own error, unchanged.
+ * The revert check and gas estimate for a send, as of the next block:
+ * eth_estimateGas with block overrides, else eth_simulateV1 gas. With a fixed
+ * Gas Limit: above the network's limit is too high (by numbers, in sendCheck);
+ * a capped failure with out-of-gas evidence is run uncapped (a real revert
+ * throws there) and capped again: failing again means too low. Any other
+ * failure is the node's own error, unchanged.
  */
 export async function simulateSendAtNextBlock(
   rpcManager: RpcProviderManager,
@@ -896,7 +884,9 @@ export async function simulateSendAtNextBlock(
     }
     cappedError = error;
   }
-  const sameBlock = (basedOn: NextBlockSimulation | undefined) => ({
+  const sameBlock = (
+    basedOn: NextBlockSimulation | undefined
+  ): SendCheckRequest => ({
     ...request,
     options: {
       ...request.options,
@@ -934,7 +924,7 @@ export async function simulateSendAtNextBlock(
           gasLimit,
           {
             needs,
-            revertedWith: decodedRevertReason(again, request.contractInterface),
+            revertedWith: decodeRevertReason(again, request.contractInterface),
           },
           { cause: again }
         ),

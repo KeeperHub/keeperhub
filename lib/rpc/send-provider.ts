@@ -1,10 +1,19 @@
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import {
   InvalidSendModeError,
   PrivateRelayUnavailableError,
   type RpcProviderManager,
+  rpcRelayErrorClass,
 } from "@/lib/rpc/providers";
-import { relayUseOf, unknownSendModeIssue } from "@/lib/web3/send-mode";
+import { readRpcFor } from "@/lib/rpc/read-provider";
+import { getErrorMessage } from "@/lib/utils";
+import {
+  noPrivateRelayMessage,
+  relayUseOf,
+  unknownSendModeIssue,
+} from "@/lib/web3/send-mode";
 
 type SendAsInput = {
   sendMode?: unknown;
@@ -12,9 +21,9 @@ type SendAsInput = {
   strict?: boolean;
 };
 
-export type SendRpc = {
+type SendRpc = {
   rpcManager: RpcProviderManager;
-  /** The step asked for the relay and may use it: never sponsored. */
+  /** The step asked for the relay (Send as or the old flag): never sponsored, as before. */
   relayRequested: boolean;
 };
 
@@ -48,5 +57,70 @@ export async function getSendRpcProvider(
   if (onRelay) {
     await rpcManager.assertPrivateRelayChain();
   }
-  return { rpcManager, relayRequested: relay === "required" || onRelay };
+  return { rpcManager, relayRequested: relay !== "none" };
+}
+
+/** The Send as checks on a chain that has no relay at all (Solana). */
+export function assertSendAsWithoutRelay(
+  input: SendAsInput,
+  chainName: string
+): void {
+  const invalid = unknownSendModeIssue(input.sendMode);
+  if (invalid) {
+    throw new InvalidSendModeError(invalid);
+  }
+  if (relayUseOf(input) === "required" && input.strict !== false) {
+    throw new PrivateRelayUnavailableError(noPrivateRelayMessage(chainName));
+  }
+}
+
+type WriteRpc = SendRpc & {
+  /** Reads with no transaction data (token reads, the trace); the send stays on rpcManager. */
+  readRpc: RpcProviderManager;
+  rpcUrl: string;
+};
+
+type WriteRpcFailure = { error: string; errorClass?: ExecutionErrorType };
+
+/**
+ * Everything a write step's send needs from the RPC layer. A failure is logged
+ * and returned with its class: the relay's own, else `fallbackClass`.
+ */
+export async function resolveWriteRpc(
+  input: SendAsInput,
+  options: {
+    chainId: number;
+    userId?: string;
+    relayRefusal?: string;
+    log: { tag: string; action: string };
+    fallbackClass?: ExecutionErrorType;
+  }
+): Promise<
+  { ok: true; rpc: WriteRpc } | { ok: false; failure: WriteRpcFailure }
+> {
+  try {
+    const send = await getSendRpcProvider(input, options);
+    const rpcUrl = await send.rpcManager.resolveActiveRpcUrl();
+    const readRpc = await readRpcFor(send.rpcManager, options);
+    return { ok: true, rpc: { ...send, readRpc, rpcUrl } };
+  } catch (error) {
+    logUserError(
+      ErrorCategory.VALIDATION,
+      `${options.log.tag} Failed to resolve RPC config`,
+      error,
+      {
+        plugin_name: "web3",
+        action_name: options.log.action,
+        chain_id: String(options.chainId),
+      }
+    );
+    const errorClass = rpcRelayErrorClass(error) ?? options.fallbackClass;
+    return {
+      ok: false,
+      failure: {
+        error: getErrorMessage(error),
+        ...(errorClass ? { errorClass } : {}),
+      },
+    };
+  }
 }

@@ -1,10 +1,11 @@
+import { isConnectionRefusal } from "@/lib/rpc/connection-refusal";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import {
   type Delivery,
   deliveryOfRpcError,
   isDuplicateHashMessage,
-  neverConnected,
 } from "@/lib/web3/extra-broadcast";
+import { rpcErrorOf } from "@/lib/web3/revert-data";
 
 /** Where a write was broadcast. Reported as the step's `route` output. */
 export type SendRoute = "public" | "private-relay" | "sponsored";
@@ -28,25 +29,11 @@ export function deliveryOfBroadcastError(
   if (isDuplicateHashMessage(message)) {
     return "accepted";
   }
-  if (knownRefusal || neverConnected(error)) {
+  if (knownRefusal || isConnectionRefusal(error, { followsRedirects: true })) {
     return "refused";
   }
   const rpcError = rpcErrorOf(error);
   return rpcError ? deliveryOfRpcError(rpcError) : "unknown";
-}
-
-// The JSON-RPC error object ethers keeps on an error the node answered with.
-function rpcErrorOf(
-  error: unknown
-): { code?: unknown; message?: unknown } | undefined {
-  const e = error as {
-    info?: { error?: unknown };
-    error?: unknown;
-  } | null;
-  const candidate = e?.info?.error ?? e?.error;
-  return candidate && typeof candidate === "object"
-    ? (candidate as { code?: unknown; message?: unknown })
-    : undefined;
 }
 
 /**

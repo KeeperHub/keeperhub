@@ -1,11 +1,22 @@
 import type { ethers } from "ethers";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mocks - must be declared before importing the module under test
 // ---------------------------------------------------------------------------
 
 vi.mock("server-only", () => ({}));
+// Receipt polls move a mocked clock instead of waiting.
+vi.mock("@/lib/sleep", () => ({
+  sleep: vi.fn((ms: number) => {
+    vi.setSystemTime(Date.now() + ms);
+    return Promise.resolve();
+  }),
+}));
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const mocks = vi.hoisted(() => ({
   finishMetrics: vi.fn(),
@@ -113,38 +124,40 @@ function makeReceipt(status: number): ethers.TransactionReceipt {
 
 function makeRpcManager(receipt: ethers.TransactionReceipt | null): {
   options: ExecuteAsSafeOptions;
-  waitForTransaction: ReturnType<typeof vi.fn>;
+  getTransactionReceipt: ReturnType<typeof vi.fn>;
 } {
-  const waitForTransaction = vi.fn().mockResolvedValue(receipt);
+  const getTransactionReceipt = vi.fn().mockResolvedValue(receipt);
   const provider = {
     estimateGas: vi.fn().mockResolvedValue(BigInt(50_000)),
-    waitForTransaction,
+    getTransactionReceipt,
   } as unknown as ethers.JsonRpcProvider;
   const rpcManager = {
     executeWithFailover: (
       op: (p: ethers.JsonRpcProvider) => Promise<unknown>
     ) => op(provider),
+    getProvider: () => provider,
     hasPrivateRelayPrimary: () => false,
   } as unknown as ExecuteAsSafeOptions["rpcManager"];
   return {
     options: { chainId: 1, workflowId: "wf-1", rpcManager },
-    waitForTransaction,
+    getTransactionReceipt,
   };
 }
 
 /**
- * An rpcManager whose receipt wait rejects the way exhausting every provider
+ * An rpcManager whose receipt reads reject the way exhausting every provider
  * does (~186s of failover), while the pre-broadcast gas estimate still works.
  */
 function makeExhaustedRpcManager(reason: Error): ExecuteAsSafeOptions {
   const provider = {
     estimateGas: vi.fn().mockResolvedValue(BigInt(50_000)),
-    waitForTransaction: vi.fn().mockRejectedValue(reason),
+    getTransactionReceipt: vi.fn().mockRejectedValue(reason),
   } as unknown as ethers.JsonRpcProvider;
   const rpcManager = {
     executeWithFailover: (
       op: (p: ethers.JsonRpcProvider) => Promise<unknown>
     ) => op(provider),
+    getProvider: () => provider,
     hasPrivateRelayPrimary: () => false,
   } as unknown as ExecuteAsSafeOptions["rpcManager"];
   return { chainId: 1, workflowId: "wf-1", rpcManager };
@@ -263,12 +276,12 @@ describe.each(cases)("%s", (_name, invoke) => {
       response: { hash: TX_HASH },
       preExistingReceipt: makeReceipt(0),
     });
-    const { options, waitForTransaction } = makeRpcManager(makeReceipt(1));
+    const { options, getTransactionReceipt } = makeRpcManager(makeReceipt(1));
 
     const error: unknown = await invoke(options).catch((e: unknown) => e);
 
     expect(isOnChainRevertError(error)).toBe(true);
-    expect(waitForTransaction).not.toHaveBeenCalled();
+    expect(getTransactionReceipt).not.toHaveBeenCalled();
     expect(mocks.confirmTransaction).not.toHaveBeenCalled();
   });
 
@@ -297,34 +310,71 @@ describe.each(cases)("%s", (_name, invoke) => {
     expect(mocks.finishMetrics).toHaveBeenCalledWith("failure");
   });
 
-  it("bounds the receipt wait instead of polling for blocks forever", async () => {
-    const { options, waitForTransaction } = makeRpcManager(makeReceipt(1));
+  it("polls the receipt through the failover until it is mined", async () => {
+    const { options, getTransactionReceipt } = makeRpcManager(null);
+    getTransactionReceipt
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(makeReceipt(1));
 
     await invoke(options);
 
-    // ethers' waitForTransaction rejects only when a timeout is supplied and
-    // otherwise waits on the block listener indefinitely, so without one a
-    // Safe-routed transaction that never mines pins the step until the reaper
-    // takes it and records no hash.
-    const [hash, confirms, timeoutMs] = waitForTransaction.mock.calls[0] as [
-      string,
-      number,
-      number,
-    ];
-    expect(hash).toBe(TX_HASH);
-    expect(confirms).toBe(1);
-    expect(timeoutMs).toBeGreaterThan(186_000);
-    expect(timeoutMs).toBeLessThan(30 * 60 * 1000);
+    expect(getTransactionReceipt).toHaveBeenCalledTimes(2);
+    expect(getTransactionReceipt).toHaveBeenCalledWith(TX_HASH);
+    expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
   });
 
-  it("carries the hash when the wait resolves without a receipt", async () => {
-    const { options } = makeRpcManager(null);
+  it("reads from the fallback when an endpoint dies mid-wait", async () => {
+    const dead = {
+      estimateGas: vi.fn().mockResolvedValue(BigInt(50_000)),
+      getTransactionReceipt: vi.fn().mockRejectedValue(
+        Object.assign(new Error("connect ECONNREFUSED"), {
+          code: "ECONNREFUSED",
+        })
+      ),
+    };
+    const alive = {
+      getTransactionReceipt: vi.fn().mockResolvedValue(makeReceipt(1)),
+    };
+    // The failover: the dead primary first, then the fallback.
+    const failover = vi.fn(
+      async (op: (p: unknown) => Promise<unknown>, kind?: string) => {
+        if (kind !== "read") {
+          return op(dead);
+        }
+        try {
+          return await op(dead);
+        } catch {
+          return op(alive);
+        }
+      }
+    );
+    const rpcManager = {
+      executeWithFailover: failover,
+      getProvider: () => dead,
+      hasPrivateRelayPrimary: () => false,
+    } as unknown as ExecuteAsSafeOptions["rpcManager"];
+
+    await invoke({ chainId: 1, workflowId: "wf-1", rpcManager });
+
+    expect(alive.getTransactionReceipt).toHaveBeenCalledWith(TX_HASH);
+    expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
+  });
+
+  it("ends a send not mined in 10 minutes as pending, with the hash", async () => {
+    const started = Date.now();
+    const { options, getTransactionReceipt } = makeRpcManager(null);
 
     const error: unknown = await invoke(options).catch((e: unknown) => e);
 
     expect(isOnChainPendingError(error)).toBe(true);
     expect(broadcastTransactionHash(error)).toBe(TX_HASH);
-    expect((error as Error).message).toContain("sent but receipt unavailable");
+    expect((error as Error).message).toContain(
+      "sent but not included within 10 minutes"
+    );
+    // Bounded by the deadline, polling all the way to it.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(600_000);
+    expect(Date.now() - started).toBeLessThan(605_000);
+    expect(getTransactionReceipt.mock.calls.length).toBeGreaterThan(100);
     expect(mocks.confirmTransaction).not.toHaveBeenCalled();
   });
 
@@ -364,7 +414,7 @@ describe.each(cases)("%s", (_name, invoke) => {
     ): ExecuteAsSafeOptions {
       const relay = {
         estimateGas: vi.fn().mockResolvedValue(BigInt(50_000)),
-        waitForTransaction: relayWait,
+        getTransactionReceipt: relayWait,
       };
       const rpcManager = {
         executeWithFailover: (op: (p: unknown) => Promise<unknown>) =>
@@ -372,26 +422,41 @@ describe.each(cases)("%s", (_name, invoke) => {
         hasPrivateRelayPrimary: () => true,
         getProvider: () => relay,
         getFallbackProvider: () =>
-          fallbackWait ? { waitForTransaction: fallbackWait } : null,
+          fallbackWait ? { getTransactionReceipt: fallbackWait } : null,
       } as unknown as ExecuteAsSafeOptions["rpcManager"];
       return { chainId: 1, workflowId: "wf-1", rpcManager, sendReport: {} };
     }
 
-    it("waits on the relay for as long as it can hold the send", async () => {
-      const relayWait = vi.fn().mockResolvedValue(makeReceipt(1));
+    it("polls the relay that sent until the send is included", async () => {
+      const relayWait = vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(makeReceipt(1));
 
       await invoke(relayOptions(relayWait));
 
-      expect(relayWait).toHaveBeenCalledWith(TX_HASH, 1, 600_000);
+      expect(relayWait).toHaveBeenCalledTimes(2);
+      expect(relayWait).toHaveBeenCalledWith(TX_HASH);
+      expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
+    });
+
+    it("cuts a hung relay read short and reads again", async () => {
+      vi.useFakeTimers();
+      const relayWait = vi
+        .fn()
+        .mockImplementationOnce(() => new Promise(() => undefined))
+        .mockResolvedValue(makeReceipt(1));
+
+      const pending = invoke(relayOptions(relayWait));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await pending;
+
+      expect(relayWait).toHaveBeenCalledTimes(2);
       expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
     });
 
     it("reports a send not included by the deadline as pending, with the hash", async () => {
-      const relayWait = vi
-        .fn()
-        .mockRejectedValue(
-          Object.assign(new Error("timeout"), { code: "TIMEOUT" })
-        );
+      const relayWait = vi.fn().mockResolvedValue(null);
 
       const error: unknown = await invoke(relayOptions(relayWait)).catch(
         (e: unknown) => e
@@ -425,7 +490,7 @@ describe.each(cases)("%s", (_name, invoke) => {
 
       await invoke(relayOptions(relayWait, fallbackWait));
 
-      expect(fallbackWait).toHaveBeenCalledWith(TX_HASH, 1, 600_000);
+      expect(fallbackWait).toHaveBeenCalledWith(TX_HASH);
       expect(relayWait).not.toHaveBeenCalled();
       expect(mocks.confirmTransaction).toHaveBeenCalledWith(TX_HASH);
     });

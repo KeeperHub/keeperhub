@@ -1,4 +1,6 @@
 import "server-only";
+import type { ethers } from "ethers";
+import { sleep } from "@/lib/sleep";
 
 /**
  * Upper bound on how long a write waits for its receipt before it reports the
@@ -32,3 +34,75 @@ import "server-only";
  * so it is not sized to outlast a write and imposes no ceiling here.
  */
 export const RECEIPT_WAIT_TIMEOUT_MS = 600_000;
+
+type PollReceiptOptions = {
+  timeoutMs: number;
+  intervalMs: number;
+  /** Cap on one read (a read error); every read is also cut at the deadline. */
+  readTimeoutMs?: number;
+};
+
+type PollReceiptOutcome =
+  | { receipt: ethers.TransactionReceipt }
+  | { receipt: null; lastReadError: unknown };
+
+const TIMED_OUT = Symbol("timed out");
+
+/** Resolves to TIMED_OUT when the read takes longer than `ms`. */
+function boundedRead<T>(
+  read: () => Promise<T>,
+  ms: number
+): Promise<T | typeof TIMED_OUT> {
+  const pending = read();
+  // A read cut short may still fail later; nobody awaits it then.
+  pending.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), ms);
+  });
+  return Promise.race([pending, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Poll a receipt by hash until one comes back or the deadline passes. Read
+ * errors keep the poll going (the send is already out); the caller turns a
+ * miss into its own pending error with the hash. No read or sleep runs past
+ * the deadline.
+ */
+export async function pollReceipt(
+  read: () => Promise<ethers.TransactionReceipt | null>,
+  { timeoutMs, intervalMs, readTimeoutMs }: PollReceiptOptions
+): Promise<PollReceiptOutcome> {
+  const deadline = Date.now() + timeoutMs;
+  let lastReadError: unknown;
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      return { receipt: null, lastReadError };
+    }
+    const cap =
+      readTimeoutMs !== undefined && readTimeoutMs < left
+        ? readTimeoutMs
+        : left;
+    const cutAtDeadline = cap === left;
+    try {
+      const result = await boundedRead(read, cap);
+      if (result === TIMED_OUT) {
+        // A cut at the deadline is no answer; only the per-read cap is an error.
+        lastReadError = cutAtDeadline
+          ? undefined
+          : new Error(`receipt read timed out after ${cap} ms`);
+      } else if (result) {
+        return { receipt: result };
+      } else {
+        lastReadError = undefined;
+      }
+    } catch (error) {
+      lastReadError = error;
+    }
+    if (Date.now() + intervalMs > deadline) {
+      return { receipt: null, lastReadError };
+    }
+    await sleep(intervalMs);
+  }
+}

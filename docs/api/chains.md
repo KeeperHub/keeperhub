@@ -86,11 +86,13 @@ RPC endpoint URLs (`defaultPrimaryRpc`, `defaultFallbackRpc`) are not returned b
 specific transaction. A `true` value lists Private relay in the Send as field
 of workflow write actions (see [Send as](/plugins/web3#send-as)). Choosing it
 stores `sendMode: "private-relay"`, together with `usePrivateMempool: true` for
-older readers. Programmatic workflow definitions can send either key; a config
-with `usePrivateMempool: true` and no `sendMode` sends through the relay.
-New values of `usePrivateMempool` must be booleans; an older stored value that
-is not a boolean (such as the text `"false"`) is read as before: through the
-relay on a chain that has one, as a normal send elsewhere. Any `sendMode` other
+older readers; a save that sends `sendMode` alone gets `usePrivateMempool`
+written beside it. Programmatic workflow definitions can send either key; a
+config with `usePrivateMempool: true` and no `sendMode` sends through the relay
+on a chain that has one and to the public mempool elsewhere (never sponsored),
+as it always did. New values of `usePrivateMempool` must be booleans; an older
+stored value that is not a boolean (such as the text `"false"`) is read the
+same way. Any `sendMode` other
 than `"transaction"` or `"private-relay"` is refused. When both keys are sent
 they must agree (`true` with `"private-relay"`, `false` with `"transaction"`),
 except on an update that changes only one of them: that key wins, and both are
@@ -98,9 +100,9 @@ saved in agreement. To change the route, set `sendMode`. Saving
 `"private-relay"` on a chain where this value is `false` is refused.
 
 Private routing is strict by default: when the private RPC is available, its
-public fallback is removed, and a step that asks for the relay on a chain
-without one fails before anything is sent (for example a stored step whose
-chain later lost its relay, or a network set by a template). Set
+public fallback is removed, and a step with `sendMode: "private-relay"` on a
+chain without a relay fails before anything is sent (for example a network set
+by a template). Set
 `strict: false` only when falling back to the public mempool is acceptable;
 the send itself can then go to the public mempool. See
 [Send as](/plugins/web3#send-as) for exactly when it falls back. A relay that

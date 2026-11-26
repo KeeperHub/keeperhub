@@ -37,6 +37,7 @@ import {
 } from "@/lib/web3/submit-signed";
 
 const ANVIL_URL = process.env.ANVIL_URL ?? "http://127.0.0.1:8546";
+
 const CHAIN_ID = 31_337;
 const DEAD = "0x000000000000000000000000000000000000dEaD";
 
@@ -285,11 +286,13 @@ describe.skipIf(shouldSkip)("broadcast to extra RPCs (anvil E2E)", () => {
     ["HTTP 401", "http401" as const],
     ["a JSON-RPC rejection", { rpcError: "rate limited" }],
   ])(
-    "stays pre-broadcast when the primary refused and the extra answered %s",
+    "keeps the hash when the primary's node named a refused upstream and the extra answered %s",
     { timeout: 30_000 },
     async (_label, onSend) => {
       const out = await send(
         manager({
+          // A node's error text is not our connection being refused: the
+          // node may have passed the bytes on, so the key is kept.
           primary: await proxy(`p4-${_label}`, {
             rpcError: "connect ECONNREFUSED 10.0.0.1:443",
           }),
@@ -297,8 +300,8 @@ describe.skipIf(shouldSkip)("broadcast to extra RPCs (anvil E2E)", () => {
         })
       );
 
-      expect(out.error).toBeInstanceOf(PreBroadcastNetworkError);
-      expect(out.report.route).toBeUndefined();
+      expect(out.error).not.toBeInstanceOf(PreBroadcastNetworkError);
+      expect(isOnChainPendingError(out.error)).toBe(true);
     }
   );
 
@@ -496,7 +499,7 @@ describe.skipIf(shouldSkip)("fixed Gas Limit (anvil E2E)", () => {
     expect(out.sent).toBe(0);
   });
 
-  it("does not blame the Gas Limit for a one-off node error", {
+  it("retries the pinned check at latest when the node lacks the pinned block", {
     timeout: 30_000,
   }, async () => {
     const out = await poke({ gasLimit: BigInt(100_000), failFirstCall: true });

@@ -1,5 +1,5 @@
 import { CronExpressionParser } from "cron-parser";
-import { and, eq, inArray, notInArray, or } from "drizzle-orm";
+import { and, eq, inArray, notInArray, or, type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   workflowExecutions,
@@ -16,6 +16,7 @@ import {
   statusForErrorType,
 } from "../../lib/errors/execution-status";
 import { calculateTotalSteps } from "../../lib/workflow/executor/progress";
+import { SOLANA_CHAIN_ID_LIST } from "../../lib/rpc/solana-chains";
 import type { NotExecutableReason } from "../../lib/workflow/not-executable";
 import {
   markRunRefused,
@@ -57,6 +58,24 @@ export type ClaimOutcome = "claimed" | "already_advanced" | "not_found";
  * failure: E-0001/P-0004/E-0004) means work may have started and is dropped.
  */
 const REAPED_NEVER_RAN_CODES: ErrorCode[] = ["P-0001", "P-0005"];
+
+// Networks the switch is ignored on, as isSkipIfRunningSupported reads them.
+const SOLANA_NETWORK = SOLANA_CHAIN_ID_LIST.flatMap((id) => [
+  `@ == ${id}`,
+  `@ == "${id}"`,
+]).join(" || ");
+// A reaped phantom of a skip-if-running Block Trigger stays dead: a newer
+// dispatch may already be running, and re-running this one would overlap it.
+// On is true or "true", as resolveSwitch and the scheduler's isOn read it.
+const SKIP_IF_RUNNING_ON = `$[*] ? (@.data.type == "trigger" && @.data.config.triggerType == "Block" && !exists(@.data.config.network ? (${SOLANA_NETWORK}))) .data.config.skipIfRunning ? (@ == true || @ == "true")`;
+// Built per call: modules that import this file must not need drizzle at load.
+function notSkipIfRunningWorkflow(): SQL {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM "workflows" AS "w"
+    WHERE "w"."id" = "workflow_executions"."workflow_id"
+      AND jsonb_path_exists("w"."nodes", ${SKIP_IF_RUNNING_ON}::jsonpath)
+  )`;
+}
 
 // The execution-start CAS UPDATE runs on the hot dispatch path. A
 // transient DB error there (dropped connection, statement timeout under the
@@ -352,6 +371,7 @@ export async function failExecutionAsSystemError(
  * REAPED_NEVER_RAN_CODES errorCode) so a concurrency-requeued message whose
  * phantom the reaper marked in the meantime is re-claimed and re-run rather than
  * dropped - a run that provably never dispatched, so re-running is side-effect-safe.
+ * Not for a workflow whose Block Trigger has skip-if-running on: that row stays reaped.
  */
 export async function claimPhantomForExecution(
   db: PostgresJsDatabase<DbSchema>,
@@ -384,7 +404,8 @@ export async function claimPhantomForExecution(
               eq(workflowExecutions.status, "phantom"),
               and(
                 eq(workflowExecutions.status, "system_error"),
-                inArray(workflowExecutions.errorCode, REAPED_NEVER_RAN_CODES)
+                inArray(workflowExecutions.errorCode, REAPED_NEVER_RAN_CODES),
+                notSkipIfRunningWorkflow()
               )
             )
           )

@@ -122,6 +122,39 @@ describe("createPhantomExecution", () => {
     expect(result).toEqual({ alreadyExisted: false });
   });
 
+  it("skips a skip-if-running dispatch when the API call fails, logging the workflow", async () => {
+    apiRequestWithAttempts.mockRejectedValue(new Error("statement timeout"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await createPhantomExecution(
+      "wf_1",
+      "block",
+      "owner_1",
+      "block:wf_1:1:99",
+      { skipIfRunning: true },
+    );
+
+    expect(result).toEqual({ alreadyExisted: false, skipped: true });
+    expect(String(error.mock.calls[0]?.[0])).toContain("wf_1");
+    error.mockRestore();
+  });
+
+  it("skips a skip-if-running dispatch when the API answers with no id", async () => {
+    apiRequestWithAttempts.mockResolvedValue(firstAttempt({}));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await createPhantomExecution(
+      "wf_1",
+      "block",
+      "owner_1",
+      "block:wf_1:1:99",
+      { skipIfRunning: true },
+    );
+
+    expect(result).toEqual({ alreadyExisted: false, skipped: true });
+    error.mockRestore();
+  });
+
   // A transport failure and a refusal must stay distinguishable: the first
   // still falls back to the id-less enqueue, the second must not enqueue.
   it("reports a refusal when the platform declines the dispatch", async () => {

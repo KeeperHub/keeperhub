@@ -26,6 +26,7 @@ import { api, ApiError } from "@/lib/api-client";
 import { integrationsAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
 import { cn } from "@/lib/utils";
+import { configTransformFor } from "@/lib/workflow/editor/action-type-transition";
 import {
   applyConfigUpdate,
   CLEARED_FIELDS_TOAST_ID,
@@ -59,6 +60,7 @@ import {
 import { findActionById } from "@/plugins/registry";
 import { ActionConfig } from "../workflow/config/action-config";
 import { ActionGrid } from "../workflow/config/action-grid";
+import { useActionSwitchNotice } from "../workflow/config/send-mode-field";
 import { TriggerConfig } from "../workflow/config/trigger-config";
 import { VersionHistoryContent } from "../workflow/version-history-content";
 import { WorkflowRuns } from "../workflow/workflow-runs";
@@ -136,6 +138,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
   const canReadHistory = isOwner || isViewer;
 
   const updateNodeData = useSetAtom(updateNodeDataAtom);
+  const noteConfigWrite = useActionSwitchNotice();
   const deleteNode = useSetAtom(deleteNodeAtom);
   const deleteEdge = useSetAtom(deleteEdgeAtom);
   const clearNodeStatuses = useSetAtom(clearNodeStatusesAtom);
@@ -204,7 +207,8 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
       key: string,
       value: string | boolean | Record<string, unknown> | undefined
     ): void => {
-      if (!selectedNode) {
+      // Viewers see the form read-only; nothing they click may change the node.
+      if (!(selectedNode && isOwner)) {
         return;
       }
       // Some fields (e.g. Send as, which also writes usePrivateMempool)
@@ -212,12 +216,15 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
       // both spread the same stale selectedNode.data.config snapshot and the
       // second call wipes out the first. The ref batches back-to-back updates
       // within a microtask so the second call sees the first's merged config.
+      // An action switch rebuilds the config, as in the side panel.
       const { batch, config: newConfig } = applyConfigUpdate(
         pendingConfigRef.current,
         selectedNode.data.config ?? {},
         key,
-        value
+        value,
+        configTransformFor(key, value)
       );
+      const before = selectedNode.data.config ?? {};
       pendingConfigRef.current = batch;
       queueMicrotask(() => {
         // Runs once the same-tick updates are done; only the first one acts.
@@ -233,8 +240,14 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
         id: selectedNode.id,
         data: { config: newConfig },
       });
+      noteConfigWrite({
+        nodeId: selectedNode.id,
+        key,
+        before,
+        after: newConfig,
+      });
     },
-    [selectedNode, updateNodeData]
+    [selectedNode, isOwner, updateNodeData, noteConfigWrite]
   );
 
   const handleUpdateLabel = useCallback(

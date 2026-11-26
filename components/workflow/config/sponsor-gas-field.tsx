@@ -1,8 +1,11 @@
 "use client";
 
 import { AlertTriangle } from "lucide-react";
-import { SwitchField } from "@/components/workflow/config/switch-field";
-import { readToggle, toggleRuleOf } from "@/plugins/registry";
+import {
+  drawnToggle,
+  SwitchField,
+} from "@/components/workflow/config/switch-field";
+import { toggleRuleOf } from "@/plugins/registry";
 
 const SPONSOR_GAS_RULE = toggleRuleOf({ type: "gas-sponsorship-switch" });
 
@@ -14,6 +17,7 @@ type SponsorGasFieldProps = {
   onChange: (value: boolean | undefined) => void;
   disabled?: boolean;
   resetOnly: boolean;
+  shownAfterReset?: boolean;
 };
 
 /**
@@ -34,9 +38,10 @@ export function SponsorGasField({
   onChange,
   disabled,
   resetOnly,
+  shownAfterReset,
 }: SponsorGasFieldProps) {
   // The switch and the warning read the value by one rule.
-  const sponsored = readToggle(SPONSOR_GAS_RULE, value);
+  const sponsored = drawnToggle(SPONSOR_GAS_RULE, value, shownAfterReset);
 
   return (
     <div className="space-y-2">
@@ -48,6 +53,7 @@ export function SponsorGasField({
         label={label}
         onChange={onChange}
         resetOnly={resetOnly}
+        shownAfterReset={shownAfterReset}
         value={value}
       />
       {!sponsored && (

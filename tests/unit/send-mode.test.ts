@@ -6,30 +6,28 @@ import {
   availableSendModes,
   isLegacyPrivateRelayConfig,
   legacyFlagTypeIssue,
-  type RelayUse,
   relayUseOf,
   resolveSendMode,
   SEND_MODE,
   type SendMode,
   sendModeConflict,
-  sendModeOn,
   unknownSendModeIssue,
   unsupportedSendMode,
-  usesPrivateRelay,
 } from "@/lib/web3/send-mode";
 import { buildConfigForActionTypeChange } from "@/lib/workflow/editor/action-type-transition";
 import { setEditorSendModeChains } from "@/lib/workflow/editor/send-mode-chains";
 import {
+  actionSwitchNotice,
   chooseNetwork,
   editorSendMode,
   hasSendModeField,
-  networkChangeNotice,
+  pickChanges,
   pickSendMode,
-  SPONSOR_ON_NOTICE,
   sendModeWarning,
   sendsPrivately,
   shownSponsorGas,
   switchSponsorGas,
+  untouchedSinceSwitch,
 } from "@/lib/workflow/editor/send-mode-editor";
 import { wouldBeSponsored } from "@/lib/workflow/editor/show-when";
 import { validateWorkflowActionConfigs } from "@/lib/workflow/validation/action-config";
@@ -40,6 +38,8 @@ import {
 } from "@/plugins/registry";
 
 const RELAY_CHAIN = { usePrivateMempoolRpc: true };
+const SPONSOR_ON_NOTICE =
+  "Send as changed to Normal transaction (public mempool): only normal sends can be sponsored.";
 const PLAIN_CHAIN = { usePrivateMempoolRpc: false };
 
 beforeEach(() => {
@@ -69,7 +69,9 @@ describe("resolveSendMode", () => {
     [{ sendMode: "bogus" }, SEND_MODE.TRANSACTION],
   ])("reads %j as %s", (config, mode) => {
     expect(resolveSendMode(config)).toBe(mode);
-    expect(usesPrivateRelay(config)).toBe(mode === SEND_MODE.PRIVATE_RELAY);
+    expect(relayUseOf(config) !== "none").toBe(
+      mode === SEND_MODE.PRIVATE_RELAY
+    );
   });
 
   it("calls only a flag-only config legacy", () => {
@@ -180,6 +182,14 @@ describe("editor rules", () => {
     actionType: "web3/write-contract",
     network: "1",
   };
+  // An old flag reads by its chain, so the editor's chain list is known here.
+  beforeEach(() =>
+    setEditorSendModeChains([
+      { chainId: 1, name: "Ethereum", ...RELAY_CHAIN },
+      { chainId: 8453, name: "Base", ...PLAIN_CHAIN },
+    ])
+  );
+  afterEach(() => setEditorSendModeChains(undefined));
 
   it("turns Sponsor gas off when a non-Normal choice is picked", () => {
     const change = pickSendMode(write, "private-relay");
@@ -265,6 +275,18 @@ describe("editor rules", () => {
     expect(change.restoreIfCleared).toEqual([["priorityFeeGwei", "3"]]);
   });
 
+  it("Reset writes only Sponsor gas, whatever Send as is", () => {
+    const relay = {
+      ...write,
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+      sponsorGas: "yes",
+    };
+    const change = switchSponsorGas(relay, undefined);
+    expect(change.writes).toEqual([["sponsorGas", undefined]]);
+    expect(change.notice).toBeUndefined();
+  });
+
   it("changes nothing else when Sponsor gas is turned off", () => {
     const change = switchSponsorGas(
       { ...write, sendMode: "transaction" },
@@ -313,7 +335,12 @@ describe("editor rules", () => {
       expect(quiet.writes).toEqual([]);
       expect(quiet.notice).toBeUndefined();
     }
-    expect(networkChangeNotice()).toBe(
+    const unnamed = chooseNetwork(
+      { ...write, network: "1", sendMode: "private-relay" },
+      { chainId: 8453, ...PLAIN_CHAIN },
+      "network"
+    );
+    expect(unnamed.notice).toBe(
       "Send as changed to Normal transaction (public mempool): this network has no private relay."
     );
   });
@@ -326,7 +353,12 @@ describe("editor rules", () => {
       ["sponsorGas", false],
     ]);
     const base = { chainId: 8453, name: "Base", ...PLAIN_CHAIN };
-    expect(chooseNetwork(legacy, base, "network").writes).toContainEqual([
+    const chosen = {
+      ...write,
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+    };
+    expect(chooseNetwork(chosen, base, "network").writes).toContainEqual([
       "sponsorGas",
       false,
     ]);
@@ -363,6 +395,23 @@ describe("editor rules", () => {
     expect(
       sendsPrivately({
         actionType: "web3/batch-write-contract",
+        usePrivateMempool: true,
+      })
+    ).toBe(false);
+  });
+
+  it("shows the badge on a stored conflict that runs privately", () => {
+    const conflict = {
+      ...write,
+      sendMode: "private-relay",
+      usePrivateMempool: false,
+    };
+    expect(sendsPrivately(conflict)).toBe(true);
+    expect(sendsPrivately({ ...conflict, network: "8453" })).toBe(false);
+    expect(
+      sendsPrivately({
+        ...write,
+        sendMode: "transaction",
         usePrivateMempool: true,
       })
     ).toBe(false);
@@ -442,52 +491,22 @@ describe("save-time validation (action configs)", () => {
 // Every legacy value shape, on a chain with a relay (Ethereum) and without (Base).
 const ETHEREUM = { chainId: 1, name: "Ethereum", usePrivateMempoolRpc: true };
 const BASE = { chainId: 8453, name: "Base", usePrivateMempoolRpc: false };
-type Shape = [string, Record<string, unknown>, SendMode, SendMode, RelayUse];
+type Shape = [string, Record<string, unknown>, SendMode, RelayUse];
+type RelayUse = ReturnType<typeof relayUseOf>;
 const SHAPES: Shape[] = [
-  // [name, keys, mode on Ethereum, mode on Base, run-time relay use]
-  [
-    "true",
-    { usePrivateMempool: true },
-    "private-relay",
-    "private-relay",
-    "required",
-  ],
-  [
-    '"false"',
-    { usePrivateMempool: "false" },
-    "private-relay",
-    "transaction",
-    "if-available",
-  ],
-  [
-    "1",
-    { usePrivateMempool: 1 },
-    "private-relay",
-    "transaction",
-    "if-available",
-  ],
-  [
-    '"yes"',
-    { usePrivateMempool: "yes" },
-    "private-relay",
-    "transaction",
-    "if-available",
-  ],
-  [
-    '"true"',
-    { usePrivateMempool: "true" },
-    "private-relay",
-    "transaction",
-    "if-available",
-  ],
-  ["0", { usePrivateMempool: 0 }, "transaction", "transaction", "none"],
-  ['""', { usePrivateMempool: "" }, "transaction", "transaction", "none"],
-  ["null", { usePrivateMempool: null }, "transaction", "transaction", "none"],
-  ["false", { usePrivateMempool: false }, "transaction", "transaction", "none"],
+  // [name, keys, mode once the chain is known, run-time relay use]
+  ["true", { usePrivateMempool: true }, "private-relay", "if-available"],
+  ['"false"', { usePrivateMempool: "false" }, "private-relay", "if-available"],
+  ["1", { usePrivateMempool: 1 }, "private-relay", "if-available"],
+  ['"yes"', { usePrivateMempool: "yes" }, "private-relay", "if-available"],
+  ['"true"', { usePrivateMempool: "true" }, "private-relay", "if-available"],
+  ["0", { usePrivateMempool: 0 }, "transaction", "none"],
+  ['""', { usePrivateMempool: "" }, "transaction", "none"],
+  ["null", { usePrivateMempool: null }, "transaction", "none"],
+  ["false", { usePrivateMempool: false }, "transaction", "none"],
   [
     "sendMode relay",
     { sendMode: "private-relay" },
-    "private-relay",
     "private-relay",
     "required",
   ],
@@ -495,8 +514,7 @@ const SHAPES: Shape[] = [
     "sendMode null + true",
     { sendMode: null, usePrivateMempool: true },
     "private-relay",
-    "private-relay",
-    "required",
+    "if-available",
   ],
 ];
 
@@ -505,65 +523,173 @@ describe("old flag values across chains", () => {
 
   it.each(SHAPES)(
     "%s reads by the chain, the same everywhere",
-    (_name, keys, onEth, onBase, relay) => {
-      expect(sendModeOn(keys, ETHEREUM)).toBe(onEth);
-      expect(sendModeOn(keys, BASE)).toBe(onBase);
+    (_name, keys, mode, relay) => {
       expect(relayUseOf(keys)).toBe(relay);
 
-      // The editor reads it the same once the chain list is known.
+      // The editor reads it as the run does once the chain list is known.
       setEditorSendModeChains([ETHEREUM, BASE]);
-      for (const [network, mode] of [
-        ["1", onEth],
-        ["8453", onBase],
-      ] as const) {
+      for (const network of ["1", "8453"]) {
         const config = { actionType: "web3/write-contract", network, ...keys };
         expect(editorSendMode(config)).toBe(mode);
         const isPrivate = mode !== "transaction";
-        // No badge where the step fails before sending (no relay on Base).
+        // PRIVATE only where the relay is used; Base has none.
         expect(sendsPrivately(config)).toBe(isPrivate && network === "1");
+        // Never sponsored while the step asks for the relay, as at run time.
         expect(shownSponsorGas(config)).toBe(isPrivate ? false : undefined);
         expect(wouldBeSponsored(config, "network")).toBe(!isPrivate);
-        // Batch keeps a Normal-reading node as it is, and resets a relay one.
+        // Fails before sending only for an explicit relay on Base.
+        expect(sendModeWarning(config)?.fails === true).toBe(
+          relay === "required" && network === "8453"
+        );
+        // Batch resets a relay node to Normal and keeps a Normal one.
         const batch = buildConfigForActionTypeChange(
           "web3/batch-write-contract",
           config
         );
-        expect(resolveSendMode(batch) === "private-relay").toBe(
-          !isPrivate && resolveSendMode(keys) === "private-relay"
-        );
+        expect(resolveSendMode(batch)).toBe("transaction");
       }
     }
   );
 
-  it("never turns the relay on unseen when an old flag moves network", () => {
+  it("keeps an old flag as saved when it moves network: it uses a relay where there is one", () => {
     setEditorSendModeChains([ETHEREUM, BASE]);
     const onBase = {
       actionType: "web3/write-contract",
       network: "8453",
       usePrivateMempool: "false",
     };
-    const toEthereum = chooseNetwork(onBase, ETHEREUM, "network");
-    expect(toEthereum.writes).toEqual([
-      ["sendMode", "transaction"],
-      ["usePrivateMempool", false],
-    ]);
-    expect(toEthereum.notice).toBeUndefined();
-    // From Ethereum (shown Private relay) to Base: Normal, with a notice.
-    const toBase = chooseNetwork({ ...onBase, network: "1" }, BASE, "network");
+    for (const change of [
+      chooseNetwork(onBase, ETHEREUM, "network"),
+      chooseNetwork({ ...onBase, network: "1" }, BASE, "network"),
+      chooseNetwork({ ...onBase, usePrivateMempool: true }, BASE, "network"),
+    ]) {
+      expect(change.writes).toEqual([]);
+      expect(change.notice).toBeUndefined();
+    }
+    // An explicit Private relay moved to Base goes Normal, with a notice.
+    const toBase = chooseNetwork(
+      { ...onBase, network: "1", sendMode: "private-relay" },
+      BASE,
+      "network"
+    );
     expect(toBase.writes.slice(0, 2)).toEqual([
       ["sendMode", "transaction"],
       ["usePrivateMempool", false],
     ]);
     expect(toBase.notice).toContain("Base has no private relay");
   });
+
+  it("says an old flag on a chain without a relay sends publicly, with no marker", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    for (const actionType of [
+      "web3/write-contract",
+      "web3/batch-write-contract",
+    ]) {
+      const warning = sendModeWarning({
+        actionType,
+        network: "8453",
+        usePrivateMempool: true,
+      });
+      expect(warning).toEqual({
+        text: "Base has no private relay, so this step sends to the public mempool.",
+        unsupported: false,
+        fails: false,
+      });
+    }
+  });
+});
+
+describe("Send as keys to fix", () => {
+  afterEach(() => setEditorSendModeChains(undefined));
+
+  it("says a key conflict runs as sendMode, saves keep it, and names the fix; no canvas marker", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const base = { actionType: "web3/write-contract", network: "1" };
+    expect(
+      sendModeWarning({
+        ...base,
+        sendMode: "transaction",
+        usePrivateMempool: true,
+      })
+    ).toEqual({
+      text: "This step's saved Send as settings disagree. It runs as Normal transaction; saving keeps them as they are, but a new network or action needs the fix first. Pick Use Normal transaction to fix it.",
+      unsupported: false,
+      fails: false,
+      keys: true,
+    });
+    expect(
+      sendModeWarning({
+        ...base,
+        sendMode: "private-relay",
+        usePrivateMempool: false,
+      })
+    ).toEqual({
+      text: "This step's saved Send as settings disagree. It runs as Private relay; saving keeps them as they are, but a new network or action needs the fix first. Pick Use Normal transaction or Keep Private relay to fix it.",
+      unsupported: false,
+      fails: false,
+      keys: true,
+    });
+  });
+
+  it("checks a Private relay conflict as it runs: it fails without a relay or on Batch", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const conflict = { sendMode: "private-relay", usePrivateMempool: false };
+    const noRelay = {
+      actionType: "web3/write-contract",
+      network: "8453",
+      ...conflict,
+    };
+    expect(sendModeWarning(noRelay)).toEqual({
+      text: "This step's saved Send as settings disagree. Base has no private relay, so this step fails before sending. Pick Use Normal transaction to fix it.",
+      unsupported: false,
+      fails: true,
+      keys: true,
+    });
+    expect(sendsPrivately(noRelay)).toBe(false);
+
+    const batch = sendModeWarning({
+      actionType: "web3/batch-write-contract",
+      network: "1",
+      ...conflict,
+    });
+    expect(batch).toMatchObject({ unsupported: true, fails: true, keys: true });
+    expect(batch?.text).toMatch(
+      /^This step's saved Send as settings disagree\. Batch Write Contract can't send through the private relay yet/
+    );
+
+    // A step that falls back sends publicly: no marker, and it says so.
+    expect(sendModeWarning({ ...noRelay, strict: false })).toMatchObject({
+      text: "This step's saved Send as settings disagree. Base has no private relay, so this step sends to the public mempool. Pick Use Normal transaction to fix it.",
+      fails: false,
+      keys: true,
+    });
+  });
+
+  it("says an unknown mode fails and names the button that fixes it", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const base = { actionType: "web3/write-contract", network: "1" };
+    expect(sendModeWarning({ ...base, sendMode: "Private-Relay" })).toEqual({
+      text: "This step's saved Send as value is not a known choice, so the step fails before sending. Pick Use Normal transaction to fix it.",
+      unsupported: false,
+      fails: true,
+      keys: true,
+    });
+    expect(
+      sendModeWarning({
+        ...base,
+        sendMode: "Private-Relay",
+        usePrivateMempool: true,
+      })?.text
+    ).toContain("Pick Use Normal transaction or Keep Private relay to fix it.");
+  });
 });
 
 describe("before the chain list is known", () => {
   afterEach(() => setEditorSendModeChains(undefined));
 
-  it("keeps an old non-boolean flag neutral: no badge, Sponsor gas as stored", () => {
+  it("keeps an old flag neutral: no badge, Sponsor gas as stored", () => {
     setEditorSendModeChains(undefined);
-    for (const flag of ["false", 1, "yes", "true"]) {
+    for (const flag of ["false", 1, "yes", "true", true]) {
       const config = {
         actionType: "web3/write-contract",
         network: "8453",
@@ -574,11 +700,11 @@ describe("before the chain list is known", () => {
       expect(sendsPrivately(config)).toBe(false);
       expect(shownSponsorGas(config)).toBe(true);
     }
-    // A real choice of the relay still shows as one.
+    // A chosen Private relay still shows as one.
     const chosen = {
       actionType: "web3/write-contract",
       network: "1",
-      usePrivateMempool: true,
+      sendMode: "private-relay",
     };
     expect(sendsPrivately(chosen)).toBe(true);
     expect(shownSponsorGas(chosen)).toBe(false);
@@ -590,15 +716,29 @@ describe("before the chain list is known", () => {
       actionType: "web3/write-contract",
       usePrivateMempool: "false",
     };
-    expect(editorSendMode({ ...old, network: "base" })).toBe("transaction");
+    expect(editorSendMode({ ...old, network: "base" })).toBe("private-relay");
+    expect(sendModeWarning({ ...old, network: "base" })?.text).toBe(
+      "Base has no private relay, so this step sends to the public mempool."
+    );
     expect(editorSendMode({ ...old, network: "mainnet" })).toBe(
       "private-relay"
     );
     expect(sendsPrivately({ ...old, network: "base" })).toBe(false);
-    // A template network stays unknown: neutral.
-    expect(editorSendMode({ ...old, network: "{{@x:X.chain}}" })).toBe(
-      "transaction"
-    );
+    expect(sendsPrivately({ ...old, network: "mainnet" })).toBe(true);
+    // A template network: the relay where the chain has one, with a neutral notice.
+    const templated = { ...old, network: "{{@x:X.chain}}" };
+    expect(editorSendMode(templated)).toBe("private-relay");
+    expect(sendModeWarning(templated)).toEqual({
+      text: "This step uses the private relay where its network has one, otherwise the public mempool.",
+      unsupported: false,
+      fails: false,
+    });
+    expect(sendsPrivately(templated)).toBe(false);
+    expect(shownSponsorGas(templated)).toBe(false);
+    // Normal only while the chain list loads.
+    setEditorSendModeChains(undefined);
+    expect(editorSendMode(templated)).toBe("transaction");
+    expect(sendModeWarning(templated)).toBeUndefined();
   });
 });
 
@@ -610,9 +750,9 @@ describe("canvas marker for a step Send as stops", () => {
   // [name, config, fails before sending, PRIVATE badge]
   const NODES: [string, Record<string, unknown>, boolean, boolean][] = [
     [
-      "true on Base",
+      "true on Base (sends publicly)",
       { actionType: WRITE, network: "8453", usePrivateMempool: true },
-      true,
+      false,
       false,
     ],
     [
@@ -628,9 +768,9 @@ describe("canvas marker for a step Send as stops", () => {
       false,
     ],
     [
-      "Batch true on Base",
+      "Batch true on Base (sends publicly)",
       { actionType: BATCH, network: "8453", usePrivateMempool: true },
-      true,
+      false,
       false,
     ],
     [
@@ -662,13 +802,13 @@ describe("canvas marker for a step Send as stops", () => {
       false,
     ],
     [
-      "old flag on Base (Normal)",
+      "old flag on Base (sends publicly)",
       { actionType: WRITE, network: "8453", usePrivateMempool: "false" },
       false,
       false,
     ],
     [
-      "Batch old flag on Base (Normal)",
+      "Batch old flag on Base (sends publicly)",
       { actionType: BATCH, network: "8453", usePrivateMempool: "false" },
       false,
       false,
@@ -686,6 +826,23 @@ describe("canvas marker for a step Send as stops", () => {
       true,
     ],
     ["Normal", { actionType: WRITE, network: "1" }, false, false],
+    [
+      "unknown sendMode (refused at run time)",
+      { actionType: WRITE, network: "1", sendMode: "Private-Relay" },
+      true,
+      false,
+    ],
+    [
+      "keys in conflict (refused at save)",
+      {
+        actionType: WRITE,
+        network: "8453",
+        sendMode: "transaction",
+        usePrivateMempool: true,
+      },
+      false,
+      false,
+    ],
   ];
 
   it.each(NODES)("%s", (_name, config, fails, badge) => {
@@ -720,4 +877,220 @@ describe("unknown sendMode values", () => {
       expect(unknownSendModeIssue(value)).toBeUndefined();
     }
   );
+});
+
+describe("editor repairs and edge values", () => {
+  afterEach(() => setEditorSendModeChains(undefined));
+  const write = { actionType: "web3/write-contract", network: "8453" };
+
+  it("lets Normal repair keys a save refuses, even when they already read as Normal", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const unknown = { ...write, sendMode: "bogus" };
+    const conflict = {
+      ...write,
+      sendMode: "transaction",
+      usePrivateMempool: true,
+    };
+    for (const config of [unknown, conflict]) {
+      expect(editorSendMode(config)).toBe("transaction");
+      expect(pickChanges(config, "transaction")).toBe(true);
+      expect(pickSendMode(config, "transaction").writes.slice(0, 2)).toEqual([
+        ["sendMode", "transaction"],
+        ["usePrivateMempool", false],
+      ]);
+      expect(sendModeWarning(config)?.text).toBeDefined();
+    }
+    const agreed = {
+      ...write,
+      sendMode: "transaction",
+      usePrivateMempool: false,
+    };
+    expect(pickChanges(agreed, "transaction")).toBe(false);
+  });
+
+  it("shows a Sponsor gas value that is neither on nor off as stored, so it can be reset", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const relay = { ...write, network: "1", sendMode: "private-relay" };
+    expect(shownSponsorGas({ ...relay, sponsorGas: "yes" })).toBe("yes");
+    expect(shownSponsorGas({ ...relay, sponsorGas: true })).toBe(false);
+    expect(shownSponsorGas({ ...relay })).toBe(false);
+  });
+
+  it("records Undo values the editor can write back (no null or numbers)", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const eth = { ...write, network: "1" };
+    const nulls = pickSendMode(
+      { ...eth, usePrivateMempool: null, sponsorGas: null },
+      "private-relay"
+    );
+    expect(nulls.undo).toEqual([
+      ["sendMode", undefined],
+      ["usePrivateMempool", undefined],
+      ["sponsorGas", undefined],
+    ]);
+    const numbers = pickSendMode(
+      { ...eth, usePrivateMempool: 0, sponsorGas: 1 },
+      "private-relay"
+    );
+    expect(numbers.undo).toEqual([
+      ["sendMode", undefined],
+      ["usePrivateMempool", false],
+      ["sponsorGas", undefined],
+    ]);
+  });
+
+  it("tells the user when an action switch set Send as back to Normal", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const before = {
+      actionType: "web3/write-contract",
+      network: "1",
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+    };
+    // As the editor applies it: the new action type, then the transition.
+    const switchTo = (
+      config: Record<string, unknown>
+    ): Record<string, unknown> =>
+      buildConfigForActionTypeChange("web3/batch-write-contract", {
+        ...config,
+        actionType: "web3/batch-write-contract",
+      });
+    const change = actionSwitchNotice(before, switchTo(before));
+    expect(change?.notice).toBe(
+      "Send as changed to Normal transaction (public mempool): Batch Write Contract can't send through the private relay yet."
+    );
+    expect(change?.undo).toEqual([]);
+    // Every value of the new step's form, so an edit there drops the notice.
+    const after = switchTo({ ...before, integrationId: "int-1" });
+    const wrote = actionSwitchNotice(before, after)?.wrote ?? [];
+    expect(wrote).toContainEqual(["actionType", "web3/batch-write-contract"]);
+    expect(wrote).toContainEqual(["sendMode", "transaction"]);
+    expect(wrote).toContainEqual(["usePrivateMempool", false]);
+    expect(wrote).toContainEqual(["isolateCallFailures", "true"]);
+    expect(wrote.some(([key]) => key === "integrationId")).toBe(false);
+    // A Normal step switching has nothing to tell.
+    const normal = {
+      ...before,
+      sendMode: "transaction",
+      usePrivateMempool: false,
+    };
+    expect(actionSwitchNotice(normal, switchTo(normal))).toBeUndefined();
+  });
+
+  it("keeps the switch notice through form fills, not through user edits", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const before = {
+      actionType: "web3/write-contract",
+      network: "1",
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+    };
+    const after = buildConfigForActionTypeChange("web3/batch-write-contract", {
+      ...before,
+      actionType: "web3/batch-write-contract",
+    });
+    const wrote = actionSwitchNotice(before, after)?.wrote ?? [];
+    expect(wrote).toContainEqual(["calls", undefined]);
+    const holds = (edit: Record<string, unknown>): boolean =>
+      untouchedSinceSwitch({ ...after, ...edit }, wrote);
+    const row = {
+      network: "",
+      contractAddress: "",
+      abi: "",
+      abiFunction: "",
+      args: [],
+      useManualAbi: "false",
+    };
+    // The Calls editor's first empty row, an empty list, or a blank key.
+    expect(holds({})).toBe(true);
+    expect(holds({ calls: JSON.stringify([row]) })).toBe(true);
+    expect(holds({ calls: "[]" })).toBe(true);
+    expect(holds({ calls: "" })).toBe(true);
+    // Anything the user typed or picked drops it.
+    expect(
+      holds({ calls: JSON.stringify([{ ...row, contractAddress: "0x1" }]) })
+    ).toBe(false);
+    expect(
+      holds({ calls: JSON.stringify([{ ...row, useManualAbi: "true" }]) })
+    ).toBe(false);
+    expect(holds({ calls: "0x1" })).toBe(false);
+    expect(holds({ isolateCallFailures: "false" })).toBe(false);
+    // Send as, the action and the network must hold exactly.
+    expect(holds({ sendMode: undefined })).toBe(false);
+    expect(holds({ usePrivateMempool: undefined })).toBe(false);
+    expect(holds({ network: "8453" })).toBe(false);
+    expect(holds({ actionType: "web3/write-contract" })).toBe(false);
+    // A key the switch left unset may take the field's own default, only that.
+    const unset = wrote.map(([key, value]): [string, unknown] =>
+      key === "isolateCallFailures" ? [key, undefined] : [key, value]
+    );
+    expect(
+      untouchedSinceSwitch({ ...after, isolateCallFailures: "true" }, unset)
+    ).toBe(true);
+    expect(
+      untouchedSinceSwitch({ ...after, isolateCallFailures: "false" }, unset)
+    ).toBe(false);
+  });
+
+  it("says an old flag on a network without a relay already sent publicly", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const before = {
+      actionType: "web3/write-contract",
+      network: "8453",
+      usePrivateMempool: true,
+    };
+    const after = buildConfigForActionTypeChange("web3/batch-write-contract", {
+      ...before,
+      actionType: "web3/batch-write-contract",
+    });
+    // Batch Write Contract has no Sponsor gas, so it stays unsponsored.
+    expect(actionSwitchNotice(before, after)?.notice).toBe(
+      "Send as changed to Normal transaction: Base has no private relay, so this step already sent to the public mempool."
+    );
+  });
+
+  it("does not say how an old flag sent on a network not known (a template)", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const before = {
+      actionType: "web3/write-contract",
+      network: "{{@trigger:Webhook.chain}}",
+      usePrivateMempool: true,
+    };
+    const after = buildConfigForActionTypeChange("web3/batch-write-contract", {
+      ...before,
+      actionType: "web3/batch-write-contract",
+    });
+    expect(actionSwitchNotice(before, after)?.notice).toBe(
+      "Send as changed to Normal transaction: this step now sends to the public mempool on every network (Batch Write Contract has no private relay option yet)."
+    );
+    // The old flag left on Batch there may fail, depending on the network.
+    expect(
+      sendModeWarning({ ...before, actionType: "web3/batch-write-contract" })
+        ?.text
+    ).toContain("so this step may fail before sending");
+  });
+
+  it("drops the old flag with Send as when the new action has no Send as", () => {
+    const relay = {
+      actionType: "web3/write-contract",
+      network: "1",
+      sendMode: "private-relay",
+      usePrivateMempool: true,
+      strict: false,
+    };
+    const read = buildConfigForActionTypeChange("web3/read-contract", relay);
+    expect(read.sendMode).toBeUndefined();
+    expect(read.usePrivateMempool).toBeUndefined();
+    expect(read.strict).toBeUndefined();
+    const back = buildConfigForActionTypeChange("web3/write-contract", read);
+    expect(back.usePrivateMempool).toBeUndefined();
+    expect(back.sendMode).toBeUndefined();
+    expect(back.strict).toBeUndefined();
+    // Kept on a switch between two actions with Send as.
+    const batch = buildConfigForActionTypeChange(
+      "web3/batch-write-contract",
+      relay
+    );
+    expect(batch.strict).toBe(false);
+  });
 });

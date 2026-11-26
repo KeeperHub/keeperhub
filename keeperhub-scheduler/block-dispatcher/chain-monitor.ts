@@ -917,9 +917,14 @@ export class ChainMonitor {
     }
 
     if (skipped) {
-      console.log(
-        `[BlockMonitor:${this.chainName}] Not enqueuing ${dispatchKey}: the platform recorded it as skipped`,
-      );
+      if (executionId) {
+        console.log(
+          `[BlockMonitor:${this.chainName}] Not enqueuing ${dispatchKey}: the platform recorded it as skipped`,
+        );
+      } else {
+        // No id: the skip-if-running check failed, already logged as an error.
+        metrics.recordSkipCheckFailed(this.chainName);
+      }
       return;
     }
 
@@ -1288,45 +1293,53 @@ export class ChainMonitor {
 
   /**
    * True when the slot has a block, so no missed-slot run is due; otherwise the
-   * "latest" block it fetched (null if that fetch failed, undefined if not tried),
-   * for the missed-slot check to reuse. A block the
-   * normal path has not dispatched yet (newer than the last processed one) is
-   * left to it; an older-numbered one (a reorg) gets its run here.
+   * "latest" block it fetched (null if that fetch failed), for the missed-slot
+   * check to reuse. A live header in the slot always means it had a block. A
+   * block the normal path has not dispatched yet (newer than the last processed
+   * one) is left to it; an older-numbered one gets its run here if the slot has
+   * none yet.
    */
   private async slotHasBlock(
     slot: number,
     workflows: BlockWorkflow[],
-  ): Promise<true | BlockData | null | undefined> {
+  ): Promise<true | BlockData | null> {
     if ((this.lastRunSlot ?? -1) >= slot) {
       return true;
     }
-    const genesis = this.slotGenesis as number;
     const header = this.lastHeader;
-    const headerInSlot =
-      header !== null && slotAt(genesis, header.timestamp) === slot;
-    let block: BlockData | null = null;
-    if (headerInSlot) {
-      if (this.isNewerThanProcessed(header.number)) {
-        return true;
+    if (header !== null && this.inSlot(header.timestamp, slot)) {
+      if (!this.isNewerThanProcessed(header.number)) {
+        // By hash first: a load-balanced node can still serve an older "latest".
+        const block =
+          (await this.getBlockData(header.hash)) ??
+          (await this.getBlockData("latest"));
+        if (block && this.inSlot(block.timestamp, slot)) {
+          await this.fillSlot(slot, workflows, block);
+        } else {
+          // No false missed-slot run, but this slot's run may be lost: say so.
+          const why = block
+            ? `the node returned block ${block.number} from another slot`
+            : "both fetches of it failed";
+          console.warn(
+            `[BlockMonitor:${this.chainName}] Slot ${slot} had block ${header.number}, but ${why}: no run for this slot`,
+          );
+        }
       }
-      // By hash: a load-balanced node can still serve an older "latest".
-      block = await this.getBlockData(header.hash);
+      return true;
     }
-    const latest = block ? null : await this.getBlockData("latest");
-    block = block ?? latest;
-    if (!block) {
-      // Both fetches failed: the header alone proves the slot had a block.
-      return headerInSlot ? true : null;
+    const latest = await this.getBlockData("latest");
+    if (!(latest && this.inSlot(latest.timestamp, slot))) {
+      return latest;
     }
-    if (
-      !plausibleTimestamp(block.timestamp) ||
-      slotAt(genesis, block.timestamp) !== slot
-    ) {
-      // Hand "latest" on if it was fetched; undefined lets the caller fetch it.
-      return latest ?? undefined;
-    }
-    await this.fillSlot(slot, workflows, block);
+    await this.fillSlot(slot, workflows, latest);
     return true;
+  }
+
+  private inSlot(timestamp: number, slot: number): boolean {
+    return (
+      plausibleTimestamp(timestamp) &&
+      slotAt(this.slotGenesis as number, timestamp) === slot
+    );
   }
 
   // Runs a block found in the slot unless the normal path will dispatch it.
@@ -1342,7 +1355,7 @@ export class ChainMonitor {
       return;
     }
     console.log(
-      `[BlockMonitor:${this.chainName}] Slot ${slot} has block ${block.number} but no run yet (a reorg), firing ${workflows.length} workflow(s)`,
+      `[BlockMonitor:${this.chainName}] Slot ${slot} has block ${block.number}, at or below the last processed block, and no run yet for this slot: firing ${workflows.length} workflow(s)`,
     );
     await this.dispatchSlotRun(workflows, slot, block, false);
   }

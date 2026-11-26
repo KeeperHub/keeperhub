@@ -12,10 +12,25 @@ import { readToggle, type ToggleRule } from "@/plugins/registry";
 const SHOWN_VALUE_MAX_CHARS = 60;
 
 // What the step does with a value that is neither on nor off.
-function strayAtRun(rule: ToggleRule): string {
+function strayAtRun(rule: ToggleRule, shownAfterReset?: boolean): string {
+  if (rule === "default-on" && shownAfterReset === false) {
+    // Another setting holds it off (e.g. Sponsor gas on a private relay step).
+    return "When the step runs, it is off with these settings.";
+  }
   return rule === "default-on"
     ? "When the step runs, it is on unless this resolves to false."
     : "When the step runs, it fails unless this resolves to true, false or nothing.";
+}
+
+/** Whether the switch draws on: a stray value held off by another setting draws as that. */
+export function drawnToggle(
+  rule: ToggleRule,
+  value: unknown,
+  shownAfterReset?: boolean
+): boolean {
+  return !isToggleValue(value) && shownAfterReset !== undefined
+    ? shownAfterReset
+    : readToggle(rule, value);
 }
 
 // The stored value as the hint quotes it: visible characters, shortened.
@@ -61,6 +76,8 @@ type SwitchFieldProps = {
   lockedHint?: string;
   // Selector of the field that takes focus after a locked switch is reset and hides.
   focusOnLockedReset?: string;
+  // What the switch shows once reset, when the form shows it other than the rule's default.
+  shownAfterReset?: boolean;
 };
 
 /**
@@ -79,6 +96,7 @@ export function SwitchField({
   strayHint,
   lockedHint,
   focusOnLockedReset,
+  shownAfterReset,
 }: SwitchFieldProps) {
   const switchRef = useRef<HTMLButtonElement>(null);
   const resetButtonRef = useRef<HTMLButtonElement>(null);
@@ -147,7 +165,7 @@ export function SwitchField({
             ) : (
               <p className="break-words text-destructive text-xs" id={strayId}>
                 Holds {shownValue(value)}, which is neither on nor off.{" "}
-                {strayHint ?? strayAtRun(rule)}
+                {strayHint ?? strayAtRun(rule, shownAfterReset)}
                 {!disabled &&
                   (strayHint
                     ? " A save refuses it, so reset it to save."
@@ -166,7 +184,8 @@ export function SwitchField({
                 type="button"
                 variant="link"
               >
-                Reset to default ({readToggle(rule, undefined) ? "on" : "off"})
+                Reset to default (
+                {(shownAfterReset ?? readToggle(rule, undefined)) ? "on" : "off"})
                 <span className="sr-only">, {label}</span>
               </Button>
             )}
@@ -175,7 +194,7 @@ export function SwitchField({
       </div>
       <Switch
         aria-describedby={describedBy || undefined}
-        checked={readToggle(rule, value)}
+        checked={drawnToggle(rule, value, shownAfterReset)}
         disabled={disabled || locked}
         id={id}
         onCheckedChange={onChange}

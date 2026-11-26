@@ -62,7 +62,7 @@ describe("isIgnoredWhileSponsored", () => {
       {
         network: SPONSORED_NETWORK,
         gasLimitMultiplier: GAS_LIMIT,
-        usePrivateMempool: true,
+        sendMode: "private-relay",
       },
     ],
     [

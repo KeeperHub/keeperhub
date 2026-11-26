@@ -1,6 +1,6 @@
 import "server-only";
 import { classifyRevert } from "@/lib/web3/decode-revert-error";
-import { isDefinitelyPreSend } from "@/lib/web3/pre-send";
+import { broadcastAttemptedOf } from "@/lib/web3/pre-send";
 
 import { ethers } from "ethers";
 import { ErrorCategory, logUserError } from "@/lib/logging";
@@ -477,12 +477,7 @@ async function tradeStockTokenCoreImpl(
     return {
       success: false,
       error: getErrorMessage(error),
-      broadcastAttempted: broadcastHash
-        ? true
-        : rejection.kind !== "unknown" ||
-            isDefinitelyPreSend(error)
-          ? false
-          : true,
+      broadcastAttempted: broadcastAttemptedOf(error, broadcastHash, rejection),
       ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
     };
   }

@@ -1,13 +1,15 @@
-import type { Interface } from "ethers";
+import { ETHEREUM_L1_CHAIN_IDS } from "@/lib/web3/ethereum-l1";
+import { extractRevertData, rpcErrorOf } from "@/lib/web3/revert-data";
 
 const GAS_LIMIT_TOO_LOW = "gas-limit-too-low" as const;
 const GAS_LIMIT_TOO_HIGH = "gas-limit-too-high" as const;
 const RAISE_OR_CLEAR = "Raise the Gas Limit or leave it empty.";
 
-// Ethereum L1 chains (mainnet, Sepolia, Hoodi) cap a transaction at 2^24 gas
-// (EIP-7825).
-const EIP_7825_CHAIN_IDS = new Set<number>([1, 11_155_111, 560_048]);
+// Ethereum L1 caps a transaction at 2^24 gas (EIP-7825).
 const EIP_7825_TX_GAS_CAP = BigInt(2 ** 24);
+// Chains whose latest block may be a small one while big blocks also come (HyperEVM):
+// their latest block's gas limit is not the per-transaction limit.
+const MIXED_BLOCK_SIZE_CHAIN_IDS: ReadonlySet<number> = new Set([999, 998]);
 
 // The node's own out-of-gas words. Only this, or revert data, counts as
 // evidence that a limit is too low.
@@ -42,7 +44,7 @@ export class GasLimitTooLowError extends Error {
 }
 
 /** A fixed Gas Limit above what the network accepts; nothing was sent. */
-export class GasLimitTooHighError extends Error {
+class GasLimitTooHighError extends Error {
   override readonly name = "GasLimitTooHighError" as const;
   readonly kind = GAS_LIMIT_TOO_HIGH;
   readonly gasLimit: bigint;
@@ -67,17 +69,22 @@ export function isGasLimitError(error: unknown): boolean {
 }
 
 /**
- * The most gas one transaction may use here: the block gas limit, and on
- * Ethereum L1 also 2^24. Undefined when the block's limit is unknown and
- * no cap applies.
+ * The most gas one transaction may use here: the block gas limit where it is the
+ * per-transaction limit, and 2^24 on Ethereum L1. Undefined when unknown.
  */
-export function networkGasLimit(
+function networkGasLimit(
   chainId: number,
   blockGasLimit: bigint | undefined
 ): bigint | undefined {
-  const cap = EIP_7825_CHAIN_IDS.has(chainId) ? EIP_7825_TX_GAS_CAP : undefined;
+  const cap = ETHEREUM_L1_CHAIN_IDS.has(chainId)
+    ? EIP_7825_TX_GAS_CAP
+    : undefined;
   // A missing or zero block gas limit says nothing.
-  if (blockGasLimit === undefined || blockGasLimit <= BigInt(0)) {
+  if (
+    MIXED_BLOCK_SIZE_CHAIN_IDS.has(chainId) ||
+    blockGasLimit === undefined ||
+    blockGasLimit <= BigInt(0)
+  ) {
     return cap;
   }
   return cap !== undefined && cap < blockGasLimit ? cap : blockGasLimit;
@@ -97,48 +104,16 @@ export function assertGasLimitFits(
 
 /** The node's own words on a failed call, as ethers keeps them. */
 export function nodeMessageOf(error: unknown): string {
-  const e = (error ?? {}) as {
-    info?: { error?: { message?: unknown } };
-    error?: { message?: unknown };
-    shortMessage?: unknown;
-    message?: unknown;
-  };
-  const text =
-    e.info?.error?.message ?? e.error?.message ?? e.shortMessage ?? e.message;
+  const e = (error ?? {}) as { shortMessage?: unknown; message?: unknown };
+  const text = rpcErrorOf(error)?.message ?? e.shortMessage ?? e.message;
   return typeof text === "string" ? text : "";
 }
 
 /** A capped failure that could be the limit: revert data or out-of-gas words. */
 export function hasOutOfGasEvidence(error: unknown): boolean {
-  const data = (error as { data?: unknown } | null)?.data;
+  const data = extractRevertData(error);
   return (
-    (typeof data === "string" && data.length > 2) ||
+    (data !== undefined && data.length > 2) ||
     OUT_OF_GAS_PATTERN.test(nodeMessageOf(error))
   );
-}
-
-/**
- * The revert reason a failed call gave, decoded: ethers' reason for
- * Error(string) / Panic, else a custom error's name from the contract ABI.
- * Nothing for empty revert data, where ethers invents "require(false)".
- */
-export function decodedRevertReason(
-  error: unknown,
-  contractInterface?: Interface
-): string | undefined {
-  const { reason, data } = (error ?? {}) as {
-    reason?: unknown;
-    data?: unknown;
-  };
-  if (typeof data !== "string" || data.length <= 2) {
-    return;
-  }
-  if (typeof reason === "string" && reason) {
-    return reason;
-  }
-  try {
-    return contractInterface?.parseError(data)?.name;
-  } catch {
-    return;
-  }
 }

@@ -725,7 +725,7 @@ export function getWssUrl(options: GetWssUrlOptions): string | undefined {
 }
 
 /** A chain's entry in chain-config JSON. */
-export type RpcConfigEntryKey = { rpcConfig: RpcConfig; jsonKey: string };
+type RpcConfigEntryKey = { rpcConfig: RpcConfig; jsonKey: string };
 
 /**
  * Get the private mempool RPC URL from chain-config JSON.

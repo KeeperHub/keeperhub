@@ -73,8 +73,9 @@ Use it when a run must not overlap the one before it, for example a keeper that 
 - The run history shows one Skipped row for each run that blocked others, with a count of the times it skipped: once per block or missed slot, even if KeeperHub receives the same block twice (a retry) within 2 minutes.
 - Skipped rows are not billed and never count toward or reset failure alerts.
 - Runs started through a listed workflow's public call endpoint do not block it: callers of a listed workflow cannot stop your trigger.
-- A run that started more than 30 minutes ago (the platform's stale-run limit) no longer blocks new runs.
-- The check is best effort: if the platform cannot record the run before dispatching it, the block runs as if the switch were off.
+- A run that started more than 30 minutes ago and has not finished a step in the last 30 minutes (the platform's stale-run limit) no longer blocks new runs.
+- If the platform cannot run the check (it cannot record the run before dispatching it), the block is skipped rather than run unchecked; no Skipped row is written for it.
+- A run that waits more than 5 minutes to start and is timed out by the platform is not started later.
 - Through the API, `true` and `"true"` both turn it on.
 - A run that sent a transaction but is still waiting for its receipt (its transaction may still be pending) does not block the next run, so the next run may send the same action again; check onchain state before sending.
 - The switch works per workflow, not per wallet: runs of other workflows that use the same wallet do not block this one.

@@ -1,7 +1,18 @@
-import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { db as appDb } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
 import type { WorkflowExecutionStatus } from "@/lib/errors/execution-status";
+import { completedStepSince } from "@/lib/reaper/completed-step-since";
 import { staleExecutionThresholdMinutes } from "@/lib/reaper/stale-threshold";
 
 // Not finished yet. 'unconfirmed' is left out: its steps are done, only the receipt is pending.
@@ -19,41 +30,84 @@ type Database = typeof appDb;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type NewRun = typeof workflowExecutions.$inferInsert;
 
-export type SkipCheckedInsert = {
+type SkipCheckedInsert = {
   id: string;
   skipped: boolean;
   alreadyExisted: boolean;
 };
 
+/** Live, not reaped, and not another caller's run (trigger_source 'mcp'). */
+function liveRunOf(workflowId: string): SQL | undefined {
+  return and(
+    eq(workflowExecutions.workflowId, workflowId),
+    inArray(workflowExecutions.status, [...ACTIVE_RUN_STATUSES]),
+    isNull(workflowExecutions.deletedAt),
+    sql`${workflowExecutions.triggerSource} IS DISTINCT FROM 'mcp'`
+  );
+}
+
+// Live rows older than the stale limit, checked for progress per dispatch.
+const OLDER_LIVE_ROWS_MAX = 100;
+
 /**
- * The oldest live run of the workflow, or null. Runs started through the
- * listed-workflow call endpoint (trigger_source 'mcp') are other callers' runs
- * and do not count; neither does a run older than the reaper's stale limit.
+ * A live run of the workflow, or null: the oldest one started within the stale
+ * limit, else the oldest older one still progressing (a step completed since),
+ * which the reaper also spares.
  */
-export async function findBlockingRun(
+async function findBlockingRun(
   tx: Pick<Transaction, "select">,
   workflowId: string,
-  now: Date = new Date()
+  now: Date
 ): Promise<string | null> {
   const cutoff = new Date(
     now.getTime() - staleExecutionThresholdMinutes() * 60 * 1000
   );
-  // workflow_id + started_at range: idx_workflow_executions_workflow_started can serve it.
-  const [row] = await tx
+  // workflow_id + started_at range: idx_workflow_executions_workflow_started serves it.
+  const [recent] = await tx
+    .select({ id: workflowExecutions.id })
+    .from(workflowExecutions)
+    .where(and(liveRunOf(workflowId), gt(workflowExecutions.startedAt, cutoff)))
+    .orderBy(asc(workflowExecutions.startedAt))
+    .limit(1);
+  if (recent) {
+    return recent.id;
+  }
+  // Older live rows: few, so the planner can use the status index (no ORDER BY
+  // asks for started_at order). Capped so the id list below stays bounded.
+  const candidates = await tx
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)
     .where(
-      and(
-        eq(workflowExecutions.workflowId, workflowId),
-        gt(workflowExecutions.startedAt, cutoff),
-        inArray(workflowExecutions.status, [...ACTIVE_RUN_STATUSES]),
-        isNull(workflowExecutions.deletedAt),
-        sql`${workflowExecutions.triggerSource} IS DISTINCT FROM 'mcp'`
-      )
+      and(liveRunOf(workflowId), lte(workflowExecutions.startedAt, cutoff))
     )
-    .orderBy(asc(workflowExecutions.startedAt))
-    .limit(1);
-  return row?.id ?? null;
+    .limit(OLDER_LIVE_ROWS_MAX);
+  if (candidates.length === 0) {
+    return null;
+  }
+  // By id, so the step-log check probes idx_exec_logs_execution_id per row
+  // instead of a semi-join that scans the log table.
+  const older = await tx
+    .select({
+      id: workflowExecutions.id,
+      startedAt: workflowExecutions.startedAt,
+    })
+    .from(workflowExecutions)
+    .where(
+      and(
+        inArray(
+          workflowExecutions.id,
+          candidates.map((row) => row.id)
+        ),
+        completedStepSince(cutoff)
+      )
+    );
+  let oldest: (typeof older)[number] | undefined;
+  for (const row of older) {
+    if (!oldest || row.startedAt < oldest.startedAt) {
+      oldest = row;
+    }
+  }
+  return oldest?.id ?? null;
 }
 
 // A repeat of a dispatch (HTTP retry within ~17 s, leader overlap, late block) comes
@@ -61,11 +115,13 @@ export async function findBlockingRun(
 const REPEAT_WINDOW_MS = 2 * 60 * 1000;
 // Upper bound on remembered keys: 2 minutes of a 17-blocks-per-second chain.
 const SKIPPED_KEYS_MAX = 2048;
+// completed_at (indexed) moves at most once a minute; between, a skip rewrites only output.
+const SKIPPED_ROW_REFRESH_SECONDS = 60;
 
 type Tx = Pick<Transaction, "select">;
 
 /** The advisory lock key that serialises dispatches of one workflow. */
-export function skipLockKey(workflowId: string): string {
+function skipLockKey(workflowId: string): string {
   return `skip-if-running:${workflowId}`;
 }
 
@@ -76,13 +132,12 @@ async function findSkippedKey(
   dispatchKey: string,
   now: Date
 ): Promise<string | null> {
-  const windowStart = new Date(now.getTime() - REPEAT_WINDOW_MS);
-  // A row still counting started at most the stale limit before its last skip.
-  const oldestStart = new Date(
-    windowStart.getTime() - staleExecutionThresholdMinutes() * 60 * 1000
+  // completed_at can trail the row's newest key by up to the refresh interval.
+  const windowStart = new Date(
+    now.getTime() - REPEAT_WINDOW_MS - SKIPPED_ROW_REFRESH_SECONDS * 1000
   );
-  // Served by the partial idx_workflow_executions_skipped_behind (workflow_id, completed_at);
-  // where it is missing, the started_at bound lets idx_workflow_executions_workflow_started serve it.
+  // Served by the partial idx_workflow_executions_skipped_behind (workflow_id, completed_at).
+  // No started_at bound: a row counts for as long as its blocker progresses.
   const [row] = await tx
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)
@@ -93,7 +148,6 @@ async function findSkippedKey(
         sql`${workflowExecutions.status} = 'skipped'`,
         sql`${workflowExecutions.dispatchKey} LIKE 'skipped-behind:%'`,
         gt(workflowExecutions.completedAt, windowStart),
-        gt(workflowExecutions.startedAt, oldestStart),
         sql`jsonb_exists(${workflowExecutions.output}->'keys', ${dispatchKey}::text)`
       )
     )
@@ -156,7 +210,7 @@ export function insertPhantomUnlessRunning(
       .onConflictDoUpdate({
         target: workflowExecutions.dispatchKey,
         set: {
-          completedAt: sql`greatest(${workflowExecutions.completedAt}, excluded.completed_at)`,
+          completedAt: sql`CASE WHEN coalesce(${workflowExecutions.completedAt}, '-infinity') <= excluded.completed_at - make_interval(secs => ${SKIPPED_ROW_REFRESH_SECONDS}) THEN excluded.completed_at ELSE ${workflowExecutions.completedAt} END`,
           // Keys older than the repeat window are dropped; newest kept up to the cap.
           output: sql`jsonb_build_object(
             'refusals', coalesce((${workflowExecutions.output}->>'refusals')::int, 1) + 1,

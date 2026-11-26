@@ -6,7 +6,7 @@
  * exporting functions from "use step" files (which breaks the workflow bundler).
  */
 import "server-only";
-import { isDefinitelyPreSend } from "@/lib/web3/pre-send";
+import { broadcastAttemptedOf } from "@/lib/web3/pre-send";
 import {
   type SendReport,
   type SendRoute,
@@ -33,10 +33,8 @@ import {
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
-import { readRpcFor } from "@/lib/rpc/read-provider";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
-import { getSendRpcProvider } from "@/lib/rpc/send-provider";
+import { resolveWriteRpc } from "@/lib/rpc/send-provider";
 import {
   describeAmbiguousKey,
   resolveAbiFunction,
@@ -110,12 +108,12 @@ export type WriteContractCoreInput = {
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
   sponsorGas?: boolean;
-  // "Send as" ("transaction" | "private-relay") and its legacy flag, read
-  // together by usesPrivateRelay. A private relay send is never sponsored.
+  // "Send as" and the old flag (any stored value), read by relayUseOf in
+  // getSendRpcProvider. A step that asks for the relay is never sponsored.
   sendMode?: string;
-  usePrivateMempool?: boolean;
-  // When true and usePrivateMempool is true, failing to reach the private RPC
-  // does NOT fall back to the public mempool. Ignored when usePrivateMempool is false.
+  usePrivateMempool?: unknown;
+  // false: a relay failure other than a revert is retried on the public RPC, and
+  // sendMode "private-relay" on a chain without a relay sends publicly.
   strict?: boolean;
   // Per-node Web3 Connection field. See ParsedWeb3Connection / parseWeb3Connection
   // in lib/safe/signer-resolver.ts. Missing -> "default" -> org-policy resolver.
@@ -292,9 +290,6 @@ async function writeContractCoreImpl(
     simulateTimestampOffsetSec,
     _context,
   } = input;
-  // Set from the Send as keys once the RPC is resolved.
-  let usePrivateMempool: boolean;
-
   if (!abiFunction || abiFunction.trim() === "") {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -445,35 +440,33 @@ async function writeContractCoreImpl(
 
   // Get chain ID and resolve RPC config (with user preferences + failover)
   let chainId: number;
-  let rpcUrl: string;
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
-  // Reads with no transaction data (the trace); the send stays on rpcManager.
-  let readRpc: Awaited<ReturnType<typeof getRpcProvider>>;
   try {
     chainId = getChainIdFromNetwork(network);
-
-    ({ rpcManager, relayRequested: usePrivateMempool } =
-      await getSendRpcProvider(input, { chainId, userId }));
-    rpcUrl = await rpcManager.resolveActiveRpcUrl();
-    readRpc = await readRpcFor(rpcManager, { chainId, userId });
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,
       "[Write Contract] Failed to resolve RPC config",
       error,
-      {
-        plugin_name: "web3",
-        action_name: "write-contract",
-      }
+      { plugin_name: "web3", action_name: "write-contract" }
     );
     return {
       success: false,
       error: getErrorMessage(error),
-      // A relay that never answered is not our platform failing, and a
-      // missing relay is the step's setting; everything else here is ours.
-      errorClass: rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM,
+      errorClass: ExecutionErrorType.SYSTEM,
     };
   }
+  // A relay that never answered or a missing relay is not our platform failing.
+  const resolved = await resolveWriteRpc(input, {
+    chainId,
+    userId,
+    log: { tag: "[Write Contract]", action: "write-contract" },
+    fallbackClass: ExecutionErrorType.SYSTEM,
+  });
+  if (!resolved.ok) {
+    return { success: false, ...resolved.failure };
+  }
+  const { rpcManager, readRpc, rpcUrl, relayRequested: usePrivateMempool } =
+    resolved.rpc;
 
   if (maxFeeOverride !== undefined) {
     const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
@@ -943,12 +936,7 @@ async function writeContractCoreImpl(
           getNextBlockSimulation(error)
         ),
         ...(errorClass ? { errorClass } : {}),
-        broadcastAttempted: broadcastHash
-          ? true
-          : rejection.kind !== "unknown" ||
-              isDefinitelyPreSend(error)
-            ? false
-            : true,
+        broadcastAttempted: broadcastAttemptedOf(error, broadcastHash, rejection),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
         ...sendReportFields(sendReport),
         ...(broadcastHash

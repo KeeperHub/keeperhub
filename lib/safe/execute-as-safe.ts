@@ -20,7 +20,7 @@ import {
   minedRevertError,
   OnChainPendingError,
 } from "@/lib/web3/onchain-revert";
-import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
+import { pollReceipt, RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import {
   type BroadcastResult,
   NonceConflictError,
@@ -114,8 +114,8 @@ function finishOnError(
  * A mined receipt with status 0 is a reverted transaction. Both Safe routes
  * are built so that an inner-call failure reverts the whole outer transaction
  * (execTransaction with safeTxGas=0 and gasPrice=0, execTransactionWithRole
- * with shouldRevert=true), and `waitForTransaction`, unlike `tx.wait()`,
- * resolves that receipt instead of throwing, so the status has to be read here.
+ * with shouldRevert=true), and a receipt read, unlike `tx.wait()`, returns
+ * that receipt instead of throwing, so the status has to be read here.
  */
 function throwIfReverted(
   receipt: ethers.TransactionReceipt,
@@ -131,9 +131,8 @@ function throwIfReverted(
  * the wait can end without one.
  *
  * Both failure modes here are post-broadcast: the transaction is on the
- * network and the nonce is spent. `executeWithFailover` exhausting its
- * providers (~186s) threw a bare Error or RpcRelayTransportError, and a null
- * receipt threw a bare Error, so neither carried the hash. The finalizer
+ * network and the nonce is spent. A failed receipt read and a null receipt
+ * once threw bare Errors, so neither carried the hash. The finalizer
  * harvests hashes off the error, so a hash-less throw stamped a terminal
  * failure on a transaction that existed on-chain and nowhere in our data --
  * #2020, entered from the Safe path.
@@ -143,12 +142,11 @@ function throwIfReverted(
  * settled-failure case is status 0, which arrives as a receipt and is
  * classified by throwIfReverted at the call sites.
  *
- * The wait is bounded for the same reason the ethers path is: ethers'
- * `waitForTransaction` rejects only when a timeout is supplied and otherwise
- * waits on the block listener forever, so without one a Safe-routed
- * transaction that never mines pins the step until the reaper takes it and
- * records no hash. At confirms = 1 ethers rejects with TIMEOUT when the
- * timeout passes; it never resolves null.
+ * The wait polls the receipt (pollReceipt) until RECEIPT_WAIT_TIMEOUT_MS, each
+ * read through the failover (on a relay, the provider that sent, each read
+ * capped), so a dead endpoint costs one read, not the wait. Not ethers'
+ * waitForTransaction: it swallows read errors and can leave an unhandled
+ * rejection when its first read fails.
  */
 async function waitForSafeReceipt(
   broadcast: BroadcastResult,
@@ -174,41 +172,42 @@ function relaySendProvider(
   );
 }
 
+// Between receipt reads while a Safe send waits for inclusion.
+const RECEIPT_POLL_INTERVAL_MS = 2000;
+// One receipt read on the relay, which has no failover to end a hung read.
+const RELAY_RECEIPT_READ_TIMEOUT_MS = 30_000;
+
 async function readSafeReceipt(
   broadcast: BroadcastResult,
   rpcManager: RpcProviderManager,
   label: string,
   route: SendReport["route"]
 ): Promise<ethers.TransactionReceipt> {
-  let receipt: ethers.TransactionReceipt | null;
-  try {
-    // A relay can hold a send for about 25 blocks: wait outside the per-try timeout.
-    receipt = rpcManager.hasPrivateRelayPrimary()
-      ? await relaySendProvider(rpcManager, route).waitForTransaction(
-          broadcast.hash,
-          1,
-          RECEIPT_WAIT_TIMEOUT_MS
-        )
-      : await rpcManager.executeWithFailover(
-          (p) =>
-            p.waitForTransaction(broadcast.hash, 1, RECEIPT_WAIT_TIMEOUT_MS),
+  const { hash } = broadcast;
+  const relay = rpcManager.hasPrivateRelayPrimary();
+  const read = (): Promise<ethers.TransactionReceipt | null> =>
+    relay
+      ? relaySendProvider(rpcManager, route).getTransactionReceipt(hash)
+      : rpcManager.executeWithFailover(
+          (provider) => provider.getTransactionReceipt(hash),
           "read"
         );
-  } catch (error) {
-    throw new OnChainPendingError({
-      message: ethers.isError(error, "TIMEOUT")
-        ? `${label} sent but not included within ${RECEIPT_WAIT_TIMEOUT_MS / 60_000} minutes`
-        : `${label} sent but receipt could not be read (${redactAllUrls(getErrorMessage(error))})`,
-      transactionHash: broadcast.hash,
-    });
+  // Inclusion can take minutes (a relay holds a send about 25 blocks).
+  const outcome = await pollReceipt(read, {
+    timeoutMs: RECEIPT_WAIT_TIMEOUT_MS,
+    intervalMs: RECEIPT_POLL_INTERVAL_MS,
+    // A relay read has no failover, so a hung one is cut short.
+    readTimeoutMs: relay ? RELAY_RECEIPT_READ_TIMEOUT_MS : undefined,
+  });
+  if (outcome.receipt) {
+    return outcome.receipt;
   }
-  if (!receipt) {
-    throw new OnChainPendingError({
-      message: `${label} sent but receipt unavailable`,
-      transactionHash: broadcast.hash,
-    });
-  }
-  return receipt;
+  throw new OnChainPendingError({
+    message: outcome.lastReadError
+      ? `${label} sent but receipt could not be read (${redactAllUrls(getErrorMessage(outcome.lastReadError))})`
+      : `${label} sent but not included within ${RECEIPT_WAIT_TIMEOUT_MS / 60_000} minutes`,
+    transactionHash: hash,
+  });
 }
 
 export async function executeContractCallAsSafe(

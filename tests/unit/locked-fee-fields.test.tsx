@@ -99,7 +99,7 @@ describe("Write Contract fee settings while sponsored", () => {
   it.each([
     { network: COVERED_NETWORK, sponsorGas: false },
     { network: UNCOVERED_NETWORK },
-    { network: COVERED_NETWORK, usePrivateMempool: true },
+    { network: COVERED_NETWORK, sendMode: "private-relay" },
   ])("unlocks the fee fields when the node pays its own gas: %j", (config) => {
     render(fields, config);
 

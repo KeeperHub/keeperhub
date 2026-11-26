@@ -366,7 +366,39 @@ describe("batch-write-contract - happy path", () => {
 });
 
 describe("batch-write-contract - old (Flashbots) relay configs", () => {
-  it.each([{ usePrivateMempool: true }, { sendMode: "private-relay" }])(
+  it("fails an old true flag on a chain with a relay, as a user error, before sending", async () => {
+    mockGetRpcProvider.mockResolvedValueOnce({
+      resolveActiveRpcUrl: () => Promise.resolve("https://relay.example"),
+      executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
+      hasPrivateRelayPrimary: () => true,
+    });
+    const { rpcRelayErrorClass } = await vi.importActual<
+      typeof import("@/lib/rpc/providers")
+    >("@/lib/rpc/providers");
+    mockRpcRelayErrorClass.mockImplementationOnce(rpcRelayErrorClass);
+    const result = await batchWriteContractCore(
+      baseInput({ usePrivateMempool: true })
+    );
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    expect((result as { error: string }).error).toContain(
+      "Batch Write Contract can't send through the private relay yet"
+    );
+    expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("sends an old true flag publicly on a chain without a relay, as before", async () => {
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    const result = await batchWriteContractCore(
+      baseInput({ usePrivateMempool: true })
+    );
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it.each([{ sendMode: "private-relay" }])(
     "fails %j before any RPC, as a user error",
     async (relay) => {
       mockGetRpcProvider.mockClear();

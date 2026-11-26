@@ -2,12 +2,11 @@ import { ethers, isError } from "ethers";
 import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
 import { logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
-import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
+import { decodeRevertReason } from "@/lib/web3/decode-revert-error";
 import { fixedGasLimit } from "@/lib/web3/gas-defaults";
 import {
   assertGasLimitFits,
-  decodedRevertReason,
   GasLimitTooLowError,
   hasOutOfGasEvidence,
   nodeMessageOf,
@@ -18,7 +17,7 @@ import {
   OnChainPendingError,
   OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
-import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
+import { pollReceipt, RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import {
   type SendReport,
   submitSignedTransactionWithFailover,
@@ -63,7 +62,7 @@ type Probe = (overrides: PreflightOverrides) => Promise<unknown>;
  * all at one pinned block.
  * - Through a private relay, which refuses eth_call, the probe is
  *   eth_estimateGas; with no fixed limit the send's own estimate is the check.
- * - Above the network's limit (block gas limit, 2^24 on Ethereum L1): too high.
+ * - Above the network's limit (2^24 on Ethereum L1, else the block's limit): too high.
  * - A capped failure with out-of-gas evidence (revert data, or the node's
  *   out-of-gas words) is retried uncapped (a real revert throws there), then
  *   capped again: failing again means too low.
@@ -116,7 +115,7 @@ async function preflightCall(
   if (again !== undefined) {
     throw new GasLimitTooLowError(
       fixed,
-      { revertedWith: decodedRevertReason(again, check.contractInterface) },
+      { revertedWith: decodeRevertReason(again, check.contractInterface) },
       { cause: again }
     );
   }
@@ -186,7 +185,10 @@ export class EvmChainAdapter implements ChainAdapter {
           )
         : probe(provider, preflightTx);
     };
-    const estimate = ({ blockTag, ...rest }: PreflightOverrides) =>
+    const estimate = ({
+      blockTag,
+      ...rest
+    }: PreflightOverrides): Promise<bigint> =>
       run((p, tx) => estimateGasAt(p, tx, blockTag), rest);
     await preflightCall(
       fixed,
@@ -339,7 +341,10 @@ export class EvmChainAdapter implements ChainAdapter {
               "preflight"
             )
           : probe(fn, provider);
-      const estimate = ({ blockTag, ...rest }: PreflightOverrides) =>
+      const estimate = ({
+        blockTag,
+        ...rest
+      }: PreflightOverrides): Promise<bigint> =>
         run(async (method, p) => {
           const overrides = { ...callOverrides, ...rest };
           if (blockTag === undefined) {
@@ -567,24 +572,15 @@ export class EvmChainAdapter implements ChainAdapter {
       return provider.getTransactionReceipt(tx.hash);
     };
 
-    const deadline = Date.now() + TEMPO_RECEIPT_TIMEOUT_MS;
-    let lastReadError: unknown;
-    while (Date.now() < deadline) {
-      let receipt: ethers.TransactionReceipt | null = null;
-      try {
-        receipt = await fetchReceipt();
-        lastReadError = undefined;
-      } catch (error) {
-        // A transient read failure is post-broadcast, but it should not throw
-        // away the rest of the confirmation window. Keep polling until the
-        // deadline; only the exhausted case below settles as pending.
-        lastReadError = error;
-      }
-      if (receipt) {
-        return receipt;
-      }
-      await sleep(TEMPO_RECEIPT_POLL_INTERVAL_MS);
+    // A failed read is post-broadcast: it keeps polling until the deadline.
+    const outcome = await pollReceipt(fetchReceipt, {
+      timeoutMs: TEMPO_RECEIPT_TIMEOUT_MS,
+      intervalMs: TEMPO_RECEIPT_POLL_INTERVAL_MS,
+    });
+    if (outcome.receipt) {
+      return outcome.receipt;
     }
+    const { lastReadError } = outcome;
     // The poll ran out of time, but the transaction is on the network: the
     // same unknown-not-failed case as an empty receipt in confirmTransaction
     // below. The hash rides on the error rather than living only in the

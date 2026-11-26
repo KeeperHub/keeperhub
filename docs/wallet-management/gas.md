@@ -51,7 +51,7 @@ You can set an absolute gas limit per action node:
 ### Field Behavior
 
 - **When empty**: The chain's default multiplier (see [Default Multipliers](#default-multipliers)) is applied to the gas estimate at execution time
-- **When set**: Your absolute value is used directly as the transaction gas limit, bypassing the multiplier. A limit above the network's limit (the block gas limit, and 16777216 on Ethereum mainnet, Sepolia and Hoodi) is refused before sending, and a limit the check shows is too low for the call fails before sending too. A node may still refuse a limit at send time; nothing is broadcast then either. Through a Safe the Gas Limit is not applied.
+- **When set**: Your absolute value is used directly as the transaction gas limit, bypassing the multiplier. A limit above the network's limit (16777216 on Ethereum mainnet, Sepolia and Hoodi; elsewhere the latest block's gas limit, except on HyperEVM, whose blocks come in two sizes) is refused before sending, and a limit the check shows is too low for the call fails before sending too. A node may still refuse a limit at send time; nothing is broadcast then either. Through a Safe the Gas Limit is not applied.
 - **Simulate at set to Latest**: direct wallet sends skip `eth_estimateGas`, and the pre-send `eth_call` that catches a revert runs with your Gas Limit. Transfer Native Token, Transfer ERC20 Token and Approve ERC20 Token have no Simulate at setting and work the same way.
 - **Simulate at set to Next block**: the estimate is the revert check, so it always runs, with your Gas Limit as its ceiling.
 - **Send as set to Private relay**: the pre-send check goes through the same RPC as the send, the private relay. Flashbots Protect refuses `eth_call`, so with Simulate at set to Latest the check runs as `eth_estimateGas`, with your Gas Limit as its gas; the too-high and too-low rules above still apply. The checks run at one block. Nothing is sent to a public RPC for the check unless the action's config sets `strict: false` (see [Send as](/plugins/web3#send-as)) and the relay fails a call for a reason other than a revert. Batch Write Contract does not offer Private relay yet, because its per-call check needs `eth_call`.
@@ -303,7 +303,7 @@ When an inner call runs out of gas and the contract then reverts with no reason,
 
 ### What happens if my gas limit is too high?
 
-Up to the network's limit, the transaction reserves more gas but only consumes what it needs, and unused gas is refunded; very high limits may make some networks deprioritize it. Above the network's limit (the block gas limit, or 16777216 on Ethereum mainnet, Sepolia and Hoodi), the step fails before sending with "Gas Limit N is above the network's limit".
+Up to the network's limit, the transaction reserves more gas but only consumes what it needs, and unused gas is refunded; very high limits may make some networks deprioritize it. Above the network's limit (16777216 on Ethereum mainnet, Sepolia and Hoodi; elsewhere the latest block's gas limit, not checked on HyperEVM), the step fails before sending with "Gas Limit N is above the network's limit".
 
 ### Does the gas limit affect gas price/fees?
 

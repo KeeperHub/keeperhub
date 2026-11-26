@@ -310,7 +310,7 @@ describe("evaluateShowWhen", () => {
 
     it("shows the field for a private mempool or an explicit Safe sender", () => {
       expect(
-        evaluateShowWhen(predicate, { network: "1", usePrivateMempool: true })
+        evaluateShowWhen(predicate, { network: "1", sendMode: "private-relay" })
       ).toBe(true);
       expect(
         evaluateShowWhen(predicate, {

@@ -31,3 +31,14 @@ export function extractRevertData(error: unknown): string | undefined {
 
   return;
 }
+
+/** The JSON-RPC error object ethers keeps on an error the node answered with. */
+export function rpcErrorOf(
+  error: unknown
+): { code?: unknown; message?: unknown } | undefined {
+  const e = error as { info?: { error?: unknown }; error?: unknown } | null;
+  const candidate = e?.info?.error ?? e?.error;
+  return candidate && typeof candidate === "object"
+    ? (candidate as { code?: unknown; message?: unknown })
+    : undefined;
+}

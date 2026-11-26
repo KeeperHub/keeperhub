@@ -7,11 +7,13 @@ import {
   reconcileSendModeKeys,
   type SendModeSaveOptions,
   validateSendModeForSave,
+  writeLegacySendModeKey,
 } from "@/lib/workflow/validation/send-mode";
 
 /**
  * Every config check a workflow save runs: the action configs and Send as.
- * On an update the Send as keys are reconciled first (see reconcileSendModeKeys).
+ * On an update the Send as keys are reconciled first; a valid save then fills
+ * a missing `usePrivateMempool` beside every known `sendMode`.
  */
 export async function validateWorkflowNodesForSave(
   nodes: WorkflowNodeForValidation[],
@@ -25,5 +27,8 @@ export async function validateWorkflowNodesForSave(
   });
   const sendModes = await validateSendModeForSave(nodes, options);
   const issues = [...actionConfigs.issues, ...sendModes.issues];
+  if (issues.length === 0) {
+    writeLegacySendModeKey(nodes);
+  }
   return { valid: issues.length === 0, issues };
 }

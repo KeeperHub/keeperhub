@@ -21,6 +21,7 @@
  * reachable, so CI without infra does not fail this file.
  */
 
+import { type AddressInfo, createServer } from "node:net";
 import { ethers } from "ethers";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -28,15 +29,26 @@ vi.mock("server-only", () => ({}));
 
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { isOnChainPendingError } from "@/lib/web3/onchain-revert";
 import {
   NonceConflictError,
   submitSignedTransactionWithFailover,
 } from "@/lib/web3/submit-signed";
 
 const ANVIL_URL = process.env.ANVIL_URL ?? "http://localhost:8546";
-// 127.0.0.1:1 is the IANA TCP port 0 reserved range -- guaranteed
-// connection-refused, making it a deterministic "dead primary" target.
-const DEAD_PRIMARY_URL = "http://127.0.0.1:1";
+// A port just freed: a deterministic ECONNREFUSED "dead primary". The RPC path
+// follows redirects, so it still reads as "may have sent" (the hash is kept).
+async function closedPortUrl(): Promise<string> {
+  const server = createServer();
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const { port } = server.address() as AddressInfo;
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+  });
+  return `http://127.0.0.1:${port}`;
+}
 const CHAIN_ID = 31_337;
 
 // First two anvil default accounts (deterministic mnemonic).
@@ -79,7 +91,7 @@ describe.skipIf(shouldSkip)(
 
     beforeAll(async () => {
       rpcManager = await getRpcProviderFromUrls(
-        DEAD_PRIMARY_URL,
+        await closedPortUrl(),
         ANVIL_URL,
         CHAIN_ID,
         "anvil-test"
@@ -141,14 +153,10 @@ describe.skipIf(shouldSkip)(
       expect(receipt?.to?.toLowerCase()).toBe(ANVIL_ADDR_1.toLowerCase());
     });
 
-    // Three failover rounds against the dead primary (broadcast + two
-    // reconcile probes) burn the default retry budget before each falls
-    // over to the live fallback, so this test needs a longer timeout
-    // than the vitest default.
-    it("throws NonceConflictError when re-using a consumed nonce with different bytes", {
-      timeout: 90_000,
-    }, async () => {
-      // First broadcast at nonce N. After this lands, nonce N is consumed.
+    // Re-uses a consumed nonce with different bytes; anvil answers "nonce too low".
+    async function sendOnConsumedNonce(
+      manager: RpcProviderManager
+    ): Promise<{ error: unknown; expectedHash: string }> {
       const consumedNonce = await fallbackProvider.getTransactionCount(
         wallet.address,
         "pending"
@@ -157,28 +165,50 @@ describe.skipIf(shouldSkip)(
         ethers.parseEther("0.0005"),
         consumedNonce
       );
-      const firstResult = await submitSignedTransactionWithFailover(
-        wallet,
-        firstTx,
-        rpcManager
-      );
-      const firstReceipt = await fallbackProvider.waitForTransaction(
-        firstResult.hash
-      );
-      expect(firstReceipt?.status).toBe(1);
+      const first = await (await wallet.sendTransaction(firstTx)).wait();
+      expect(first?.status).toBe(1);
 
-      // Second broadcast at the SAME nonce but DIFFERENT value -> different
-      // signature -> different hash. Anvil rejects with "nonce too low".
-      // The helper's reconcile probes for OUR hash (not the first tx's),
-      // finds neither receipt nor mempool entry, and throws.
       const secondTx = await buildFundedTxRequest(
         ethers.parseEther("0.0007"),
         consumedNonce
       );
+      const expectedHash = ethers.keccak256(
+        await wallet.signTransaction(secondTx)
+      );
+      try {
+        await submitSignedTransactionWithFailover(wallet, secondTx, manager);
+      } catch (error) {
+        return { error, expectedHash };
+      }
+      throw new Error("expected the send to fail");
+    }
 
-      await expect(
-        submitSignedTransactionWithFailover(wallet, secondTx, rpcManager)
-      ).rejects.toBeInstanceOf(NonceConflictError);
+    it("throws NonceConflictError when re-using a consumed nonce with different bytes", {
+      timeout: 30_000,
+    }, async () => {
+      // A different signature means a different hash: the reconcile finds
+      // neither receipt nor mempool entry for OUR hash and throws.
+      const healthyOnly = await getRpcProviderFromUrls(
+        ANVIL_URL,
+        undefined,
+        CHAIN_ID,
+        "anvil-test-healthy"
+      );
+      const { error } = await sendOnConsumedNonce(healthyOnly);
+      expect(error).toBeInstanceOf(NonceConflictError);
+    });
+
+    // The dead primary's refusal is not proof of "never sent", so the
+    // conflict ends pending with our hash. Each failover round first burns
+    // the retry budget on the dead primary, hence the longer timeout.
+    it("keeps the hash on a nonce conflict after a dead primary", {
+      timeout: 90_000,
+    }, async () => {
+      const { error, expectedHash } = await sendOnConsumedNonce(rpcManager);
+      expect(isOnChainPendingError(error)).toBe(true);
+      expect((error as { transactionHash?: string }).transactionHash).toBe(
+        expectedHash
+      );
     });
   }
 );

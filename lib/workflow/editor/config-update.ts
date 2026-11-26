@@ -81,3 +81,21 @@ export function applyConfigUpdate(
     .map((field) => field.label ?? field.key);
   return { batch: { start, merged, cleared }, config };
 }
+
+/**
+ * A plugin field's value as the editor stores it: strings, booleans, plain
+ * objects and undefined as they are, anything else as text.
+ */
+export function editorConfigValue(
+  value: unknown
+): string | boolean | Record<string, unknown> | undefined {
+  if (
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    value === undefined ||
+    (typeof value === "object" && value !== null && !Array.isArray(value))
+  ) {
+    return value as string | boolean | Record<string, unknown> | undefined;
+  }
+  return String(value);
+}

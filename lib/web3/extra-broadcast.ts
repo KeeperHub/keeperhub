@@ -1,6 +1,7 @@
 import "server-only";
 import { logWarn } from "@/lib/logging";
-import { SsrfBlockedError, safeFetch } from "@/lib/safe-fetch";
+import { neverReached } from "@/lib/rpc/connection-refusal";
+import { safeFetch } from "@/lib/safe-fetch";
 
 /**
  * What one endpoint did with our signed bytes: took them (or already had
@@ -8,14 +9,14 @@ import { SsrfBlockedError, safeFetch } from "@/lib/safe-fetch";
  */
 export type Delivery = "accepted" | "refused" | "unknown";
 
-export type ExtraBroadcast = {
+type ExtraBroadcast = {
   /** True as soon as one extra URL accepts; false once all have answered. */
   anyAccepted: Promise<boolean>;
   /** Every extra URL's delivery, bounded by the request timeout. */
   deliveries: Promise<Delivery[]>;
 };
 
-export const EXTRA_BROADCAST_TIMEOUT_MS = 5000;
+const EXTRA_BROADCAST_TIMEOUT_MS = 5000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const JSON_RPC_INTERNAL_ERROR = -32_603;
 const HTTP_REQUEST_TIMEOUT = 408;
@@ -27,9 +28,6 @@ const UNKNOWN_OUTCOME_PATTERN =
 // Whole words only, so "unknown transaction type" is not a duplicate.
 const DUPLICATE_HASH_PATTERN =
   /\balready known\b|\balreadyknown\b|\balready imported\b|\bknown transaction\b/i;
-
-// Connection never made, so the request cannot have reached the node.
-const NEVER_CONNECTED_CODES = new Set(["ECONNREFUSED", "ENOTFOUND"]);
 
 export function isDuplicateHashMessage(message: string): boolean {
   return DUPLICATE_HASH_PATTERN.test(message);
@@ -107,12 +105,24 @@ async function sendRaw(
         params: [signedHex],
       }),
       signal: AbortSignal.timeout(EXTRA_BROADCAST_TIMEOUT_MS),
+      // Never re-send the signed bytes to wherever a redirect points.
+      redirect: "manual",
       plugin: "rpc-evm",
     });
   } catch (error) {
-    return neverConnected(error)
-      ? { delivery: "refused", kind: "connection_refused" }
-      : { delivery: "unknown", kind: "network" };
+    // No redirect is followed, so an unresolved or blocked host never got the bytes.
+    const reason = neverReached(error, { followsRedirects: false });
+    if (reason) {
+      return {
+        delivery: "refused",
+        kind: reason === "refused" ? "connection_refused" : "unreachable",
+      };
+    }
+    return { delivery: "unknown", kind: "network" };
+  }
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel().catch(() => undefined);
+    return { delivery: "refused", kind: "http_3xx" };
   }
   if (response.status >= 500) {
     await response.body?.cancel().catch(() => undefined);
@@ -122,18 +132,21 @@ async function sendRaw(
     await response.body?.cancel().catch(() => undefined);
     return { delivery: "unknown", kind: "http_408" };
   }
-  if (response.status >= 400) {
-    await response.body?.cancel().catch(() => undefined);
-    return { delivery: "refused", kind: "http_4xx" };
-  }
   const body = await readCapped(response);
-  if (body === undefined) {
-    return { delivery: "unknown", kind: "bad_response" };
+  const answer =
+    body === undefined ? undefined : readAnswer(body, expectedHash);
+  if (response.status >= 400) {
+    // Some nodes answer a JSON-RPC error ("already known") inside a 4xx.
+    return answer ?? { delivery: "refused", kind: "http_4xx" };
   }
-  return readAnswer(body, expectedHash);
+  return answer ?? { delivery: "unknown", kind: "bad_response" };
 }
 
-function readAnswer(body: string, expectedHash: string): SendOutcome {
+// The JSON-RPC answer in a body; undefined when the body is not one.
+function readAnswer(
+  body: string,
+  expectedHash: string
+): SendOutcome | undefined {
   let parsed: {
     result?: unknown;
     error?: { code?: unknown; message?: unknown };
@@ -141,7 +154,7 @@ function readAnswer(body: string, expectedHash: string): SendOutcome {
   try {
     parsed = JSON.parse(body);
   } catch {
-    return { delivery: "unknown", kind: "bad_response" };
+    return;
   }
   if (typeof parsed?.result === "string") {
     // Anything but our hash (a tracking id, say) may still have been forwarded.
@@ -152,7 +165,7 @@ function readAnswer(body: string, expectedHash: string): SendOutcome {
   if (parsed?.error && typeof parsed.error === "object") {
     return { delivery: deliveryOfRpcError(parsed.error), kind: "rpc_error" };
   }
-  return { delivery: "unknown", kind: "bad_response" };
+  return;
 }
 
 function normalizeHash(value: string): string {
@@ -185,21 +198,4 @@ async function readCapped(response: Response): Promise<string | undefined> {
     return;
   }
   return Buffer.concat(chunks).toString("utf8");
-}
-
-/** The request never reached a node: blocked, refused or not resolved. */
-export function neverConnected(error: unknown): boolean {
-  if (error instanceof SsrfBlockedError) {
-    return true;
-  }
-  // fetch and ethers wrap the socket error; look a few causes deep.
-  let current: unknown = error;
-  for (let depth = 0; depth < 4 && current; depth++) {
-    const code = (current as { code?: unknown }).code;
-    if (typeof code === "string" && NEVER_CONNECTED_CODES.has(code)) {
-      return true;
-    }
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
 }

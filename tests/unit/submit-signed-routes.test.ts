@@ -15,7 +15,9 @@ const { extraAnswer, SsrfBlockedError } = vi.hoisted(() => ({
   extraAnswer: {
     current: (_url: string, _signal: AbortSignal): unknown => undefined,
   },
-  SsrfBlockedError: class extends Error {},
+  SsrfBlockedError: class extends Error {
+    readonly code = "SSRF_BLOCKED";
+  },
 }));
 vi.mock("@/lib/safe-fetch", () => ({
   SsrfBlockedError,
@@ -224,36 +226,54 @@ describe("send route reporting", () => {
     expect(report.route).toBe("public");
   });
 
-  it.each([
-    ["in its message", () => new Error("connect ECONNREFUSED")],
-    [
-      "as a socket error code",
-      () =>
-        Object.assign(new TypeError("fetch failed"), {
-          cause: { code: "ECONNREFUSED" },
-        }),
-    ],
-  ])(
-    "keeps private-relay when the public fallback refused the connection (%s)",
-    async (_label, refusal) => {
-      stubManaged({
-        broadcast: (url) =>
-          Promise.reject(
-            url === RELAY_URL ? new Error("internal error") : refusal()
-          ),
-        seen: seenTx(),
-      });
-      const report: SendReport = {};
+  it("keeps private-relay when the public fallback refused the connection", async () => {
+    stubManaged({
+      broadcast: (url) =>
+        Promise.reject(
+          url === RELAY_URL
+            ? new Error("internal error")
+            : new Error("connect ECONNREFUSED")
+        ),
+      seen: seenTx(),
+    });
+    const report: SendReport = {};
 
-      const out = await send(
-        manager({ primary: RELAY_URL, fallback: PUBLIC_URL, relay: true }),
-        report
-      );
+    const out = await send(
+      manager({ primary: RELAY_URL, fallback: PUBLIC_URL, relay: true }),
+      report
+    );
 
-      expect(out.error).toBeUndefined();
-      expect(report.route).toBe("private-relay");
-    }
-  );
+    expect(out.error).toBeUndefined();
+    expect(report.route).toBe("private-relay");
+  });
+
+  it("keeps the hash when the managed RPC's refusal is only a socket code", async () => {
+    // A followed redirect can be refused on a later hop after an earlier one took the bytes.
+    stubManaged({ broadcast: refusedConnection });
+
+    const out = await send(manager({}));
+
+    expect(out.error).not.toBeInstanceOf(PreBroadcastNetworkError);
+    expect(isOnChainPendingError(out.error)).toBe(true);
+  });
+
+  it("keeps the hash when a gateway's error body names a refused upstream", async () => {
+    stubManaged({
+      broadcast: () =>
+        Promise.reject(
+          makeError("server response 503", "SERVER_ERROR", {
+            info: {
+              responseStatus: 503,
+              responseBody: "delayed connect error: Connection refused",
+            },
+          } as never)
+        ),
+    });
+
+    const out = await send(manager({}));
+
+    expect(isOnChainPendingError(out.error)).toBe(true);
+  });
 
   it("reports no route when nothing left the box", async () => {
     stubManaged({ broadcast: () => Promise.reject(new Error("ECONNREFUSED")) });
@@ -513,6 +533,55 @@ describe("broadcast to extra RPCs", () => {
     expect(out.result).toMatchObject({ hash: HASH });
   });
 
+  it("ends pending with the hash on 'nonce too low' when an extra may have sent", async () => {
+    stubManaged({
+      broadcast: () => Promise.reject(rpcRefusal("nonce too low")),
+    });
+    extras({ [EXTRA_A]: () => httpStatus(502) });
+
+    const out = await send(manager({ extras: [EXTRA_A] }));
+
+    expect(out.error).not.toBeInstanceOf(NonceConflictError);
+    expect(isOnChainPendingError(out.error)).toBe(true);
+    expect((out.error as { transactionHash?: string }).transactionHash).toBe(
+      HASH
+    );
+  });
+
+  it("ends pending with the hash on 'nonce too low' after a managed attempt timed out", async () => {
+    const fallback = "https://fallback.example";
+    // The first endpoint may have taken the bytes before timing out.
+    const { broadcastCalls } = stubManaged({
+      broadcast: (url) =>
+        Promise.reject(
+          url === fallback
+            ? rpcRefusal("nonce too low")
+            : makeError("request timeout", "TIMEOUT")
+        ),
+    });
+
+    const out = await send(manager({ fallback }));
+
+    expect(broadcastCalls).toContain(fallback);
+    expect(out.error).not.toBeInstanceOf(NonceConflictError);
+    expect(isOnChainPendingError(out.error)).toBe(true);
+    expect((out.error as { transactionHash?: string }).transactionHash).toBe(
+      HASH
+    );
+  });
+
+  it("asks extras not to follow redirects, so the signed bytes go nowhere else", async () => {
+    stubManaged({ broadcast: accepted });
+    extras({ [EXTRA_A]: () => rpcResult(HASH) });
+
+    await send(manager({ extras: [EXTRA_A] }));
+
+    await vi.waitFor(() => expect(safeFetch).toHaveBeenCalledTimes(1));
+    expect(
+      (vi.mocked(safeFetch).mock.calls[0][1] as RequestInit).redirect
+    ).toBe("manual");
+  });
+
   it("fails as a nonce conflict when no extra accepted and the hash is not found", async () => {
     stubManaged({
       broadcast: () => Promise.reject(rpcRefusal("nonce too low")),
@@ -532,6 +601,16 @@ describe("broadcast to extra RPCs", () => {
     ["a JSON-RPC rejection", () => rpcError("rate limited")],
     ["a refused connection", refusedConnection],
     ["a blocked URL", () => Promise.reject(new SsrfBlockedError("blocked"))],
+    ["a redirect, never followed", () => httpStatus(307)],
+    [
+      "an unresolved host",
+      () =>
+        Promise.reject(
+          Object.assign(new TypeError("fetch failed"), {
+            cause: { code: "ENOTFOUND" },
+          })
+        ),
+    ],
     [
       "unknown transaction type",
       () => rpcError("rlp: unknown transaction type"),
@@ -563,6 +642,26 @@ describe("broadcast to extra RPCs", () => {
     ],
     ["answered 408", () => httpStatus(408)],
     ["sent an oversized body", () => new Response("x".repeat(70_000))],
+    [
+      "answered 400 with a JSON-RPC 'already known'",
+      () =>
+        Response.json(
+          {
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: -32_000, message: "already known" },
+          },
+          { status: 400 }
+        ),
+    ],
+    [
+      "answered 400 with a JSON-RPC internal error",
+      () =>
+        Response.json(
+          { jsonrpc: "2.0", id: 1, error: { code: -32_603, message: "oops" } },
+          { status: 400 }
+        ),
+    ],
   ])(
     "is no longer pre-broadcast when an extra %s",
     async (_label, answer) => {
@@ -597,6 +696,35 @@ describe("broadcast to extra RPCs", () => {
       expect(safeFetch).not.toHaveBeenCalled();
     }
   );
+
+  it.each([
+    ["a refused connection", refusedConnection, "connection_refused"],
+    [
+      "an unresolved host",
+      () =>
+        Promise.reject(
+          Object.assign(new TypeError("fetch failed"), {
+            cause: { code: "ENOTFOUND" },
+          })
+        ),
+      "unreachable",
+    ],
+    [
+      "a blocked URL",
+      () => Promise.reject(new SsrfBlockedError("blocked")),
+      "unreachable",
+    ],
+  ])("logs an extra that met %s as %s", async (_label, answer, kind) => {
+    stubManaged({ broadcast: accepted });
+    extras({ [EXTRA_A]: answer });
+
+    await send(manager({ extras: [EXTRA_A] }));
+    await vi.waitFor(() => expect(logWarn).toHaveBeenCalled());
+
+    expect(vi.mocked(logWarn).mock.calls[0]?.[1]).toMatchObject({
+      error_type: kind,
+    });
+  });
 
   it("never fails the step or logs the URL when an extra URL fails", async () => {
     stubManaged({ broadcast: accepted });

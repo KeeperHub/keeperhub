@@ -1,6 +1,7 @@
 import { ethers, isError } from "ethers";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { sleep } from "@/lib/sleep";
+import { isConnectionRefusal } from "../connection-refusal";
 import { safeEthersGetUrl } from "../safe-ethers-fetch";
 import { redactAllUrls, scrubRpcUrls } from "../scrub-rpc-urls";
 import {
@@ -186,16 +187,6 @@ export function classifyRpcError(error: unknown): RpcErrorType {
     return "connection";
   }
   return "rpc_error";
-}
-
-function isConnectionRefusal(error: unknown): boolean {
-  const message =
-    error instanceof Error
-      ? error.message.toLowerCase()
-      : String(error).toLowerCase();
-  return (
-    message.includes("econnrefused") || message.includes("connection refused")
-  );
 }
 
 export type RpcProviderConfig = {
@@ -770,7 +761,8 @@ export class RpcProviderManager {
         lastError = error instanceof Error ? error : new Error(String(error));
         attemptCount += 1;
         allAttemptsConnectionRefused =
-          allAttemptsConnectionRefused && isConnectionRefusal(error);
+          allAttemptsConnectionRefused &&
+          isConnectionRefusal(error, { followsRedirects: true });
         this.recordFailure(providerType, operationType);
         this.metricsCollector.recordErrorType(
           this.config.chainName,

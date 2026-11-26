@@ -6,7 +6,13 @@
  * exporting functions from "use step" files (which breaks the workflow bundler).
  */
 import "server-only";
-import { isDefinitelyPreSend } from "@/lib/web3/pre-send";
+import { broadcastAttemptedOf } from "@/lib/web3/pre-send";
+import {
+  type SendReport,
+  type SendRoute,
+  sendReportFields,
+} from "@/lib/web3/submit-signed";
+import { isSponsoredTxRevertError } from "@/lib/web3/turnkey-revert";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
@@ -24,9 +30,12 @@ import {
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
+import { isSolanaChain } from "@/lib/rpc/provider-factory";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
-import { getSendRpcProvider } from "@/lib/rpc/send-provider";
+import {
+  assertSendAsWithoutRelay,
+  resolveWriteRpc,
+} from "@/lib/rpc/send-provider";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
 import { generateId } from "@/lib/utils/id";
@@ -79,12 +88,12 @@ export type TransferFundsCoreInput = {
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
   sponsorGas?: boolean;
-  // "Send as" ("transaction" | "private-relay") and its legacy flag, read
-  // together by usesPrivateRelay. A private relay send is never sponsored.
+  // "Send as" and the old flag (any stored value), read by relayUseOf in
+  // getSendRpcProvider. A step that asks for the relay is never sponsored.
   sendMode?: string;
-  usePrivateMempool?: boolean;
-  // Strict mode: when true and usePrivateMempool is true, failing to reach the
-  // private RPC does NOT fall back to the public mempool. Ignored otherwise.
+  usePrivateMempool?: unknown;
+  // false: a relay failure other than a revert is retried on the public RPC, and
+  // sendMode "private-relay" on a chain without a relay sends publicly.
   strict?: boolean;
   // Per-node Web3 Connection field. See parseWeb3Connection in
   // lib/safe/signer-resolver.ts. Missing -> "default" -> org-policy resolver.
@@ -112,6 +121,9 @@ export type TransferFundsResult =
       gasUsedUnits: string;
       effectiveGasPrice: string;
       sponsored?: boolean;
+      // Where the transaction was broadcast, and whether a receipt came back.
+      route?: SendRoute;
+      included?: boolean;
     }
   | {
       success: false;
@@ -129,6 +141,9 @@ export type TransferFundsResult =
       // the finalizer can report the route accurately on a failed execution.
       sponsored?: boolean;
       broadcastAttempted?: boolean;
+      // Absent before broadcast. included is true for an on-chain revert.
+      route?: SendRoute;
+      included?: boolean;
     };
 
 /**
@@ -150,8 +165,6 @@ async function transferFundsCoreImpl(
     web3Connection,
     _context,
   } = input;
-  // Set from the Send as keys once the RPC is resolved.
-  let usePrivateMempool: boolean;
 
   const { multiplierOverride, gasLimitOverride } =
     resolveGasLimitOverrides(gasLimitMultiplier);
@@ -166,6 +179,17 @@ async function transferFundsCoreImpl(
 
   // Branch early to Solana-specific path
   if (isSolanaTransferPath(chainId)) {
+    // Solana has no relay: Send as is checked here, before the Solana send.
+    try {
+      assertSendAsWithoutRelay(input, "Solana");
+    } catch (error) {
+      const errorClass = rpcRelayErrorClass(error);
+      return {
+        success: false,
+        error: getErrorMessage(error),
+        ...(errorClass ? { errorClass } : {}),
+      };
+    }
     return transferFundsSolana({
       chainId,
       amount,
@@ -227,27 +251,16 @@ async function transferFundsCoreImpl(
 
   const { organizationId, userId } = orgCtx;
 
-  // Resolve RPC config (with failover)
-  let rpcUrl: string;
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
-  try {
-    ({ rpcManager, relayRequested: usePrivateMempool } =
-      await getSendRpcProvider(input, { chainId, userId }));
-    rpcUrl = await rpcManager.resolveActiveRpcUrl();
-  } catch (error) {
-    logUserError(
-      ErrorCategory.VALIDATION,
-      "[Transfer Funds] Failed to resolve RPC config",
-      error,
-      { plugin_name: "web3", action_name: "transfer-funds" }
-    );
-    const errorClass = rpcRelayErrorClass(error);
-    return {
-      success: false,
-      error: getErrorMessage(error),
-      ...(errorClass ? { errorClass } : {}),
-    };
+  const resolved = await resolveWriteRpc(input, {
+    chainId,
+    userId,
+    log: { tag: "[Transfer Funds]", action: "transfer-funds" },
+  });
+  if (!resolved.ok) {
+    return { success: false, ...resolved.failure };
   }
+  const { rpcManager, rpcUrl, relayRequested: usePrivateMempool } =
+    resolved.rpc;
 
   // Get wallet address for nonce management
   let walletAddress: string;
@@ -339,6 +352,8 @@ async function transferFundsCoreImpl(
         return {
           success: true,
           sponsored: true,
+          route: "sponsored",
+          included: true,
           transactionHash: sponsoredResult.transactionHash,
           chainId,
           transactionLink,
@@ -372,6 +387,8 @@ async function transferFundsCoreImpl(
           // in-flight send into success.
           errorClass: decision.errorClass,
           sponsored: true,
+          route: "sponsored",
+          included: isSponsoredTxRevertError(error),
           broadcastAttempted: decision.broadcastAttempted,
           ...(decision.transactionHash
             ? { transactionHash: decision.transactionHash, chainId }
@@ -443,6 +460,7 @@ async function transferFundsCoreImpl(
     }
 
     let receivedTransactionHash: string | undefined;
+    const sendReport: SendReport = {};
     try {
       let receipt: Awaited<ReturnType<typeof adapter.sendTransaction>>;
       if (signerMode.kind === SIGNER_MODE.SAFE_ROLE) {
@@ -461,6 +479,7 @@ async function transferFundsCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            sendReport,
           }
         );
       } else if (signerMode.kind === SIGNER_MODE.SAFE) {
@@ -477,6 +496,7 @@ async function transferFundsCoreImpl(
             chainId,
             workflowId,
             rpcManager,
+            sendReport,
           }
         );
       } else {
@@ -491,6 +511,7 @@ async function transferFundsCoreImpl(
             gasOverrides: { multiplierOverride, gasLimitOverride },
             workflowId,
             rpcManager,
+            sendReport,
           }
         );
       }
@@ -504,6 +525,7 @@ async function transferFundsCoreImpl(
       return {
         success: true,
         transactionHash: receipt.hash,
+        ...sendReportFields(sendReport),
         chainId,
         transactionLink,
         gasUsed: gasCostWei,
@@ -534,12 +556,8 @@ async function transferFundsCoreImpl(
         error: formatContractError(error, undefined, "Transaction failed"),
         ...(errorClass ? { errorClass } : {}),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
-        broadcastAttempted:
-          broadcastHash ? true
-            : rejection.kind !== "unknown" ||
-                isDefinitelyPreSend(error)
-              ? false
-              : true,
+        broadcastAttempted: broadcastAttemptedOf(error, broadcastHash, rejection),
+        ...sendReportFields(sendReport),
         ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
       };
     }

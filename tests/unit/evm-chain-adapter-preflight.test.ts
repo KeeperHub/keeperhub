@@ -28,7 +28,9 @@ const mockSendTx = Object.assign(
   { staticCall: mockStaticCall, estimateGas: mockEstimateGas }
 );
 
-vi.mock("ethers", () => {
+// The send path builds revert-decoding ABIs at import, so Interface stays real.
+vi.mock("ethers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ethers")>();
   function MockContract(): Record<string, unknown> {
     return {
       approve: mockSendTx,
@@ -43,6 +45,7 @@ vi.mock("ethers", () => {
   return {
     ethers: {
       Contract: MockContract,
+      Interface: actual.ethers.Interface,
     },
   };
 });

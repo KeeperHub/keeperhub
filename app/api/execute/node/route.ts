@@ -806,8 +806,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     return featureGuard.response;
   }
 
-  // The same Send as checks a workflow save runs; the step itself refuses a
-  // relay request on a chain without one.
+  // The same Send as checks a workflow save runs. On a chain without a relay the
+  // step refuses an explicit Private relay; the old flag alone sends publicly.
   const sendModeCheck = await validateSendModeForSave([
     {
       id: "direct",

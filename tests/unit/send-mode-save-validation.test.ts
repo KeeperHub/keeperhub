@@ -84,16 +84,16 @@ describe("validateSendModeForSave", () => {
     expect(result.valid).toBe(true);
   });
 
-  it("refuses the private relay on a chain without one or unknown, legacy flag included", async () => {
+  it("refuses sendMode private-relay on a chain without one or unknown, not the old flag alone", async () => {
     const result = await validateChains([
       write("a", { network: "8453", sendMode: "private-relay" }),
+      // The old flag alone sends publicly there, as it always did.
       write("b", { network: "8453", usePrivateMempool: true }),
       write("c", { network: "999999", sendMode: "private-relay" }),
     ]);
     expect(result.valid).toBe(false);
     expect(result.issues.map((issue) => issue.path)).toEqual([
       "nodes[0].data.config.sendMode",
-      "nodes[1].data.config.sendMode",
       "nodes[2].data.config.sendMode",
     ]);
     expect(result.issues[0].message).toBe(
@@ -404,12 +404,13 @@ describe("old non-boolean flags (sent as before: relay where there is one)", () 
     }
   );
 
-  it("still refuses a real true on a chain without a relay", async () => {
+  it("lets a real true through on a chain without a relay: it sends publicly, as before", async () => {
     const node = write("a", { network: "8453", usePrivateMempool: true });
-    expect(
-      (await validateSendModeForSave([node], { keepLegacy: true })).issues[0]
-        ?.message
-    ).toContain("not available on chain 8453");
+    for (const actionType of ["web3/write-contract", BATCH]) {
+      const config = { ...node.data.config, actionType };
+      const step = { ...node, data: { ...node.data, config } };
+      expect((await validateChains([step])).valid).toBe(true);
+    }
   });
 });
 
@@ -453,5 +454,155 @@ describe("sendMode must be a known value", () => {
     expect(issues[0].message).toContain(
       'Set Send as to Normal transaction (sendMode: "transaction")'
     );
+  });
+});
+
+describe("the legacy key beside sendMode, and drafts", () => {
+  // A Write Contract config the action checks accept.
+  const CALL = {
+    contractAddress: "0x000000000000000000000000000000000000dEaD",
+    abi: '[{"type":"function","name":"run","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]',
+    abiFunction: "run",
+  };
+  const flag = (node: { data: { config: unknown } }): unknown =>
+    (node.data.config as Record<string, unknown>).usePrivateMempool;
+
+  it("writes usePrivateMempool beside a known sendMode on every save, for older executors", async () => {
+    const nodes = [
+      write("a", { ...CALL, network: "1", sendMode: "private-relay" }),
+      write("b", { ...CALL, network: "8453", sendMode: "transaction" }),
+      write("c", { ...CALL, network: "1" }),
+    ];
+    const result = await validateWorkflowNodesForSave(nodes);
+    expect(result.issues).toEqual([]);
+    expect(nodes.map(flag)).toEqual([true, false, undefined]);
+  });
+
+  it("saves a stored key conflict left as it was, as stored; refuses it on a new network", async () => {
+    const conflict = {
+      network: "1",
+      sendMode: "private-relay",
+      usePrivateMempool: false,
+    };
+    const saved = [write("a", { ...CALL, ...conflict })];
+    // Unchanged (another field edited): saved with both keys as stored.
+    const kept = [write("a", { ...CALL, ...conflict, abiFunction: "run" })];
+    const result = await validateWorkflowNodesForSave(kept, {
+      savedNodes: saved,
+    });
+    expect(result.issues).toEqual([]);
+    expect(flag(kept[0])).toBe(false);
+    // A new network with the keys still in conflict is refused.
+    rows.value.push({
+      chainId: 11_155_111,
+      usePrivateMempoolRpc: true,
+      defaultPrivateRpcUrl: "https://relay.example",
+    });
+    const moved = [write("a", { ...CALL, ...conflict, network: "11155111" })];
+    const refused = await validateWorkflowNodesForSave(moved, {
+      savedNodes: saved,
+    });
+    expect(refused.issues[0]?.message).toContain("disagree");
+    expect(flag(moved[0])).toBe(false);
+  });
+
+  it.each([
+    { sendMode: "private-relay", usePrivateMempool: false },
+    { sendMode: "transaction", usePrivateMempool: true },
+  ])(
+    "keeps the mode of a stored conflict %j over two saves from a client still holding it",
+    async (conflict) => {
+      let saved = [write("a", { ...CALL, network: "1", ...conflict })];
+      for (const abiFunction of ["first", "second"]) {
+        const abi = CALL.abi.replace('"run"', `"${abiFunction}"`);
+        const nodes = [
+          write("a", { ...CALL, abi, abiFunction, network: "1", ...conflict }),
+        ];
+        const result = await validateWorkflowNodesForSave(nodes, {
+          savedNodes: saved,
+        });
+        expect(result.issues).toEqual([]);
+        expect(nodes[0].data.config).toMatchObject(conflict);
+        saved = nodes;
+      }
+    }
+  );
+
+  it("keeps a sent old key that agrees, and fills only a missing one", async () => {
+    const saved = [
+      write("a", { ...CALL, network: "1", usePrivateMempool: "true" }),
+    ];
+    // sendMode added to a stored loose flag: the flag stays as sent.
+    const nodes = [
+      write("a", {
+        ...CALL,
+        network: "1",
+        sendMode: "private-relay",
+        usePrivateMempool: "true",
+      }),
+    ];
+    const result = await validateWorkflowNodesForSave(nodes, {
+      savedNodes: saved,
+    });
+    expect(result.issues).toEqual([]);
+    expect(flag(nodes[0])).toBe("true");
+  });
+
+  it("saves a stored unknown sendMode left as it was; refuses a new one", async () => {
+    const unknown = { network: "1", sendMode: "Private-Relay" };
+    const saved = [write("a", { ...CALL, ...unknown })];
+    const kept = [write("a", { ...CALL, ...unknown })];
+    const result = await validateWorkflowNodesForSave(kept, {
+      savedNodes: saved,
+    });
+    expect(result.issues).toEqual([]);
+    expect(flag(kept[0])).toBeUndefined();
+    const fresh = [write("b", { ...CALL, ...unknown })];
+    expect((await validateWorkflowNodesForSave(fresh)).valid).toBe(false);
+  });
+
+  it("writes nothing when the save is refused", async () => {
+    const nodes = [
+      write("a", { ...CALL, network: "8453", sendMode: "private-relay" }),
+    ];
+    const result = await validateWorkflowNodesForSave(nodes);
+    expect(result.valid).toBe(false);
+    expect(flag(nodes[0])).toBeUndefined();
+  });
+
+  it("lets a draft keep only old values its stored copy already had", async () => {
+    // As the current-draft autosave calls it: the stored draft, no keepLegacy.
+    const stored = [
+      write("kept", { ...CALL, network: "1", usePrivateMempool: "yes" }),
+      write("batch", { network: "1", usePrivateMempool: true }, BATCH),
+    ];
+    const kept = await validateSendModeForSave(
+      [
+        write("kept", {
+          ...CALL,
+          network: "1",
+          usePrivateMempool: "yes",
+          abiFunction: "other",
+        }),
+        write("batch", { network: "8453", usePrivateMempool: true }, BATCH),
+      ],
+      { savedNodes: stored }
+    );
+    expect(kept.issues).toEqual([]);
+
+    for (const node of [
+      write("new1", { ...CALL, network: "1", usePrivateMempool: "yes" }),
+      write("new2", {
+        ...CALL,
+        network: "1",
+        usePrivateMempool: "{{@trigger:Webhook.private}}",
+      }),
+      write("new3", { network: "1", usePrivateMempool: true }, BATCH),
+    ]) {
+      const fresh = await validateSendModeForSave([node], {
+        savedNodes: stored,
+      });
+      expect(fresh.valid).toBe(false);
+    }
   });
 });

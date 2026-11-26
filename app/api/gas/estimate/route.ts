@@ -111,15 +111,33 @@ function parseTokenAddress(tokenConfig: unknown): string | undefined {
   return;
 }
 
+/** The token's decimals from the public RPC, when the token address is valid. */
+async function readTokenDecimals(
+  config: EstimateConfig,
+  rpcManager: RpcProviderManager,
+  chainId: number
+): Promise<number | undefined> {
+  const tokenAddress = parseTokenAddress(config.tokenConfig);
+  if (!(tokenAddress && ethers.isAddress(tokenAddress))) {
+    return;
+  }
+  const readRpc = await readRpcFor(rpcManager, { chainId });
+  return readRpc.executeWithFailover(async (provider) =>
+    Number(
+      await new ethers.Contract(tokenAddress, ERC20_ABI, provider).decimals()
+    )
+  );
+}
+
 /**
  * Estimate gas for an ERC20 token transfer
  */
-async function estimateTransferToken(
+function estimateTransferToken(
   config: EstimateConfig,
   provider: ethers.JsonRpcProvider,
   walletAddress: string,
-  readDecimals: (tokenAddress: string) => Promise<number>
-): Promise<NextResponse | bigint> {
+  decimals: number | undefined
+): Promise<bigint> | NextResponse {
   if (!config.recipientAddress) {
     return badRequest(
       "recipientAddress is required for transfer-token estimation"
@@ -133,8 +151,10 @@ async function estimateTransferToken(
     );
   }
 
+  if (decimals === undefined) {
+    return badRequest("Could not read the token's decimals");
+  }
   const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
-  const decimals = await readDecimals(tokenAddress);
   const amountRaw = config.amount
     ? ethers.parseUnits(config.amount, decimals)
     : BigInt(0);
@@ -394,17 +414,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       }
       throw error;
     }
-    const readDecimals = async (tokenAddress: string): Promise<number> =>
-      (await readRpcFor(rpcManager, { chainId })).executeWithFailover(
-        async (provider) =>
-          Number(
-            await new ethers.Contract(
-              tokenAddress,
-              ERC20_ABI,
-              provider
-            ).decimals()
-          )
-      );
+    // Read before the send manager's failover, so a public RPC failure is
+    // never counted against (or retried with) the relay.
+    const decimals =
+      actionSlug === "transfer-token"
+        ? await readTokenDecimals(config, rpcManager, chainId)
+        : undefined;
 
     const result = await rpcManager.executeWithFailover(async (provider) => {
       switch (actionSlug) {
@@ -415,7 +430,7 @@ export async function POST(request: Request): Promise<NextResponse> {
             config,
             provider,
             walletAddress,
-            readDecimals
+            decimals
           );
         case "write-contract":
           return await estimateWriteContract(config, provider, walletAddress);

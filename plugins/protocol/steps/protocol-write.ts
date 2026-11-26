@@ -42,7 +42,7 @@ type ProtocolWriteInput = StepInput & {
   sponsorGas?: boolean;
   // "Send as" and its legacy flag, both forwarded to writeContractCore.
   sendMode?: string;
-  usePrivateMempool?: boolean;
+  usePrivateMempool?: unknown;
   strict?: boolean;
   _protocolMeta?: string;
   _actionType?: string;

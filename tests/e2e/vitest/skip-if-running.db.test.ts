@@ -3,6 +3,8 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { WorkflowExecutionStatus } from "../../../lib/errors/execution-status";
+import { resolveSwitch } from "../../../lib/utils";
+import { isSkipIfRunningSupported } from "../../../lib/workflow/block-trigger-switches";
 
 vi.mock("server-only", () => ({}));
 // tests/setup.ts stubs @/lib/db; these tests must read Postgres.
@@ -18,14 +20,19 @@ const ORG_ID = `${PREFIX}org`;
 type Db = typeof import("@/lib/db").db;
 type Schema = typeof import("@/lib/db/schema");
 type Skip = typeof import("@/lib/workflow/skip-if-running");
+type Claims = typeof import("../../../keeperhub-executor/lib/db-helpers");
 let db: Db;
 let schema: Schema;
 let skip: Skip;
+let claims: Claims;
 let seq = 0;
+// Fresh block numbers for probes, apart from the ones tests name.
+let probeBlock = 1_000_000;
 
 async function cleanup(): Promise<void> {
   const client = postgres(DATABASE_URL, { max: 1 });
   try {
+    await client`DELETE FROM workflow_execution_logs WHERE execution_id IN (SELECT id FROM workflow_executions WHERE workflow_id LIKE ${`${PREFIX}%`})`;
     await client`DELETE FROM workflow_executions WHERE workflow_id LIKE ${`${PREFIX}%`}`;
     await client`DELETE FROM workflows WHERE id LIKE ${`${PREFIX}%`}`;
     await client`DELETE FROM organization WHERE id LIKE ${`${PREFIX}%`}`;
@@ -35,11 +42,22 @@ async function cleanup(): Promise<void> {
   }
 }
 
+/** Nodes of a workflow whose only node is a trigger with this config. */
+const triggerNodes = (config: Record<string, unknown>) => [
+  {
+    id: "trigger",
+    type: "trigger",
+    position: { x: 0, y: 0 },
+    data: { type: "trigger", label: "Trigger", config },
+  },
+];
+
 /** A workflow with one run in `status`, started `ageMs` ago. */
 async function workflowWithRun(
   status: WorkflowExecutionStatus | null,
   ageMs = 0,
-  triggerSource: string | null = "block"
+  triggerSource: string | null = "block",
+  nodes: unknown[] = []
 ): Promise<string> {
   seq += 1;
   const id = `${PREFIX}wf${seq}`;
@@ -48,7 +66,7 @@ async function workflowWithRun(
     name: id,
     userId: USER_ID,
     organizationId: ORG_ID,
-    nodes: [],
+    nodes,
     edges: [],
   });
   if (status) {
@@ -63,12 +81,14 @@ async function workflowWithRun(
   return id;
 }
 
-const busy = async (workflowId: string): Promise<boolean> =>
-  (await skip.findBlockingRun(db, workflowId)) !== null;
-
-const dispatch = (workflowId: string, block: number, now?: Date) =>
+const dispatch = (
+  workflowId: string,
+  block: number,
+  now?: Date,
+  database: Db = db
+) =>
   skip.insertPhantomUnlessRunning(
-    db,
+    database,
     {
       workflowId,
       userId: USER_ID,
@@ -78,6 +98,26 @@ const dispatch = (workflowId: string, block: number, now?: Date) =>
     },
     now
   );
+
+/** Whether a new block of the workflow would be skipped (writes its phantom or Skipped row). */
+const busy = async (workflowId: string): Promise<boolean> => {
+  probeBlock += 1;
+  return (await dispatch(workflowId, probeBlock)).skipped;
+};
+
+/** A finished step of the workflow's run, completed `ageMs` ago. */
+async function stepCompleted(workflowId: string, ageMs: number): Promise<void> {
+  const [run] = await rowsOf(workflowId);
+  await db.insert(schema.workflowExecutionLogs).values({
+    executionId: run.id,
+    nodeId: "step",
+    nodeName: "Step",
+    nodeType: "action",
+    status: "success",
+    startedAt: new Date(Date.now() - ageMs - 1000),
+    completedAt: new Date(Date.now() - ageMs),
+  });
+}
 
 /** Marks the workflow's live runs (or the given ones) finished. */
 async function finish(workflowId: string, ids?: string[]): Promise<void> {
@@ -141,6 +181,7 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
     ({ db } = await import("@/lib/db"));
     schema = await import("@/lib/db/schema");
     skip = await import("@/lib/workflow/skip-if-running");
+    claims = await import("../../../keeperhub-executor/lib/db-helpers");
     await db.insert(schema.users).values({
       id: USER_ID,
       name: "skip owner",
@@ -181,10 +222,19 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
     expect(await busy(await workflowWithRun("running", 0, null))).toBe(true);
   });
 
-  it("a run older than the reaper's stale limit no longer blocks", async () => {
+  it("a run older than the stale limit still blocks while a step completed within it", async () => {
+    const workflowId = await workflowWithRun("running", 35 * 60_000);
+    await stepCompleted(workflowId, 2 * 60_000);
+    expect(await busy(workflowId)).toBe(true);
+  });
+
+  it("a run older than the stale limit with no step completed within it does not block", async () => {
     expect(await busy(await workflowWithRun("running", 31 * 60_000))).toBe(
       false
     );
+    const stalled = await workflowWithRun("running", 40 * 60_000);
+    await stepCompleted(stalled, 31 * 60_000);
+    expect(await busy(stalled)).toBe(false);
     expect(await busy(await workflowWithRun("running", 29 * 60_000))).toBe(
       true
     );
@@ -193,6 +243,24 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
       false
     );
     vi.unstubAllEnvs();
+  });
+
+  it("a key skipped behind a run past the stale limit is still not run after it finishes", async () => {
+    const workflowId = await workflowWithRun("running", 50 * 60_000);
+    await stepCompleted(workflowId, 60_000);
+    // The Skipped row starts 35 minutes ago, more than the stale limit before the next skip.
+    const first = await dispatch(
+      workflowId,
+      600,
+      new Date(Date.now() - 35 * 60_000)
+    );
+    const second = await dispatch(workflowId, 601);
+    expect(second).toMatchObject({ id: first.id, skipped: true });
+    await finish(workflowId);
+    expect(
+      await dispatch(workflowId, 601, new Date(Date.now() + 60_000))
+    ).toEqual({ id: first.id, skipped: true, alreadyExisted: true });
+    expect(await phantomsFor(workflowId, 601)).toHaveLength(0);
   });
 
   it("writes a phantom when nothing runs, then one Skipped row with a count per blocking run", async () => {
@@ -343,8 +411,8 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
   it("a repeat older than the lookup window is still not counted twice on the live blocker's row", async () => {
     const workflowId = await workflowWithRun("running");
     const skipped = await dispatch(workflowId, 400);
-    // 3 minutes on: the 2-minute lookup no longer sees the key, the row's own key list does.
-    const later = new Date(Date.now() + 3 * 60_000);
+    // 4 minutes on: the lookup window no longer sees the key, the row's own key list does.
+    const later = new Date(Date.now() + 4 * 60_000);
     expect(await dispatch(workflowId, 400, later)).toEqual({
       id: skipped.id,
       skipped: true,
@@ -421,17 +489,19 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
     const lockTaken = new Promise<void>((resolve) => {
       locked = resolve;
     });
+    // A dispatch inside an open transaction keeps the workflow's lock until it commits.
     const first = db.transaction(async (tx) => {
       const [{ pid }] = await tx.execute<{ pid: number }>(
         sql`SELECT pg_backend_pid() AS pid`
       );
       holder = pid;
-      await tx.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtext(${skip.skipLockKey(workflowId)}))`
+      const own = await dispatch(
+        workflowId,
+        59,
+        undefined,
+        tx as unknown as Db
       );
-      await tx
-        .insert(schema.workflowExecutions)
-        .values({ workflowId, userId: USER_ID, status: "phantom" });
+      expect(own.skipped).toBe(false);
       locked();
       await held;
     });
@@ -484,6 +554,136 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
       id: otherId,
       skipped: false,
       alreadyExisted: true,
+    });
+  });
+
+  it("moves a Skipped row's completed_at at most once a minute, still recording every key", async () => {
+    const workflowId = await workflowWithRun("running");
+    const t0 = Date.now();
+    await dispatch(workflowId, 700, new Date(t0));
+    await dispatch(workflowId, 701, new Date(t0 + 30_000));
+    let [row] = await skipRows(workflowId);
+    expect(row.completedAt?.getTime()).toBe(t0);
+    expect(countOf(row)).toBe(2);
+    expect(Object.keys((row.output as { keys: object }).keys).sort()).toEqual([
+      `block:${workflowId}:1:700`,
+      `block:${workflowId}:1:701`,
+    ]);
+    await dispatch(workflowId, 702, new Date(t0 + 61_000));
+    [row] = await skipRows(workflowId);
+    expect(row.completedAt?.getTime()).toBe(t0 + 61_000);
+    expect(countOf(row)).toBe(3);
+  });
+
+  it("a repeat of a key written while completed_at was held back neither runs nor counts", async () => {
+    const workflowId = await workflowWithRun("running");
+    const t0 = Date.now();
+    const skipped = await dispatch(workflowId, 800, new Date(t0));
+    // completed_at stays at t0 while key 801 is added 50 s later.
+    await dispatch(workflowId, 801, new Date(t0 + 50_000));
+    await finish(workflowId);
+    // 110 s after key 801, 160 s after the row's completed_at.
+    expect(await dispatch(workflowId, 801, new Date(t0 + 160_000))).toEqual({
+      id: skipped.id,
+      skipped: true,
+      alreadyExisted: true,
+    });
+    expect(await phantomsFor(workflowId, 801)).toHaveLength(0);
+    expect(countOf((await skipRows(workflowId))[0])).toBe(2);
+  });
+
+  describe("a phantom the reaper timed out (P-0005)", () => {
+    const claim = (id: string) =>
+      claims.claimPhantomForExecution(
+        db as unknown as Parameters<Claims["claimPhantomForExecution"]>[0],
+        id,
+        {},
+        "hash"
+      );
+
+    async function reapedPhantom(nodes: unknown[]): Promise<string> {
+      const workflowId = await workflowWithRun(
+        "system_error",
+        0,
+        "block",
+        nodes
+      );
+      const [run] = await rowsOf(workflowId);
+      await db
+        .update(schema.workflowExecutions)
+        .set({ errorCode: "P-0005", completedAt: new Date() })
+        .where(eq(schema.workflowExecutions.id, run.id));
+      return run.id;
+    }
+
+    it.each([true, "true"])(
+      "is not claimed again when skip-if-running is %j",
+      async (value) => {
+        const id = await reapedPhantom(
+          triggerNodes({ triggerType: "Block", skipIfRunning: value })
+        );
+        expect(await claim(id)).toBe("already_advanced");
+        const [row] = await db
+          .select()
+          .from(schema.workflowExecutions)
+          .where(eq(schema.workflowExecutions.id, id));
+        expect(row).toMatchObject({
+          status: "system_error",
+          errorCode: "P-0005",
+        });
+      }
+    );
+
+    it.each([
+      ["no trigger", []],
+      [
+        "the switch off",
+        triggerNodes({ triggerType: "Block", skipIfRunning: false }),
+      ],
+      [
+        "a leftover flag on a Schedule trigger",
+        triggerNodes({ triggerType: "Schedule", skipIfRunning: true }),
+      ],
+    ])("is still claimed with %s", async (_label, nodes) => {
+      expect(await claim(await reapedPhantom(nodes))).toBe("claimed");
+    });
+
+    // The executor's jsonpath, the app's resolveSwitch and the dispatcher read one switch.
+    it.each([true, "true", false, "false", "TRUE", 1, "1", "yes", null])(
+      "reads skip-if-running %j as resolveSwitch does",
+      async (value) => {
+        const on = resolveSwitch(value, false) === true;
+        const id = await reapedPhantom(
+          triggerNodes({
+            triggerType: "Block",
+            network: "1",
+            skipIfRunning: value,
+          })
+        );
+        expect(await claim(id)).toBe(on ? "already_advanced" : "claimed");
+      }
+    );
+
+    it.each(["101", 103])(
+      "ignores the switch on Solana network %j, as the dispatcher does",
+      async (network) => {
+        expect(isSkipIfRunningSupported(network)).toBe(false);
+        const id = await reapedPhantom(
+          triggerNodes({ triggerType: "Block", network, skipIfRunning: true })
+        );
+        expect(await claim(id)).toBe("claimed");
+      }
+    );
+
+    it("a live phantom of a skip-flagged workflow is claimed as usual", async () => {
+      const workflowId = await workflowWithRun(
+        "phantom",
+        0,
+        "block",
+        triggerNodes({ triggerType: "Block", skipIfRunning: true })
+      );
+      const [run] = await rowsOf(workflowId);
+      expect(await claim(run.id)).toBe("claimed");
     });
   });
 });

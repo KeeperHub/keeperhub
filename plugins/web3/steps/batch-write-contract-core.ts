@@ -12,7 +12,7 @@
  * confirmed payable (not view) in lib/contracts/abis/multicall3.json.
  */
 import "server-only";
-import { isDefinitelyPreSend } from "@/lib/web3/pre-send";
+import { broadcastAttemptedOf } from "@/lib/web3/pre-send";
 import {
   type SendReport,
   type SendRoute,
@@ -35,14 +35,13 @@ import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
 import { getErrorMessage, resolveFailOnError } from "@/lib/utils";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import {
   getOrganizationWalletAddress,
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { type RpcProviderManager, rpcRelayErrorClass } from "@/lib/rpc/providers";
-import { getSendRpcProvider } from "@/lib/rpc/send-provider";
+import { resolveWriteRpc } from "@/lib/rpc/send-provider";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import {
   preflightGasBalance,
@@ -112,10 +111,12 @@ export type BatchWriteContractCoreInput = {
   // Optional maxFeePerGas ceiling (in gwei). The send is refused when it is
   // below the current base fee.
   maxFeeGwei?: string;
-  // "Send as" ("transaction" | "private-relay") and its legacy flag, read
-  // together by usesPrivateRelay. A private relay send is never sponsored.
+  // "Send as" and the old flag (any stored value), read by relayUseOf in
+  // getSendRpcProvider. A step that asks for the relay is never sponsored.
   sendMode?: string;
-  usePrivateMempool?: boolean;
+  usePrivateMempool?: unknown;
+  // false: a relay failure other than a revert is retried on the public RPC, and
+  // sendMode "private-relay" on a chain without a relay sends publicly.
   strict?: boolean;
   web3Connection?: string;
   // See WriteContractCoreInput: "next-block" simulates as of the next block.
@@ -627,28 +628,31 @@ async function batchWriteContractCoreImpl(
   const { organizationId, userId } = orgCtx;
 
   let chainId: number;
-  let rpcUrl: string;
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
   try {
     chainId = getChainIdFromNetwork(network);
-    // An old "(Flashbots)" batch that would use the relay is refused before
-    // sending, as the editor says; one without a relay sends publicly.
-    ({ rpcManager } = await getSendRpcProvider(input, {
-      chainId,
-      userId,
-      relayRefusal: unsupportedSendMode(
-        "web3/batch-write-contract",
-        SEND_MODE.PRIVATE_RELAY
-      ),
-    }));
-    rpcUrl = await rpcManager.resolveActiveRpcUrl();
   } catch (error) {
     return {
       success: false,
       error: getErrorMessage(error),
-      errorClass: rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM,
+      errorClass: ExecutionErrorType.SYSTEM,
     };
   }
+  // A batch that would use the relay is refused before sending, as the editor
+  // says; an old flag on a chain without a relay sends publicly.
+  const resolved = await resolveWriteRpc(input, {
+    chainId,
+    userId,
+    relayRefusal: unsupportedSendMode(
+      "web3/batch-write-contract",
+      SEND_MODE.PRIVATE_RELAY
+    ),
+    log: { tag: "[Batch Write Contract]", action: "batch-write-contract" },
+    fallbackClass: ExecutionErrorType.SYSTEM,
+  });
+  if (!resolved.ok) {
+    return { success: false, ...resolved.failure };
+  }
+  const { rpcManager, rpcUrl } = resolved.rpc;
 
   if (maxFeeOverride !== undefined) {
     const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
@@ -871,12 +875,7 @@ async function batchWriteContractCoreImpl(
         ),
         ...(errorClass ? { errorClass } : {}),
         ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
-        broadcastAttempted: broadcastHash
-          ? true
-          : rejection.kind !== "unknown" ||
-              isDefinitelyPreSend(error)
-            ? false
-            : true,
+        broadcastAttempted: broadcastAttemptedOf(error, broadcastHash, rejection),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
         ...sendReportFields(sendReport),
       };

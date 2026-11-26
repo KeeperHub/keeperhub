@@ -1429,6 +1429,39 @@ describe("ChainMonitor", () => {
       expect(enqueueBlockTrigger).not.toHaveBeenCalled();
       await monitor.stop();
     });
+
+    it("does not enqueue when the skip check failed (skipped with no id)", async () => {
+      createPhantomExecution.mockResolvedValueOnce({
+        alreadyExisted: false,
+        skipped: true,
+      });
+      const monitor = new ChainMonitor({
+        chain: makeChain(),
+        workflows: [makeWorkflow({ blockInterval: 1, skipIfRunning: true })],
+      });
+      await monitor.start();
+      const { enqueueBlockTrigger } = await import(
+        "../../block-dispatcher/sqs-enqueue.js"
+      );
+      vi.mocked(enqueueBlockTrigger).mockClear();
+
+      const failedCount = async (): Promise<number> => {
+        const metric = registry.getSingleMetric(
+          "keeperhub_block_dispatcher_skip_check_failed_total",
+        );
+        const values = (await metric?.get())?.values ?? [];
+        return values.reduce((sum, v) => sum + v.value, 0);
+      };
+      const before = await failedCount();
+
+      latestProvider().emitBlock(10);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(enqueueBlockTrigger).not.toHaveBeenCalled();
+      // Counted, so a keeper that stopped running shows on /metrics.
+      expect(await failedCount()).toBe(before + 1);
+      await monitor.stop();
+    });
   });
 
   describe("missed-slot runs", () => {
@@ -1682,20 +1715,88 @@ describe("ChainMonitor", () => {
       await monitor.stop();
     });
 
-    it("falls through to a missed-slot run when the slot's header cannot be found and latest is older", async () => {
+    it("treats a slot whose header was seen as filled when its block cannot be fetched and latest is older", async () => {
+      const warn = vi.spyOn(console, "warn");
       const monitor = await startAt(slotStart(S0) * 1000 + 1000, [optedIn]);
       blockTimestamp = slotStart(S0);
       latestProvider().emitBlock(500);
       await vi.advanceTimersByTimeAsync(11_000); // start of slot S0 + 1, well before its check
+      // A lagging node answers "latest" with slot S0's block; the by-hash fetch fails.
       headTimestamp = slotStart(S0);
       latestCalls = 0;
       pushHeader(slotStart(S0 + 1), { number: 500, hash: "0xgone" });
       await vi.advanceTimersByTimeAsync(5000);
-      expect(keys()).toEqual([`slot:wf-1:1:${S0}`, `slot:wf-1:1:${S0 + 1}`]);
-      expect(latestCalls).toBe(1); // the missed-slot check reuses that "latest"
-      expect((await missedSlotRuns())[0]?.triggerData).toMatchObject({
-        targetSlot: S0 + 2,
-      });
+      expect(keys()).toEqual([`slot:wf-1:1:${S0}`]);
+      expect(await missedSlotRuns()).toHaveLength(0);
+      expect(latestCalls).toBe(1);
+      // The run for that slot may be lost, so it is logged.
+      expect(
+        warn.mock.calls.some((c) =>
+          String(c[0]).includes("from another slot: no run for this slot"),
+        ),
+      ).toBe(true);
+      warn.mockRestore();
+      await monitor.stop();
+    });
+
+    it("warns when the slot's block was seen but neither fetch of it answers", async () => {
+      const warn = vi.spyOn(console, "warn");
+      const monitor = await startAt(slotStart(S0) * 1000 + 1000, [optedIn]);
+      blockTimestamp = slotStart(S0);
+      latestProvider().emitBlock(500);
+      await vi.advanceTimersByTimeAsync(11_000);
+      latestMissing = true;
+      pushHeader(slotStart(S0 + 1), { number: 500, hash: "0xgone" });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(keys()).toEqual([`slot:wf-1:1:${S0}`]);
+      expect(await missedSlotRuns()).toHaveLength(0);
+      expect(
+        warn.mock.calls.some((c) =>
+          String(c[0]).includes(
+            `Slot ${S0 + 1} had block 500, but both fetches of it failed: no run for this slot`,
+          ),
+        ),
+      ).toBe(true);
+      warn.mockRestore();
+      await monitor.stop();
+    });
+
+    it("treats a slot whose header was seen as filled when the block by hash is from another slot", async () => {
+      const monitor = await startAt(slotStart(S0) * 1000 + 1000, [optedIn]);
+      blockTimestamp = slotStart(S0);
+      latestProvider().emitBlock(500);
+      await vi.advanceTimersByTimeAsync(11_000);
+      headTimestamp = slotStart(S0);
+      blocksByHash = { "0xodd": { number: 500, timestamp: slotStart(S0) } };
+      pushHeader(slotStart(S0 + 1), { number: 500, hash: "0xodd" });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(keys()).toEqual([`slot:wf-1:1:${S0}`]);
+      expect(await missedSlotRuns()).toHaveLength(0);
+      await monitor.stop();
+    });
+
+    it("logs a run for an already-processed block without naming a cause", async () => {
+      const log = vi.spyOn(console, "log");
+      const monitor = await startAt(slotStart(S0) * 1000 + 1000, [optedIn]);
+      blockTimestamp = slotStart(S0);
+      latestProvider().emitBlock(500);
+      await vi.advanceTimersByTimeAsync(11_000);
+      headTimestamp = slotStart(S0);
+      blocksByHash = {
+        "0xnew500": { number: 500, timestamp: slotStart(S0 + 1) },
+      };
+      pushHeader(slotStart(S0 + 1), { number: 500, hash: "0xnew500" });
+      await vi.advanceTimersByTimeAsync(5000);
+      const lines = log.mock.calls.map((c) => String(c[0]));
+      expect(
+        lines.some((l) =>
+          l.includes(
+            `Slot ${S0 + 1} has block 500, at or below the last processed block, and no run yet for this slot`,
+          ),
+        ),
+      ).toBe(true);
+      expect(lines.some((l) => l.includes("reorg"))).toBe(false);
+      log.mockRestore();
       await monitor.stop();
     });
 

@@ -156,9 +156,8 @@ export async function POST(request: Request) {
       )
       .limit(1);
 
-    // The stored draft's nodes and old "(Flashbots)" steps are let through, as on PATCH and import.
+    // Nodes kept as in the stored draft (old "(Flashbots)" ones included) pass, as on PATCH.
     const actionConfigValidation = await validateWorkflowNodesForSave(nodes, {
-      keepLegacy: true,
       savedNodes: existingWorkflow
         ? sanitizeWorkflowData(existingWorkflow.nodes ?? [], []).nodes
         : undefined,

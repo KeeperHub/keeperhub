@@ -13,7 +13,7 @@ import {
   userRpcPreferences,
 } from "@/lib/db/schema";
 import { logWarn } from "@/lib/logging";
-import { USE_NORMAL_HINT } from "@/lib/web3/send-mode";
+import { noPrivateRelayMessage } from "@/lib/web3/send-mode";
 import { PrivateRelayUnavailableError } from "./providers/transport-error";
 import { cleanBroadcastRpcUrls } from "./rpc-config";
 import type { ResolvedRpcConfig } from "./types";
@@ -25,12 +25,12 @@ import type { ResolvedRpcConfig } from "./types";
  * is set and the chain has a relay (`chains.usePrivateMempoolRpc` with a
  * `defaultPrivateRpcUrl`), the primary URL is swapped to the relay. With
  * `strict` (the default) the fallback is cleared, and a chain without a relay
- * is refused, so nothing falls back to the public mempool.
+ * is refused unless the relay is optional (the old flag alone).
  */
 export type ResolveRpcConfigOptions = {
   usePrivateMempool?: boolean;
   strict?: boolean;
-  // Use the relay only where the chain has one (an old non-boolean flag).
+  // Use the relay only where the chain has one (the old flag with no sendMode).
   relayOptional?: boolean;
 };
 
@@ -146,7 +146,7 @@ function applyPrivateMempoolSwap(
   if (!(baseConfig.usePrivateMempoolRpc && baseConfig.privateRpcUrl)) {
     if (options.strict !== false && !options.relayOptional) {
       throw new PrivateRelayUnavailableError(
-        `This step is set to Send as: Private relay, but ${baseConfig.chainName} has no private relay. ${USE_NORMAL_HINT}`
+        noPrivateRelayMessage(baseConfig.chainName)
       );
     }
     logWarn(

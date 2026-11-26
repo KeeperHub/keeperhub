@@ -347,7 +347,7 @@ export const TRIGGERS = {
     optionalFields: {
       executionPriority: EXECUTION_PRIORITY_DOC,
       skipIfRunning:
-        'string - EVM networks only. "true": a block that fires while a run of this workflow is still pending or running does not start a run; one Skipped row per blocking run counts the skipped blocks and slots, once each (a repeat within 2 minutes is not counted again). Runs started through the listed-workflow call endpoint do not block, and a run older than the stale-run limit (30 minutes by default) no longer blocks. true and "true" are both accepted. Default "false"',
+        'string - EVM networks only. "true": a block that fires while a run of this workflow is still pending or running does not start a run; one Skipped row per blocking run counts the skipped blocks and slots, once each (a repeat within 2 minutes is not counted again). Runs started through the listed-workflow call endpoint do not block, and a run older than the stale-run limit (30 minutes by default) with no step finished within that limit no longer blocks. true and "true" are both accepted. Default "false"',
       runOnMissedSlot:
         'string - "true": when no block arrives 4 s into a slot, the workflow runs anyway; at most one run per slot. Takes effect only on Ethereum Mainnet, Sepolia and Hoodi with blockInterval 1; saved but ignored otherwise. Best effort. true and "true" are both accepted. Default "false"',
     },
