@@ -5,6 +5,7 @@ import type {
 import {
   amountField,
   balanceCheckSuccessOutput,
+  broadcastOutput,
   checkErrorOutput,
   contractAddressField,
   evmNetworkField,
@@ -1851,6 +1852,7 @@ const web3Plugin: IntegrationPlugin = {
           description:
             "With Next block, the predicted block the per-call check before the send ran against. It differs from simulation when a new block or slot came before the send, which then checked again.",
         },
+        broadcastOutput(),
       ],
       configFields: [
         evmPrivateNetworkField(),
@@ -2153,11 +2155,7 @@ const web3Plugin: IntegrationPlugin = {
             "Error message if the call failed. Also set when failOnError is off and an execution failure was softened into success=true, e.g. 'Contract call failed: Error(Splitter/kicked-too-soon)'. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert.",
         },
         simulationOutput(),
-        {
-          field: "broadcast",
-          description:
-            "When and how the transaction was sent: { broadcastAt (ISO time the RPC accepted it), via (primary or fallback RPC), builders? }. builders is present only with Next block on a network with block builder endpoints configured: [{ name, accepted, error? }] per builder that was also sent the transaction. Absent on a failed step and on gas-sponsored or Safe sends.",
-        },
+        broadcastOutput(),
       ],
       configFields: [
         evmPrivateNetworkField(),
