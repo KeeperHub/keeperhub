@@ -1,3 +1,4 @@
+import type { LookupFunction } from "node:net";
 import { pinnedLookup } from "./pinned-lookup";
 import {
   ChainProviderManager,
@@ -6,7 +7,12 @@ import {
   createWebSocketProvider,
   silentLogger,
 } from "./provider-manager";
-import type { RpcRoute, RpcRouteEndpoint, RpcUsageCounter } from "./rpc-route";
+import {
+  RpcOrigin,
+  type RpcRoute,
+  type RpcRouteEndpoint,
+  type RpcUsageCounter,
+} from "./rpc-route";
 
 /** The fields a usage bucket is attributed to. */
 export interface RpcUsageAttribution {
@@ -61,6 +67,15 @@ function endpointFor(route: RpcRoute, url: string): RpcRouteEndpoint | null {
     return route.fallback;
   }
   return null;
+}
+
+/** Pinned to the vetted addresses for an organization endpoint, else none. */
+function lookupFor(route: RpcRoute, url: string): LookupFunction | undefined {
+  const endpoint = endpointFor(route, url);
+  if (endpoint?.origin !== RpcOrigin.ORG) {
+    return undefined;
+  }
+  return pinnedLookup(endpoint.addresses ?? []);
 }
 
 /**
@@ -121,10 +136,7 @@ export class RouteProviderPool {
       ((opts: ChainProviderManagerOptions) => new ChainProviderManager(opts));
     entry.manager = create({
       factory: (url) =>
-        createWebSocketProvider(
-          url,
-          pinnedLookup(endpointFor(entry.route, url)?.addresses ?? []),
-        ),
+        createWebSocketProvider(url, lookupFor(entry.route, url)),
       ...this.opts.managerOptions,
       logger: silentLogger,
       onPermanentFailure: () => this.fail(route.key, entry),
