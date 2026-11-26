@@ -5,6 +5,7 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db";
 import { organizationRpcUsageHourly } from "@/lib/db/schema-rpc";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
+import { processSingleton } from "./process-singleton";
 import { rpcUsageAccumulator } from "./runtime";
 import type { RpcUsageAccumulator, RpcUsageBucket } from "./telemetry/usage";
 
@@ -87,15 +88,17 @@ export async function flushRpcUsage(
   }
 }
 
-let flushTimer: ReturnType<typeof setInterval> | null = null;
+const flusher = processSingleton<{
+  timer: ReturnType<typeof setInterval> | null;
+}>("rpcUsageFlusher", () => ({ timer: null }));
 
 /** Flush usage on an interval for the life of the process. Idempotent. */
 export function startRpcUsageFlusher(): void {
-  if (flushTimer !== null) {
+  if (flusher.timer !== null) {
     return;
   }
-  flushTimer = setInterval(() => {
+  flusher.timer = setInterval(() => {
     flushRpcUsage().catch(() => undefined);
   }, FLUSH_INTERVAL_MS);
-  flushTimer.unref();
+  flusher.timer.unref();
 }

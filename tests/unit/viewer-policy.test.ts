@@ -86,6 +86,7 @@ const EXPECTED_VIEWER_EXEMPT = [
   "app/api/internal/executions/[executionId]/route.ts",
   "app/api/internal/executions/route.ts",
   "app/api/internal/pyth-triggers/route.ts",
+  "app/api/internal/rpc-usage/route.ts",
   "app/api/internal/schedules/[scheduleId]/route.ts",
   "app/api/internal/wallet-unlock/route.ts",
   "app/api/mcp/workflows/[slug]/call/route.ts",

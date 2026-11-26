@@ -49,6 +49,7 @@ import {
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
 import { type RpcScope, rpcScopeForOrganization } from "@/lib/rpc/engine";
+import type { RpcAttribution } from "@/lib/rpc/engine/step-attribution";
 import { toJsonSafe } from "@/lib/utils/json-safe";
 import {
   describeVerificationFailure,
@@ -804,6 +805,8 @@ export type LogStepCompleteParams = {
   outputRaw?: unknown;
   error?: string;
   executionId?: string;
+  /** Which RPC endpoints served the step; null leaves the columns empty. */
+  rpc?: RpcAttribution | null;
 };
 
 /**
@@ -868,6 +871,13 @@ export async function logStepCompleteDb(
       error: errorValue,
       completedAt: new Date(),
       duration: duration.toString(),
+      ...(params.rpc
+        ? {
+            rpcOrigin: params.rpc.rpcOrigin,
+            rpcConfigId: params.rpc.rpcConfigId,
+            rpcFailedOver: params.rpc.rpcFailedOver,
+          }
+        : {}),
     })
     .where(eq(workflowExecutionLogs.id, params.logId));
 

@@ -22,6 +22,7 @@ import { checkProtocolOnchainGuards } from "@/lib/protocol-input-guards-onchain"
 import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { rpcScopeForOrganization } from "@/lib/rpc/engine";
+import { runWithRpcAttribution } from "@/lib/rpc/engine/step-attribution";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { PLUGIN_STEP_IMPORTERS } from "@/lib/step-registry";
 import {
@@ -413,9 +414,11 @@ async function executeProtocolAction(
   );
 }
 
-export async function POST(
+type SlugRouteContext = { params: Promise<{ slug: string[] }> };
+
+async function handlePost(
   request: Request,
-  { params }: { params: Promise<{ slug: string[] }> }
+  { params }: SlugRouteContext
 ): Promise<NextResponse> {
   const { slug } = await params;
   const actionType = slug.join("/");
@@ -565,4 +568,12 @@ export async function POST(
       rateLimit
     );
   }
+}
+
+/** Runs in an RPC collector so the execution row records its endpoints. */
+export function POST(
+  request: Request,
+  context: SlugRouteContext
+): Promise<NextResponse> {
+  return runWithRpcAttribution(() => handlePost(request, context));
 }

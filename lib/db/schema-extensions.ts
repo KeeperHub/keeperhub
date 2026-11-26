@@ -32,6 +32,7 @@ import {
 // Note: Using relative paths instead of @/ aliases for drizzle-kit compatibility
 import type { PlanLimits } from "@/lib/billing/plans";
 import { organization, users, workflows } from "@/lib/db/schema";
+import type { RpcOrigin } from "@/lib/rpc/engine/types";
 import { generateId } from "@/lib/utils/id";
 
 /**
@@ -707,6 +708,10 @@ export const directExecutions = pgTable(
     retryCount: integer("retry_count").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     completedAt: timestamp("completed_at"),
+    // Which endpoint served this execution's RPC calls; null when none ran.
+    rpcOrigin: text("rpc_origin").$type<RpcOrigin>(),
+    rpcConfigId: text("rpc_config_id"),
+    rpcFailedOver: boolean("rpc_failed_over"),
   },
   (table) => [
     index("idx_direct_executions_org").on(table.organizationId),

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   afterEach,
   beforeEach,
@@ -33,6 +34,11 @@ import type {
   PlatformChainRecord,
   PlatformRpcSource,
 } from "@/lib/rpc/engine/sources/platform-source";
+import {
+  readRpcAttribution,
+  runWithRpcAttribution,
+  setRpcAttributionStorage,
+} from "@/lib/rpc/engine/step-attribution";
 import { RpcUsageAccumulator } from "@/lib/rpc/engine/telemetry/usage";
 import {
   type OrgRpcState,
@@ -264,6 +270,20 @@ describe("createRpcEngine", () => {
     );
     expect(client.route.primary.url.host).toBe("kh-solana.example.com");
     expect(client.activeEndpoint().origin).toBe(RpcOrigin.PLATFORM);
+  });
+
+  it("notes every client it hands out for the step running it", async () => {
+    setRpcAttributionStorage(new AsyncLocalStorage());
+    const attribution = await runWithRpcAttribution(async () => {
+      await engine.evm(platformScope(PlatformRpcPurpose.BILLING), 1);
+      await engine.evm(orgScope("org_1"), 1);
+      return readRpcAttribution();
+    });
+    expect(attribution).toEqual({
+      rpcOrigin: RpcOrigin.ORG,
+      rpcConfigId: "cfg_main",
+      rpcFailedOver: false,
+    });
   });
 
   it("fails for an unknown chain", async () => {

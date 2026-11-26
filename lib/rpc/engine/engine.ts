@@ -14,6 +14,7 @@ import { resolveRoute } from "./resolve-route";
 import { RpcRouteError, RpcRouteErrorCode } from "./route-error";
 import { EMPTY_ORG_RPC_STATE, type OrgRpcSource } from "./sources/org-source";
 import type { PlatformRpcSource } from "./sources/platform-source";
+import { noteRpcClient } from "./step-attribution";
 import { composeFailoverCallbacks } from "./telemetry/platform-collectors";
 import { createPlatformSink } from "./telemetry/platform-sink";
 import { createRouteSink, isPlatformOnlyRoute } from "./telemetry/route-sink";
@@ -222,11 +223,13 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         timeoutMs: request.tuning?.timeoutMs,
         cacheKey: managerCacheKey(resolved, request.tuning),
       });
-      return {
+      const client = {
         route: resolved,
         manager,
         activeEndpoint: activeEndpointOf(resolved, manager),
       };
+      noteRpcClient(client);
+      return client;
     },
 
     async solana(
@@ -255,11 +258,13 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         timeoutMs: request.tuning?.timeoutMs,
         cacheKey: managerCacheKey(resolved, request.tuning),
       });
-      return {
+      const client = {
         route: resolved,
         manager,
         activeEndpoint: activeEndpointOf(resolved, manager),
       };
+      noteRpcClient(client);
+      return client;
     },
   };
 }

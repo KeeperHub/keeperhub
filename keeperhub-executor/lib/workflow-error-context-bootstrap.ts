@@ -25,6 +25,9 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import { setRpcAttributionStorage } from "@/lib/rpc/engine/step-attribution";
 import { setWorkflowErrorContextStorage } from "@/lib/workflow/executor/error-context";
 
 setWorkflowErrorContextStorage(new AsyncLocalStorage());
+// Same constraint for the per-step RPC endpoint attribution.
+setRpcAttributionStorage(new AsyncLocalStorage());

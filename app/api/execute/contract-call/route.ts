@@ -28,6 +28,7 @@ import { SCOPE_MCP_READ, SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { type RpcScope, rpcScopeForOrganization } from "@/lib/rpc/engine";
+import { runWithRpcAttribution } from "@/lib/rpc/engine/step-attribution";
 import { getErrorMessage } from "@/lib/utils";
 import { normalizeErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
 import { readContractCore } from "@/plugins/web3/steps/read-contract-core";
@@ -357,7 +358,7 @@ async function handleWriteCall(
   );
 }
 
-export async function POST(request: Request): Promise<NextResponse> {
+async function handlePost(request: Request): Promise<NextResponse> {
   const apiKeyCtx = await validateApiKey(request);
   if ("error" in apiKeyCtx) {
     return NextResponse.json(
@@ -590,4 +591,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     ),
     rateLimit
   );
+}
+
+/** Runs in an RPC collector so the execution row records its endpoints. */
+export function POST(request: Request): Promise<NextResponse> {
+  return runWithRpcAttribution(() => handlePost(request));
 }

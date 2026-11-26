@@ -73,6 +73,10 @@ export async function register() {
       "@/lib/workflow/executor/error-context"
     );
     setWorkflowErrorContextStorage(new AsyncLocalStorage());
+    const { setRpcAttributionStorage } = await import(
+      "@/lib/rpc/engine/step-attribution"
+    );
+    setRpcAttributionStorage(new AsyncLocalStorage());
 
     // Dynamically import Sentry to ensure it's available
     const Sentry = await import("@sentry/nextjs");

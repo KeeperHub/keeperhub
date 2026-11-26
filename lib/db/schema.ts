@@ -21,6 +21,7 @@ import type {
 } from "../errors/execution-status";
 import type { ErrorCategory } from "../logging";
 import type { PythSignal } from "../pyth/price-trigger";
+import type { RpcOrigin } from "../rpc/engine/types";
 import type { IntegrationType } from "../types/integration";
 import { generateId } from "../utils/id";
 import { countedRunSql } from "./counted-runs";
@@ -956,6 +957,14 @@ export const workflowExecutionLogs = pgTable(
      * user their own steps filter on it.
      */
     deletedAt: timestamp("deleted_at"),
+    /**
+     * Which endpoint served the step's RPC calls: the organization's own
+     * (`rpcConfigId` names the config) or KeeperHub's. Null for steps that
+     * made no RPC call and for rows written before attribution existed.
+     */
+    rpcOrigin: text("rpc_origin").$type<RpcOrigin>(),
+    rpcConfigId: text("rpc_config_id"),
+    rpcFailedOver: boolean("rpc_failed_over"),
   },
   (table) => [
     index("idx_exec_logs_started_at").on(table.startedAt),

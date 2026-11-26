@@ -20,6 +20,7 @@ import {
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
+import { runWithRpcAttribution } from "@/lib/rpc/engine/step-attribution";
 import { getErrorMessage } from "@/lib/utils";
 import type { ResolvedAction } from "../_lib/action-resolver";
 import { resolveAction } from "../_lib/action-resolver";
@@ -697,7 +698,7 @@ async function executeNode(
   }
 }
 
-export async function POST(request: Request): Promise<NextResponse> {
+async function handlePost(request: Request): Promise<NextResponse> {
   const apiKeyCtx = await validateApiKey(request);
   if ("error" in apiKeyCtx) {
     return NextResponse.json(
@@ -968,4 +969,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     ),
     rateLimit
   );
+}
+
+/** Runs in an RPC collector so the execution row records its endpoints. */
+export function POST(request: Request): Promise<NextResponse> {
+  return runWithRpcAttribution(() => handlePost(request));
 }
