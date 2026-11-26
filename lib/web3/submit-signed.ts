@@ -3,10 +3,8 @@ import { ethers, isError } from "ethers";
 import { isConnectionRefusal } from "@/lib/rpc/connection-refusal";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { sleep } from "@/lib/sleep";
-import {
-  broadcastToExtraRpcs,
-  isDuplicateHashMessage,
-} from "@/lib/web3/extra-broadcast";
+import { broadcastToExtraRpcs } from "@/lib/web3/extra-broadcast";
+import { isDuplicateMessage } from "@/lib/web3/json-rpc-answer";
 import {
   isOnChainPendingError,
   OnChainPendingError,
@@ -360,7 +358,7 @@ async function reconcile(
   }
   // A copy that may have gone out (extra or earlier attempt) explains "nonce too low" too.
   if (
-    isDuplicateHashMessage(errorMessage(originalError)) ||
+    isDuplicateMessage(errorMessage(originalError)) ||
     (mayHaveSent && isNonceConflictError(originalError))
   ) {
     throw pendingBroadcast(expectedHash, originalError);

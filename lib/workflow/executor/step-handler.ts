@@ -24,6 +24,7 @@ import {
   stepClaimScope,
 } from "@/lib/workflow/executor/step-claim";
 import {
+  recordRunOutcomeIfPresent,
   recordStepSuccess,
   recordTransactionHashIfPresent,
 } from "@/lib/workflow/executor/step-success-tracker";
@@ -351,13 +352,14 @@ async function withStepLoggingInner<TInput extends StepInput, TOutput>(
     if (decision.outcome === "reuse") {
       // The winner's row already carries this step; writing another would be
       // the duplicate being removed. The tracker still has to learn about it:
-      // resolveTransactionHashesForSuccess only scans the logs when the
+      // resolveSuccessFacts only reads hashes from the logs when the
       // tracker is entirely empty, so a pod that ran one web3 write and
       // reused another would otherwise drop the reused hash from the run's
       // transactionHashes and from receipt verification.
       const reused = decision.output as TOutput;
       recordStepSuccess(claim.executionId, claim.nodeId, reused);
       recordTransactionHashIfPresent(context, reused);
+      recordRunOutcomeIfPresent(context, reused);
       return reused;
     }
   }
@@ -469,6 +471,7 @@ async function withStepLoggingInner<TInput extends StepInput, TOutput>(
           iterationKey
         );
         recordTransactionHashIfPresent(context, result);
+        recordRunOutcomeIfPresent(context, result);
       }
 
       recordStepMetrics({

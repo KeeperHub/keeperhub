@@ -42,7 +42,8 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
     "explorerApiType": "etherscan",
     "isTestnet": false,
     "isEnabled": true,
-    "usePrivateMempoolRpc": false
+    "usePrivateMempoolRpc": false,
+    "bundleBuilders": ["flashbots", "buildernet", "titan"]
   },
   {
     "id": "chain_2",
@@ -56,7 +57,8 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
     "explorerApiType": "etherscan",
     "isTestnet": true,
     "isEnabled": true,
-    "usePrivateMempoolRpc": false
+    "usePrivateMempoolRpc": false,
+    "bundleBuilders": []
   }
 ]
 ```
@@ -77,6 +79,7 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
 | `isTestnet` | boolean | Whether this chain is a testnet |
 | `isEnabled` | boolean | Whether the chain is currently available for workflow execution |
 | `usePrivateMempoolRpc` | boolean | Whether this chain offers a configured private relay (Flashbots Protect): `true` only when the relay is switched on and its URL is set. This does not enable private routing by default. |
+| `bundleBuilders` | string[] | Names of the block builders that transaction bundles on this chain can be sent to (never their URLs). Empty on chains without builders. |
 
 RPC endpoint URLs (`defaultPrimaryRpc`, `defaultFallbackRpc`) are not returned by this endpoint. They may embed provider API keys and are read server-side only; client code should use the user-configurable RPC preferences API instead.
 

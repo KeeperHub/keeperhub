@@ -28,6 +28,12 @@ describe("normalizeStatus", () => {
     expect(normalizeStatus("skipped", "workflow", "user")).toBe("skipped");
   });
 
+  // Ran, but a transaction in it did not land: its own neutral status.
+  it("keeps a not landed run as not_landed, matched by its own DB status", () => {
+    expect(normalizeStatus("not_landed", "workflow")).toBe("not_landed");
+    expect(workflowDbStatuses("not_landed")).toEqual(["not_landed"]);
+  });
+
   it("maps direct completed/failed onto success/error", () => {
     expect(normalizeStatus("completed", "direct")).toBe("success");
     expect(normalizeStatus("failed", "direct")).toBe("error");

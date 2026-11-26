@@ -1201,7 +1201,7 @@ export function recordWorkflowExecutionError(labels: {
 }
 
 // Per-execution terminal counter: incremented once per execution finalization
-// (success | error | system_error), gated on the CAS-guarded terminal write so
+// (success | error | system_error | not_landed), gated on the CAS-guarded terminal write so
 // lost finalize races are not counted. Unlike errors_created it also counts
 // successes, so windowed success-rate SLIs can be computed per org from
 // increase() without reading the 30-day executions gauge. Non-error rows carry
@@ -1209,12 +1209,12 @@ export function recordWorkflowExecutionError(labels: {
 const workflowExecutionsFinished = getOrCreateCounter(
   apiRegistry,
   "keeperhub_workflow_executions_finished_total",
-  "Workflow executions finished since pod start, by terminal status (success, error, system_error; cancellations are not counted), org_slug and error_type",
+  "Workflow executions finished since pod start, by terminal status (success, error, system_error, not_landed; cancellations are not counted), org_slug and error_type",
   ["status", "org_slug", "error_type"]
 );
 
 export function recordWorkflowExecutionFinished(labels: {
-  status: "success" | "unconfirmed" | ErrorStatus;
+  status: "success" | "unconfirmed" | "not_landed" | ErrorStatus;
   orgSlug: string;
   errorType: ExecutionErrorType | typeof NA_ERROR_TYPE;
 }): void {
@@ -1225,15 +1225,14 @@ export function recordWorkflowExecutionFinished(labels: {
   });
 }
 
-// Runs the platform refused before they started: over the plan's execution
-// limit, a gated action, or an unpaid pay-as-you-go charge. Deliberately its own
-// series rather than a `finished` status: a refused run never executed, so it
-// belongs in neither the error count nor the success-rate denominator, but it
-// still has to be visible or the refusals become invisible in Prometheus.
+// Runs that sent no transaction: refused before they started, or stopped behind
+// an earlier run's in-flight transaction. Its own series rather than a
+// `finished` status: such a run belongs in neither the error count nor the
+// success-rate denominator, but it still has to be visible in Prometheus.
 const workflowExecutionsSkipped = getOrCreateCounter(
   apiRegistry,
   "keeperhub_workflow_executions_skipped_total",
-  "Workflow executions skipped before starting, by org_slug and reason: plan refusals (execution_limit, plan_feature, payg_unpaid) and lifecycle skips the executor resolves (not_found, deleted, deactivated, org_deactivated, disabled, schedule_invalid). Not failures: these runs never executed.",
+  "Workflow executions skipped without sending a transaction, by org_slug and reason: plan refusals (execution_limit, plan_feature, payg_unpaid) and lifecycle skips the executor resolves (not_found, deleted, deactivated, org_deactivated, disabled, schedule_invalid), which never started, and bundle_in_flight (the run found an earlier run's transaction still in flight and sent nothing; steps before it that send nothing may have run). Not failures.",
   ["org_slug", "reason"]
 );
 
@@ -1263,6 +1262,26 @@ export function recordWorkflowExecutionHealed(labels: {
   orgSlug: string;
 }): void {
   workflowExecutionsHealed.inc({ org_slug: labels.orgSlug });
+}
+
+// A not landed run re-settled after its transaction was mined later. The
+// finished counter already holds it as not_landed, so dashboards move it with
+// this series (not_landed -= n, and success or error += n).
+const workflowExecutionsLateLanded = getOrCreateCounter(
+  apiRegistry,
+  "keeperhub_workflow_executions_late_landed_total",
+  "Not landed workflow executions re-settled after a transaction in them was mined later, by org_slug and status (success, or error when it reverted)",
+  ["org_slug", "status"]
+);
+
+export function recordWorkflowExecutionLateLanded(labels: {
+  orgSlug: string;
+  status: "success" | "error";
+}): void {
+  workflowExecutionsLateLanded.inc({
+    org_slug: labels.orgSlug,
+    status: labels.status,
+  });
 }
 
 // ─── Scan-to-automate funnel (v1.13) ─────────────────────────────────────────

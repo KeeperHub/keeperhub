@@ -252,8 +252,8 @@ describe("workflow execute redispatch guard", () => {
     );
   });
 
-  it("returns 409 for terminal error and cancelled", async () => {
-    for (const status of ["error", "cancelled"] as const) {
+  it("returns 409 for terminal error, cancelled and not landed", async () => {
+    for (const status of ["error", "cancelled", "not_landed"] as const) {
       vi.clearAllMocks();
       mockAuthenticateInternalService.mockResolvedValue({
         authenticated: true,
@@ -291,6 +291,24 @@ describe("workflow execute redispatch guard", () => {
       expect(mockChargePaygIfBillable).not.toHaveBeenCalled();
       expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
     }
+  });
+
+  it("returns 409 for a finished skipped row, so a re-dispatch never re-runs it", async () => {
+    mockFindExecution.mockResolvedValue({
+      id: "exec_skip",
+      status: "skipped",
+      workflowId: "wf_1",
+      organizationId: "org_1",
+      completedAt: new Date(),
+    });
+
+    const response = await callExecute({ executionId: "exec_skip" });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.status).toBe("skipped");
+    expect(mockChargePaygIfBillable).not.toHaveBeenCalled();
+    expect(mockExecuteWorkflowInBackground).not.toHaveBeenCalled();
   });
 
   it("acks running without PAYG or second start", async () => {

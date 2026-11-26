@@ -52,13 +52,21 @@ export const STATUS_DISPLAY: Record<NormalizedStatus, StatusDisplay> = {
       "bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/20",
     chartColor: "var(--color-orange-500)",
   },
-  // Never started (refused, or skipped behind a live run): neutral everywhere, so it never reads as a
-  // failure, in a badge or as a band on the chart.
+  // Sent nothing (refused, skipped behind a live run, or behind an earlier run's
+  // transaction still in flight): neutral, so it never reads as a failure.
   skipped: {
     label: "Skipped",
     dot: "bg-muted-foreground",
     badge: "bg-muted text-muted-foreground border-border",
     chartColor: "var(--color-muted-foreground)",
+  },
+  // A transaction in the run did not land in a block: muted badge, but its own
+  // hue for dot and chart so it is not mistaken for Skipped.
+  not_landed: {
+    label: "Not landed",
+    dot: "bg-teal-500",
+    badge: "bg-muted text-muted-foreground border-border",
+    chartColor: "var(--color-teal-500)",
   },
   running: {
     label: "Running",

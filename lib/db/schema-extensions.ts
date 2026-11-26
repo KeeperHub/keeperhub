@@ -17,6 +17,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   foreignKey,
   index,
@@ -542,6 +543,16 @@ export type NewWalletLock = typeof walletLocks.$inferInsert;
  *
  * Status lifecycle: pending -> confirmed | dropped | replaced
  */
+/** One bundle signed at a nonce: its hashes, the run and step that signed it, and when. */
+export type BundleRun = {
+  executionId: string;
+  hashes: string[];
+  // Epoch ms; entries older than the late-landing window are pruned on reuse.
+  signedAt: number;
+  // Lets a late landing name its hash on the run.
+  node?: { id: string; name: string; iterationIndex?: number };
+};
+
 export const pendingTransactions = pgTable(
   "pending_transactions",
   {
@@ -555,6 +566,15 @@ export const pendingTransactions = pgTable(
     submittedAt: timestamp("submitted_at", { withTimezone: true }).defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     status: text("status").default("pending"), // pending, confirmed, dropped, replaced
+    // Set only while the row's current send is a bundle: reconcile leaves it
+    // pending until the latest block passes this.
+    lastTargetBlock: bigint("last_target_block", { mode: "number" }),
+    // Bundles signed at this nonce (newest last, capped), kept across reuse of
+    // a dropped nonce so a late landing re-settles the right run.
+    bundleRuns: jsonb("bundle_runs")
+      .$type<BundleRun[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
   },
   (table) => [
     primaryKey({ columns: [table.walletAddress, table.chainId, table.nonce] }),

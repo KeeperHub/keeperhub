@@ -251,6 +251,29 @@ describe("/api/chains route", () => {
       expect(JSON.stringify(data)).not.toContain("relay.example");
     });
 
+    it("lists bundle builder names only, never their URLs", async () => {
+      mockQueryResult = [
+        {
+          ...mockChains.ethereumWithExplorer,
+          chain: {
+            ...mockChains.ethereumWithExplorer.chain,
+            bundleBuilders: [
+              { name: "alpha", url: "https://alpha.builder.example" },
+              { name: "Bad Name", url: "https://bad.builder.example" },
+            ],
+          },
+        },
+        mockChains.sepoliaWithExplorer,
+      ];
+
+      const data = await (await GET(createRequest("/api/chains"))).json();
+
+      expect(
+        data.map((chain: { bundleBuilders: string[] }) => chain.bundleBuilders)
+      ).toEqual([["alpha"], []]);
+      expect(JSON.stringify(data)).not.toContain("builder.example");
+    });
+
     it("should handle chains without explorer config", async () => {
       mockQueryResult = [mockChains.solanaNoExplorer];
 

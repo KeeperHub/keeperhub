@@ -2,12 +2,12 @@ import "server-only";
 import { logWarn } from "@/lib/logging";
 import { neverReached } from "@/lib/rpc/connection-refusal";
 import { safeFetch } from "@/lib/safe-fetch";
-
-/**
- * What one endpoint did with our signed bytes: took them (or already had
- * them), answered and turned them down, or left it unknown.
- */
-export type Delivery = "accepted" | "refused" | "unknown";
+import { readCappedBody } from "@/lib/web3/capped-body";
+import {
+  classifyRpcError,
+  type Delivery,
+  parseJsonRpcAnswer,
+} from "@/lib/web3/json-rpc-answer";
 
 type ExtraBroadcast = {
   /** True as soon as one extra URL accepts; false once all have answered. */
@@ -18,40 +18,7 @@ type ExtraBroadcast = {
 
 const EXTRA_BROADCAST_TIMEOUT_MS = 5000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
-const JSON_RPC_INTERNAL_ERROR = -32_603;
 const HTTP_REQUEST_TIMEOUT = 408;
-const UNKNOWN_OUTCOME_PATTERN =
-  /internal error|timed out|timeout|deadline exceeded/i;
-
-// Node replies that mean "I already hold a transaction with this hash"
-// (geth, Erigon, Nethermind's "AlreadyKnown", Parity's "already imported").
-// Whole words only, so "unknown transaction type" is not a duplicate.
-const DUPLICATE_HASH_PATTERN =
-  /\balready known\b|\balreadyknown\b|\balready imported\b|\bknown transaction\b/i;
-
-export function isDuplicateHashMessage(message: string): boolean {
-  return DUPLICATE_HASH_PATTERN.test(message);
-}
-
-/** How a JSON-RPC error answer to eth_sendRawTransaction reads. */
-export function deliveryOfRpcError(rpcError: {
-  code?: unknown;
-  message?: unknown;
-}): Delivery {
-  const message = typeof rpcError.message === "string" ? rpcError.message : "";
-  if (isDuplicateHashMessage(message)) {
-    return "accepted";
-  }
-  // An internal error or a gateway timeout can follow a forward, so it
-  // proves nothing either way.
-  if (
-    rpcError.code === JSON_RPC_INTERNAL_ERROR ||
-    UNKNOWN_OUTCOME_PATTERN.test(message)
-  ) {
-    return "unknown";
-  }
-  return "refused";
-}
 
 /**
  * Send the signed bytes to every extra URL at once. Never rejects; each
@@ -133,7 +100,7 @@ async function sendRaw(
     await response.body?.cancel().catch(() => undefined);
     return { delivery: "unknown", kind: "http_408" };
   }
-  const body = await readCapped(response);
+  const body = await readCappedBody(response, MAX_RESPONSE_BYTES);
   const answer =
     body === undefined ? undefined : readAnswer(body, expectedHash);
   if (response.status >= 400) {
@@ -148,23 +115,15 @@ function readAnswer(
   body: string,
   expectedHash: string
 ): SendOutcome | undefined {
-  let parsed: {
-    result?: unknown;
-    error?: { code?: unknown; message?: unknown };
-  };
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return;
-  }
+  const parsed = parseJsonRpcAnswer(body);
   if (typeof parsed?.result === "string") {
     // Anything but our hash (a tracking id, say) may still have been forwarded.
     return normalizeHash(parsed.result) === normalizeHash(expectedHash)
       ? { delivery: "accepted", kind: "accepted" }
       : { delivery: "unknown", kind: "unexpected_hash" };
   }
-  if (parsed?.error && typeof parsed.error === "object") {
-    return { delivery: deliveryOfRpcError(parsed.error), kind: "rpc_error" };
+  if (parsed?.error) {
+    return { delivery: classifyRpcError(parsed.error), kind: "rpc_error" };
   }
   return;
 }
@@ -172,31 +131,4 @@ function readAnswer(
 function normalizeHash(value: string): string {
   const trimmed = value.trim().toLowerCase();
   return trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`;
-}
-
-// Reads at most MAX_RESPONSE_BYTES; undefined when larger or cut off.
-async function readCapped(response: Response): Promise<string | undefined> {
-  const reader = response.body?.getReader();
-  if (!reader) {
-    return "";
-  }
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      size += value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) {
-        await reader.cancel();
-        return;
-      }
-      chunks.push(value);
-    }
-  } catch {
-    return;
-  }
-  return Buffer.concat(chunks).toString("utf8");
 }

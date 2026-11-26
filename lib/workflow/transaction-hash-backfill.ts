@@ -15,7 +15,7 @@ import { isRecordableTransactionHash } from "@/lib/workflow/executor/step-succes
  * here (transactionHash, chainId, network) are not redacted (lib/utils/redact.ts),
  * so `output` carries the same values.
  *
- * It mirrors loadHashesFromLogs and toHashEntry (lib/workflow/executor/logging.ts):
+ * It mirrors loadSuccessLogFacts and toHashEntry (lib/workflow/executor/logging.ts):
  * success steps only, ordered by started_at, deduplicated by hash, the same
  * shape check, chainId kept only when it is a number and network only when it
  * is a string. A backfilled array and a freshly written one cannot drift.
@@ -132,7 +132,7 @@ function toEntry(row: HashStepRow): TransactionHashEntry | null {
   };
 }
 
-/** Per run, deduplicated by hash the way loadHashesFromLogs does it. */
+/** Per run, deduplicated by hash the way loadSuccessLogFacts does it. */
 function groupByRun(rows: HashStepRow[]): Map<string, TransactionHashEntry[]> {
   const byRun = new Map<string, TransactionHashEntry[]>();
   const seen = new Map<string, Set<string>>();

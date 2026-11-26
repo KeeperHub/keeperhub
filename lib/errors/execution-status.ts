@@ -27,11 +27,18 @@ export function isErrorStatus(status: string): status is ErrorStatus {
  * the same set, and so adding a status shows up as a type error everywhere it
  * has to be handled.
  *
- * `skipped` is a run the platform refused before it started: over the plan's
- * execution limit, a gated action, or an unpaid pay-as-you-go charge; or a
- * Block trigger dispatch skipped while a previous run was still live. It is
- * terminal, never billable, and not a failure, so it belongs outside both the
- * error count and the success-rate denominator.
+ * `skipped` is a run that sent no transaction: refused before it started (over
+ * the plan's execution limit, a gated action, or an unpaid pay-as-you-go
+ * charge), a Block trigger dispatch skipped while a previous run was still
+ * live, or a run that found an earlier run's transaction still in flight and
+ * stopped before sending (non-sending steps before it may have run). It is
+ * terminal and not a failure, so it belongs outside both the error count and
+ * the success-rate denominator; only the in-flight kind is billable.
+ *
+ * `not_landed` is a run that finished but where a transaction in it did not
+ * land in a block (for example a bundle no builder picked). Terminal, billable,
+ * and neither a success nor a failure: failure alerts step over it. A late
+ * landing re-settles it to success (or error, if it reverted).
  */
 export const WORKFLOW_EXECUTION_STATUSES = [
   "pending",
@@ -43,6 +50,7 @@ export const WORKFLOW_EXECUTION_STATUSES = [
   "cancelled",
   "phantom",
   "system_error",
+  "not_landed",
 ] as const;
 
 export type WorkflowExecutionStatus =

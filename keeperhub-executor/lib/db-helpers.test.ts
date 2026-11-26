@@ -1,3 +1,5 @@
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -148,6 +150,39 @@ describe("updateExecutionStatus classification", () => {
     expect(recordTerminalSampleMock).toHaveBeenCalledWith(
       db,
       expect.objectContaining({ status: "success" })
+    );
+  });
+});
+
+describe("updateExecutionStatus backstop guard", () => {
+  // Engine outcomes the backstop's success/error write must not overwrite.
+  it("never reopens an unconfirmed, not landed, skipped or finished row", async () => {
+    let where: SQL | undefined;
+    const builder = {
+      set: () => builder,
+      where: (condition: SQL) => {
+        where = condition;
+        return builder;
+      },
+      returning: () => Promise.resolve([]),
+    };
+    const db = {
+      update: () => builder,
+    } as unknown as PostgresJsDatabase<DbSchema>;
+
+    await updateExecutionStatus(db, "e1", "success", { output: {} });
+
+    const params = new PgDialect().sqlToQuery(where as SQL).params;
+    expect(params).toEqual(
+      expect.arrayContaining([
+        "success",
+        "error",
+        "system_error",
+        "skipped",
+        "cancelled",
+        "unconfirmed",
+        "not_landed",
+      ])
     );
   });
 });

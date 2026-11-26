@@ -58,6 +58,7 @@ describe("/api/cron/execution-reconciler", () => {
     mockReconcile.mockResolvedValue({
       direct: EMPTY_SUMMARY,
       workflows: EMPTY_SUMMARY,
+      lateBundles: { examined: 0, landed: 0, replaced: 0, runsChecked: 0 },
     });
     mockAuthResult = {
       authenticated: true,

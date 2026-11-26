@@ -2099,7 +2099,7 @@ export function registerTools(
         .string()
         .optional()
         .describe(
-          "Filter by status: pending, running, success, error, system_error, external_error, skipped, cancelled"
+          "Filter by status: pending, running, success, error, system_error, external_error, skipped, not_landed, cancelled"
         ),
       source: z
         .enum(["workflow", "direct"])

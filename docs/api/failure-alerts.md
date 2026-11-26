@@ -7,6 +7,8 @@ description: "KeeperHub Failure Alerts API - read and change a workflow's alert 
 
 Failure alerts tell your team when a workflow that runs on its own keeps failing. These routes are available to organizations with failure alerts turned on; for any other organization they answer `404`.
 
+A run that ends `not_landed` is neither a failure nor a success, so it does not count and does not end a streak. If its transaction is mined later, the run becomes `error` (the call reverted) or `success` in its original place in the run history: a late error counts as a failure there (it extends a streak only when no success came after it), and a late success ends the count there but resolves nothing; an alert resolves only when the newest run succeeds.
+
 ## Authentication
 
 Routes accept a session cookie or an organization API key (`Authorization: Bearer $KEEPERHUB_API_KEY`). Any member can read. Changing a workflow's alert settings needs an owner or admin; a key needs the `mcp:write` scope.

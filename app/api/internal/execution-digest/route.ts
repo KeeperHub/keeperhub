@@ -126,6 +126,7 @@ async function processOrg(
           success: digest.success,
           error: digest.error,
           skipped: digest.skipped,
+          notLanded: digest.notLanded,
           distinctWorkflows: digest.distinctWorkflows,
           transactionCount: digest.transactionCount,
           gasUsedWei: digest.gasUsedWei,

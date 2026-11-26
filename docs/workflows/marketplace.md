@@ -213,6 +213,8 @@ Your slug, on the other hand, is public. x402scan.com and mppscan.com index it u
 
 Reliability is on you. Callers are only charged on successful execution, but repeat failures cost you trust (and revenue, since agents stop calling you). Watch the Earnings page after any workflow change.
 
+A call that waits for the run answers `{"executionId", "status": "success", "output"}`, `{"executionId", "status": "running"}` when the run is still going (poll the execution status), or `{"executionId", "status": "error", "error"}`. An error answer for a run that ended without failing also carries `code`: `skipped` (the run sent no transaction) or `not_landed` (a transaction in it did not land in a block; it can still land within about a day, so re-read the execution if that matters).
+
 Calls run inside your KeeperHub organization. Connected wallets and integrations the workflow uses are billed to your org, not the caller's. Executions of listings priced at $0.05 USDC or higher are exempt from your monthly execution quota; see [Execution quota](#execution-quota) above.
 
 ## Reference implementation

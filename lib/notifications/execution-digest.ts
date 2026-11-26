@@ -143,10 +143,12 @@ export type OrgExecutionDigest = {
   // Every failed run in the window, platform failures included, so the digest
   // rates a run the same way the analytics dashboard does.
   error: number;
-  // Runs that did not start: refused (over the plan's execution limit, a gated
-  // action) or skipped behind a still-running run. They never ran, so they are reported on their
-  // own rather than as failures, and they are excluded from `total`.
+  // Runs that sent no transaction: refused, or skipped behind a live run or an in-flight
+  // transaction. Reported on their own rather than as failures, and excluded from `total`.
   skipped: number;
+  // A transaction in the run did not land in a block: neither a success nor a
+  // failure, so no rate. Included in `total`.
+  notLanded: number;
   // Distinct workflows that ran at least once over the window.
   distinctWorkflows: number;
   // On-chain activity over the window.
@@ -191,6 +193,7 @@ export async function getOrgExecutionDigest(
       success: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'success' THEN 1 ELSE 0 END)`,
       error: sql<number>`SUM(CASE WHEN ${inArray(workflowExecutions.status, [...ERROR_STATUSES])} THEN 1 ELSE 0 END)`,
       skipped: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'skipped' THEN 1 ELSE 0 END)`,
+      notLanded: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'not_landed' THEN 1 ELSE 0 END)`,
       distinctWorkflows: sql<number>`COUNT(DISTINCT CASE WHEN ${workflowExecutions.status} <> 'skipped' THEN ${workflowExecutions.workflowId} END)`,
       transactionCount: sql<number>`COALESCE(SUM(CASE WHEN jsonb_typeof(${workflowExecutions.transactionHashes}) = 'array' THEN jsonb_array_length(${workflowExecutions.transactionHashes}) ELSE 0 END), 0)`,
       gasUsedWei: sql<string>`COALESCE(SUM(${workflowExecutions.gasUsedWei}), 0)`,
@@ -282,6 +285,7 @@ export async function getOrgExecutionDigest(
     success: Number(totalsRow?.success) || 0,
     error: Number(totalsRow?.error) || 0,
     skipped: skippedTotal,
+    notLanded: Number(totalsRow?.notLanded) || 0,
     distinctWorkflows: Number(totalsRow?.distinctWorkflows) || 0,
     transactionCount: Number(totalsRow?.transactionCount) || 0,
     gasUsedWei: totalsRow?.gasUsedWei ?? "0",
@@ -304,7 +308,7 @@ export async function getOrgExecutionDigest(
 /**
  * Workflows whose runs the platform refused over the window, with the reason
  * carried on the most recent one. Same shape as the failing list, deliberately
- * kept apart from it: these runs did not fail, they never started.
+ * kept apart from it: these runs did not fail, they sent no transaction.
  */
 async function getTopSkippedWorkflows(
   windowFilter: ReturnType<typeof and>

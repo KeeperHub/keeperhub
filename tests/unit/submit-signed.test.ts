@@ -13,7 +13,7 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 import { type RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
-import { isDuplicateHashMessage } from "@/lib/web3/extra-broadcast";
+import { isDuplicateMessage } from "@/lib/web3/json-rpc-answer";
 import { broadcastTransactionHash } from "@/lib/web3/onchain-revert";
 import {
   isNonceConflictError,
@@ -581,7 +581,7 @@ describe("isNonceConflictError", () => {
     ["unknown transaction type", false],
     ["rlp: unknown transaction type", false],
   ])("reads %s as a duplicate-hash reply: %s", (msg, duplicate) => {
-    expect(isDuplicateHashMessage(msg)).toBe(duplicate);
+    expect(isDuplicateMessage(msg)).toBe(duplicate);
   });
 
   it("handles non-Error values without throwing", () => {

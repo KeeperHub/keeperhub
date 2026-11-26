@@ -126,11 +126,13 @@ Returns real-time execution status with progress tracking.
 |--------|-------------|----------|
 | `pending` | Execution queued | no |
 | `running` | Currently executing | no |
-| `unconfirmed` | On-chain writes were submitted but their receipts could not be read conclusively. Keep polling | **no** |
+| `unconfirmed` | On-chain writes were submitted but their receipts could not be read conclusively, or the run's outcome could not be read yet. Keep polling | **no** |
 | `success` | Completed successfully | yes |
 | `error` | Failed with error | yes |
 | `system_error` | Failed for an infrastructure reason, or was reaped after going stale | yes |
 | `cancelled` | Manually cancelled | yes |
+| `skipped` | Sent no transaction: refused before it started, skipped behind a run that was still going, or stopped because a transaction from an earlier run of the workflow was still in flight (steps before it that send nothing may have run). Not a failure. Counts towards usage only in that last case | yes |
+| `not_landed` | Finished, but a transaction in it did not land in a block (for example no block builder picked it up). Neither a success nor a failure, and counts towards usage. It can still change: if the transaction is mined later (within about a day; less for a workflow that sends very often from one wallet, which keeps a shorter history) the run becomes `success`, or `error` if the call reverted. Re-read the run if that matters, and put a deadline in the calldata of calls that must not run late | yes |
 
 Treat this list as a lower bound rather than a closed set, and decide terminality from the `pollIntervalHint` response body field (or the `X-Poll-Interval-Hint` response header) rather than from the status string. The server computes that hint from its own terminal set, so it stays correct for statuses added after your client shipped; `0` means terminal. A client that routes an unrecognised status into a failing `default` branch reports a failure for a run that is still settling.
 
@@ -164,7 +166,7 @@ An empty array carries one of two meanings: the run produced no on-chain writes,
 GET /api/workflows/executions/{executionId}/wait?timeoutMs=30000
 ```
 
-Blocks until the execution reaches a terminal state (`success`, `error`, or `cancelled`) or the timeout elapses, then returns the execution receipt including `transactionHashes`. This replaces the client-side `while (!terminal) { sleep + GET status }` polling loop.
+Blocks until the execution reaches a terminal state (`success`, `error`, `system_error`, `cancelled`, `skipped` or `not_landed`) or the timeout elapses, then returns the execution receipt including `transactionHashes`. This replaces the client-side `while (!terminal) { sleep + GET status }` polling loop.
 
 `timeoutMs` is optional (default `25000`, max `60000`). If the execution is still running when the timeout elapses, the response returns with `completed: false` and the current status — re-call to keep waiting.
 
@@ -193,7 +195,7 @@ Blocks until the execution reaches a terminal state (`success`, `error`, or `can
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status` | enum | `pending`, `running`, `success`, `error`, `cancelled` |
+| `status` | enum | `pending`, `running`, `unconfirmed`, `success`, `error`, `system_error`, `cancelled`, `skipped`, `not_landed` |
 | `completed` | boolean | `true` once the execution reached a terminal state; `false` if the wait timed out while still running |
 | `transactionHashes` | array | Ordered on-chain writes (same shape as the status endpoint) |
 | `output` | object | Workflow output |

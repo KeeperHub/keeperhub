@@ -210,12 +210,15 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
     }
   );
 
-  it.each(["unconfirmed", "success", "error", "skipped"] as const)(
-    "a %s run does not block",
-    async (status) => {
-      expect(await busy(await workflowWithRun(status))).toBe(false);
-    }
-  );
+  it.each([
+    "unconfirmed",
+    "success",
+    "error",
+    "skipped",
+    "not_landed",
+  ] as const)("a %s run does not block", async (status) => {
+    expect(await busy(await workflowWithRun(status))).toBe(false);
+  });
 
   it("a listed-workflow call (trigger source mcp) does not block; legacy rows without a source do", async () => {
     expect(await busy(await workflowWithRun("running", 0, "mcp"))).toBe(false);

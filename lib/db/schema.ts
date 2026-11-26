@@ -1396,6 +1396,11 @@ export const chains = pgTable(
       .notNull()
       .default([])
       .$type<string[]>(),
+    // Block builders bundles go to, set from CHAIN_RPC_CONFIG by the chain seed.
+    bundleBuilders: jsonb("bundle_builders")
+      .notNull()
+      .default([])
+      .$type<{ name: string; url: string; supportsMinTimestamp: boolean }[]>(),
     isTestnet: boolean("is_testnet").default(false),
     isEnabled: boolean("is_enabled").default(true), // Can disable chains
     // Support maturity signal surfaced to agents via list_action_schemas:

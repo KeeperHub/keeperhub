@@ -56,7 +56,8 @@ export function attemptConditions(workflowId: string, since: Date | null) {
     isNotNull(workflowExecutions.completedAt),
     isNull(workflowExecutions.deletedAt),
     AUTOMATED_RUN_SQL,
-    sql`${workflowExecutions.status} NOT IN ('phantom', 'system_error')`,
+    // A not landed run neither counts nor resets, so it never takes a window slot.
+    sql`${workflowExecutions.status} NOT IN ('phantom', 'system_error', 'not_landed')`,
     sql`(${workflowExecutions.status} <> 'error'
       OR ${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})`,
     // A skip with no category (an expired Pyth signal) was never an attempt.
@@ -200,6 +201,8 @@ export async function loadStreakRuns(
         sql`(${workflowExecutions.status} <> 'error'
           OR ${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})`,
         sql`NOT ${REFUSED_RUN_SQL}`,
+        // Stepped over by summarizeStreak; filtered here so it takes no window slot.
+        sql`${workflowExecutions.status} <> 'not_landed'`,
         // The index predicate, verbatim (literals), so the planner can use it.
         countedRunSql(workflowExecutions)
       )

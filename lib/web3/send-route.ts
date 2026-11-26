@@ -1,10 +1,10 @@
 import { isConnectionRefusal } from "@/lib/rpc/connection-refusal";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import {
+  classifyRpcError,
   type Delivery,
-  deliveryOfRpcError,
-  isDuplicateHashMessage,
-} from "@/lib/web3/extra-broadcast";
+  isDuplicateMessage,
+} from "@/lib/web3/json-rpc-answer";
 import { rpcErrorOf } from "@/lib/web3/revert-data";
 
 /** Where a write was broadcast. Reported as the step's `route` output. */
@@ -26,14 +26,14 @@ export function deliveryOfBroadcastError(
   message: string,
   knownRefusal: boolean
 ): Delivery {
-  if (isDuplicateHashMessage(message)) {
+  if (isDuplicateMessage(message)) {
     return "accepted";
   }
   if (knownRefusal || isConnectionRefusal(error)) {
     return "refused";
   }
   const rpcError = rpcErrorOf(error);
-  return rpcError ? deliveryOfRpcError(rpcError) : "unknown";
+  return rpcError ? classifyRpcError(rpcError) : "unknown";
 }
 
 /**

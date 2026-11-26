@@ -121,6 +121,7 @@ describe("RPC Preferences API Routes", () => {
     usePrivateMempoolRpc: false,
     defaultPrivateRpcUrl: null,
     broadcastRpcUrls: [],
+    bundleBuilders: [],
     isEnabled: true,
     status: "stable",
     createdAt: new Date("2026-01-01"),

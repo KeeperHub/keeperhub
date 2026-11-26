@@ -728,6 +728,23 @@ describe("broadcast to extra RPCs", () => {
           { status: 400 }
         ),
     ],
+    [
+      "answered 400 with a string error 'already known'",
+      () =>
+        Response.json(
+          { jsonrpc: "2.0", id: 1, error: "already known" },
+          { status: 400 }
+        ),
+    ],
+    [
+      "answered an internal error with its code as a string",
+      () =>
+        Response.json({
+          jsonrpc: "2.0",
+          id: 1,
+          error: { code: "-32603", message: "oops" },
+        }),
+    ],
   ])(
     "is no longer pre-broadcast when an extra %s",
     async (_label, answer) => {

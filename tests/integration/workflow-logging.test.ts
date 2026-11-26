@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -16,9 +24,12 @@ vi.mock("@/lib/workflow/executor/step-claim", () => ({
   clearStepClaims: vi.fn(() => Promise.resolve()),
 }));
 
+const { mockIncrementCounter } = vi.hoisted(() => ({
+  mockIncrementCounter: vi.fn(),
+}));
 vi.mock("@/lib/metrics", () => ({
   getMetricsCollector: () => ({
-    incrementCounter: vi.fn(),
+    incrementCounter: mockIncrementCounter,
   }),
 }));
 
@@ -52,7 +63,7 @@ const {
     status: "status",
     error: "error",
     completedAt: "completed_at",
-    // KEEP-470: columns referenced by loadHashesFromLogs SELECT
+    // KEEP-470: columns referenced by loadSuccessLogFacts SELECT
     iterationIndex: "iteration_index",
     outputRaw: "output_raw",
     startedAt: "started_at",
@@ -108,6 +119,7 @@ vi.mock("@/lib/metrics/collectors/prometheus", () => ({
   recordWorkflowExecutionError: vi.fn(),
   recordWorkflowExecutionFinished: vi.fn(),
   recordWorkflowExecutionHealed: vi.fn(),
+  recordWorkflowExecutionSkipped: vi.fn(),
 }));
 vi.mock("@/lib/metrics/db-metrics", () => ({
   ANONYMOUS_ORG_SLUG: "_anonymous",
@@ -184,7 +196,15 @@ let trulyFailedProbes = 0;
 // resolveGasTotal issues `db.select(...).from(...).where(...)` and reads
 // rows[0].gasUsedWei. Default to a no-gas run; tests that exercise the gas
 // denormalisation set this to a summed value.
-let mockGasRows: Array<{ gasUsedWei: string | null }> = [{ gasUsedWei: null }];
+// The finish aggregate: run gas plus the outcome signals of every pod's steps.
+let mockGasRows: Array<{
+  gasUsedWei: string | null;
+  skippedInFlight?: boolean | null;
+  notIncluded?: boolean | null;
+}> = [{ gasUsedWei: null }];
+// Make the finish aggregate or the success-log scan throw (a statement timeout).
+let finishQueryFails = false;
+let logScanFails = false;
 // Rows returned by the terminal UPDATE's .returning(). Tests exercising the
 // counter-emission gate seed workflowId + previousStatus here; the default
 // empty array means "no row flipped" so the counter path is skipped.
@@ -273,12 +293,14 @@ vi.mock("@/lib/db", () => ({
           if (isOrphanSiblingProbe) {
             return Promise.resolve(siblingErrorRows);
           }
-          // loadHashesFromLogs is the only reader that asks for output_raw
+          // loadSuccessLogFacts is the only reader that asks for output_raw
           // (KEEP-470 harvests success rows, KEEP-1281 harvests error rows).
           // It is not a listTrulyFailedNodes probe, so it must not advance
           // that counter or consume the late-commit script.
           if (cols.outputRaw === true) {
-            return Promise.resolve(allLogs);
+            return logScanFails
+              ? Promise.reject(new Error("statement timeout"))
+              : Promise.resolve(allLogs);
           }
           trulyFailedProbes += 1;
           return Promise.resolve(
@@ -296,7 +318,10 @@ vi.mock("@/lib/db", () => ({
     //   .leftJoin(organization).where(...).limit(1) -> rows[]
     select: vi.fn(() => ({
       from: () => ({
-        where: () => Promise.resolve(mockGasRows),
+        where: () =>
+          finishQueryFails
+            ? Promise.reject(new Error("statement timeout"))
+            : Promise.resolve(mockGasRows),
         leftJoin: () => ({
           where: () => ({
             limit: () => Promise.resolve(mockOrgRows),
@@ -316,6 +341,7 @@ import {
 import type { StepContext } from "@/lib/workflow/executor/step-handler";
 import {
   clearExecution,
+  recordRunOutcomeIfPresent,
   recordTransactionHashIfPresent,
 } from "@/lib/workflow/executor/step-success-tracker";
 import { MAX_STORED_OUTPUT_BYTES } from "@/lib/workflow/output-limits";
@@ -334,6 +360,8 @@ function getLogUpdate(): UpdateCall | undefined {
 // Tests exercising the KEEP-966 gate itself override with
 // mockResolvedValueOnce / mockImplementationOnce.
 beforeEach(() => {
+  finishQueryFails = false;
+  logScanFails = false;
   verifyExecutionReceiptsMock.mockImplementation(
     (hashes: Array<{ hash: string; chainId: number }>) =>
       Promise.resolve({
@@ -1551,7 +1579,7 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
     });
 
     // listTrulyFailedNodes also hits findMany; discriminate by the
-    // outputRaw column selector unique to loadHashesFromLogs.
+    // outputRaw column selector unique to loadSuccessLogFacts.
     const loadHashesCall = findManyMock.mock.calls.find(
       ([opts]) =>
         (opts as { columns?: { outputRaw?: boolean } } | undefined)?.columns
@@ -1719,6 +1747,455 @@ describe("selfHealWorkflowAfterLateStepCommit transactionHashes (KEEP-470)", () 
       (c) => c.target === workflowExecutionsMock && c.set.status === "success"
     );
     expect(healUpdate).toBeUndefined();
+  });
+});
+
+// A success whose step reported a bundle not included ends as not_landed; a
+// step that found a bundle already in flight ends the run as skipped.
+describe("run outcome from step outputs", () => {
+  const executionId = "exec_outcome";
+  const stepContext: StepContext = {
+    executionId,
+    nodeId: "write-contract-1",
+    nodeName: "Write Contract",
+    nodeType: "web3/write-contract",
+  };
+  const notIncluded = {
+    success: true,
+    route: "bundle",
+    included: false,
+    notIncludedReason: "not-picked",
+  };
+  const inFlight = { success: true, route: "skipped-in-flight" };
+
+  beforeEach(() => {
+    allLogs = [];
+    updateCalls = [];
+    updateShouldThrow = false;
+    siblingErrorRows = [];
+    mockGasRows = [{ gasUsedWei: null }];
+    finishQueryFails = false;
+    logScanFails = false;
+    mockReturningRows = [];
+    mockOrgRows = [{ slug: "acme" }];
+    mockExecution = null;
+    clearExecution(executionId);
+    vi.clearAllMocks();
+  });
+
+  async function finalize(status: "success" | "error"): Promise<void> {
+    await logWorkflowCompleteDb({
+      executionId,
+      status,
+      ...(status === "error" && { error: "Step failed" }),
+      startTime: Date.now() - 1000,
+    });
+  }
+
+  it("writes not_landed for a success with a not-included step, still billable", async () => {
+    recordRunOutcomeIfPresent(stepContext, notIncluded);
+    await finalize("success");
+    const set = getExecUpdate()?.set;
+    expect(set?.status).toBe("not_landed");
+    expect(set).not.toHaveProperty("billable");
+  });
+
+  it("writes skipped, still billable, for a bundle already in flight", async () => {
+    recordRunOutcomeIfPresent(stepContext, inFlight);
+    await finalize("success");
+    const set = getExecUpdate()?.set;
+    expect(set?.status).toBe("skipped");
+    expect(set).not.toHaveProperty("billable");
+  });
+
+  describe("tracked hashes and another pod's signal", () => {
+    const sent = { transactionHash: `0x${"b".repeat(64)}`, chainId: 1 };
+    const transfer = {
+      ...stepContext,
+      nodeId: "transfer-1",
+      nodeType: "web3/transfer-funds",
+    };
+    const otherPodLog = {
+      id: "log_other_pod_bundle",
+      nodeId: "write-contract-2",
+      nodeType: "web3/write-contract",
+      status: "success",
+      outputRaw: notIncluded,
+    };
+    const outputScans = (): number =>
+      vi
+        .mocked(db.query.workflowExecutionLogs.findMany)
+        .mock.calls.filter(
+          ([opts]) =>
+            (opts as { columns?: { outputRaw?: boolean } } | undefined)?.columns
+              ?.outputRaw === true
+        ).length;
+
+    afterEach(() => {
+      delete process.env.BUNDLE_SEND_ROLLOUT;
+    });
+
+    it("keeps a plain success with no log scan when no pod's step signalled", async () => {
+      recordTransactionHashIfPresent(transfer, sent);
+      await finalize("success");
+      expect(outputScans()).toBe(0);
+      expect(getExecUpdate()?.set.status).toBe("success");
+    });
+
+    it("ends not_landed after a redeploy turned the rollout off mid-run", async () => {
+      // Old pod, rollout on: step 1's bundle missed; only its log row says so.
+      process.env.BUNDLE_SEND_ROLLOUT = "all";
+      allLogs = [otherPodLog] as unknown as LogRow[];
+      mockGasRows = [{ gasUsedWei: "10", notIncluded: true }];
+      // New pod, rollout off: step 2 sends a public transaction, then finalizes.
+      process.env.BUNDLE_SEND_ROLLOUT = "off";
+      recordTransactionHashIfPresent(transfer, sent);
+      await finalize("success");
+      expect(outputScans()).toBe(0);
+      expect(getExecUpdate()?.set.status).toBe("not_landed");
+    });
+
+    it("reads a skip on another pod as not_landed when this pod sent a transaction", async () => {
+      recordTransactionHashIfPresent(transfer, sent);
+      mockGasRows = [{ gasUsedWei: null, skippedInFlight: true }];
+      await finalize("success");
+      expect(getExecUpdate()?.set.status).toBe("not_landed");
+    });
+
+    it("scans the logs for the outcome when the finish aggregate fails, even with tracked hashes", async () => {
+      recordTransactionHashIfPresent(transfer, sent);
+      allLogs = [otherPodLog] as unknown as LogRow[];
+      finishQueryFails = true;
+      await finalize("success");
+      expect(outputScans()).toBe(1);
+      const set = getExecUpdate()?.set;
+      expect(set?.status).toBe("not_landed");
+      expect(set?.transactionHashes).toEqual([
+        expect.objectContaining({ hash: sent.transactionHash }),
+      ]);
+      expect(logSystemError).toHaveBeenCalledWith(
+        expect.anything(),
+        "[Workflow Logging] Failed to read gas and run outcome at finalize",
+        expect.any(Error),
+        { execution_id: executionId }
+      );
+    });
+
+    it("keeps a plain success when the aggregate fails and the scan finds no signal", async () => {
+      recordTransactionHashIfPresent(transfer, sent);
+      finishQueryFails = true;
+      await finalize("success");
+      expect(outputScans()).toBe(1);
+      expect(getExecUpdate()?.set.status).toBe("success");
+    });
+
+    it("writes unconfirmed, never success, when neither read of the outcome works", async () => {
+      const prometheusMod = await import("@/lib/metrics/collectors/prometheus");
+      mockReturningRows = [{ workflowId: "wf_1", previousStatus: "running" }];
+      recordTransactionHashIfPresent(transfer, sent);
+      finishQueryFails = true;
+      logScanFails = true;
+      await finalize("success");
+      const set = getExecUpdate()?.set;
+      expect(set?.status).toBe("unconfirmed");
+      expect(set?.errorType).toBeNull();
+      expect(set?.transactionHashes).toEqual([
+        expect.objectContaining({ hash: sent.transactionHash }),
+      ]);
+      expect(
+        prometheusMod.recordWorkflowExecutionFinished
+      ).not.toHaveBeenCalled();
+    });
+
+    it("writes unconfirmed on a cross-pod resume when neither read works", async () => {
+      finishQueryFails = true;
+      logScanFails = true;
+      await finalize("success");
+      expect(getExecUpdate()?.set.status).toBe("unconfirmed");
+    });
+
+    it("writes unconfirmed, not skipped, for this pod's skip when neither read works", async () => {
+      recordRunOutcomeIfPresent(stepContext, inFlight);
+      finishQueryFails = true;
+      logScanFails = true;
+      await finalize("success");
+      expect(getExecUpdate()?.set.status).toBe("unconfirmed");
+    });
+
+    it("still writes this pod's not landed outcome when neither read works", async () => {
+      recordRunOutcomeIfPresent(stepContext, notIncluded);
+      finishQueryFails = true;
+      logScanFails = true;
+      await finalize("success");
+      expect(getExecUpdate()?.set.status).toBe("not_landed");
+    });
+
+    it("leaves an error finalize as it was when the aggregate fails", async () => {
+      allLogs = [{ id: "log_1", nodeId: "node_a", status: "error" }];
+      finishQueryFails = true;
+      await finalize("error");
+      expect(getExecUpdate()?.set.status).toBe("system_error");
+    });
+  });
+
+  it("lets not landed outrank a skip", async () => {
+    recordRunOutcomeIfPresent(stepContext, notIncluded);
+    recordRunOutcomeIfPresent(
+      { ...stepContext, nodeId: "write-contract-2" },
+      inFlight
+    );
+    await finalize("success");
+    const set = getExecUpdate()?.set;
+    expect(set?.status).toBe("not_landed");
+    expect(set).not.toHaveProperty("billable");
+  });
+
+  it("ends a skip as not_landed, billable, when another step sent a transaction", async () => {
+    recordTransactionHashIfPresent(
+      { ...stepContext, nodeId: "transfer-1", nodeType: "web3/transfer-funds" },
+      { transactionHash: `0x${"a".repeat(64)}`, chainId: 1 }
+    );
+    recordRunOutcomeIfPresent(stepContext, inFlight);
+    await finalize("success");
+    const set = getExecUpdate()?.set;
+    expect(set?.status).toBe("not_landed");
+    expect(set).not.toHaveProperty("billable");
+  });
+
+  it("ignores the outcome keys on any step that is not Write Contract", async () => {
+    const httpStep = {
+      ...stepContext,
+      nodeId: "http-1",
+      nodeType: "http-request",
+    };
+    recordRunOutcomeIfPresent(httpStep, inFlight);
+    recordRunOutcomeIfPresent(httpStep, notIncluded);
+    allLogs = [
+      {
+        id: "log_http",
+        nodeId: "http-1",
+        nodeType: "http-request",
+        status: "success",
+        outputRaw: { route: "skipped-in-flight", notIncludedReason: "x" },
+      },
+    ] as unknown as LogRow[];
+    await finalize("success");
+    const set = getExecUpdate()?.set;
+    expect(set?.status).toBe("success");
+    expect(set).not.toHaveProperty("billable");
+  });
+
+  it("ignores an empty or blank not-included reason", async () => {
+    recordRunOutcomeIfPresent(stepContext, { notIncludedReason: "  " });
+    allLogs = [
+      {
+        id: "log_blank",
+        nodeId: "write-contract-1",
+        nodeType: "web3/write-contract",
+        status: "success",
+        outputRaw: { notIncludedReason: "" },
+      },
+    ] as unknown as LogRow[];
+    await finalize("success");
+    expect(getExecUpdate()?.set.status).toBe("success");
+  });
+
+  it("merges a partial tracker with the logs of another pod's steps", async () => {
+    recordRunOutcomeIfPresent(stepContext, inFlight);
+    allLogs = [
+      {
+        id: "log_other_pod",
+        nodeId: "write-contract-2",
+        nodeType: "web3/write-contract",
+        status: "success",
+        outputRaw: notIncluded,
+      },
+    ] as unknown as LogRow[];
+    await finalize("success");
+    expect(getExecUpdate()?.set.status).toBe("not_landed");
+  });
+
+  it("reads outcome and hashes in one log scan", async () => {
+    const findManyMock = vi.mocked(db.query.workflowExecutionLogs.findMany);
+    await finalize("success");
+    const scans = findManyMock.mock.calls.filter(
+      ([opts]) =>
+        (opts as { columns?: { outputRaw?: boolean } } | undefined)?.columns
+          ?.outputRaw === true
+    );
+    expect(scans).toHaveLength(1);
+    const whereJson = JSON.stringify(
+      (scans[0]?.[0] as { where?: unknown } | undefined)?.where
+    );
+    expect(whereJson).toContain("->>'transactionHash' IS NOT NULL");
+    expect(whereJson).toContain("notIncludedReason");
+  });
+
+  it("reads the outcome from the step logs when the tracker is empty (cross-pod resume)", async () => {
+    allLogs = [
+      {
+        id: "log_bundle_resume",
+        nodeId: "write-contract-1",
+        nodeType: "web3/write-contract",
+        status: "success",
+        outputRaw: notIncluded,
+      },
+    ] as unknown as LogRow[];
+    await finalize("success");
+    expect(getExecUpdate()?.set.status).toBe("not_landed");
+  });
+
+  it("keeps a plain success when no step reported an outcome", async () => {
+    recordRunOutcomeIfPresent(stepContext, {
+      success: true,
+      route: "public",
+      included: true,
+    });
+    await finalize("success");
+    expect(getExecUpdate()?.set.status).toBe("success");
+  });
+
+  it("lets an error win over a not-included step", async () => {
+    recordRunOutcomeIfPresent(stepContext, notIncluded);
+    allLogs = [{ id: "log_1", nodeId: "node_a", status: "error" }];
+    await finalize("error");
+    expect(getExecUpdate()?.set.status).toBe("system_error");
+  });
+
+  it("emits finished{status=not_landed} once, and the skipped counter for an in-flight skip", async () => {
+    const prometheusMod = await import("@/lib/metrics/collectors/prometheus");
+    mockReturningRows = [{ workflowId: "wf_1", previousStatus: "running" }];
+
+    recordRunOutcomeIfPresent(stepContext, notIncluded);
+    await finalize("success");
+    expect(prometheusMod.recordWorkflowExecutionFinished).toHaveBeenCalledWith({
+      status: "not_landed",
+      orgSlug: "acme",
+      errorType: "na",
+    });
+
+    clearExecution(executionId);
+    vi.clearAllMocks();
+    recordRunOutcomeIfPresent(stepContext, inFlight);
+    await finalize("success");
+    expect(prometheusMod.recordWorkflowExecutionSkipped).toHaveBeenCalledWith({
+      orgSlug: "acme",
+      reason: "bundle_in_flight",
+    });
+    expect(
+      prometheusMod.recordWorkflowExecutionFinished
+    ).not.toHaveBeenCalled();
+  });
+
+  it("self-heals a spurious error to not_landed, not success", async () => {
+    mockExecution = {
+      status: "error",
+      error: "exceeded max retries",
+      completedAt: new Date(Date.now() - 5000),
+      startedAt: new Date(Date.now() - 30_000),
+    };
+    allLogs = [
+      {
+        id: "log_bundle",
+        nodeId: "write-contract-1",
+        nodeType: "web3/write-contract",
+        status: "success",
+        outputRaw: notIncluded,
+      },
+    ] as unknown as LogRow[];
+
+    await logStepCompleteDb({
+      logId: "log_bundle",
+      startTime: Date.now() - 1000,
+      status: "success",
+      outputRaw: notIncluded,
+      executionId,
+    });
+
+    const heal = updateCalls.find(
+      (c) =>
+        c.target === workflowExecutionsMock && c.set.status === "not_landed"
+    );
+    expect(heal).toBeDefined();
+    const prometheusMod = await import("@/lib/metrics/collectors/prometheus");
+    expect(prometheusMod.recordWorkflowExecutionHealed).not.toHaveBeenCalled();
+  });
+
+  it("does not self-heal to skipped when only this pod's skip is known", async () => {
+    mockExecution = {
+      status: "error",
+      error: "exceeded max retries",
+      completedAt: new Date(Date.now() - 5000),
+      startedAt: new Date(Date.now() - 30_000),
+    };
+    allLogs = [
+      {
+        id: "log_skip",
+        nodeId: "write-contract-1",
+        nodeType: "web3/write-contract",
+        status: "success",
+        outputRaw: inFlight,
+      },
+    ] as unknown as LogRow[];
+    recordRunOutcomeIfPresent(stepContext, inFlight);
+    finishQueryFails = true;
+    logScanFails = true;
+
+    await logStepCompleteDb({
+      logId: "log_skip",
+      startTime: Date.now() - 1000,
+      status: "success",
+      outputRaw: inFlight,
+      executionId,
+    });
+
+    expect(
+      updateCalls.filter((c) => c.target === workflowExecutionsMock)
+    ).toEqual([]);
+    expect(mockIncrementCounter).toHaveBeenCalledWith(
+      "workflow.executor.self_heal_late_commit.total",
+      {
+        outcome: "noop_early_exit",
+        reason: "outcome_unknown",
+      }
+    );
+  });
+
+  it("does not self-heal to success when the outcome cannot be read", async () => {
+    mockExecution = {
+      status: "error",
+      error: "exceeded max retries",
+      completedAt: new Date(Date.now() - 5000),
+      startedAt: new Date(Date.now() - 30_000),
+    };
+    allLogs = [
+      {
+        id: "log_write",
+        nodeId: "write-contract-1",
+        nodeType: "web3/write-contract",
+        status: "success",
+      },
+    ] as unknown as LogRow[];
+    finishQueryFails = true;
+    logScanFails = true;
+
+    await logStepCompleteDb({
+      logId: "log_write",
+      startTime: Date.now() - 1000,
+      status: "success",
+      executionId,
+    });
+
+    expect(
+      updateCalls.filter((c) => c.target === workflowExecutionsMock)
+    ).toEqual([]);
+    expect(mockIncrementCounter).toHaveBeenCalledWith(
+      "workflow.executor.self_heal_late_commit.total",
+      {
+        outcome: "noop_early_exit",
+        reason: "outcome_unknown",
+      }
+    );
   });
 });
 

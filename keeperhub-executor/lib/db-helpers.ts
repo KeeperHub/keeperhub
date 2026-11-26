@@ -252,7 +252,8 @@ export async function updateExecutionStatus(
   // it stuck "running". Excluding every terminal state keeps the backstop from
   // clobbering the engine's richer fields (KEEP-431). 'skipped' is in the list
   // for the same reason: a run the platform refused must not be reopened as a
-  // failure by a late backstop write.
+  // failure by a late backstop write. 'unconfirmed' and 'not_landed' are
+  // engine outcomes this success/error write would otherwise overwrite.
   const updated = await db
     .update(workflowExecutions)
     .set(updateData)
@@ -265,6 +266,8 @@ export async function updateExecutionStatus(
           "system_error",
           "skipped",
           "cancelled",
+          "unconfirmed",
+          "not_landed",
         ])
       )
     )

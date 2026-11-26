@@ -18,15 +18,25 @@ import { ErrorCategory, logInfo, logSystemWarn, logWarn } from "@/lib/logging";
 import {
   recordWorkflowExecutionError,
   recordWorkflowExecutionFinished,
+  recordWorkflowExecutionSkipped,
 } from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
 import { DAY_MS } from "@/lib/utils/duration";
 import {
+  type LateBundleSweep,
+  sweepLateBundles,
+} from "@/lib/web3/bundles/late-landing-sweep";
+import {
   describeVerificationFailure,
   hasUnreadableReceipt,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
+import {
+  type RunOutcome,
+  runOutcomeOf,
+} from "@/lib/workflow/executor/run-outcome";
+import { loadSuccessLogFacts } from "@/lib/workflow/executor/success-log-facts";
 
 /**
  * Settles executions left in `unconfirmed`: a transaction was broadcast but
@@ -76,9 +86,12 @@ export type ReconcileSummary = {
 export type ReconcileReport = {
   direct: ReconcileSummary;
   workflows: ReconcileSummary;
+  lateBundles: LateBundleSweep;
 };
 
 type SettleOutcome = "completed" | "failed" | "unconfirmed";
+
+type SettledStatus = "success" | RunOutcome | ErrorStatus;
 
 type UnconfirmedDirectExecution = Pick<
   DirectExecution,
@@ -256,11 +269,15 @@ async function reconcileOne(
  */
 async function recordSettled(
   workflowId: string,
-  status: "success" | ErrorStatus,
+  status: SettledStatus,
   classification?: { errorType: string | null; errorCategory: string | null }
 ): Promise<void> {
   try {
     const orgSlug = await resolveOrgSlugForCounter(workflowId);
+    if (status === "skipped") {
+      recordWorkflowExecutionSkipped({ orgSlug, reason: "bundle_in_flight" });
+      return;
+    }
     const errorType = classification?.errorType as ExecutionErrorType | null;
     recordWorkflowExecutionFinished({
       status,
@@ -293,12 +310,18 @@ async function recordSettled(
  */
 async function settleWorkflow(
   execution: UnconfirmedWorkflowExecution,
-  status: "success" | ErrorStatus,
-  error: string | null
+  status: SettledStatus,
+  error: string | null,
+  transactionHashes?: TransactionHashEntry[]
 ): Promise<void> {
   const updated = await db
     .update(workflowExecutions)
-    .set({ status, error, completedAt: new Date() })
+    .set({
+      status,
+      error,
+      completedAt: new Date(),
+      ...(transactionHashes && { transactionHashes }),
+    })
     .where(
       and(
         eq(workflowExecutions.id, execution.id),
@@ -343,11 +366,34 @@ async function reconcileWorkflow(
     execution.errorType as ExecutionErrorType | null
   );
 
-  const entries = execution.transactionHashes ?? [];
+  // A success finalize that could not read its logs wrote no hashes or outcome: read them now.
+  const logged =
+    !failureOrigin && (execution.transactionHashes ?? []).length === 0
+      ? await loadSuccessLogFacts(execution.id, true)
+      : undefined;
+  if (logged && logged.hashes.length === 0) {
+    await settleWorkflow(
+      execution,
+      runOutcomeOf(logged.signals, false) ?? "success",
+      null
+    );
+    return "completed";
+  }
+  const entries = logged?.hashes ?? execution.transactionHashes ?? [];
   const verifiable = entries.filter(
     (entry): entry is TransactionHashEntry & { chainId: number } =>
       entry.chainId !== undefined
   );
+  // As at finalize: a logged hash with no chainId can never verify, so the run fails.
+  if (logged && verifiable.length < entries.length) {
+    await settleWorkflow(
+      execution,
+      settledStatus,
+      "On-chain verification failed: missing chainId for one or more transaction hashes",
+      logged.hashes
+    );
+    return "failed";
+  }
 
   if (verifiable.length === 0) {
     await settleWorkflow(
@@ -365,7 +411,17 @@ async function reconcileWorkflow(
   );
 
   if (allVerified && !failureOrigin) {
-    await settleWorkflow(execution, "success", null);
+    // A step that did not land keeps the run not landed; a run with hashes
+    // sent a transaction, so it is never an unbilled skip.
+    const { signals } =
+      logged ?? (await loadSuccessLogFacts(execution.id, false));
+    const outcome = runOutcomeOf(signals, true);
+    await settleWorkflow(
+      execution,
+      outcome === undefined ? "success" : "not_landed",
+      null,
+      logged?.hashes
+    );
     return "completed";
   }
 
@@ -391,7 +447,8 @@ async function reconcileWorkflow(
       ? `Transactions were broadcast but never appeared on chain; treating them as dropped after ${Math.round(
           DROPPED_AFTER_MS / 3_600_000
         )}h`
-      : describeVerificationFailure(results)
+      : describeVerificationFailure(results),
+    logged?.hashes
   );
   return "failed";
 }
@@ -531,6 +588,19 @@ export async function reconcileUnconfirmedExecutions(
     "[Reconciler] Failed to re-verify an unconfirmed workflow run; leaving it open"
   );
 
+  // Not landed runs whose bundle was mined later; uses what the budget left.
+  const lateBundles = await sweepLateBundles(
+    now,
+    startedAt + timeBudgetMs
+  ).catch((error: unknown): LateBundleSweep => {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[Reconciler] Late bundle sweep failed; retried next run",
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return { examined: 0, landed: 0, replaced: 0, runsChecked: 0 };
+  });
+
   if (direct.deferred > 0 || workflows.deferred > 0) {
     logWarn(
       "[Reconciler] Time budget exhausted before every unconfirmed row was examined",
@@ -553,5 +623,5 @@ export async function reconcileUnconfirmedExecutions(
     });
   }
 
-  return { direct, workflows };
+  return { direct, workflows, lateBundles };
 }

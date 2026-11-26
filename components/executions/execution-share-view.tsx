@@ -2,6 +2,7 @@
 
 import {
   Check,
+  CircleOff,
   Clock,
   ExternalLink,
   Loader2,
@@ -11,6 +12,7 @@ import {
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import { api } from "@/lib/api-client";
 import { joinExplorerUrl } from "@/lib/build-explorer-url";
 import type { TransactionHashEntry } from "@/lib/db/schema";
@@ -21,6 +23,7 @@ const TERMINAL_STATUSES = new Set([
   "error",
   "system_error",
   "skipped",
+  "not_landed",
   "cancelled",
 ]);
 
@@ -66,6 +69,8 @@ function getStatusLabel(status: string): string {
       return "Cancelled";
     case "skipped":
       return "Skipped";
+    case "not_landed":
+      return "Not landed";
     default:
       return status;
   }
@@ -83,6 +88,8 @@ function StatusIcon({ status }: { status: string }): React.ReactElement {
     // Terminal, so it must not fall through to the pending clock.
     case "skipped":
       return <SkipForward aria-hidden="true" className="h-4 w-4" />;
+    case "not_landed":
+      return <CircleOff aria-hidden="true" className="h-4 w-4" />;
     default:
       return <Clock aria-hidden="true" className="h-4 w-4" />;
   }
@@ -240,9 +247,10 @@ export function ExecutionShareView({
                 statusData.status === "running" && "bg-primary/15 text-primary",
                 statusData.status === "cancelled" &&
                   "bg-orange-500/15 text-orange-600 dark:text-orange-400",
-                // Never started (refused or skipped): neutral, not a failure colour.
-                statusData.status === "skipped" &&
-                  "bg-muted text-muted-foreground"
+                // Neutral, not a failure colour; shared with the analytics badges.
+                statusData.status === "skipped" && STATUS_DISPLAY.skipped.badge,
+                statusData.status === "not_landed" &&
+                  STATUS_DISPLAY.not_landed.badge
               )}
             >
               <StatusIcon status={statusData.status} />

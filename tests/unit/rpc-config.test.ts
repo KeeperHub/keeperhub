@@ -10,6 +10,7 @@ import { logSystemError } from "@/lib/logging";
 import {
   CHAIN_CONFIG,
   cleanBroadcastRpcUrls,
+  ETH_MAINNET_BUNDLE_BUILDERS,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrl,
@@ -21,6 +22,7 @@ import {
   RPC_CONFIG_GZIP_PREFIX,
   type RpcConfig,
   readBroadcastRpcUrls,
+  readBundleBuilders,
 } from "../../lib/rpc/rpc-config";
 
 vi.mock("@/lib/logging", async (importActual) => {
@@ -1280,6 +1282,86 @@ describe("readBroadcastRpcUrls / cleanBroadcastRpcUrls", () => {
       readBroadcastRpcUrls({ rpcConfig: {}, jsonKey: "eth-mainnet" })
     ).toEqual([]);
     expect(cleanBroadcastRpcUrls("x")).toEqual([]);
+  });
+});
+
+describe("readBundleBuilders", () => {
+  const fromConfig = (bundleBuilders: unknown) =>
+    readBundleBuilders({
+      rpcConfig: { "eth-mainnet": { bundleBuilders } } as never,
+      jsonKey: "eth-mainnet",
+    });
+
+  it("keeps valid entries with unique names and https URLs", () => {
+    expect(
+      fromConfig([
+        {
+          name: "alpha",
+          url: " https://a.example/ ",
+          supportsMinTimestamp: true,
+        },
+        { name: "alpha", url: "https://dup.example" },
+        { name: "Bad Name", url: "https://b.example" },
+        { name: "beta", url: "http://b.example" },
+        { name: "local", url: "http://127.0.0.1:9000" },
+        { name: "gamma", url: "not a url" },
+        { name: "x".repeat(33), url: "https://long.example" },
+        "https://string.example",
+        null,
+      ])
+    ).toEqual([
+      { name: "alpha", url: "https://a.example", supportsMinTimestamp: true },
+      {
+        name: "local",
+        url: "http://127.0.0.1:9000",
+        supportsMinTimestamp: false,
+      },
+    ]);
+  });
+
+  it("keeps at most sixteen builders", () => {
+    const raw = Array.from({ length: 20 }, (_, i) => ({
+      name: `b${i}`,
+      url: `https://b${i}.example`,
+    }));
+    expect(fromConfig(raw)).toHaveLength(16);
+  });
+
+  it("uses the defaults only when the entry has no bundleBuilders", () => {
+    const defaults = [
+      { name: "alpha", url: "https://a.example", supportsMinTimestamp: false },
+    ];
+    expect(
+      readBundleBuilders({ rpcConfig: {}, jsonKey: "eth-mainnet", defaults })
+    ).toEqual(defaults);
+    expect(
+      readBundleBuilders({
+        rpcConfig: { "eth-mainnet": { bundleBuilders: [] } },
+        jsonKey: "eth-mainnet",
+        defaults,
+      })
+    ).toEqual([]);
+    expect(
+      readBundleBuilders({ rpcConfig: {}, jsonKey: "eth-sepolia" })
+    ).toEqual([]);
+  });
+
+  it("seeds mainnet with the seven probed builders", () => {
+    expect(
+      readBundleBuilders({
+        rpcConfig: {},
+        jsonKey: "eth-mainnet",
+        defaults: ETH_MAINNET_BUNDLE_BUILDERS,
+      }).map((b) => b.name)
+    ).toEqual([
+      "flashbots",
+      "buildernet",
+      "titan",
+      "beaverbuild",
+      "quasar",
+      "btcs",
+      "eureka",
+    ]);
   });
 });
 

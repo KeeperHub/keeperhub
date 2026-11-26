@@ -33,6 +33,7 @@ const TERMINAL_STATUSES = new Set([
   "error",
   "system_error",
   "skipped",
+  "not_landed",
   "cancelled",
 ]);
 const POLL_INTERVAL_HINT_SECONDS = 2;

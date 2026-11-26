@@ -1,65 +1,27 @@
-/** FAILURE_ALERTS_ROLLOUT: off | all | orgs:<id>,<id> | percent:<n> (hashed, so raising n only adds). */
+import {
+  isEnabledForOrg,
+  isRolloutActive,
+  splitByRollout as splitRows,
+} from "@/lib/rollout";
+
+/** FAILURE_ALERTS_ROLLOUT, parsed by the shared rollout parser. */
 export function isFailureAlertsEnabledForOrg(
   organizationId: string,
   rollout: string | undefined = process.env.FAILURE_ALERTS_ROLLOUT
 ): boolean {
-  const value = rollout?.trim() ?? "";
-  if (value === "" || value === "off") {
-    return false;
-  }
-  if (value === "all") {
-    return true;
-  }
-  if (value.startsWith("orgs:")) {
-    const ids = value
-      .slice("orgs:".length)
-      .split(",")
-      .map((id) => id.trim())
-      .filter(Boolean);
-    return ids.includes(organizationId);
-  }
-  if (value.startsWith("percent:")) {
-    const percent = Number(value.slice("percent:".length));
-    if (!Number.isFinite(percent) || percent <= 0) {
-      return false;
-    }
-    return orgBucket(organizationId) < Math.min(percent, 100);
-  }
-  return false;
+  return isEnabledForOrg(organizationId, rollout);
 }
 
-/** Rows of orgs in the rollout, and the rest (no org counts as outside). */
 export function splitByRollout<T>(
   rows: T[],
   orgOf: (row: T) => string | undefined,
   rollout: string | undefined = process.env.FAILURE_ALERTS_ROLLOUT
 ): { kept: T[]; dropped: T[] } {
-  const kept: T[] = [];
-  const dropped: T[] = [];
-  for (const row of rows) {
-    const org = orgOf(row);
-    if (org !== undefined && isFailureAlertsEnabledForOrg(org, rollout)) {
-      kept.push(row);
-    } else {
-      dropped.push(row);
-    }
-  }
-  return { kept, dropped };
+  return splitRows(rows, orgOf, rollout);
 }
 
 export function isFailureAlertsRolloutActive(
   rollout: string | undefined = process.env.FAILURE_ALERTS_ROLLOUT
 ): boolean {
-  const value = rollout?.trim() ?? "";
-  return value !== "" && value !== "off";
-}
-
-/** 0-99, stable per organization (FNV-1a: spreads ids evenly, no secrecy needed). */
-function orgBucket(organizationId: string): number {
-  let hash = 0x81_1c_9d_c5;
-  for (let i = 0; i < organizationId.length; i += 1) {
-    hash ^= organizationId.charCodeAt(i);
-    hash = Math.imul(hash, 0x01_00_01_93);
-  }
-  return (hash >>> 0) % 100;
+  return isRolloutActive(rollout);
 }

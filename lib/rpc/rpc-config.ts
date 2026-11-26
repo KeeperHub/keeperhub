@@ -559,6 +559,8 @@ export type RpcConfigEntry = {
   isPrivateMempoolRpcEnabled?: boolean;
   privateMempoolRpcUrl?: string;
   broadcastRpcUrls?: string[];
+  // Block builders bundles go to; absent means the code default list.
+  bundleBuilders?: unknown;
   isEnabled?: boolean;
   isTestnet?: boolean;
 };
@@ -807,6 +809,101 @@ export function cleanBroadcastRpcUrls(
     }
   }
   return urls.slice(0, MAX_BROADCAST_RPC_URLS);
+}
+
+/** A block builder that takes eth_sendBundle for a chain. */
+type BundleBuilder = {
+  name: string;
+  url: string;
+  // Whether it honours minTimestamp; read once a bundle can wait for an unlock time.
+  supportsMinTimestamp: boolean;
+};
+
+const MAX_BUNDLE_BUILDERS = 16;
+const BUILDER_NAME_RE = /^[a-z0-9-]{1,32}$/;
+
+// Mainnet default, used when CHAIN_RPC_CONFIG has no bundleBuilders for it.
+export const ETH_MAINNET_BUNDLE_BUILDERS: readonly BundleBuilder[] = [
+  {
+    name: "flashbots",
+    url: "https://relay.flashbots.net",
+    supportsMinTimestamp: false,
+  },
+  {
+    name: "buildernet",
+    url: "https://rpc.buildernet.org",
+    supportsMinTimestamp: false,
+  },
+  {
+    name: "titan",
+    url: "https://rpc.titanbuilder.xyz",
+    supportsMinTimestamp: false,
+  },
+  {
+    name: "beaverbuild",
+    url: "https://rpc.beaverbuild.org",
+    supportsMinTimestamp: false,
+  },
+  {
+    name: "quasar",
+    url: "https://rpc.quasar.win",
+    supportsMinTimestamp: false,
+  },
+  { name: "btcs", url: "https://rpc.btcs.com", supportsMinTimestamp: false },
+  {
+    name: "eureka",
+    url: "https://rpc.eurekabuilder.xyz",
+    supportsMinTimestamp: false,
+  },
+];
+
+/** A chain-config entry's bundleBuilders, cleaned; the default list when absent. */
+export function readBundleBuilders(
+  options: RpcConfigEntryKey & { defaults?: readonly BundleBuilder[] }
+): BundleBuilder[] {
+  const entry = findRpcConfigEntry(options.rpcConfig, options.jsonKey);
+  if (entry?.bundleBuilders === undefined) {
+    return cleanBundleBuilders(options.defaults ?? []);
+  }
+  return cleanBundleBuilders(entry.bundleBuilders);
+}
+
+function toBundleBuilder(raw: unknown): BundleBuilder | undefined {
+  if (typeof raw !== "object" || raw === null) {
+    return;
+  }
+  const { name, url, supportsMinTimestamp } = raw as Record<string, unknown>;
+  const parsed = parseRpcUrl(url);
+  if (
+    typeof name !== "string" ||
+    !BUILDER_NAME_RE.test(name) ||
+    !parsed ||
+    !isAllowedBroadcastUrl(parsed)
+  ) {
+    return;
+  }
+  return {
+    name,
+    url: urlKey(parsed),
+    supportsMinTimestamp: supportsMinTimestamp === true,
+  };
+}
+
+/** Builders as they may be used: valid name and https URL, unique names, at most 16. */
+export function cleanBundleBuilders(raw: unknown): BundleBuilder[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const names = new Set<string>();
+  const builders: BundleBuilder[] = [];
+  for (const entry of raw) {
+    const builder = toBundleBuilder(entry);
+    if (builder && !names.has(builder.name)) {
+      names.add(builder.name);
+      builders.push(builder);
+    }
+  }
+  return builders.slice(0, MAX_BUNDLE_BUILDERS);
 }
 
 /**

@@ -321,6 +321,7 @@ async function addRun(
     | "success"
     | "error"
     | "skipped"
+    | "not_landed"
     | "system_error"
     | "phantom"
     | "pending",
@@ -622,7 +623,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(row?.countingSince).toBeTruthy();
     });
 
-    it("does not open an incident at 2 automated failures (manual, skipped and system errors do not count)", async () => {
+    it("does not open an incident at 2 automated failures (manual, skipped, not landed and system errors do not count)", async () => {
       for (let i = 0; i < 2; i++) {
         await addRun(acme, wf, "error", { at: at(-5 + i * 0.5) });
       }
@@ -633,6 +634,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       });
       await addRun(acme, wf, "skipped", { at: at(-2) });
       await addRun(acme, wf, "system_error", { at: at(-1.5) });
+      // Neither counts nor resets: the next failure still opens the incident.
+      await addRun(acme, wf, "not_landed", { at: at(-1.2) });
       await runCycle();
       expect(await openIncident(wf)).toBeUndefined();
     });
@@ -4395,6 +4398,36 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await unpaid(org, wf, -2);
       await runCycle();
       expect(await openIncident(wf)).toBeUndefined();
+    });
+
+    it("not landed runs take no slot in the streak window: errors around more of them than the window still open an incident", async () => {
+      const org = await countingOrg("notlandedwindow");
+      const wf = await makeWorkflow(org, "Mostly not landed");
+      await addRun(org, wf, "error", { at: at(-30) });
+      for (let i = 0; i < 13; i++) {
+        await addRun(org, wf, "not_landed", { at: at(-29 + i) });
+      }
+      await addRun(org, wf, "error", { at: at(-10) });
+      for (let i = 0; i < 13; i++) {
+        await addRun(org, wf, "not_landed", { at: at(-9 + i * 0.5) });
+      }
+      await addRun(org, wf, "error", { at: at(-1) });
+      await runCycle();
+      expect((await openIncident(wf))?.failureCount).toBe(3);
+    });
+
+    it("a not landed run between two refusals does not break the pair", async () => {
+      const org = await countingOrg("refusednotlanded");
+      const wf = await makeWorkflow(
+        org,
+        "Refused around not landed",
+        "Webhook"
+      );
+      await unpaid(org, wf, -4);
+      await addRun(org, wf, "not_landed", { at: at(-3), source: "webhook" });
+      await unpaid(org, wf, -2);
+      await runCycle();
+      expect((await openIncident(wf))?.openedBy).toBe("refused");
     });
 
     it("an accepted run closes it; the recovery waits out the hold and says runs are accepted again", async () => {

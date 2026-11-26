@@ -23,7 +23,8 @@ import {
 
 // Unmock db to use real database for e2e tests
 vi.unmock("@/lib/db");
-vi.unmock("server-only");
+// A late landing loads server-only modules.
+vi.mock("server-only", () => ({}));
 
 import { pendingTransactions, walletLocks } from "@/lib/db/schema-extensions";
 import {
@@ -912,5 +913,335 @@ describe.skipIf(shouldSkip)("Nonce Manager E2E", () => {
         .set({ lockedBy: null, lockedAt: null })
         .where(eq(walletLocks.walletAddress, TEST_WALLET_NORMALIZED));
     }, 20_000);
+  });
+
+  // Several hashes at one nonce (one per bundle target block), and rows that
+  // are never in the public mempool while their window is open.
+  describe("Bundle rows", () => {
+    const hash = (c: string): string => `0x${c.repeat(64)}`;
+
+    type ChainView = {
+      transactionCount: number;
+      latestBlock: number | "unreadable";
+      mined?: string[];
+      inMempool?: string[];
+    };
+
+    function chainProvider(view: ChainView) {
+      const calls = { getTransaction: 0, getBlockNumber: 0 };
+      const provider = {
+        getTransactionCount: async () => view.transactionCount,
+        getBlockNumber: async () => {
+          calls.getBlockNumber += 1;
+          if (view.latestBlock === "unreadable") {
+            throw new Error("block number read failed");
+          }
+          return view.latestBlock;
+        },
+        getTransactionReceipt: async (h: string) =>
+          view.mined?.includes(h) ? { hash: h, status: 1 } : null,
+        getTransaction: async (h: string) => {
+          calls.getTransaction += 1;
+          return view.inMempool?.includes(h) ? { hash: h } : null;
+        },
+      };
+      return { provider, calls };
+    }
+
+    async function rowAt(nonce: number) {
+      const [row] = await db
+        .select()
+        .from(pendingTransactions)
+        .where(
+          and(
+            eq(pendingTransactions.walletAddress, TEST_WALLET_NORMALIZED),
+            eq(pendingTransactions.chainId, TEST_CHAIN_ID),
+            eq(pendingTransactions.nonce, nonce)
+          )
+        );
+      return row;
+    }
+
+    async function seedBundle(
+      nonce: number,
+      hashes: string[],
+      lastTargetBlock: number
+    ): Promise<void> {
+      const manager = new NonceManager();
+      // Chain nonce 0 and block 0: earlier seeded rows stay untouched.
+      const { provider } = chainProvider({
+        transactionCount: 0,
+        latestBlock: 0,
+      });
+      const { session } = await manager.startSession(
+        TEST_WALLET,
+        TEST_CHAIN_ID,
+        `${testExecutionId}_seed`,
+        provider as any
+      );
+      await manager.recordBundle(session, nonce, {
+        hashes,
+        lastTargetBlock,
+        workflowId: "wf_bundle",
+        gasPrice: "3000000000",
+      });
+      await manager.endSession(session);
+    }
+
+    async function startAgainst(view: ChainView) {
+      const manager = new NonceManager();
+      const { provider, calls } = chainProvider(view);
+      const started = await manager.startSession(
+        TEST_WALLET,
+        TEST_CHAIN_ID,
+        testExecutionId,
+        provider as any
+      );
+      return { manager, calls, ...started };
+    }
+
+    it("records every hash before the send, the first as tx_hash, with its window", async () => {
+      await seedBundle(7, [hash("1"), hash("2"), hash("3")], 103);
+      const row = await rowAt(7);
+      expect(row).toMatchObject({
+        txHash: hash("1"),
+        lastTargetBlock: 103,
+        status: "pending",
+        workflowId: "wf_bundle",
+        bundleRuns: [
+          {
+            executionId: `${testExecutionId}_seed`,
+            hashes: [hash("1"), hash("2"), hash("3")],
+            signedAt: expect.any(Number),
+          },
+        ],
+      });
+    });
+
+    it("confirms a past nonce through the hash that was mined (not the first)", async () => {
+      await seedBundle(7, [hash("1"), hash("2"), hash("3")], 103);
+      const { manager, session } = await startAgainst({
+        transactionCount: 8,
+        latestBlock: 104,
+        mined: [hash("2")],
+      });
+      expect(await rowAt(7)).toMatchObject({
+        status: "confirmed",
+        txHash: hash("2"),
+      });
+      await manager.endSession(session);
+    });
+
+    it("marks a past nonce replaced when none of its hashes was mined", async () => {
+      await seedBundle(7, [hash("1"), hash("2")], 103);
+      const { manager, session } = await startAgainst({
+        transactionCount: 8,
+        latestBlock: 104,
+      });
+      expect((await rowAt(7))?.status).toBe("replaced");
+      await manager.endSession(session);
+    });
+
+    it("leaves a row pending up to its last target block plus a 2-block margin, without a mempool read", async () => {
+      await seedBundle(7, [hash("1"), hash("2")], 103);
+      const { manager, session, calls, validation } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 105,
+      });
+      expect((await rowAt(7))?.status).toBe("pending");
+      expect(calls.getTransaction).toBe(0);
+      expect(validation.warnings.join(" ")).toContain("until block 103");
+      // A live row is never handed out again.
+      expect(session.currentNonce).toBe(8);
+      await manager.endSession(session);
+    });
+
+    it("drops the row once the latest block passes the window and no hash was mined, and the nonce is reused", async () => {
+      await seedBundle(7, [hash("1"), hash("2")], 103);
+      const { manager, session, calls } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 106,
+      });
+      expect((await rowAt(7))?.status).toBe("dropped");
+      // A bundle is never in a mempool: no mempool read decides it.
+      expect(calls.getTransaction).toBe(0);
+      expect(session.currentNonce).toBe(7);
+      await manager.endSession(session);
+    });
+
+    it("confirms a row whose window passed when a hash was mined, even if the nonce endpoint lags", async () => {
+      await seedBundle(7, [hash("1"), hash("2")], 103);
+      const { manager, session } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 106,
+        mined: [hash("2")],
+      });
+      expect(await rowAt(7)).toMatchObject({
+        status: "confirmed",
+        txHash: hash("2"),
+      });
+      await manager.endSession(session);
+    });
+
+    it("caps the window by time, so an absurd last target block cannot pin the nonce", async () => {
+      await seedBundle(7, [hash("1")], 10_000_000);
+      await db
+        .update(pendingTransactions)
+        .set({ submittedAt: new Date(Date.now() - 3 * 60_000) })
+        .where(eq(pendingTransactions.walletAddress, TEST_WALLET_NORMALIZED));
+      const { manager, session, calls } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 150,
+      });
+      expect((await rowAt(7))?.status).toBe("dropped");
+      expect(calls.getBlockNumber).toBe(0);
+      expect(session.currentNonce).toBe(7);
+      await manager.endSession(session);
+    });
+
+    it("keeps a bundle row pending when the latest block cannot be read, and the session still starts", async () => {
+      await seedBundle(7, [hash("1")], 103);
+      const { manager, session, validation } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: "unreadable",
+      });
+      expect((await rowAt(7))?.status).toBe("pending");
+      expect(validation.warnings.join(" ")).toContain(
+        "latest block could not be read"
+      );
+      expect(session.currentNonce).toBe(8);
+      await manager.endSession(session);
+    });
+
+    it("never reads the latest block without a bundle row, so a failing read cannot stop a session", async () => {
+      const { manager, session, calls } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: "unreadable",
+      });
+      expect(calls.getBlockNumber).toBe(0);
+      expect(session.currentNonce).toBe(7);
+      await manager.endSession(session);
+    });
+
+    it("applies the window to a future-nonce row too", async () => {
+      await seedBundle(9, [hash("4")], 200);
+      const { manager, session, calls } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 150,
+      });
+      expect((await rowAt(9))?.status).toBe("pending");
+      expect(calls.getTransaction).toBe(0);
+      expect(session.currentNonce).toBe(10);
+      await manager.endSession(session);
+    });
+
+    it("reads the latest block once for several windowed rows, and not at all without one", async () => {
+      await seedBundle(7, [hash("1")], 300);
+      await seedBundle(8, [hash("2")], 300);
+      const first = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 150,
+      });
+      expect(first.calls.getBlockNumber).toBe(1);
+      await first.manager.endSession(first.session);
+
+      await db
+        .delete(pendingTransactions)
+        .where(eq(pendingTransactions.walletAddress, TEST_WALLET_NORMALIZED));
+      const second = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 150,
+      });
+      expect(second.calls.getBlockNumber).toBe(0);
+      await second.manager.endSession(second.session);
+    });
+
+    it("confirmNonce sets the mined hash; markNonceDropped frees the nonce for the next session", async () => {
+      const { manager, session } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 100,
+      });
+      const nonce = manager.getNextNonce(session);
+      await manager.recordBundle(session, nonce, {
+        hashes: [hash("5"), hash("6")],
+        lastTargetBlock: 102,
+      });
+      await manager.confirmNonce(session, nonce, hash("6"));
+      expect(await rowAt(nonce)).toMatchObject({
+        status: "confirmed",
+        txHash: hash("6"),
+      });
+
+      const next = manager.getNextNonce(session);
+      await manager.recordBundle(session, next, {
+        hashes: [hash("7")],
+        lastTargetBlock: 102,
+      });
+      await manager.markNonceDropped(session, next);
+      expect((await rowAt(next))?.status).toBe("dropped");
+      await manager.endSession(session);
+
+      // Chain nonce 8 (7 mined): the dropped 8 is handed out again.
+      const again = await startAgainst({
+        transactionCount: 8,
+        latestBlock: 110,
+      });
+      expect(again.session.currentNonce).toBe(8);
+      await again.manager.endSession(again.session);
+    });
+
+    it("markNonceDropped leaves another execution's row alone", async () => {
+      await seedBundle(7, [hash("1")], 103);
+      const { manager, session } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 100,
+      });
+      await manager.markNonceDropped(session, 7);
+      expect((await rowAt(7))?.status).toBe("pending");
+      await manager.endSession(session);
+    });
+
+    it("records a public or relay send with no route or window: it keeps today's rules", async () => {
+      const { manager, session } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 100,
+      });
+      const nonce = manager.getNextNonce(session);
+      await manager.recordTransaction(session, nonce, hash("8"), "wf", "1");
+      expect(await rowAt(nonce)).toMatchObject({
+        lastTargetBlock: null,
+        bundleRuns: [],
+      });
+      await manager.endSession(session);
+
+      // Not in the mempool on the next session: dropped at once, as before.
+      const next = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 100,
+      });
+      expect((await rowAt(nonce))?.status).toBe("dropped");
+      await next.manager.endSession(next.session);
+    });
+
+    it("a send over a row that is not a dropped bundle starts a fresh row", async () => {
+      await seedBundle(7, [hash("1"), hash("2")], 103);
+      await db
+        .update(pendingTransactions)
+        .set({ status: "replaced" })
+        .where(eq(pendingTransactions.walletAddress, TEST_WALLET_NORMALIZED));
+      const { manager, session } = await startAgainst({
+        transactionCount: 7,
+        latestBlock: 104,
+      });
+      await manager.recordTransaction(session, 7, hash("9"));
+      expect(await rowAt(7)).toMatchObject({
+        txHash: hash("9"),
+        lastTargetBlock: null,
+        bundleRuns: [],
+        status: "pending",
+        executionId: testExecutionId,
+      });
+      await manager.endSession(session);
+    });
   });
 });

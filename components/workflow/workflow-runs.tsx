@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleOff,
   Clock,
   Copy,
   ExternalLink,
@@ -21,6 +22,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toChecksumAddress } from "@/lib/address-utils";
+import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import { api, type ExecutionSummary } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
@@ -823,7 +825,9 @@ function getStatusLabel(status: string): string {
     case "cancelled":
       return "Cancelled before it finished";
     case "skipped":
-      return "Skipped - expand for why it did not run";
+      return "Skipped - expand for the reason";
+    case "not_landed":
+      return "Not landed - a transaction did not land in a block (it can still land within about a day)";
     default:
       return "Pending - has not run yet";
   }
@@ -1288,6 +1292,7 @@ export function WorkflowRuns({
           "error",
           "system_error",
           "skipped",
+          "not_landed",
         ]);
         const executionMap = new Map(page.executions.map((e) => [e.id, e]));
         for (const executionId of expandedRuns) {
@@ -1370,6 +1375,8 @@ export function WorkflowRuns({
         return <Ban className="h-3 w-3 text-white" />;
       case "skipped":
         return <SkipForward className="h-3 w-3 text-white" />;
+      case "not_landed":
+        return <CircleOff className="h-3 w-3 text-white" />;
       default:
         return <Clock className="h-3 w-3 text-white" />;
     }
@@ -1387,9 +1394,12 @@ export function WorkflowRuns({
         return "bg-blue-600";
       case "cancelled":
         return "bg-orange-500";
-      // Neutral: never started (refused or skipped), not a failure.
+      // Neutral: sent nothing (refused or skipped), not a failure.
       case "skipped":
         return "bg-muted-foreground";
+      // One shade darker than the swatch, like the other dots: the white icon needs 3:1.
+      case "not_landed":
+        return "bg-teal-600";
       default:
         return "bg-muted-foreground";
     }

@@ -69,6 +69,7 @@ type ExistingExecutionRow = {
   workflowId: string;
   organizationId: string | null;
   status: string;
+  completedAt: Date | null;
 };
 
 /**
@@ -125,7 +126,10 @@ function existingExecutionOutcome(
   if (
     existing.status === "success" ||
     existing.status === "error" ||
-    existing.status === "cancelled"
+    existing.status === "cancelled" ||
+    existing.status === "not_landed" ||
+    // Any finished skipped row (refused, or behind a bundle in flight) is not re-run.
+    (existing.status === "skipped" && existing.completedAt !== null)
   ) {
     return {
       adopt: false,

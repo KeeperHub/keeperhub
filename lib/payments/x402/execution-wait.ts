@@ -22,7 +22,8 @@ type TerminalStatus =
   | "error"
   | "system_error"
   | "cancelled"
-  | "skipped";
+  | "skipped"
+  | "not_landed";
 
 type ExecutionResult = {
   status: TerminalStatus;
@@ -37,7 +38,8 @@ function isTerminalStatus(status: string): status is TerminalStatus {
     status === "cancelled" ||
     // A refused run never starts, so a caller waiting on it must stop here
     // rather than poll until the timeout.
-    status === "skipped"
+    status === "skipped" ||
+    status === "not_landed"
   );
 }
 
@@ -231,7 +233,13 @@ export type CallCompletionResponse =
       output: unknown;
       feedback: FeedbackCta;
     }
-  | { executionId: string; status: "error"; error: string }
+  | {
+      executionId: string;
+      status: "error";
+      error: string;
+      // Set when the run ended without failing, so a caller can tell it apart.
+      code?: "skipped" | "not_landed";
+    }
   | { executionId: string; status: "running" };
 
 /**
@@ -269,6 +277,16 @@ export async function buildCallCompletionResponse(
       executionId,
       status: "error",
       error: result.error ?? "Execution skipped",
+      code: "skipped",
+    };
+  }
+  if (result.status === "not_landed") {
+    return {
+      executionId,
+      status: "error",
+      error:
+        "Execution finished, but a transaction in it did not land in a block (it can still land within about a day)",
+      code: "not_landed",
     };
   }
   return {

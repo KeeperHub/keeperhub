@@ -112,11 +112,10 @@ function DeltaDisplay({
   );
 }
 
-// Shown on Total Runs, which is where a user notices runs are missing: the
-// trigger fired but the run did not start (refused, or skipped behind a live run), so it is
-// neither a success nor a failure and belongs in no rate.
+// Shown on Total Runs, where a user notices runs are missing: skipped and not
+// landed runs are neither a success nor a failure, so they belong in no rate.
 const SKIPPED_TOOLTIP =
-  "Runs that finished, successfully or not, over this period. Runs still in flight, runs you cancelled, and skipped runs are excluded. A run is skipped when the trigger fired but the run did not start: the plan's monthly execution limit was reached, the workflow uses an action your plan does not include, a pay-as-you-go charge could not be collected, or the workflow cannot run (for example it was turned off or its schedule was removed). A Block trigger set to skip while running also records a skipped run when a block fires while the previous run is still going. Refusals of one workflow for the same reason share one skipped run per hour, and the skips behind one running run share one skipped run, so the skipped count can be lower than the number of refused or skipped triggers. Nothing ran, so skipped runs do not count towards your success rate or your usage.";
+  "Runs that finished, successfully or not, over this period. Runs still in flight, runs you cancelled, skipped runs and not landed runs are excluded. A skipped run sent no transaction: the trigger fired but the run did not start (the plan's monthly execution limit was reached, the workflow uses an action your plan does not include, a pay-as-you-go charge could not be collected, or the workflow cannot run, for example it was turned off or its schedule was removed), a Block trigger set to skip while running fired while the previous run was still going, or the run found a transaction from an earlier run still in flight and stopped before sending its own. Refusals of one workflow for the same reason share one skipped run per hour, and the skips behind one running run share one skipped run, so the skipped count can be lower than the number of refused or skipped triggers. Skipped runs do not count towards your success rate, and count towards your usage only when they found an earlier run's transaction in flight. A run marked Not landed finished, but a transaction in it did not land in a block: neither a success nor a failure, but it still counts towards your usage. It can still land later (within about a day); then the run changes to Success, or to Error if the call reverted.";
 
 const COMPARISON_LABELS: Record<TimeRange, string> = {
   "1h": "the previous hour",
@@ -304,6 +303,20 @@ export function KpiCards(): ReactNode {
 
     const prev = summary.previousPeriod;
     const skippedCount = summary.skippedCount;
+    const notLandedCount = summary.notLandedCount;
+    const excludedLines = [
+      ...(skippedCount > 0
+        ? [{ key: "skipped", text: `${skippedCount.toLocaleString()} skipped` }]
+        : []),
+      ...(notLandedCount > 0
+        ? [
+            {
+              key: "not-landed",
+              text: `${notLandedCount.toLocaleString()} not landed`,
+            },
+          ]
+        : []),
+    ];
 
     const totalRunsDelta = prev
       ? computeDelta(summary.totalRuns, prev.totalRuns)
@@ -344,15 +357,7 @@ export function KpiCards(): ReactNode {
         deltaTooltip: deltaTooltip("total runs"),
         invertDeltaColor: false,
         iconClassName: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-        breakdown:
-          skippedCount > 0
-            ? ([
-                {
-                  key: "skipped",
-                  text: `${skippedCount.toLocaleString()} skipped`,
-                },
-              ] as const)
-            : undefined,
+        breakdown: excludedLines.length > 0 ? excludedLines : undefined,
         tooltip: SKIPPED_TOOLTIP,
       },
       {

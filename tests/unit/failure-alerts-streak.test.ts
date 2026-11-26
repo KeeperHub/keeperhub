@@ -82,6 +82,34 @@ describe("summarizeStreak", () => {
     expect(summary.failures).toBe(3);
   });
 
+  it("steps over not landed runs: they neither count nor end the streak", () => {
+    const summary = summarizeStreak(
+      runs(["error", "not_landed", "error", "not_landed", "error", "success"]),
+      null,
+      10
+    );
+    expect(summary.failures).toBe(3);
+  });
+
+  it("a not landed run re-settled to success mid-streak ends the count there but resolves nothing", () => {
+    // Newest first: R3 error, R2 error, R1 not_landed later settled to success, R0 error.
+    const summary = summarizeStreak(
+      runs(["error", "error", "success", "error"]),
+      null,
+      10
+    );
+    expect(summary).toMatchObject({ failures: 2, latestSuccessRunId: null });
+    expect(
+      decide({
+        summary,
+        threshold: 5,
+        timeLimitMinutes: null,
+        hasOpenIncident: true,
+        now: new Date(BASE),
+      })
+    ).toEqual({ kind: "none" });
+  });
+
   it("ignores manual runs in both directions", () => {
     const summary = summarizeStreak(
       runs(["success:manual", "error", "error:manual", "error"]),

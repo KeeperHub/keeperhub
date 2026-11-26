@@ -107,7 +107,7 @@ The per-node entries in `logs.logs` are ordered by `timestamp` descending — th
 
 ### `errorContext` is `null` on every non-error status
 
-`status.errorContext` is populated only when `status.status` is `"error"` or `"system_error"`. Every other status gets `null` — not omitted, `null`. That currently means `pending`, `running`, `unconfirmed`, `success`, `cancelled`, and `phantom`, but treat the rule ("null unless the status is one of the two error statuses") as the contract rather than that list: as [Status Values](/api/executions#status-values) notes, the status set is a lower bound and a client that switches on a closed set will mishandle statuses added after it shipped.
+`status.errorContext` is populated only when `status.status` is `"error"` or `"system_error"`. Every other status gets `null` — not omitted, `null`. That currently means `pending`, `running`, `unconfirmed`, `success`, `cancelled`, `skipped`, `not_landed`, and `phantom`, but treat the rule ("null unless the status is one of the two error statuses") as the contract rather than that list: as [Status Values](/api/executions#status-values) notes, the status set is a lower bound and a client that switches on a closed set will mishandle statuses added after it shipped.
 
 ### `transactionHashes` is an array of receipt objects, not hash strings
 

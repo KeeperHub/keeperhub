@@ -33,7 +33,7 @@
       "path": "/api/organizations/{organizationId}/failure-alerts/pause",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/pause/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 84
+      "line": 86
     },
     {
       "method": "DELETE",
@@ -68,7 +68,7 @@
       "path": "/api/workflows/{workflowId}/executions",
       "route_file": "app/api/workflows/[workflowId]/executions/route.ts",
       "source": "docs/api/executions.md",
-      "line": 352
+      "line": 354
     },
     {
       "method": "GET",
@@ -82,28 +82,28 @@
       "path": "/api/analytics/networks",
       "route_file": "app/api/analytics/networks/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 123
+      "line": 127
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs",
       "route_file": "app/api/analytics/runs/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 155
+      "line": 159
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs/{executionId}/steps",
       "route_file": "app/api/analytics/runs/[id]/steps/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 286
+      "line": 290
     },
     {
       "method": "GET",
       "path": "/api/analytics/spend-cap",
       "route_file": "app/api/analytics/spend-cap/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 335
+      "line": 339
     },
     {
       "method": "GET",
@@ -111,7 +111,7 @@
       "route_file": "app/api/analytics/stream/route.ts",
       "streaming": true,
       "source": "docs/api/analytics.md",
-      "line": 360
+      "line": 364
     },
     {
       "method": "GET",
@@ -125,7 +125,7 @@
       "path": "/api/analytics/time-series",
       "route_file": "app/api/analytics/time-series/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 81
+      "line": 84
     },
     {
       "method": "GET",
@@ -146,7 +146,7 @@
       "path": "/api/chains/{chainId}/abi",
       "route_file": "app/api/chains/[chainId]/abi/route.ts",
       "source": "docs/api/chains.md",
-      "line": 162
+      "line": 165
     },
     {
       "method": "GET",
@@ -195,21 +195,21 @@
       "path": "/api/organizations/{organizationId}/failure-alerts",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 53
+      "line": 55
     },
     {
       "method": "GET",
       "path": "/api/organizations/{organizationId}/failure-alerts/history",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/history/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 122
+      "line": 124
     },
     {
       "method": "GET",
       "path": "/api/organizations/{organizationId}/failure-alerts/preview",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/preview/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 112
+      "line": 114
     },
     {
       "method": "GET",
@@ -286,7 +286,7 @@
       "path": "/api/workflows/executions/{executionId}/logs",
       "route_file": "app/api/workflows/executions/[executionId]/logs/route.ts",
       "source": "docs/api/executions.md",
-      "line": 207
+      "line": 209
     },
     {
       "method": "GET",
@@ -300,7 +300,7 @@
       "path": "/api/workflows/executions/{executionId}/wait",
       "route_file": "app/api/workflows/executions/[executionId]/wait/route.ts",
       "source": "docs/api/executions.md",
-      "line": 164
+      "line": 166
     },
     {
       "method": "GET",
@@ -342,7 +342,7 @@
       "path": "/api/workflows/{workflowId}/failure-alerts",
       "route_file": "app/api/workflows/[workflowId]/failure-alerts/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 17
+      "line": 19
     },
     {
       "method": "GET",
@@ -489,7 +489,7 @@
       "path": "/api/organizations/{organizationId}/failure-alerts/test",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/test/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 92
+      "line": 94
     },
     {
       "method": "POST",
@@ -615,14 +615,14 @@
       "path": "/api/organizations/{organizationId}/failure-alerts",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 61
+      "line": 63
     },
     {
       "method": "PUT",
       "path": "/api/organizations/{organizationId}/failure-alerts/pause",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/pause/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 83
+      "line": 85
     },
     {
       "method": "PUT",
@@ -636,7 +636,7 @@
       "path": "/api/workflows/{workflowId}/failure-alerts",
       "route_file": "app/api/workflows/[workflowId]/failure-alerts/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 29
+      "line": 31
     },
     {
       "method": "PUT",

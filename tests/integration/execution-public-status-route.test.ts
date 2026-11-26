@@ -282,6 +282,20 @@ describe("GET /api/workflows/executions/[executionId]/status public access", () 
     );
   });
 
+  it("treats a not landed run as terminal", async () => {
+    mockResolveExecutionViewAccess.mockResolvedValue({
+      mode: "publicReadOnly",
+      execution: { ...makeExecution("public"), status: "not_landed" },
+    });
+
+    const response = await GET(
+      createRequest({ "x-forwarded-for": "203.0.113.60" }),
+      { params: Promise.resolve({ executionId: EXECUTION_ID }) }
+    );
+
+    expect(response.headers.get("X-Poll-Interval-Hint")).toBe("0");
+  });
+
   it("keys authenticated callers per principal, not per IP", async () => {
     mockResolveExecutionViewAccess.mockResolvedValue({
       mode: "full",
