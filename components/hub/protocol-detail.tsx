@@ -17,7 +17,7 @@ import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type SavedWorkflow } from "@/lib/api-client";
-import { authClient, useSession } from "@/lib/auth-client";
+import { signInAnonymously, useSession } from "@/lib/auth-client";
 import { getChainName, getExplorerUrl } from "@/lib/chain-utils";
 import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import {
@@ -253,7 +253,7 @@ export function ProtocolDetail({
 
     try {
       if (!session?.user) {
-        await authClient.signIn.anonymous();
+        await signInAnonymously();
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
@@ -282,7 +282,7 @@ export function ProtocolDetail({
 
     try {
       if (!session) {
-        await authClient.signIn.anonymous();
+        await signInAnonymously();
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
@@ -359,7 +359,7 @@ export function ProtocolDetail({
 
     try {
       if (!session) {
-        await authClient.signIn.anonymous();
+        await signInAnonymously();
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 

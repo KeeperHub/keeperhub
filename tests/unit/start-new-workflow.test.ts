@@ -10,7 +10,7 @@ vi.mock("@/lib/api-client", () => ({
   api: { workflow: { getAll, create } },
 }));
 vi.mock("@/lib/auth-client", () => ({
-  authClient: { signIn: { anonymous: signInAnonymous } },
+  signInAnonymously: signInAnonymous,
 }));
 
 import { startNewWorkflow } from "@/lib/workflow/start-new-workflow";

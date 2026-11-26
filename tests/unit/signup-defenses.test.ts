@@ -56,7 +56,7 @@ describe("signup defenses: captcha plugin", () => {
     expect(plugin).toBeUndefined();
   });
 
-  it("loads the captcha plugin gated to /sign-up/email when secret is set outside test mode", async () => {
+  it("loads the captcha plugin gated to every account-creating endpoint when secret is set outside test mode", async () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("CI", "");
     process.env.TURNSTILE_SECRET_KEY = "test-secret";
@@ -66,7 +66,11 @@ describe("signup defenses: captcha plugin", () => {
     ) as CaptchaPluginShape | undefined;
     expect(plugin).toBeDefined();
     expect(plugin?.options.provider).toBe("cloudflare-turnstile");
-    expect(plugin?.options.endpoints).toEqual(["/sign-up/email"]);
+    expect(plugin?.options.endpoints).toEqual([
+      "/sign-up/email",
+      "/sign-in/anonymous",
+      "/siwe/verify",
+    ]);
     expect(plugin?.options.secretKey).toBe("test-secret");
   });
 
@@ -128,7 +132,11 @@ describe("signup defenses: captcha plugin", () => {
       (p) => (p as CaptchaPluginShape).id === "captcha"
     ) as CaptchaPluginShape | undefined;
     expect(plugin).toBeDefined();
-    expect(plugin?.options.endpoints).toEqual(["/sign-up/email"]);
+    expect(plugin?.options.endpoints).toEqual([
+      "/sign-up/email",
+      "/sign-in/anonymous",
+      "/siwe/verify",
+    ]);
   });
 
   it("throws at module load when TURNSTILE_ENFORCE=true but the secret is missing", async () => {
@@ -183,7 +191,11 @@ describe("signup defenses: captcha plugin", () => {
         (p) => (p as CaptchaPluginShape).id === "captcha"
       ) as CaptchaPluginShape | undefined;
       expect(plugin).toBeDefined();
-      expect(plugin?.options.endpoints).toEqual(["/sign-up/email"]);
+      expect(plugin?.options.endpoints).toEqual([
+        "/sign-up/email",
+        "/sign-in/anonymous",
+        "/siwe/verify",
+      ]);
     });
 
     // And still throws when enforce is on and the secret is missing, so the
@@ -281,6 +293,31 @@ describe("signup defenses: captcha load-test bypass", () => {
       ctxStub
     );
     expect(result?.response).toBeInstanceOf(Response);
+  });
+
+  it.each(["/sign-in/anonymous", "/siwe/verify"])(
+    "enforces Turnstile on %s without a captcha response",
+    async (path) => {
+      const onRequest = await loadCaptchaOnRequest();
+      const result = await onRequest?.(
+        new Request(`http://localhost:3000/api/auth${path}`, {
+          method: "POST",
+        }),
+        ctxStub
+      );
+      expect(result?.response).toBeInstanceOf(Response);
+    }
+  );
+
+  it("does not gate sign-in endpoints that create no account", async () => {
+    const onRequest = await loadCaptchaOnRequest();
+    const result = await onRequest?.(
+      new Request("http://localhost:3000/api/auth/sign-in/email", {
+        method: "POST",
+      }),
+      ctxStub
+    );
+    expect(result).toBeUndefined();
   });
 
   it("does not bypass when LOAD_TEST_BYPASS_TOKEN is unset (production posture)", async () => {

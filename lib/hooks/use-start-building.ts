@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
-import { authClient, useSession } from "@/lib/auth-client";
+import { signInAnonymously, useSession } from "@/lib/auth-client";
 import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -89,7 +89,7 @@ export function useStartBuilding(): { startBuilding: () => Promise<void> } {
   // Helper to create anonymous session if needed
   const ensureSession = useCallback(async () => {
     if (!session) {
-      await authClient.signIn.anonymous();
+      await signInAnonymously();
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }, [session]);
