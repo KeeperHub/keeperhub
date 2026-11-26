@@ -456,6 +456,31 @@ describe("writeContractCore executedCall on direct send", () => {
     }
   });
 
+  it("sends even when the trace's read RPC cannot be resolved", async () => {
+    // A relay manager sends; the public read RPC for the trace fails to resolve.
+    vi.mocked(getRpcProvider)
+      .mockResolvedValueOnce({
+        hasPrivateRelayPrimary: () => true,
+        resolveActiveRpcUrl: vi.fn().mockResolvedValue("https://relay.example"),
+      } as never)
+      .mockRejectedValueOnce(new Error("database blip"));
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.executedCall).toBeUndefined();
+    }
+    expect(vi.mocked(getRpcProvider)).toHaveBeenCalledTimes(2);
+    expect(mockTraceExecutedCall).not.toHaveBeenCalled();
+  });
+
   it("omits executedCall when trace returns undefined (graceful degradation)", async () => {
     mockTraceExecutedCall.mockResolvedValue(undefined);
 

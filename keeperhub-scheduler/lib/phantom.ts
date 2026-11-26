@@ -30,7 +30,7 @@ export type PhantomRefusalReason = "plan_feature" | "execution_limit";
  * Why a skip-if-running dispatch was not checked: the workflow is gone or may
  * not run (answers, not faults), or the check itself failed.
  */
-export type SkipCheckOutcome = "workflow_gone" | "workflow_inactive" | "failed";
+type SkipCheckOutcome = "workflow_gone" | "workflow_inactive" | "failed";
 
 /** Result of a phantom pre-create attempt. */
 export interface PhantomCreateResult {

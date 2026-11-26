@@ -34,6 +34,7 @@ import {
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { readRpcFor } from "@/lib/rpc/read-provider";
 import { resolveWriteRpc } from "@/lib/rpc/send-provider";
 import {
   describeAmbiguousKey,
@@ -76,7 +77,10 @@ import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
-import { traceExecutedCallWithFailover } from "@/lib/web3/trace-executed-call";
+import {
+  type TraceExecutedCallOptions,
+  traceExecutedCallWithFailover,
+} from "@/lib/web3/trace-executed-call";
 import {
   broadcastTransactionHash,
   isOnChainPendingError,
@@ -463,14 +467,25 @@ async function writeContractCoreImpl(
     chainId,
     userId,
     log: { tag: "[Write Contract]", action: "write-contract" },
-    withReadRpc: true,
     fallbackClass: ExecutionErrorType.SYSTEM,
   });
   if (!resolved.ok) {
     return { success: false, ...resolved.failure };
   }
-  const { rpcManager, readRpc, rpcUrl, relayRequested: usePrivateMempool } =
+  const { rpcManager, rpcUrl, relayRequested: usePrivateMempool } =
     resolved.rpc;
+  // The trace's read RPC is resolved only after the send: a failure there skips the trace.
+  const traceExecuted = async (
+    hash: string,
+    options: TraceExecutedCallOptions
+  ): Promise<ExecutedCall | undefined> => {
+    try {
+      const readRpc = await readRpcFor(rpcManager, { chainId, userId });
+      return await traceExecutedCallWithFailover(readRpc, hash, options);
+    } catch {
+      return;
+    }
+  };
 
   if (maxFeeOverride !== undefined) {
     const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
@@ -679,8 +694,7 @@ async function writeContractCoreImpl(
           ? getTransactionUrl(explorerConfig, sponsoredResult.transactionHash)
           : "";
 
-        const executedCall = await traceExecutedCallWithFailover(
-          readRpc,
+        const executedCall = await traceExecuted(
           sponsoredResult.transactionHash,
           { target: contractAddress, abi: parsedAbi, functionName: abiFunction }
         );
@@ -874,7 +888,7 @@ async function writeContractCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      const executedCall = await traceExecutedCallWithFailover(readRpc, receipt.hash, {
+      const executedCall = await traceExecuted(receipt.hash, {
         target: contractAddress,
         abi: parsedAbi,
         functionName: abiFunction,

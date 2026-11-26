@@ -5,22 +5,20 @@ import { checkDispatchAdmission } from "@/lib/billing/dispatch-admission";
 import type { DispatchRefusal } from "@/lib/billing/dispatch-refusal";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { db } from "@/lib/db";
-import { workflowExecutions, workflows } from "@/lib/db/schema";
+import { organization, workflowExecutions, workflows } from "@/lib/db/schema";
 import { extractActionTypeNodes } from "@/lib/features";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logWarn } from "@/lib/logging";
 import { recordWorkflowExecutionSkipped } from "@/lib/metrics/collectors/prometheus";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
-import {
-  isBackstopRejection,
-  withBackstopCapture,
-} from "@/lib/security/backstop-capture";
+import { withBackstopCapture } from "@/lib/security/backstop-capture";
 import {
   buildAttribution,
   type TriggerSource,
 } from "@/lib/security/request-attribution";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
+import { getWorkflowExecutability } from "@/lib/workflow/executable";
 import { recordRefusedRun } from "@/lib/workflow/refused-runs";
 import { insertPhantomUnlessRunning } from "@/lib/workflow/skip-if-running";
 
@@ -98,6 +96,40 @@ async function recordRefusedDispatch(params: {
   }
 }
 
+const INACTIVE_MESSAGES = {
+  deactivated: "This workflow is deactivated, so it may not run",
+  org_deactivated:
+    "This workflow's organization is deactivated (or its owner), so it may not run",
+} as const;
+
+/**
+ * Why the database would refuse a run of this live workflow (deactivated, or
+ * its organization or that organization's owner deactivated), checked before
+ * the insert so its trigger is not the answer. Deletion is checked by the caller.
+ */
+async function inactiveMessage(workflow: {
+  organizationId: string;
+  deactivatedAt: Date | null;
+}): Promise<string | undefined> {
+  const [org] = await db
+    .select({ deactivatedAt: organization.deactivatedAt })
+    .from(organization)
+    .where(eq(organization.id, workflow.organizationId))
+    .limit(1);
+  const executability = getWorkflowExecutability({
+    enabled: true,
+    deactivatedAt: workflow.deactivatedAt,
+    orgDeactivatedAt: org?.deactivatedAt ?? null,
+  });
+  if (executability.executable) {
+    return;
+  }
+  return executability.reason === "deactivated" ||
+    executability.reason === "org_deactivated"
+    ? INACTIVE_MESSAGES[executability.reason]
+    : undefined;
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const rawBody = await request.text();
   const auth = await authenticateInternalService(request, rawBody);
@@ -139,6 +171,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     columns: {
       organizationId: true,
       deletedAt: true,
+      deactivatedAt: true,
       nodes: true,
       edges: true,
       userId: true,
@@ -159,6 +192,20 @@ export async function POST(request: Request): Promise<NextResponse> {
   const ownerId: string = userId ?? workflow.userId;
 
   const source = resolveTriggerSource(triggerSource);
+  const skipIfRunning =
+    isPhantom && body.skipIfRunning === true && dispatchKeyValue !== null;
+
+  // The skip check is an answer the dispatcher counts: refuse an inactive
+  // workflow here, so a raw 42501 from the insert stays a failure (500).
+  if (skipIfRunning) {
+    const inactive = await inactiveMessage(workflow);
+    if (inactive) {
+      return NextResponse.json(
+        { error: inactive, code: "WORKFLOW_INACTIVE" },
+        { status: 403 }
+      );
+    }
+  }
 
   // A phantom is created by a dispatcher on every occurrence of its trigger, so
   // admission runs here rather than one hop later on the executor: a refused
@@ -225,32 +272,15 @@ export async function POST(request: Request): Promise<NextResponse> {
   };
 
   // Block Trigger "Skip if the previous run is still running": the dispatcher asks.
-  if (isPhantom && body.skipIfRunning === true && dispatchKeyValue) {
-    let result: Awaited<ReturnType<typeof insertPhantomUnlessRunning>>;
-    try {
-      result = await withBackstopCapture(
-        { workflowId, userId: ownerId, source },
-        () =>
-          insertPhantomUnlessRunning(db, {
-            ...values,
-            dispatchKey: dispatchKeyValue,
-          })
-      );
-    } catch (error) {
-      // The database refuses runs of this workflow (owner deactivated, or deleted since):
-      // an answer, so the dispatcher does not count a failed skip check.
-      if (isBackstopRejection(error)) {
-        return NextResponse.json(
-          {
-            error:
-              "This workflow may not run (owner deactivated or workflow deleted)",
-            code: "WORKFLOW_INACTIVE",
-          },
-          { status: 403 }
-        );
-      }
-      throw error;
-    }
+  if (skipIfRunning && dispatchKeyValue) {
+    const result = await withBackstopCapture(
+      { workflowId, userId: ownerId, source },
+      () =>
+        insertPhantomUnlessRunning(db, {
+          ...values,
+          dispatchKey: dispatchKeyValue,
+        })
+    );
     return NextResponse.json(
       {
         executionId: result.id,

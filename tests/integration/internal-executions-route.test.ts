@@ -46,8 +46,6 @@ vi.mock("@/lib/billing/dispatch-admission", () => ({
 // withBackstopCapture wraps the insert; just run the callback.
 vi.mock("@/lib/security/backstop-capture", () => ({
   withBackstopCapture: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
-  isBackstopRejection: (error: unknown) =>
-    (error as { code?: unknown } | null)?.code === "42501",
 }));
 
 // Record the source buildAttribution was called with so trigger-source
@@ -66,6 +64,7 @@ const sourceArg = (source: string) => expect.objectContaining({ source });
 let mockWorkflow: {
   organizationId: string | null;
   deletedAt: Date | null;
+  deactivatedAt?: Date | null;
   nodes: unknown[];
   userId: string;
 } | null;
@@ -77,6 +76,8 @@ let updatedSet: Record<string, unknown> | null;
 let mockInsertReturning: Array<{ id: string }> = [{ id: "exec_created" }];
 // Rows the dedup fallback SELECT resolves to when the insert conflicted.
 let mockSelectResult: Array<{ id: string; status?: string }> = [];
+// The organization row the skip check reads.
+let mockOrgRows: Array<{ deactivatedAt: Date | null }> = [];
 // Rows the PATCH terminal UPDATE's .returning() resolves to; seed with
 // workflowId + previousStatus to exercise the counter-emission gate.
 let mockUpdateReturning: Array<{
@@ -118,9 +119,12 @@ vi.mock("@/lib/db", () => ({
     })),
     // Dedup fallback lookup when the insert conflicts on dispatch_key.
     select: vi.fn(() => ({
-      from: () => ({
+      from: (table: { __name?: string } | undefined) => ({
         where: () => ({
-          limit: () => Promise.resolve(mockSelectResult),
+          limit: () =>
+            Promise.resolve(
+              table?.__name === "organization" ? mockOrgRows : mockSelectResult
+            ),
         }),
       }),
     })),
@@ -148,6 +152,11 @@ vi.mock("@/lib/db/schema", () => ({
     dispatchKey: "dispatch_key",
   },
   workflows: { id: "id" },
+  organization: {
+    __name: "organization",
+    id: "organization.id",
+    deactivatedAt: "organization.deactivated_at",
+  },
 }));
 
 // The alias() self-join needs drizzle table internals the schema stub lacks.
@@ -220,6 +229,7 @@ describe("POST /api/internal/executions", () => {
     insertedValues = null;
     mockInsertReturning = [{ id: "exec_created" }];
     mockSelectResult = [];
+    mockOrgRows = [{ deactivatedAt: null }];
     enforceExecutionLimit.mockResolvedValue({ blocked: false });
     enforceWorkflowFeatures.mockResolvedValue({ blocked: false });
     checkDispatchAdmission.mockResolvedValue(null);
@@ -440,18 +450,46 @@ describe("POST /api/internal/executions", () => {
       expect(insertPhantomUnlessRunning).not.toHaveBeenCalled();
     });
 
-    it("answers a workflow the database refuses to run with a coded 403", async () => {
+    it("answers a deactivated workflow with a coded 403 before the insert", async () => {
+      mockWorkflow = {
+        organizationId: "org_1",
+        deletedAt: null,
+        deactivatedAt: new Date(),
+        nodes: [],
+        userId: "wf_owner",
+      };
+      const response = await POST(blockDispatch(true));
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error: "This workflow is deactivated, so it may not run",
+        code: "WORKFLOW_INACTIVE",
+      });
+      expect(insertPhantomUnlessRunning).not.toHaveBeenCalled();
+      expect(checkDispatchAdmission).not.toHaveBeenCalled();
+    });
+
+    it("answers a deactivated organization (or owner) with a coded 403 before the insert", async () => {
+      mockOrgRows = [{ deactivatedAt: new Date() }];
+      const response = await POST(blockDispatch(true));
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error:
+          "This workflow's organization is deactivated (or its owner), so it may not run",
+        code: "WORKFLOW_INACTIVE",
+      });
+      expect(insertPhantomUnlessRunning).not.toHaveBeenCalled();
+    });
+
+    it("keeps a raw 42501 from the insert a failure, not an inactive answer", async () => {
+      // Also what a missing GRANT looks like: it must stay a 500 the dispatcher counts.
       insertPhantomUnlessRunning.mockRejectedValueOnce(
-        Object.assign(new Error("Workflow owner is deactivated"), {
+        Object.assign(new Error("permission denied for table"), {
           code: "42501",
         })
       );
-      const response = await POST(blockDispatch(true));
-      expect(response.status).toBe(403);
-      expect((await response.json()).code).toBe("WORKFLOW_INACTIVE");
-
-      insertPhantomUnlessRunning.mockRejectedValueOnce(new Error("boom"));
-      await expect(POST(blockDispatch(true))).rejects.toThrow("boom");
+      await expect(POST(blockDispatch(true))).rejects.toThrow(
+        "permission denied for table"
+      );
     });
 
     it("answers a deleted workflow with a coded 404", async () => {

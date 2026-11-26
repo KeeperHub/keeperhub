@@ -666,7 +666,6 @@ describe("broadcast to extra RPCs", () => {
     ["a JSON-RPC rejection", () => rpcError("rate limited")],
     ["a refused connection", refusedConnection],
     ["a blocked URL", () => Promise.reject(new SsrfBlockedError("blocked"))],
-    ["a redirect, never followed", () => httpStatus(307)],
     [
       "an unresolved host",
       () =>
@@ -699,6 +698,8 @@ describe("broadcast to extra RPCs", () => {
   it.each([
     ["timed out", (signal: AbortSignal) => hang(EXTRA_A, signal)],
     ["answered 502", () => httpStatus(502)],
+    // It read the signed bytes before answering, so it may have sent them.
+    ["answered a redirect (never followed)", () => httpStatus(307)],
     ["said internal error", () => rpcError("internal error", -32_603)],
     ["returned another hash", () => rpcResult(`0x${"ab".repeat(32)}`)],
     [

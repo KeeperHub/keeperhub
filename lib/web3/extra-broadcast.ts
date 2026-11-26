@@ -121,8 +121,9 @@ async function sendRaw(
     return { delivery: "unknown", kind: "network" };
   }
   if (response.status >= 300 && response.status < 400) {
+    // It read the request, signed bytes included: may have sent, like a managed 3xx.
     await response.body?.cancel().catch(() => undefined);
-    return { delivery: "refused", kind: "http_3xx" };
+    return { delivery: "unknown", kind: "http_3xx" };
   }
   if (response.status >= 500) {
     await response.body?.cancel().catch(() => undefined);

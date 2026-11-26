@@ -1433,39 +1433,45 @@ describe("ChainMonitor", () => {
       await monitor.stop();
     });
 
-    it("does not enqueue when the skip check failed (skipped with no id)", async () => {
-      createPhantomExecution.mockResolvedValueOnce({
-        alreadyExisted: false,
-        skipped: true,
-        skipCheck: "failed",
-      });
-      const monitor = new ChainMonitor({
-        chain: makeChain(),
-        workflows: [makeWorkflow({ blockInterval: 1, skipIfRunning: true })],
-      });
-      await monitor.start();
-      const { enqueueBlockTrigger } = await import(
-        "../../block-dispatcher/sqs-enqueue.js"
-      );
-      vi.mocked(enqueueBlockTrigger).mockClear();
-
-      const failedCount = async (): Promise<number> => {
-        const metric = registry.getSingleMetric(
-          "keeperhub_block_dispatcher_skip_check_failed_total",
+    it.each([
+      ["failed", "failed" as const],
+      ["no outcome", undefined],
+    ])(
+      "does not enqueue and counts a failed skip check (skipped with no id, %s)",
+      async (_name, skipCheck) => {
+        createPhantomExecution.mockResolvedValueOnce({
+          alreadyExisted: false,
+          skipped: true,
+          ...(skipCheck ? { skipCheck } : {}),
+        });
+        const monitor = new ChainMonitor({
+          chain: makeChain(),
+          workflows: [makeWorkflow({ blockInterval: 1, skipIfRunning: true })],
+        });
+        await monitor.start();
+        const { enqueueBlockTrigger } = await import(
+          "../../block-dispatcher/sqs-enqueue.js"
         );
-        const values = (await metric?.get())?.values ?? [];
-        return values.reduce((sum, v) => sum + v.value, 0);
-      };
-      const before = await failedCount();
+        vi.mocked(enqueueBlockTrigger).mockClear();
 
-      latestProvider().emitBlock(10);
-      await vi.advanceTimersByTimeAsync(0);
+        const failedCount = async (): Promise<number> => {
+          const metric = registry.getSingleMetric(
+            "keeperhub_block_dispatcher_skip_check_failed_total",
+          );
+          const values = (await metric?.get())?.values ?? [];
+          return values.reduce((sum, v) => sum + v.value, 0);
+        };
+        const before = await failedCount();
 
-      expect(enqueueBlockTrigger).not.toHaveBeenCalled();
-      // Counted, so a keeper that stopped running shows on /metrics.
-      expect(await failedCount()).toBe(before + 1);
-      await monitor.stop();
-    });
+        latestProvider().emitBlock(10);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(enqueueBlockTrigger).not.toHaveBeenCalled();
+        // Counted, so a keeper that stopped running shows on /metrics.
+        expect(await failedCount()).toBe(before + 1);
+        await monitor.stop();
+      },
+    );
 
     it.each(["workflow_gone", "workflow_inactive"] as const)(
       "does not enqueue or count a failed check when the workflow cannot run (%s)",

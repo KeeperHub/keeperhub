@@ -1,5 +1,10 @@
 import { ethers, isError } from "ethers";
-import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
+import {
+  ErrorCategory,
+  logSystemError,
+  logSystemWarn,
+  logUserError,
+} from "@/lib/logging";
 import { sleep } from "@/lib/sleep";
 import { isConnectionRefusal } from "../connection-refusal";
 import { safeEthersGetUrl } from "../safe-ethers-fetch";
@@ -11,7 +16,9 @@ import {
 } from "./error-classification";
 import {
   PrivateRelayUnavailableError,
+  RpcRedirectError,
   RpcRelayTransportError,
+  RpcUserEndpointError,
 } from "./transport-error";
 
 export {
@@ -23,7 +30,9 @@ export {
 export {
   InvalidSendModeError,
   PrivateRelayUnavailableError,
+  RpcRedirectError,
   RpcRelayTransportError,
+  RpcUserEndpointError,
   rpcRelayErrorClass,
 } from "./transport-error";
 
@@ -202,6 +211,8 @@ export type RpcProviderConfig = {
   primaryIsPrivateRelay?: boolean;
   // Extra public RPCs a signed write is also sent to (chains.broadcast_rpc_urls).
   broadcastRpcUrls?: readonly string[];
+  // True when every endpoint but the relay is the user's own RPC preference.
+  userRpc?: boolean;
 };
 
 export type RpcProviderMetrics = {
@@ -211,6 +222,13 @@ export type RpcProviderMetrics = {
   fallbackFailures: number;
   totalRequests: number;
   lastFailoverTime: Date | null;
+};
+
+type EndpointFailure = {
+  endpoint: "primary" | "fallback";
+  transport?: boolean;
+  allAttemptsConnectionRefused?: boolean;
+  allAttemptsRedirected?: boolean;
 };
 
 export type RpcProviderManagerOptions = {
@@ -253,6 +271,7 @@ export class RpcProviderManager {
       chainId: config.chainId ?? 1,
       primaryIsPrivateRelay: config.primaryIsPrivateRelay ?? false,
       broadcastRpcUrls: config.broadcastRpcUrls ?? [],
+      userRpc: config.userRpc ?? false,
     };
 
     this.metricsCollector = metricsCollector;
@@ -448,39 +467,23 @@ export class RpcProviderManager {
         }
 
         // Both failed -- throw without redundant retry
-        this.metricsCollector.recordBothFailed(this.config.chainName);
-        // Both endpoints are KeeperHub-managed, so exhausting them is a
-        // platform fault: error level and the system-error metric. The Sentry
-        // event only reaches Sentry from the Next.js runtimes - the
-        // workflow-runner pods initialise no Sentry client.
-        logSystemError(
-          ErrorCategory.NETWORK_RPC,
-          `[RPC] Both primary and fallback RPC failed for ${this.config.chainName}`,
-          `Fallback: ${fallbackResult.error}. Primary: ${primaryResult.error}`,
-          {
-            event: "RPC_BOTH_ENDPOINTS_FAILED",
-            chain: this.config.chainName,
-          }
+        const failures = [
+          { endpoint: "fallback" as const, ...fallbackResult },
+          { endpoint: "primary" as const, ...primaryResult },
+        ];
+        // A platform fault (error level, system-error metric) unless the user's
+        // own URL redirected. The Sentry event only reaches Sentry from the
+        // Next.js runtimes - the workflow-runner pods initialise no Sentry client.
+        this.reportBothFailed(
+          failures,
+          `Fallback: ${fallbackResult.error}. Primary: ${primaryResult.error}`
         );
         // Thrown messages reach end users via step errors; drop provider
         // URLs entirely (host included). Internal logs above keep the
         // host-visible masked form.
         throw this.failoverError(
           `RPC failed on both endpoints. Fallback: ${fallbackResult.error}. Primary: ${primaryResult.error}`,
-          [
-            {
-              endpoint: "fallback",
-              transport: fallbackResult.transport,
-              allAttemptsConnectionRefused:
-                fallbackResult.allAttemptsConnectionRefused,
-            },
-            {
-              endpoint: "primary",
-              transport: primaryResult.transport,
-              allAttemptsConnectionRefused:
-                primaryResult.allAttemptsConnectionRefused,
-            },
-          ]
+          failures
         );
       }
     }
@@ -540,45 +543,62 @@ export class RpcProviderManager {
         return fallbackResult.result as T;
       }
 
-      this.metricsCollector.recordBothFailed(this.config.chainName);
-      logSystemError(
-        ErrorCategory.NETWORK_RPC,
-        `[RPC] Both primary and fallback RPC failed for ${this.config.chainName}`,
-        `Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`,
-        {
-          event: "RPC_BOTH_ENDPOINTS_FAILED",
-          chain: this.config.chainName,
-        }
+      const failures = [
+        { endpoint: "primary" as const, ...primaryResult },
+        { endpoint: "fallback" as const, ...fallbackResult },
+      ];
+      this.reportBothFailed(
+        failures,
+        `Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`
       );
       throw this.failoverError(
         `RPC failed on both endpoints. Primary: ${primaryResult.error}. Fallback: ${fallbackResult.error}`,
-        [
-          {
-            endpoint: "primary",
-            transport: primaryResult.transport,
-            allAttemptsConnectionRefused:
-              primaryResult.allAttemptsConnectionRefused,
-          },
-          {
-            endpoint: "fallback",
-            transport: fallbackResult.transport,
-            allAttemptsConnectionRefused:
-              fallbackResult.allAttemptsConnectionRefused,
-          },
-        ]
+        failures
       );
     }
 
     throw this.failoverError(
       `RPC failed on primary endpoint: ${primaryResult.error}`,
-      [
-        {
-          endpoint: "primary",
-          transport: primaryResult.transport,
-          allAttemptsConnectionRefused:
-            primaryResult.allAttemptsConnectionRefused,
-        },
-      ]
+      [{ endpoint: "primary", ...primaryResult }]
+    );
+  }
+
+  /** True when every failure is a redirect from the user's own RPC preference. */
+  private onlyUserRedirects(failures: readonly EndpointFailure[]): boolean {
+    return (
+      failures.length > 0 &&
+      failures.every(
+        (failure) =>
+          failure.allAttemptsRedirected === true &&
+          this.config.userRpc &&
+          !(failure.endpoint === "primary" && this.config.primaryIsPrivateRelay)
+      )
+    );
+  }
+
+  /** Both endpoints failed: a platform fault, unless the user's own URL redirected. */
+  private reportBothFailed(
+    failures: readonly EndpointFailure[],
+    detail: string
+  ): void {
+    if (this.onlyUserRedirects(failures)) {
+      logUserError(
+        ErrorCategory.CONFIGURATION,
+        `[RPC] User RPC preference redirected for ${this.config.chainName}`,
+        detail,
+        { event: "RPC_USER_ENDPOINT_REDIRECT", chain: this.config.chainName }
+      );
+      return;
+    }
+    this.metricsCollector.recordBothFailed(this.config.chainName);
+    logSystemError(
+      ErrorCategory.NETWORK_RPC,
+      `[RPC] Both primary and fallback RPC failed for ${this.config.chainName}`,
+      detail,
+      {
+        event: "RPC_BOTH_ENDPOINTS_FAILED",
+        chain: this.config.chainName,
+      }
     );
   }
 
@@ -588,17 +608,23 @@ export class RpcProviderManager {
    * Becomes a relay error only when the round never touched an endpoint we
    * operate AND every attempt failed on transport. In practice that is the
    * strict private-mempool case, where the swap left the relay as the only
-   * endpoint. Anything else stays a plain Error so the message classifier
+   * endpoint. A round where only the user's own RPC preference redirected is
+   * a user error. Anything else stays a plain Error so the message classifier
    * keeps deciding, which for RPC means a platform fault.
    */
   private failoverError(
     message: string,
-    failures: readonly {
-      endpoint: "primary" | "fallback";
-      transport?: boolean;
-      allAttemptsConnectionRefused?: boolean;
-    }[]
+    failures: readonly EndpointFailure[]
   ): Error {
+    if (this.onlyUserRedirects(failures)) {
+      // The user's own URL: their configuration, not a platform fault. It took the bytes.
+      return Object.assign(
+        new RpcUserEndpointError(
+          `Your RPC preference for ${this.config.chainName} answered with a redirect, which is not followed; set it to the final https:// address`
+        ),
+        { allAttemptsConnectionRefused: false }
+      );
+    }
     const redacted = redactAllUrls(message);
     const allAttemptsConnectionRefused =
       failures.length > 0 &&
@@ -699,6 +725,10 @@ export class RpcProviderManager {
     if (isNonRetryableError(error)) {
       throw wrappedError;
     }
+    // The same URL redirects again: move on to the next endpoint.
+    if (error instanceof RpcRedirectError) {
+      return null;
+    }
 
     if (attempt === maxRetries - 1) {
       return null;
@@ -725,10 +755,12 @@ export class RpcProviderManager {
     transport?: boolean;
     /** True only when every retry attempt ended in a connection refusal. */
     allAttemptsConnectionRefused?: boolean;
+    allAttemptsRedirected?: boolean;
   }> {
     let lastError: Error | undefined;
     let attemptCount = 0;
     let allAttemptsConnectionRefused = true;
+    let allAttemptsRedirected = true;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const startTime = performance.now();
@@ -762,6 +794,8 @@ export class RpcProviderManager {
         attemptCount += 1;
         allAttemptsConnectionRefused =
           allAttemptsConnectionRefused && isConnectionRefusal(error);
+        allAttemptsRedirected =
+          allAttemptsRedirected && error instanceof RpcRedirectError;
         this.recordFailure(providerType, operationType);
         this.metricsCollector.recordErrorType(
           this.config.chainName,
@@ -792,6 +826,7 @@ export class RpcProviderManager {
       transport: isTransportFailure(lastError),
       allAttemptsConnectionRefused:
         attemptCount > 0 && allAttemptsConnectionRefused,
+      allAttemptsRedirected: attemptCount > 0 && allAttemptsRedirected,
     };
   }
 
@@ -873,6 +908,7 @@ export type CreateRpcProviderManagerOptions = {
   chainId?: number;
   primaryIsPrivateRelay?: boolean;
   broadcastRpcUrls?: readonly string[];
+  userRpc?: boolean;
   metricsCollector?: RpcMetricsCollector;
   onFailoverStateChange?: FailoverStateChangeCallback;
 };
@@ -880,7 +916,7 @@ export type CreateRpcProviderManagerOptions = {
 export function createRpcProviderManager(
   options: CreateRpcProviderManagerOptions
 ): RpcProviderManager {
-  const cacheKey = `${options.primaryRpcUrl}|${options.fallbackRpcUrl || ""}|${options.chainId ?? ""}|${options.primaryIsPrivateRelay ? "relay" : ""}|${(options.broadcastRpcUrls ?? []).join(",")}`;
+  const cacheKey = `${options.primaryRpcUrl}|${options.fallbackRpcUrl || ""}|${options.chainId ?? ""}|${options.primaryIsPrivateRelay ? "relay" : ""}|${(options.broadcastRpcUrls ?? []).join(",")}|${options.userRpc ? "user" : ""}`;
 
   let manager = managerCache.get(cacheKey);
   if (!manager) {
@@ -894,6 +930,7 @@ export function createRpcProviderManager(
         chainId: options.chainId,
         primaryIsPrivateRelay: options.primaryIsPrivateRelay,
         broadcastRpcUrls: options.broadcastRpcUrls,
+        userRpc: options.userRpc,
       },
       metricsCollector: options.metricsCollector,
       onFailoverStateChange: options.onFailoverStateChange,

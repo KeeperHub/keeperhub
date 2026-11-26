@@ -116,8 +116,8 @@ export type BatchWriteContractCoreInput = {
   // flag alone (any stored value) still uses the relay where the chain has one.
   sendMode?: string;
   usePrivateMempool?: unknown;
-  // Only with that old flag on a relay chain: false keeps the public RPC as
-  // fallback, so a relay failure other than a revert is retried there.
+  // Only with that old flag on a relay chain: false gives the relay manager a
+  // public fallback, as before; its eth_call check is not proven to reach it.
   strict?: boolean;
   web3Connection?: string;
   // See WriteContractCoreInput: "next-block" simulates as of the next block.

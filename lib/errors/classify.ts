@@ -333,6 +333,14 @@ const RULES: readonly Rule[] = [
     code: DEFAULT_SYSTEM_ERROR_CODE,
   })),
 
+  // User-config: the user's own RPC preference redirected (never followed).
+  // Above the RPC rules so a wrapped `Failed to check balance:` form stays user.
+  {
+    pattern: /Your RPC preference for .+ answered with a redirect/i,
+    errorCategory: ErrorCategory.CONFIGURATION,
+    errorType: ExecutionErrorType.USER,
+    code: null,
+  },
   // System: RPC endpoints are KeeperHub-managed infrastructure, so a failover
   // exhaustion is a platform fault, not a third-party dependency failure.
   {

@@ -1,15 +1,4 @@
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  gt,
-  inArray,
-  isNull,
-  lte,
-  type SQL,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte, type SQL, sql } from "drizzle-orm";
 import type { db as appDb } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
 import type { WorkflowExecutionStatus } from "@/lib/errors/execution-status";
@@ -52,9 +41,6 @@ function liveRunOf(workflowId: string): SQL | undefined {
   );
 }
 
-// Live rows older than the stale limit, checked for progress per dispatch.
-const OLDER_LIVE_ROWS_MAX = 100;
-
 /**
  * A live run of the workflow, or null: the oldest one started within the stale
  * limit, else the oldest older one still progressing (a step completed since),
@@ -78,43 +64,21 @@ async function findBlockingRun(
   if (recent) {
     return recent.id;
   }
-  // Older live rows, through the same partial index. The newest first, so a run
-  // still progressing is not left out by the cap that bounds the id list below.
-  const candidates = await tx
+  // Every older live row, through the same partial index, each probing
+  // idx_exec_logs_execution_id for a step completed since: no cap can hide one.
+  const [older] = await tx
     .select({ id: workflowExecutions.id })
     .from(workflowExecutions)
     .where(
-      and(liveRunOf(workflowId), lte(workflowExecutions.startedAt, cutoff))
-    )
-    .orderBy(desc(workflowExecutions.startedAt))
-    .limit(OLDER_LIVE_ROWS_MAX);
-  if (candidates.length === 0) {
-    return null;
-  }
-  // By id, so the step-log check probes idx_exec_logs_execution_id per row
-  // instead of a semi-join that scans the log table.
-  const older = await tx
-    .select({
-      id: workflowExecutions.id,
-      startedAt: workflowExecutions.startedAt,
-    })
-    .from(workflowExecutions)
-    .where(
       and(
-        inArray(
-          workflowExecutions.id,
-          candidates.map((row) => row.id)
-        ),
+        liveRunOf(workflowId),
+        lte(workflowExecutions.startedAt, cutoff),
         completedStepSince(cutoff)
       )
-    );
-  let oldest: (typeof older)[number] | undefined;
-  for (const row of older) {
-    if (!oldest || row.startedAt < oldest.startedAt) {
-      oldest = row;
-    }
-  }
-  return oldest?.id ?? null;
+    )
+    .orderBy(asc(workflowExecutions.startedAt))
+    .limit(1);
+  return older?.id ?? null;
 }
 
 // A repeat of a dispatch (HTTP retry within ~17 s, leader overlap, late block) comes

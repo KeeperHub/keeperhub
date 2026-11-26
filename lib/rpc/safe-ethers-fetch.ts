@@ -2,6 +2,10 @@ import "server-only";
 
 import type { FetchGetUrlFunc, FetchRequest, GetUrlResponse } from "ethers";
 import { safeFetch } from "@/lib/safe-fetch";
+import {
+  RPC_REDIRECT_MESSAGE,
+  RpcRedirectError,
+} from "./providers/transport-error";
 
 /** undici's network error for a 3xx under `redirect: "error"`. */
 function isRedirectRefusal(error: unknown): boolean {
@@ -43,10 +47,7 @@ export const safeEthersGetUrl: FetchGetUrlFunc = async (
     });
   } catch (error) {
     if (isRedirectRefusal(error)) {
-      throw new Error(
-        "RPC endpoint answered with a redirect, which is not followed",
-        { cause: error }
-      );
+      throw new RpcRedirectError(RPC_REDIRECT_MESSAGE, { cause: error });
     }
     throw error;
   }

@@ -191,7 +191,7 @@ export const dispatchRefusedTotal = new Counter({
 
 export const skipCheckFailedTotal = new Counter({
   name: `${PREFIX}_skip_check_failed_total`,
-  help: "Blocks of skip-if-running workflows not dispatched because the platform's skip check failed (fails closed), per chain: transport errors, 5xx and unexpected 4xx (such as an auth failure), not a deleted workflow or a deactivated owner. Sustained growth means such keepers are not running.",
+  help: "Blocks of skip-if-running workflows not dispatched because the platform's skip check failed (fails closed), per chain: transport errors, 5xx and unexpected 4xx (such as an auth failure), not a workflow that is deleted or deactivated, or whose organization or owner is deactivated. Sustained growth means such keepers are not running.",
   labelNames: ["chain"] as const,
   registers: [registry],
 });

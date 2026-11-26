@@ -245,7 +245,7 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
     vi.unstubAllEnvs();
   });
 
-  it("finds the run still progressing behind more than 100 older stalled live rows", async () => {
+  it("finds the run still progressing behind 150 older stalled live rows", async () => {
     const workflowId = await workflowWithRun(null);
     // 150 stalled pending rows from 2 to 4.5 hours ago, then one progressing run.
     await db.insert(schema.workflowExecutions).values(
@@ -277,6 +277,43 @@ describe.skipIf(SKIP)("skip if still running (real Postgres)", () => {
       completedAt: new Date(Date.now() - 60_000),
     });
     const result = await dispatch(workflowId, 700);
+    expect(result.skipped).toBe(true);
+    const [row] = await skipRows(workflowId);
+    expect(row.dispatchKey).toBe(`skipped-behind:${progressing.id}`);
+  });
+
+  it("finds the run still progressing when it is older than 150 stalled live rows", async () => {
+    const workflowId = await workflowWithRun(null);
+    const [progressing] = await db
+      .insert(schema.workflowExecutions)
+      .values({
+        workflowId,
+        userId: USER_ID,
+        status: "running",
+        triggerSource: "block",
+        startedAt: new Date(Date.now() - 5 * 60 * 60_000),
+      })
+      .returning({ id: schema.workflowExecutions.id });
+    await db.insert(schema.workflowExecutionLogs).values({
+      executionId: progressing.id,
+      nodeId: "step",
+      nodeName: "Step",
+      nodeType: "action",
+      status: "success",
+      startedAt: new Date(Date.now() - 61_000),
+      completedAt: new Date(Date.now() - 60_000),
+    });
+    // 150 stalled pending rows, all newer than it, from 40 minutes to 3 hours ago.
+    await db.insert(schema.workflowExecutions).values(
+      Array.from({ length: 150 }, (_, i) => ({
+        workflowId,
+        userId: USER_ID,
+        status: "pending" as const,
+        triggerSource: "block",
+        startedAt: new Date(Date.now() - (40 + i) * 60_000),
+      }))
+    );
+    const result = await dispatch(workflowId, 701);
     expect(result.skipped).toBe(true);
     const [row] = await skipRows(workflowId);
     expect(row.dispatchKey).toBe(`skipped-behind:${progressing.id}`);

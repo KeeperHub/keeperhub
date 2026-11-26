@@ -34,6 +34,20 @@ export class InvalidSendModeError extends Error {
   readonly errorClass = ExecutionErrorType.USER;
 }
 
+/** An RPC endpoint answered with a 3xx: redirects are never followed. */
+export class RpcRedirectError extends Error {
+  override readonly name = "RpcRedirectError" as const;
+}
+
+export const RPC_REDIRECT_MESSAGE =
+  "RPC endpoint answered with a redirect, which is not followed; set the RPC URL to the final https:// address";
+
+/** Every endpoint tried was the user's own RPC preference and it redirected. */
+export class RpcUserEndpointError extends Error {
+  override readonly name = "RpcUserEndpointError" as const;
+  readonly errorClass = ExecutionErrorType.USER;
+}
+
 /**
  * The fault domain a relay or Send as failure declares, or undefined for
  * anything else (the caller keeps its own classification).
@@ -44,7 +58,8 @@ export function rpcRelayErrorClass(
   if (
     error instanceof RpcRelayTransportError ||
     error instanceof PrivateRelayUnavailableError ||
-    error instanceof InvalidSendModeError
+    error instanceof InvalidSendModeError ||
+    error instanceof RpcUserEndpointError
   ) {
     return error.errorClass;
   }

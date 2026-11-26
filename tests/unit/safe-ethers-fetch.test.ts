@@ -5,10 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/sleep", () => ({ sleep: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { NETWORK_RPC: "network_rpc" },
+const { logSystemError, logUserError } = vi.hoisted(() => ({
   logSystemError: vi.fn(),
+  logUserError: vi.fn(),
+}));
+vi.mock("@/lib/logging", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/logging")>()),
+  logSystemError,
   logSystemWarn: vi.fn(),
+  logUserError,
   logWarn: vi.fn(),
 }));
 // The SSRF guard would refuse 127.0.0.1; undici's own fetch keeps the redirect handling under test.
@@ -22,8 +27,14 @@ vi.mock("@/lib/safe-fetch", async () => {
   };
 });
 
+import { classifyExecutionError } from "@/lib/errors/classify";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { isConnectionRefusal } from "@/lib/rpc/connection-refusal";
-import { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  RpcProviderManager,
+  RpcUserEndpointError,
+  rpcRelayErrorClass,
+} from "@/lib/rpc/providers";
 
 type Hit = { method?: string; body: string };
 
@@ -138,5 +149,106 @@ describe("the RPC transport does not follow redirects", () => {
       manager.executeWithFailover((provider) => provider.getBlockNumber())
     ).rejects.toThrow("redirect");
     expect(targetHits).toEqual([]);
+  });
+
+  it("does not retry a redirect on the same endpoint", async () => {
+    const manager = new RpcProviderManager({
+      config: {
+        primaryRpcUrl: urlOf(redirect),
+        maxRetries: 3,
+        chainName: "redirect-test",
+        chainId: 1,
+      },
+    });
+    await expect(
+      manager.executeWithFailover((provider) => provider.getBlockNumber())
+    ).rejects.toThrow("set the RPC URL to the final https:// address");
+    expect(redirectHits).toHaveLength(1);
+  });
+
+  it("reads the user's own redirecting RPC preference as their configuration", async () => {
+    logSystemError.mockClear();
+    logUserError.mockClear();
+    const manager = new RpcProviderManager({
+      config: {
+        primaryRpcUrl: urlOf(redirect),
+        fallbackRpcUrl: `${urlOf(redirect)}/other`,
+        maxRetries: 1,
+        chainName: "Ethereum",
+        chainId: 1,
+        userRpc: true,
+      },
+    });
+    const error = await manager
+      .executeWithFailover((provider) => provider.getBlockNumber())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(error).toBeInstanceOf(RpcUserEndpointError);
+    expect(rpcRelayErrorClass(error)).toBe(ExecutionErrorType.USER);
+    expect((error as Error).message).toBe(
+      "Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address"
+    );
+    // A step that wraps it still reads as a user error, not N-0001.
+    expect(
+      classifyExecutionError(
+        `Failed to check balance: ${(error as Error).message}`
+      ).errorType
+    ).toBe(ExecutionErrorType.USER);
+    expect(isConnectionRefusal(error)).toBe(false);
+    expect(logSystemError).not.toHaveBeenCalled();
+    expect(logUserError).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a platform URL's redirect a platform fault", async () => {
+    logSystemError.mockClear();
+    const manager = new RpcProviderManager({
+      config: {
+        primaryRpcUrl: urlOf(redirect),
+        fallbackRpcUrl: `${urlOf(redirect)}/other`,
+        maxRetries: 1,
+        chainName: "Ethereum",
+        chainId: 1,
+      },
+    });
+    const error = await manager
+      .executeWithFailover((provider) => provider.getBlockNumber())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(error).not.toBeInstanceOf(RpcUserEndpointError);
+    expect(classifyExecutionError((error as Error).message)).toMatchObject({
+      errorType: ExecutionErrorType.SYSTEM,
+      code: "N-0001",
+    });
+    expect(logSystemError).toHaveBeenCalledWith(
+      "network_rpc",
+      expect.stringContaining("Both primary and fallback RPC failed"),
+      expect.any(String),
+      expect.objectContaining({ event: "RPC_BOTH_ENDPOINTS_FAILED" })
+    );
+  });
+
+  it("does not blame the user when the relay in front of their URL redirected", async () => {
+    const manager = new RpcProviderManager({
+      config: {
+        primaryRpcUrl: urlOf(redirect),
+        fallbackRpcUrl: `${urlOf(redirect)}/other`,
+        maxRetries: 1,
+        chainName: "Ethereum",
+        chainId: 1,
+        userRpc: true,
+        primaryIsPrivateRelay: true,
+      },
+    });
+    const error = await manager
+      .executeWithFailover((provider) => provider.getBlockNumber())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(error).not.toBeInstanceOf(RpcUserEndpointError);
   });
 });

@@ -780,15 +780,27 @@ describe("canvas marker for a step Send as stops", () => {
       false,
     ],
     [
-      "Batch old flag on Ethereum, strict: false (its check may use the public RPC)",
+      "Batch old flag on Ethereum, strict: false (its check still runs on the relay)",
       {
         actionType: BATCH,
         network: "1",
         usePrivateMempool: true,
         strict: false,
       },
-      false,
       true,
+      false,
+    ],
+    [
+      "Batch old flag on Ethereum, strict: false, Simulate at Next block",
+      {
+        actionType: BATCH,
+        network: "1",
+        usePrivateMempool: true,
+        strict: false,
+        simulateAt: "next-block",
+      },
+      true,
+      false,
     ],
     [
       "relay on Base, strict: false (sends publicly)",

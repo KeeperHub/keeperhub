@@ -70,12 +70,15 @@ function actionLabel(config: Record<string, unknown>): string {
 /** An old flag on an action without the relay option: it runs as before, on the relay where there is one. */
 function legacyUnsupportedNotice(
   config: Record<string, unknown>,
-  chainKnown: boolean
+  chainName: string | undefined
 ): string {
-  const where = chainKnown
-    ? "the private relay"
-    : "the private relay where its network has one, otherwise the public mempool";
-  return `This step was saved with the old "(Flashbots)" network, so it still sends through ${where}. ${actionLabel(config)} checks its calls with eth_call, which a relay such as Flashbots Protect refuses, so on such a relay it fails before sending. Set Send as to Normal transaction to send publicly, or split the calls into Write Contract steps to keep them private.`;
+  const saved = `This step was saved with the old "(Flashbots)" network, so it still sends through`;
+  const fix =
+    "Set Send as to Normal transaction to send publicly, or split the calls into Write Contract steps to keep them private.";
+  if (chainName !== undefined) {
+    return `${saved} ${chainName}'s private relay. ${actionLabel(config)} checks its calls with eth_call first, which the private relay (Flashbots Protect) refuses, so every run fails before sending. ${fix}`;
+  }
+  return `${saved} the private relay where its network has one, otherwise the public mempool. ${actionLabel(config)} checks its calls with eth_call, which a relay such as Flashbots Protect refuses, so on such a relay it fails before sending. ${fix}`;
 }
 
 function actionFields(config: Record<string, unknown>) {
@@ -358,10 +361,13 @@ export function sendModeWarning(
   if (unsupported && !legacy) {
     return { text: unsupported, unsupported: true, fails: true };
   }
-  // The old flag still uses the relay; with strict: false its eth_call check falls back to the public RPC.
-  if (unsupported && !noRelay && config.strict !== false) {
+  // The old flag runs its eth_call check on the relay; a public fallback with strict: false is not proven.
+  if (unsupported && !noRelay) {
     return {
-      text: legacyUnsupportedNotice(config, chain !== undefined),
+      text: legacyUnsupportedNotice(
+        config,
+        chain && (chain.name ?? "this network")
+      ),
       unsupported: true,
       fails: true,
     };

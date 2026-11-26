@@ -1079,8 +1079,11 @@ export class ChainMonitor {
         console.log(
           `[BlockMonitor:${this.chainName}] Not enqueuing ${dispatchKey}: the platform recorded it as skipped`,
         );
-      } else if (skipCheck === "failed") {
-        // No id: the skip-if-running check failed, already logged as an error.
+      } else if (
+        skipCheck !== "workflow_gone" &&
+        skipCheck !== "workflow_inactive"
+      ) {
+        // No id and no "cannot run" answer: the skip-if-running check failed.
         metrics.recordSkipCheckFailed(this.chainName);
       }
       return;
