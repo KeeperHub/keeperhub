@@ -58,6 +58,8 @@ export const PlatformRpcPurpose = {
   AGENTIC_WALLET: "agentic-wallet",
   PUBLIC_TOOL: "public-tool",
   NO_ORGANIZATION: "no-organization",
+  /** Reads whose result is cached for every organization, such as an ABI. */
+  SHARED_CACHE: "shared-cache",
 } as const;
 export type PlatformRpcPurpose =
   (typeof PlatformRpcPurpose)[keyof typeof PlatformRpcPurpose];

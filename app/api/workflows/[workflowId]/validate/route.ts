@@ -11,7 +11,6 @@ import {
 import { validateWorkflowDeep } from "@/lib/mcp/validate-workflow-deep";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { resolveProtocolEventAddress } from "@/lib/workflow/protocol-event-address";
-import { rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { failureResponse } from "@/lib/rpc/engine/org/http";
 import { workflowCoverageRefusal } from "@/lib/rpc/engine/org/service";
 
@@ -101,11 +100,7 @@ export async function GET(
     resolveProtocolEventAddress,
   };
   const result: ValidationResult = deepCheck
-    ? await validateWorkflowDeep(
-        workflow,
-        rpcScopeForOrganization(authContext.organizationId),
-        options
-      )
+    ? await validateWorkflowDeep(workflow, options)
     : validateWorkflow(workflow, options);
 
   return NextResponse.json({

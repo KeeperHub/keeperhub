@@ -21,7 +21,6 @@ import { requireScope } from "@/lib/middleware/require-scope";
 import { checkProtocolOnchainGuards } from "@/lib/protocol-input-guards-onchain";
 import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
-import { rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { runWithRpcAttribution } from "@/lib/rpc/engine/step-attribution";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { PLUGIN_STEP_IMPORTERS } from "@/lib/step-registry";
@@ -170,7 +169,6 @@ async function executeProtocolAction(
       contractAddress,
       network,
       abi: contract.abi,
-      scope: rpcScopeForOrganization(organizationId),
     });
     resolvedAbi = abiResult.abi;
   } catch (err: unknown) {

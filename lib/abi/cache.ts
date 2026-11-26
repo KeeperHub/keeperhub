@@ -8,7 +8,7 @@ import {
   fetchEtherscanSourceCode,
 } from "@/lib/explorer/etherscan";
 import { detectProxyViaRpc } from "@/lib/explorer/proxy-detection";
-import type { RpcScope } from "@/lib/rpc/engine";
+import { PlatformRpcPurpose, platformScope } from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { DAY_MS } from "@/lib/utils/duration";
 
@@ -21,9 +21,11 @@ type ResolveAbiInput = {
   contractAddress: string;
   network: string;
   abi?: string;
-  /** Whose RPC route the proxy probe uses. */
-  scope: RpcScope;
 };
+
+// The resolved ABI is cached for every organization, so the proxy probe that
+// picks it must not take any one organization's endpoint's word for it.
+const SHARED_ABI_SCOPE = platformScope(PlatformRpcPurpose.SHARED_CACHE);
 
 type ResolveAbiResult = {
   abi: string;
@@ -40,8 +42,7 @@ function buildCacheKey(chainId: number, contractAddress: string): string {
 
 async function fetchAbiFromExplorer(
   chainId: number,
-  contractAddress: string,
-  scope: RpcScope
+  contractAddress: string
 ): Promise<string> {
   const explorerResults = await db
     .select()
@@ -97,7 +98,11 @@ async function fetchAbiFromExplorer(
     }
   }
 
-  const proxyResult = await detectProxyViaRpc(contractAddress, chainId, scope);
+  const proxyResult = await detectProxyViaRpc(
+    contractAddress,
+    chainId,
+    SHARED_ABI_SCOPE
+  );
   if (proxyResult.isProxy && proxyResult.implementationAddress) {
     const implResult = await fetchEtherscanAbi(
       explorer.explorerApiUrl,
@@ -130,11 +135,7 @@ export async function resolveAbi(
     return { abi: cached.abi, source: "cache" };
   }
 
-  const abi = await fetchAbiFromExplorer(
-    chainId,
-    input.contractAddress,
-    input.scope
-  );
+  const abi = await fetchAbiFromExplorer(chainId, input.contractAddress);
   abiCache.set(cacheKey, { abi, fetchedAt: Date.now() });
 
   return { abi, source: "explorer" };

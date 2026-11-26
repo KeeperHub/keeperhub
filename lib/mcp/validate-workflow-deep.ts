@@ -26,7 +26,6 @@ import {
 } from "@/lib/mcp/validate-workflow";
 import { VALIDATION_WARNING_CODES } from "@/lib/mcp/validate-workflow-codes";
 import { isTemplateReference } from "@/lib/mcp/validate-workflow-web3";
-import type { RpcScope } from "@/lib/rpc/engine";
 import { sleep } from "@/lib/sleep";
 import {
   BATCH_READ_CONTRACT_ACTION_TYPE,
@@ -260,8 +259,7 @@ async function runWithLimit<T, R>(
 async function resolveWithTimeout(
   ref: ContractRef,
   perCallTimeoutMs: number,
-  resolver: typeof resolveAbi,
-  scope: RpcScope
+  resolver: typeof resolveAbi
 ): Promise<string | null> {
   type RaceResult = { ok: true; abi: string } | { ok: false };
 
@@ -269,7 +267,6 @@ async function resolveWithTimeout(
     resolver({
       contractAddress: ref.contractAddress,
       network: ref.network,
-      scope,
     }).then((r): RaceResult => ({ ok: true, abi: r.abi })),
     new Promise<RaceResult>((resolve) => {
       setTimeout(() => resolve({ ok: false }), perCallTimeoutMs);
@@ -349,7 +346,6 @@ function extractSignatureSet(abiJson: string): Set<string> | null {
  */
 export async function validateWorkflowDeep(
   workflow: ValidatorWorkflow,
-  scope: RpcScope,
   opts: ValidateWorkflowDeepOptions = {}
 ): Promise<ValidationResult> {
   const fast = validateWorkflow(workflow, opts);
@@ -373,8 +369,7 @@ export async function validateWorkflowDeep(
       const resolvedAbi = await resolveWithTimeout(
         ref,
         perCallTimeoutMs,
-        resolver,
-        scope
+        resolver
       );
       if (resolvedAbi === null) {
         // Silent skip — explorer down, contract unverified, or timeout.
