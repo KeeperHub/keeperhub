@@ -23,7 +23,7 @@ import {
   WORKFLOW_SAVE_ERROR_TOAST,
   workflowSaveErrorMessage,
 } from "@/lib/api-client";
-import { authClient, useSession } from "@/lib/auth-client";
+import { signInAnonymously, useSession } from "@/lib/auth-client";
 import {
   getPendingClaim,
   useClaimWorkflow,
@@ -242,7 +242,7 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   // Helper to create anonymous session if needed
   const ensureSession = useCallback(async () => {
     if (!session) {
-      await authClient.signIn.anonymous();
+      await signInAnonymously();
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }, [session]);
