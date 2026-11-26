@@ -13,6 +13,7 @@ vi.mock("@/lib/db", () => ({
 import { db } from "@/lib/db";
 import {
   deleteUserRpcPreference,
+  getChainBuilderRpcUrls,
   getUserRpcPreferences,
   resolveAllRpcConfigs,
   resolveRpcConfig,
@@ -431,6 +432,29 @@ describe("config-service", () => {
       const result = await deleteUserRpcPreference("user_456", 999);
 
       expect(result).toBe(false);
+    });
+  });
+
+  describe("getChainBuilderRpcUrls", () => {
+    it("returns the chain's https builder endpoints", async () => {
+      mockChainQuery({
+        builderRpcUrls: {
+          titan: "https://titan.example",
+          plain: "http://plain.example",
+        },
+      });
+
+      await expect(getChainBuilderRpcUrls(1)).resolves.toEqual({
+        titan: "https://titan.example",
+      });
+    });
+
+    it("returns undefined when the lookup fails", async () => {
+      vi.mocked(db.select).mockImplementation(() => {
+        throw new Error("db down");
+      });
+
+      await expect(getChainBuilderRpcUrls(1)).resolves.toBeUndefined();
     });
   });
 });

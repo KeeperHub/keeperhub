@@ -17,7 +17,7 @@ export type BroadcastInfo = {
   builders?: BuilderBroadcastResult[];
 };
 
-export type SubmitSignedOptions = {
+type SubmitSignedOptions = {
   // Also send the signed bytes to these block builders, in parallel.
   builderRpcUrls?: BuilderRpcUrls;
 };
@@ -30,8 +30,7 @@ export type BroadcastResult = {
    * before/during our broadcast attempt. Callers may skip `response.wait()`.
    */
   preExistingReceipt?: ethers.TransactionReceipt;
-  // Set when the regular RPC accepted the broadcast. Absent when the outcome
-  // came from reconciliation instead.
+  // Absent when the outcome came from reconciliation.
   broadcast?: BroadcastInfo;
 };
 

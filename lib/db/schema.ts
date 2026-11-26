@@ -1376,8 +1376,7 @@ export const chains = pgTable(
     // instead of the public mempool.
     usePrivateMempoolRpc: boolean("use_private_mempool_rpc").default(false),
     defaultPrivateRpcUrl: text("default_private_rpc_url"),
-    // Block builder endpoints a next-block write also sends its signed
-    // transaction to, keyed by label. Seeded from chain-config.
+    // Block builder endpoints for next-block sends, seeded from chain-config.
     builderRpcUrls: jsonb("builder_rpc_urls").$type<Record<string, string>>(),
     isTestnet: boolean("is_testnet").default(false),
     isEnabled: boolean("is_enabled").default(true), // Can disable chains

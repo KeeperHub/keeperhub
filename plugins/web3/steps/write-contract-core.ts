@@ -21,9 +21,8 @@ import { db } from "@/lib/db";
 import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
 import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
 import { getTransactionUrl } from "@/lib/explorer";
-import { ErrorCategory, logUserError, logWarn } from "@/lib/logging";
+import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainBuilderRpcUrls } from "@/lib/rpc/config-service";
-import type { BuilderRpcUrls } from "@/lib/rpc/rpc-config";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import {
   getOrganizationWalletAddress,
@@ -179,8 +178,7 @@ export type WriteContractResult =
       error?: string;
       rejection?: RevertKind;
       simulation?: NextBlockSimulation;
-      // When and through which RPC the transaction went out, and which block
-      // builders also received it. Labels only, never URLs.
+      // How the transaction went out; builder labels only, never URLs.
       broadcast?: BroadcastInfo;
     }
   | {
@@ -256,22 +254,6 @@ export function applyFailOnError(
     rejection: result.rejection,
     ...(result.simulation ? { simulation: result.simulation } : {}),
   };
-}
-
-// Builder endpoints are an optional speed-up: a failed lookup sends through
-// the regular RPC alone rather than failing the step.
-async function lookupBuilderRpcUrls(
-  chainId: number
-): Promise<BuilderRpcUrls | undefined> {
-  try {
-    return await getChainBuilderRpcUrls(chainId);
-  } catch (error) {
-    logWarn(
-      `[Write Contract] Builder endpoint lookup failed: ${getErrorMessage(error)}`,
-      { chain_id: String(chainId) }
-    );
-    return undefined;
-  }
 }
 
 /**
@@ -783,14 +765,12 @@ async function writeContractCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
-  // Looked up before the wallet lock, so a slow read never holds it. A private
-  // mempool send stays on its relay only.
+  // Looked up before the wallet lock; private mempool sends stay on the relay.
   const builderRpcUrls =
     simulation !== undefined &&
     !usePrivateMempool &&
-    signerMode.kind !== SIGNER_MODE.SAFE_ROLE &&
-    signerMode.kind !== SIGNER_MODE.SAFE
-      ? await lookupBuilderRpcUrls(chainId)
+    signerMode.kind === SIGNER_MODE.EOA
+      ? await getChainBuilderRpcUrls(chainId)
       : undefined;
 
   return withNonceSession(txContext, walletAddress, async (session) => {

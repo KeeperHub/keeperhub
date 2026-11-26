@@ -14,10 +14,7 @@ vi.mock("@/lib/logging", () => ({
   logWarn: (...args: unknown[]) => mockLogWarn(...args),
 }));
 
-import {
-  BUILDER_BROADCAST_TIMEOUT_MS,
-  broadcastToBuilders,
-} from "@/lib/web3/builder-broadcast";
+import { broadcastToBuilders } from "@/lib/web3/builder-broadcast";
 
 const SIGNED_HEX = "0x02f8abcdef";
 
@@ -56,7 +53,6 @@ describe("broadcastToBuilders", () => {
       params: [SIGNED_HEX],
     });
     expect(init.signal).toBeInstanceOf(AbortSignal);
-    expect(BUILDER_BROADCAST_TIMEOUT_MS).toBe(2000);
     expect(mockLogWarn).not.toHaveBeenCalled();
   });
 

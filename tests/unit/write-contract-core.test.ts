@@ -51,7 +51,6 @@ vi.mock("@/lib/logging", () => ({
   logUserError: vi.fn(),
   logSystemWarn: vi.fn(),
   logSecurityEvent: vi.fn(),
-  logWarn: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -849,21 +848,6 @@ describe("writeContractCore simulateAt next-block", () => {
     };
     expect(optionsArg.builderRpcUrls).toEqual(builderRpcUrls);
     expect(result).toMatchObject({ success: true, broadcast });
-  });
-
-  it("sends through the regular RPC alone when the builder lookup fails", async () => {
-    mockGetChainBuilderRpcUrls.mockRejectedValueOnce(new Error("db down"));
-
-    const result = await writeContractCore({
-      ...baseInput,
-      simulateAt: "next-block",
-    });
-
-    const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
-      builderRpcUrls?: unknown;
-    };
-    expect(optionsArg.builderRpcUrls).toBeUndefined();
-    expect(result.success).toBe(true);
   });
 
   it("does not look up block builders without next-block simulation", async () => {

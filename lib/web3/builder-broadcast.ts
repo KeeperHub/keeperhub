@@ -5,7 +5,7 @@ import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { safeFetch } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
 
-export const BUILDER_BROADCAST_TIMEOUT_MS = 2000;
+const BUILDER_BROADCAST_TIMEOUT_MS = 2000;
 
 const MAX_ERROR_LENGTH = 200;
 
@@ -20,7 +20,7 @@ type JsonRpcReply = {
   error?: { message?: unknown };
 };
 
-// A builder that already holds the transaction has it, which is the goal.
+// A builder that already holds the transaction counts as accepted.
 const ALREADY_KNOWN = /already known|known transaction/i;
 
 // Builder replies end up in the step output, so URLs are removed first.
@@ -66,12 +66,7 @@ async function sendToBuilder(
   }
 }
 
-/**
- * Send already-signed bytes to block builders, in parallel. Best-effort: a
- * builder that rejects or times out is reported, never thrown, so it cannot
- * fail a transaction the regular RPC accepted. Results carry the label only,
- * never the URL.
- */
+// Best-effort parallel send: failures are reported by label, never thrown.
 export async function broadcastToBuilders(
   signedHex: string,
   builders: BuilderRpcUrls
