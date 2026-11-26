@@ -138,9 +138,10 @@ function hasSafeExecutionFailureLog(
   );
 }
 
-const VERIFY_TUNING = {
-  maxRetries: VERIFY_MAX_RETRIES,
-  timeoutMs: VERIFY_TIMEOUT_MS,
+const VERIFY_REQUEST = {
+  tuning: { maxRetries: VERIFY_MAX_RETRIES, timeoutMs: VERIFY_TIMEOUT_MS },
+  // Reading a receipt is not what the step used to send it.
+  unattributed: true,
 } as const;
 
 /**
@@ -199,7 +200,7 @@ function buildVerificationManager(
   chainId: number
 ): Promise<RpcProviderManager | null> {
   return firstRoutableManager(scope, chainId, (candidate) =>
-    rpc.evm(candidate, chainId, { tuning: VERIFY_TUNING })
+    rpc.evm(candidate, chainId, VERIFY_REQUEST)
   );
 }
 
@@ -208,7 +209,7 @@ function buildSolanaVerificationManager(
   chainId: number
 ): Promise<SolanaProviderManager | null> {
   return firstRoutableManager(scope, chainId, (candidate) =>
-    rpc.solana(candidate, chainId, { tuning: VERIFY_TUNING })
+    rpc.solana(candidate, chainId, VERIFY_REQUEST)
   );
 }
 

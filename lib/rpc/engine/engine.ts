@@ -53,6 +53,8 @@ export type RouteRequest = {
   privateMempool?: PrivateMempoolRequest;
   /** Gets its own cached manager, so the shared one keeps its defaults. */
   tuning?: RpcClientTuning;
+  /** A check on the step's outcome, not the step's own call; left out of its attribution. */
+  unattributed?: boolean;
 };
 
 type RpcClient<TManager> = {
@@ -228,7 +230,9 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         manager,
         activeEndpoint: activeEndpointOf(resolved, manager),
       };
-      noteRpcClient(client);
+      if (!request.unattributed) {
+        noteRpcClient(client);
+      }
       return client;
     },
 
@@ -263,7 +267,9 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         manager,
         activeEndpoint: activeEndpointOf(resolved, manager),
       };
-      noteRpcClient(client);
+      if (!request.unattributed) {
+        noteRpcClient(client);
+      }
       return client;
     },
   };

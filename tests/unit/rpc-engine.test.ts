@@ -286,6 +286,20 @@ describe("createRpcEngine", () => {
     });
   });
 
+  it("leaves an unattributed client out of the step's record", async () => {
+    setRpcAttributionStorage(new AsyncLocalStorage());
+    const attribution = await runWithRpcAttribution(async () => {
+      await engine.evm(platformScope(PlatformRpcPurpose.BILLING), 1);
+      await engine.evm(orgScope("org_1"), 1, { unattributed: true });
+      return readRpcAttribution();
+    });
+    expect(attribution).toEqual({
+      rpcOrigin: RpcOrigin.PLATFORM,
+      rpcConfigId: null,
+      rpcFailedOver: false,
+    });
+  });
+
   it("fails for an unknown chain", async () => {
     await expect(
       engine.route(platformScope(PlatformRpcPurpose.BILLING), 999)

@@ -371,6 +371,7 @@ describe("Solana signatures", () => {
 
     expect(rpcSolana).toHaveBeenCalledWith(SCOPE, SOLANA_CHAIN_ID, {
       tuning: expect.any(Object),
+      unattributed: true,
     });
     expect(getSignatureStatuses).toHaveBeenCalledWith([SIGNATURE], {
       searchTransactionHistory: true,
@@ -508,6 +509,7 @@ describe("Solana signatures", () => {
     expect(evmRequest?.[0]).toBe(SCOPE);
     expect(evmRequest?.[1]).toBe(CHAIN_ID);
     expect(evmRequest?.[2]?.tuning).toBeDefined();
+    expect(evmRequest?.[2]?.unattributed).toBe(true);
     expect(solanaRequest?.[0]).toBe(SCOPE);
     expect(solanaRequest?.[1]).toBe(SOLANA_CHAIN_ID);
     expect(solanaRequest?.[2]).toEqual(evmRequest?.[2]);
