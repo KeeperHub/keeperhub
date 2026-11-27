@@ -1,5 +1,6 @@
 import { rpc } from "@/lib/rpc/engine";
 import { type RpcScope, RpcScopeKind } from "@/lib/rpc/engine/types";
+import { BoundedCache } from "@/lib/rpc/providers/bounded-cache";
 import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { getGasStrategy } from "../gas-strategy";
 import { getNonceManager } from "../nonce-manager";
@@ -7,7 +8,10 @@ import { EvmChainAdapter } from "./evm";
 import { SolanaChainAdapter } from "./solana";
 import type { ChainAdapter } from "./types";
 
-const adapterCache = new Map<string, ChainAdapter>();
+// One Solana adapter per organization, selection and chain, so the cache is
+// bounded; an adapter holds no connection of its own, so dropping one is free.
+const ADAPTER_CACHE_LIMIT = 1000;
+const adapterCache = new BoundedCache<ChainAdapter>(ADAPTER_CACHE_LIMIT);
 
 /** Who the adapter's RPC traffic belongs to; EVM adapters take theirs per call. */
 function scopeKey(scope: RpcScope): string {
