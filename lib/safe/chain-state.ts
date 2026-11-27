@@ -4,6 +4,7 @@ import { ethers } from "ethers";
 import { rolesAbi } from "zodiac-roles-sdk";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
 
 /**
  * Read-only helpers that query the live on-chain state of a Safe's Zodiac
@@ -19,7 +20,7 @@ const SAFE_MODULES_ABI = [
 const MODULE_SENTINEL: string = "0x0000000000000000000000000000000000000001";
 
 async function getProvider(chainId: number): Promise<ethers.Provider> {
-  const rpcUrl = getRpcUrlByChainId(chainId, "primary");
+  const rpcUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.PRIMARY);
   const manager = await getRpcProviderFromUrls(rpcUrl, undefined, chainId);
   return manager.getProvider();
 }

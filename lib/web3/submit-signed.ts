@@ -1,11 +1,8 @@
 import "server-only";
 import { ethers, isError } from "ethers";
-import {
-  RPC_ENDPOINT,
-  type RpcEndpoint,
-  type RpcProviderManager,
-} from "@/lib/rpc/providers";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import type { BuilderRpcUrls } from "@/lib/rpc/rpc-config";
+import { RPC_ENDPOINT, type RpcEndpoint } from "@/lib/rpc/rpc-endpoint";
 import {
   type BuilderBroadcastResult,
   broadcastToBuilders,

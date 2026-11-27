@@ -2,6 +2,7 @@ import { type Commitment, Connection } from "@solana/web3.js";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { safeFetch } from "@/lib/safe-fetch";
 import { sleep } from "@/lib/sleep";
+import { RPC_ENDPOINT, type RpcEndpoint } from "../rpc-endpoint";
 import { redactAllUrls, scrubRpcUrls } from "../scrub-rpc-urls";
 import {
   RPC_CONNECTION_ERROR_PATTERNS,
@@ -41,18 +42,18 @@ export type SolanaRpcMetricsCollector = {
   recordBothFailed(chainName: string): void;
   recordSuccess(
     chainName: string,
-    provider: "primary" | "fallback",
+    provider: RpcEndpoint,
     operation?: RpcOperationType
   ): void;
   recordLatency(
     chainName: string,
-    provider: "primary" | "fallback",
+    provider: RpcEndpoint,
     durationMs: number,
     operation?: RpcOperationType
   ): void;
   recordErrorType(
     chainName: string,
-    provider: "primary" | "fallback",
+    provider: RpcEndpoint,
     errorType: RpcErrorType,
     operation?: RpcOperationType
   ): void;
@@ -88,14 +89,14 @@ export const noopSolanaMetricsCollector: SolanaRpcMetricsCollector = {
   },
   recordSuccess: (
     _chain: string,
-    _provider: "primary" | "fallback",
+    _provider: RpcEndpoint,
     _operation?: RpcOperationType
   ) => {
     /* noop */
   },
   recordLatency: (
     _chain: string,
-    _provider: "primary" | "fallback",
+    _provider: RpcEndpoint,
     _durationMs: number,
     _operation?: RpcOperationType
   ) => {
@@ -103,7 +104,7 @@ export const noopSolanaMetricsCollector: SolanaRpcMetricsCollector = {
   },
   recordErrorType: (
     _chain: string,
-    _provider: "primary" | "fallback",
+    _provider: RpcEndpoint,
     _errorType: RpcErrorType,
     _operation?: RpcOperationType
   ) => {
@@ -267,7 +268,7 @@ export class SolanaProviderManager {
         const fallbackResult = await this.tryConnection(
           fallbackConnection,
           operation,
-          "fallback",
+          RPC_ENDPOINT.FALLBACK,
           this.config.maxRetries,
           operationType
         );
@@ -275,7 +276,7 @@ export class SolanaProviderManager {
         if (fallbackResult.success) {
           this.metricsCollector.recordSuccess(
             this.config.chainName,
-            "fallback",
+            RPC_ENDPOINT.FALLBACK,
             operationType
           );
           return fallbackResult.result as T;
@@ -297,7 +298,7 @@ export class SolanaProviderManager {
     const primaryResult = await this.tryConnection(
       primaryConnection,
       operation,
-      "primary",
+      RPC_ENDPOINT.PRIMARY,
       this.config.maxRetries,
       operationType
     );
@@ -305,7 +306,7 @@ export class SolanaProviderManager {
     if (primaryResult.success) {
       this.metricsCollector.recordSuccess(
         this.config.chainName,
-        "primary",
+        RPC_ENDPOINT.PRIMARY,
         operationType
       );
       if (this.isUsingFallback) {
@@ -315,8 +316,8 @@ export class SolanaProviderManager {
             event: "SOLANA_RPC_FAILOVER_RECOVERY",
             message: `Primary RPC recovered for ${this.config.chainName}, switching back from fallback`,
             chain: this.config.chainName,
-            previousState: "fallback",
-            newState: "primary",
+            previousState: RPC_ENDPOINT.FALLBACK,
+            newState: RPC_ENDPOINT.PRIMARY,
             timestamp: new Date().toISOString(),
           })
         );
@@ -335,7 +336,7 @@ export class SolanaProviderManager {
       const fallbackResult = await this.tryConnection(
         fallbackConnection,
         operation,
-        "fallback",
+        RPC_ENDPOINT.FALLBACK,
         this.config.maxRetries,
         operationType
       );
@@ -343,7 +344,7 @@ export class SolanaProviderManager {
       if (fallbackResult.success) {
         this.metricsCollector.recordSuccess(
           this.config.chainName,
-          "fallback",
+          RPC_ENDPOINT.FALLBACK,
           operationType
         );
         if (!this.isUsingFallback) {
@@ -354,8 +355,8 @@ export class SolanaProviderManager {
             {
               event: "SOLANA_RPC_FAILOVER_ACTIVATED",
               chain: this.config.chainName,
-              previous_state: "primary",
-              new_state: "fallback",
+              previous_state: RPC_ENDPOINT.PRIMARY,
+              new_state: RPC_ENDPOINT.FALLBACK,
             }
           );
           this.isUsingFallback = true;
@@ -416,7 +417,7 @@ export class SolanaProviderManager {
   private async tryConnection<T>(
     connection: Connection,
     operation: (c: Connection) => Promise<T>,
-    connectionType: "primary" | "fallback",
+    connectionType: RpcEndpoint,
     maxRetries: number,
     operationType: RpcOperationType = "read"
   ): Promise<{ success: boolean; result?: T; error?: string }> {
@@ -425,7 +426,7 @@ export class SolanaProviderManager {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const startTime = performance.now();
       try {
-        if (connectionType === "primary") {
+        if (connectionType === RPC_ENDPOINT.PRIMARY) {
           this.metrics.primaryAttempts += 1;
           this.metricsCollector.recordPrimaryAttempt(
             this.config.chainName,
@@ -464,7 +465,7 @@ export class SolanaProviderManager {
 
         lastError = error instanceof Error ? error : new Error(String(error));
 
-        if (connectionType === "primary") {
+        if (connectionType === RPC_ENDPOINT.PRIMARY) {
           this.metrics.primaryFailures += 1;
           this.metricsCollector.recordPrimaryFailure(
             this.config.chainName,
@@ -521,8 +522,8 @@ export class SolanaProviderManager {
     return this.isUsingFallback;
   }
 
-  getCurrentConnectionType(): "primary" | "fallback" {
-    return this.isUsingFallback ? "fallback" : "primary";
+  getCurrentConnectionType(): RpcEndpoint {
+    return this.isUsingFallback ? RPC_ENDPOINT.FALLBACK : RPC_ENDPOINT.PRIMARY;
   }
 
   setFailoverStateChangeCallback(

@@ -17,6 +17,7 @@ import {
   PUBLIC_RPCS,
   parseRpcConfig,
 } from "../../lib/rpc/rpc-config";
+import { RPC_ENDPOINT } from "../../lib/rpc/rpc-endpoint";
 
 // Parse JSON config from environment (if available)
 const rpcConfig = parseRpcConfig(process.env.CHAIN_RPC_CONFIG);
@@ -33,13 +34,13 @@ async function testSolanaProvider() {
       "solana-mainnet",
       "CHAIN_SOLANA_MAINNET_PRIMARY_RPC",
       PUBLIC_RPCS.SOLANA_MAINNET,
-      "primary"
+      RPC_ENDPOINT.PRIMARY
     ),
     getRpcUrl(
       "solana-mainnet",
       "CHAIN_SOLANA_MAINNET_FALLBACK_RPC",
       PUBLIC_RPCS.SOLANA_MAINNET,
-      "fallback"
+      RPC_ENDPOINT.FALLBACK
     ),
     "Solana Mainnet"
   );
@@ -50,13 +51,13 @@ async function testSolanaProvider() {
       "solana-devnet",
       "CHAIN_SOLANA_DEVNET_PRIMARY_RPC",
       PUBLIC_RPCS.SOLANA_DEVNET,
-      "primary"
+      RPC_ENDPOINT.PRIMARY
     ),
     getRpcUrl(
       "solana-devnet",
       "CHAIN_SOLANA_DEVNET_FALLBACK_RPC",
       PUBLIC_RPCS.SOLANA_DEVNET,
-      "fallback"
+      RPC_ENDPOINT.FALLBACK
     ),
     "Solana Devnet"
   );
