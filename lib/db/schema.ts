@@ -1225,10 +1225,7 @@ export {
   workflowPayments,
 } from "./schema-payments";
 export {
-  type NewOrganizationRpcConfigRow,
-  type OrganizationRpcChainPolicyRow,
   type OrganizationRpcConfigRow,
-  type OrganizationRpcUsageRow,
   organizationRpcChainPolicy,
   organizationRpcConfigs,
   organizationRpcUsageHourly,

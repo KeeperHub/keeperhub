@@ -252,7 +252,7 @@ describe("createRpcEngine", () => {
       1
     );
 
-    expect(tenant.route.primary.url.host).toBe("kh-primary.example.com");
+    expect(tenant.route.primary.url.hostname).toBe("kh-primary.example.com");
     expect(platform.manager).not.toBe(tenant.manager);
   });
 
@@ -292,7 +292,7 @@ describe("createRpcEngine", () => {
       platformScope(PlatformRpcPurpose.BILLING),
       101
     );
-    expect(client.route.primary.url.host).toBe("kh-solana.example.com");
+    expect(client.route.primary.url.hostname).toBe("kh-solana.example.com");
     expect(client.activeEndpoint().origin).toBe(RpcOrigin.PLATFORM);
   });
 

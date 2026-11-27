@@ -238,28 +238,6 @@ async function newCoverageGaps(
   }).filter((gap) => !before.has(gapKey(gap)));
 }
 
-/** Every node the organization's policy currently leaves uncovered. */
-export async function currentCoverageGaps(
-  organizationId: string
-): Promise<CoverageGap[]> {
-  const usages = await loadOrgUsages(organizationId);
-  if (usages.length === 0) {
-    return [];
-  }
-  const [ownRpcOnlyChains, configs, platform] = await Promise.all([
-    loadOwnRpcOnlyChains(organizationId),
-    loadOrgRpcConfigs(organizationId),
-    loadPlatformRecords(usages),
-  ]);
-  return findCoverageGaps({
-    organizationId,
-    usages,
-    platform,
-    ownRpcOnlyChains,
-    configs,
-  });
-}
-
 /**
  * Nodes of one workflow that its organization's RPC setup leaves without a
  * route, counting only gaps from a pinned config or own RPC only. With

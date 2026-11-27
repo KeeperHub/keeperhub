@@ -224,7 +224,7 @@ function platformConnection(
     );
     return null;
   }
-  if (!(wssUrl.startsWith("wss://") || wssUrl.startsWith("ws://"))) {
+  if (!isWebSocketUrl(wssUrl)) {
     logger.warn(
       `[workflow-mapper] workflow ${workflowId} chain ${chainId} defaultPrimaryWss is not a WebSocket URL ("${redactRpcUrl(wssUrl)}"); skipping`,
     );
@@ -238,10 +238,7 @@ function platformConnection(
   const rawFallbackWssUrl: unknown = network.defaultFallbackWss;
   let fallbackWssUrl: string | undefined;
   if (typeof rawFallbackWssUrl === "string" && rawFallbackWssUrl.length > 0) {
-    if (
-      rawFallbackWssUrl.startsWith("wss://") ||
-      rawFallbackWssUrl.startsWith("ws://")
-    ) {
+    if (isWebSocketUrl(rawFallbackWssUrl)) {
       fallbackWssUrl = rawFallbackWssUrl;
     } else {
       logger.warn(

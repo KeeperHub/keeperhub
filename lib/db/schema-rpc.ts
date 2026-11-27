@@ -64,8 +64,6 @@ export const organizationRpcConfigs = pgTable(
 
 export type OrganizationRpcConfigRow =
   typeof organizationRpcConfigs.$inferSelect;
-export type NewOrganizationRpcConfigRow =
-  typeof organizationRpcConfigs.$inferInsert;
 
 /**
  * An organization's RPC policy for one chain. With `ownRpcOnly` the chain is
@@ -85,9 +83,6 @@ export const organizationRpcChainPolicy = pgTable(
   },
   (table) => [primaryKey({ columns: [table.organizationId, table.chainId] })]
 );
-
-export type OrganizationRpcChainPolicyRow =
-  typeof organizationRpcChainPolicy.$inferSelect;
 
 /**
  * Hourly RPC usage per organization and endpoint. `configId` is null for
@@ -132,9 +127,6 @@ export const organizationRpcUsageHourly = pgTable(
     index("idx_org_rpc_usage_org_hour").on(table.organizationId, table.hour),
   ]
 );
-
-export type OrganizationRpcUsageRow =
-  typeof organizationRpcUsageHourly.$inferSelect;
 
 /**
  * Usage reports already stored, by the id the reporting service gave them, so

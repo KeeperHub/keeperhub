@@ -42,7 +42,7 @@ import { EmptyState, SectionHeader, SettingsCard } from "./section";
 import { useSettingsContext } from "./settings-context";
 import { RowsSkeleton } from "./skeletons";
 
-export const CONFIGURED_ENDPOINTS_TITLE = "Configured endpoints";
+const CONFIGURED_ENDPOINTS_TITLE = "Configured endpoints";
 
 type Refusal = { message: string; gaps: CoverageGap[] };
 

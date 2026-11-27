@@ -35,12 +35,6 @@ export type RpcUsageRecorder = {
   record(key: RpcUsageKey, delta: RpcUsageDelta): void;
 };
 
-export const noopUsageRecorder: RpcUsageRecorder = {
-  record: (): void => {
-    /* noop */
-  },
-};
-
 const HOUR_MS = 3_600_000;
 
 function emptyCounters(): RpcUsageCounters {

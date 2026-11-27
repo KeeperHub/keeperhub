@@ -105,7 +105,7 @@ function errorCode(result: ReturnType<typeof resolveRoute>): string {
 }
 
 function hosts(route: RpcRoute): [string, string | undefined] {
-  return [route.primary.url.host, route.fallback?.url.host];
+  return [route.primary.url.hostname, route.fallback?.url.hostname];
 }
 
 describe("resolveRoute", () => {
@@ -203,7 +203,7 @@ describe("resolveRoute", () => {
       );
       expect(route.primary.origin).toBe(RpcOrigin.ORG);
       expect(route.fallback).toMatchObject({ origin: RpcOrigin.PLATFORM });
-      expect(route.fallback?.url.host).toBe("kh-primary.example.com");
+      expect(route.fallback?.url.hostname).toBe("kh-primary.example.com");
     });
   });
 
@@ -276,7 +276,7 @@ describe("resolveRoute", () => {
       const route = ok(
         resolveRoute(input({ scope, org: orgState([config(), archive]) }))
       );
-      expect(route.primary.url.host).toBe("archive.example.com");
+      expect(route.primary.url.hostname).toBe("archive.example.com");
       expect(route.primary.configId).toBe("cfg_archive");
     });
 
@@ -381,7 +381,7 @@ describe("resolveRoute", () => {
         )
       );
       expect(route.transport).toBe(RpcTransport.HTTP);
-      expect(route.primary.url.host).toBe("org-primary.example.com");
+      expect(route.primary.url.hostname).toBe("org-primary.example.com");
     });
   });
 
@@ -399,7 +399,7 @@ describe("resolveRoute", () => {
         origin: RpcOrigin.PLATFORM,
         role: RpcEndpointRole.PRIVATE,
       });
-      expect(route.fallback?.url.host).toBe("kh-primary.example.com");
+      expect(route.fallback?.url.hostname).toBe("kh-primary.example.com");
     });
 
     it("drops the public fallback when strict", () => {
@@ -428,7 +428,7 @@ describe("resolveRoute", () => {
         origin: RpcOrigin.ORG,
         role: RpcEndpointRole.PRIVATE,
       });
-      expect(route.fallback?.url.host).toBe("org-primary.example.com");
+      expect(route.fallback?.url.hostname).toBe("org-primary.example.com");
     });
 
     it("uses the KeeperHub relay for an org config without one when allowed", () => {

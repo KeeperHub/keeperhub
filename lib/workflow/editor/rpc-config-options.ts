@@ -15,7 +15,7 @@ export type OrgRpcEditorState = {
   ownRpcOnlyChains: readonly number[];
 };
 
-export function isOwnRpcOnly(
+function isOwnRpcOnly(
   state: OrgRpcEditorState,
   chainId: number | null
 ): boolean {
@@ -47,7 +47,7 @@ export type NodeRpcResolution =
  * default, then KeeperHub unless the organization uses its own RPC only on
  * that network.
  */
-export function resolveNodeRpc(
+function resolveNodeRpc(
   value: unknown,
   chainId: number,
   state: OrgRpcEditorState
@@ -98,7 +98,7 @@ export type RpcConfigOptions = {
   problem: string | null;
 };
 
-export function parseChainId(value: unknown): number | null {
+function parseChainId(value: unknown): number | null {
   if (typeof value !== "string" && typeof value !== "number") {
     return null;
   }

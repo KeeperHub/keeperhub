@@ -53,8 +53,6 @@ export type RpcSelectionMode =
 export const PlatformRpcPurpose = {
   BILLING: "billing",
   PAYMENTS: "payments",
-  HEALTH_PROBE: "health-probe",
-  SEED: "seed",
   AGENTIC_WALLET: "agentic-wallet",
   PUBLIC_TOOL: "public-tool",
   NO_ORGANIZATION: "no-organization",

@@ -25,8 +25,7 @@ export const FINGERPRINT_ENCODING = "hex";
  */
 export class SecretUrl {
   readonly transport: RpcTransport;
-  readonly host: string;
-  /** Host without port or IPv6 brackets. */
+  /** Host without port or IPv6 brackets, for SSRF checks; never logged. */
   readonly hostname: string;
   readonly masked: string;
   readonly fingerprint: string;
@@ -35,7 +34,6 @@ export class SecretUrl {
   private constructor(raw: string, parsed: URL, transport: RpcTransport) {
     this.#raw = raw;
     this.transport = transport;
-    this.host = parsed.host;
     this.hostname = parsed.hostname.replace(IPV6_BRACKETS, "");
     // Only the scheme survives: providers put keys in the path, the query,
     // credentials and the subdomain, so no other part of the URL is safe.
