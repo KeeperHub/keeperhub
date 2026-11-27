@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { logWarn } from "@/lib/logging";
 import {
   createRpcProviderManager,
@@ -19,6 +20,7 @@ import {
   noteRpcClient,
   noteRpcFailover,
 } from "./step-attribution";
+import { collectorFromSink } from "./telemetry/collector-adapter";
 import { composeFailoverCallbacks } from "./telemetry/platform-collectors";
 import { createPlatformSink } from "./telemetry/platform-sink";
 import { createRouteSink, isPlatformOnlyRoute } from "./telemetry/route-sink";
@@ -116,9 +118,28 @@ const MANAGER_CACHE_PREFIX = "route:";
 /** Marks the managers whose calls are left out of step attribution. */
 const UNATTRIBUTED_CACHE_SUFFIX = ":unattributed";
 
+/**
+ * KeeperHub's endpoints for a chain, whichever organization the call is for:
+ * one manager per set of URLs, so its failover state is learned once.
+ */
+function platformManagerKey(route: RpcRoute): string {
+  const { primary, fallback } = route;
+  return [
+    "platform",
+    route.chain.chainId,
+    primary.role,
+    primary.url.fingerprint,
+    fallback?.role ?? "",
+    fallback?.url.fingerprint ?? "",
+  ].join(":");
+}
+
 function managerCacheKey(route: RpcRoute, request: RouteRequest): string {
   const { tuning } = request;
-  const base = `${MANAGER_CACHE_PREFIX}${route.key}`;
+  const identity = isPlatformOnlyRoute(route)
+    ? platformManagerKey(route)
+    : route.key;
+  const base = `${MANAGER_CACHE_PREFIX}${identity}`;
   const tuned = tuning
     ? `${base}:${tuning.maxRetries ?? ""}:${tuning.timeoutMs ?? ""}`
     : base;
@@ -148,6 +169,72 @@ function attributedSink(
       sink.failover();
     },
   };
+}
+
+/** The telemetry of the client whose call is running. */
+const callTelemetry = new AsyncLocalStorage<RpcTelemetrySink>();
+
+/**
+ * A shared manager's telemetry: each call reports to the client that made
+ * it, so one manager can serve many organizations and keep their usage apart.
+ */
+function callerSink(outsideCall: RpcTelemetrySink): RpcTelemetrySink {
+  const current = (): RpcTelemetrySink =>
+    callTelemetry.getStore() ?? outsideCall;
+  return {
+    attempt: (position, operation) => current().attempt(position, operation),
+    failure: (position, operation) => current().failure(position, operation),
+    success: (position, operation) => current().success(position, operation),
+    latency: (position, durationMs, operation) =>
+      current().latency(position, durationMs, operation),
+    errorType: (position, errorType, operation) =>
+      current().errorType(position, errorType, operation),
+    failover: () => current().failover(),
+    recovery: () => current().recovery(),
+    bothFailed: () => current().bothFailed(),
+    event: (event) => current().event(event),
+  };
+}
+
+type SharedManager = {
+  executeWithFailover(...args: never[]): Promise<unknown>;
+};
+
+/** One view per shared manager and attribution, so a client's manager is stable. */
+const sharedManagerViews = new WeakMap<object, Map<string, object>>();
+
+/** The shared manager as one client sees it: its calls report to `sink`. */
+function managerFor<TManager extends SharedManager>(
+  manager: TManager,
+  sink: RpcTelemetrySink,
+  attribution: string
+): TManager {
+  const views = sharedManagerViews.get(manager) ?? new Map<string, object>();
+  sharedManagerViews.set(manager, views);
+  const existing = views.get(attribution);
+  if (existing) {
+    return existing as TManager;
+  }
+  const view = new Proxy(manager, {
+    get(target, property): unknown {
+      if (property === "executeWithFailover") {
+        return (...args: Parameters<TManager["executeWithFailover"]>) =>
+          callTelemetry.run(sink, () => target.executeWithFailover(...args));
+      }
+      if (property === "getMetricsCollector" && property in target) {
+        return () => collectorFromSink(sink);
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  views.set(attribution, view);
+  return view;
+}
+
+/** Who a shared manager's calls are reported to, as a view key. */
+function attributionOf(route: RpcRoute, request: RouteRequest): string {
+  return `${route.organizationId ?? ""}:${request.unattributed ? "unattributed" : ""}`;
 }
 
 export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
@@ -212,6 +299,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
     request: RouteRequest
   ): Promise<{
     sink: RpcTelemetrySink;
+    managerSink: RpcTelemetrySink;
     onFailoverStateChange?: FailoverStateChangeCallback;
   }> {
     const collector = await collectors[family]();
@@ -228,10 +316,14 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
       ? routeSink
       : attributedSink(routeSink, resolved);
     // The per-chain "using fallback" gauge describes KeeperHub endpoints only.
-    const onFailoverStateChange = isPlatformOnlyRoute(resolved)
+    const platformOnly = isPlatformOnlyRoute(resolved);
+    const onFailoverStateChange = platformOnly
       ? composeFailoverCallbacks(await deps.failoverCallback())
       : undefined;
-    return { sink, onFailoverStateChange };
+    // A KeeperHub-only manager is shared across organizations, so it reports
+    // to whichever client is calling; outside a call, to KeeperHub only.
+    const managerSink = platformOnly ? callerSink(platformSink) : sink;
+    return { sink, managerSink, onFailoverStateChange };
   }
 
   return {
@@ -248,7 +340,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         chainId,
         request
       );
-      const { sink, onFailoverStateChange } = await telemetryFor(
+      const { sink, managerSink, onFailoverStateChange } = await telemetryFor(
         RpcChainType.EVM,
         resolved,
         request
@@ -261,7 +353,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         primaryIsPrivateRelay:
           resolved.primary.role === RpcEndpointRole.PRIVATE,
         failureOwner: failureOwnerOf(resolved),
-        telemetry: sink,
+        telemetry: managerSink,
         onFailoverStateChange,
         maxRetries: request.tuning?.maxRetries,
         timeoutMs: request.tuning?.timeoutMs,
@@ -269,7 +361,9 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
       });
       const client = {
         route: resolved,
-        manager,
+        manager: isPlatformOnlyRoute(resolved)
+          ? managerFor(manager, sink, attributionOf(resolved, request))
+          : manager,
         telemetry: sink,
         activeEndpoint: activeEndpointOf(resolved, manager),
       };
@@ -290,7 +384,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         chainId,
         request
       );
-      const { sink, onFailoverStateChange } = await telemetryFor(
+      const { sink, managerSink, onFailoverStateChange } = await telemetryFor(
         RpcChainType.SOLANA,
         resolved,
         request
@@ -300,7 +394,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
         fallbackRpcUrl: resolved.fallback?.url.reveal(),
         chainName: resolved.chain.name,
         failureOwner: failureOwnerOf(resolved),
-        telemetry: sink,
+        telemetry: managerSink,
         onFailoverStateChange,
         maxRetries: request.tuning?.maxRetries,
         timeoutMs: request.tuning?.timeoutMs,
@@ -308,7 +402,9 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
       });
       const client = {
         route: resolved,
-        manager,
+        manager: isPlatformOnlyRoute(resolved)
+          ? managerFor(manager, sink, attributionOf(resolved, request))
+          : manager,
         telemetry: sink,
         activeEndpoint: activeEndpointOf(resolved, manager),
       };

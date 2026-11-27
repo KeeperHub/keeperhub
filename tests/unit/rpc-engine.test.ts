@@ -220,6 +220,30 @@ describe("createRpcEngine", () => {
     expect(b.manager).not.toBe(a.manager);
   });
 
+  it("shares KeeperHub's manager across organizations and keeps their usage apart", async () => {
+    orgState = { policy: { ownRpcOnly: false }, configs: [] };
+    const first = await engine.evm(orgScope("org_1"), 1);
+    const second = await engine.evm(orgScope("org_2"), 1);
+    let calls = 0;
+    await first.manager.executeWithFailover(() => {
+      calls += 1;
+      return calls <= 3 ? down() : Promise.resolve("ok");
+    });
+    calls = 0;
+    await second.manager.executeWithFailover(() => {
+      calls += 1;
+      return Promise.resolve("ok");
+    });
+
+    // The second organization starts on the fallback the first one found.
+    expect(calls).toBe(1);
+    expect(second.manager.isCurrentlyUsingFallback()).toBe(true);
+    const organizations = new Set(
+      usage.drain().map((bucket) => bucket.organizationId)
+    );
+    expect(organizations).toEqual(new Set(["org_1", "org_2"]));
+  });
+
   it("never hands an organization manager to platform traffic", async () => {
     orgState = { policy: { ownRpcOnly: false }, configs: [] };
     const tenant = await engine.evm(orgScope("org_1"), 1);
