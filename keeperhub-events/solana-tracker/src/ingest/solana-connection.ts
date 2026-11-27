@@ -73,6 +73,12 @@ const REMOVE_SUB_TIMEOUT_MS = 5_000;
  */
 const SLOT_POLL_INTERVAL_MS = 1_000;
 
+/**
+ * A tip read this recently is reused, so the poll's read and the block
+ * source's read on the tick it triggers cost one request between them.
+ */
+const SLOT_READ_REUSE_MS = 250;
+
 export interface Endpoint {
   rpcUrl: string;
   /** Absent for organization routes: web3.js derives it from `rpcUrl`. */
@@ -199,6 +205,9 @@ export class SolanaConnection {
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private slotPoll: ReturnType<typeof setInterval> | null = null;
   private polling = false;
+  /** When the HTTP poll last read the tip, while the socket was silent. */
+  private lastPolledAt: number | null = null;
+  private lastSlotRead: { at: number; slot: number } | null = null;
   private activeIndex = 0;
   private lastSlotAt: number | null = null;
   private subscribedAt: number | null = null;
@@ -261,6 +270,7 @@ export class SolanaConnection {
     try {
       const slot = await this.getCurrentSlot();
       if (!this.stopped && epoch === this.epoch) {
+        this.lastPolledAt = Date.now();
         this.opts.onSlot(slot);
       }
     } catch {
@@ -283,6 +293,8 @@ export class SolanaConnection {
       clearInterval(this.slotPoll);
       this.slotPoll = null;
     }
+    this.lastPolledAt = null;
+    this.lastSlotRead = null;
     await this.removeSub();
     this.connection = null;
     // After the await, so a reconnect that completes mid-teardown cannot leave
@@ -413,6 +425,14 @@ export class SolanaConnection {
       return;
     }
     const now = Date.now();
+    // An endpoint the poll is serving is working: rebuilding its socket
+    // every grace period would only rotate the poll between endpoints.
+    if (
+      this.lastPolledAt !== null &&
+      now - this.lastPolledAt < FIRST_SLOT_GRACE_MS
+    ) {
+      return;
+    }
     if (this.phase === "failed") {
       this.log.warn(
         `[solana-conn] chain ${this.opts.chainId} in failed state; retrying`,
@@ -527,9 +547,15 @@ export class SolanaConnection {
   }
 
   async getCurrentSlot(): Promise<number> {
-    return this.rpc((connection) =>
+    const recent = this.lastSlotRead;
+    if (recent && Date.now() - recent.at < SLOT_READ_REUSE_MS) {
+      return recent.slot;
+    }
+    const slot = await this.rpc((connection) =>
       connection.getSlot(toFinality(this.opts.commitment)),
     );
+    this.lastSlotRead = { at: Date.now(), slot };
+    return slot;
   }
 
   /**
