@@ -97,8 +97,6 @@ function checkSessionOrigin(request: Request): AuthFailure | null {
 
 export type AuthMethod = "oauth" | "api-key" | "session";
 
-export const AUTH_METHOD_API_KEY = "api-key" satisfies AuthMethod;
-
 export const ORG_HEADER = "x-organization-id";
 
 /**
