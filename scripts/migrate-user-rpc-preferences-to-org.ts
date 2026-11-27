@@ -90,12 +90,23 @@ async function enabledChain(chainId: number): Promise<RpcChain | null> {
   return record?.chain.isEnabled ? record.chain : null;
 }
 
+type ChainConfigs = {
+  /** This user's preference was already migrated into the organization. */
+  migrated: boolean;
+  /** Names already taken on the chain. */
+  names: Set<string>;
+};
+
 async function existingConfigs(
   organizationId: string,
-  chainId: number
-): Promise<{ migrated: boolean }> {
+  chainId: number,
+  userId: string
+): Promise<ChainConfigs> {
   const rows = await db
-    .select({ name: organizationRpcConfigs.name })
+    .select({
+      name: organizationRpcConfigs.name,
+      createdBy: organizationRpcConfigs.createdBy,
+    })
     .from(organizationRpcConfigs)
     .where(
       and(
@@ -103,7 +114,25 @@ async function existingConfigs(
         eq(organizationRpcConfigs.chainId, chainId)
       )
     );
-  return { migrated: rows.some((row) => row.name === MIGRATED_CONFIG_NAME) };
+  return {
+    migrated: rows.some(
+      (row) =>
+        row.createdBy === userId && row.name.startsWith(MIGRATED_CONFIG_NAME)
+    ),
+    names: new Set(rows.map((row) => row.name)),
+  };
+}
+
+/** The migrated name, numbered when another admin's preference took it. */
+function migratedName(taken: ReadonlySet<string>): string {
+  if (!taken.has(MIGRATED_CONFIG_NAME)) {
+    return MIGRATED_CONFIG_NAME;
+  }
+  let n = 2;
+  while (taken.has(`${MIGRATED_CONFIG_NAME} ${n}`)) {
+    n += 1;
+  }
+  return `${MIGRATED_CONFIG_NAME} ${n}`;
 }
 
 async function main(): Promise<void> {
@@ -153,7 +182,8 @@ async function main(): Promise<void> {
     for (const organizationId of organizations) {
       const existing = await existingConfigs(
         organizationId,
-        preference.chainId
+        preference.chainId,
+        preference.userId
       );
       if (existing.migrated) {
         alreadyMigrated += 1;
@@ -163,7 +193,7 @@ async function main(): Promise<void> {
         await db.insert(organizationRpcConfigs).values({
           organizationId,
           chainId: preference.chainId,
-          name: MIGRATED_CONFIG_NAME,
+          name: migratedName(existing.names),
           isDefault: false,
           enabled: true,
           encryptedUrls,
