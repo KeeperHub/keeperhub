@@ -28,6 +28,7 @@ export {
   type RpcStepInput,
   rpcScopeForOrganization,
   rpcScopeFromStep,
+  rpcSelectionValue,
   scopeForManyChains,
 } from "./scope";
 export { SecretUrl } from "./secret-url";

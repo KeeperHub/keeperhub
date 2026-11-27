@@ -89,6 +89,28 @@ describe("processDueHeldPayments - broadcast phase", () => {
     expect(res.broadcast).toBe(1);
   });
 
+  it("broadcasts through the RPC config the signing node chose", async () => {
+    broker.selectDueHeldPayments.mockResolvedValue([row({ id: "p1" })]);
+    broker.claimHeldPayment.mockResolvedValue(
+      row({
+        id: "p1",
+        status: "broadcasting",
+        organizationId: "org1",
+        rpcSelection: "cfg_archive",
+      })
+    );
+
+    await processDueHeldPayments();
+
+    expect(mockBroadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rpcScope: expect.objectContaining({
+          selection: { mode: "config", configId: "cfg_archive" },
+        }),
+      })
+    );
+  });
+
   it("skips a row it loses the claim on", async () => {
     broker.selectDueHeldPayments.mockResolvedValue([row({ id: "p1" })]);
     broker.claimHeldPayment.mockResolvedValue(null);

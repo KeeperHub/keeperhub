@@ -5,7 +5,12 @@ import type { Hex } from "viem";
 import { createHeldPayment } from "@/lib/tempo/held-payments";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { RpcRouteError, type RpcScope, rpc } from "@/lib/rpc/engine";
+import {
+  RpcRouteError,
+  type RpcScope,
+  rpc,
+  rpcSelectionValue,
+} from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import {
@@ -229,6 +234,7 @@ export async function executeHoldPayment(
       tokenDecimals: token.decimals,
       amountDisplay: input.amount,
       memo: input.memo?.trim() ? input.memo.trim() : undefined,
+      rpcSelection: rpcSelectionValue(input.rpcScope),
       serializedTx: signed.serialized,
       precomputedHash: signed.hash,
       nonceKey: signed.nonceKey.toString(),

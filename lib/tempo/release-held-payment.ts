@@ -10,7 +10,7 @@
  */
 import "server-only";
 
-import { rpcScopeForOrganization } from "@/lib/rpc/engine";
+import { parseRpcSelection, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import {
   claimHeldPayment,
   getHeldPaymentForOrg,
@@ -83,7 +83,10 @@ export async function releaseHeldPaymentNow(params: {
   try {
     const { hash } = await broadcastStoredTempoTx({
       chainId: claimed.chainId,
-      rpcScope: rpcScopeForOrganization(organizationId),
+      rpcScope: rpcScopeForOrganization(
+        organizationId,
+        parseRpcSelection(claimed.rpcSelection)
+      ),
       serialized: claimed.serializedTx,
       expectedHash: claimed.precomputedHash,
       waitForConfirmation: true,

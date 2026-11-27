@@ -179,6 +179,7 @@ describe("holdPaymentStep - manual mode", () => {
     expect(createArgs.nonceKey).toBe("123");
     expect(createArgs.maxFeePerGas).toBe("2000");
     expect(createArgs.workflowId).toBe("wf1");
+    expect(createArgs.rpcSelection).toBeNull();
   });
 
   it("records the run's user and routes RPC by the organization", async () => {

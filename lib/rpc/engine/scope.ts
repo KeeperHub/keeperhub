@@ -34,6 +34,23 @@ export function parseRpcSelection(value: unknown): RpcSelection {
   return { mode: RpcSelectionMode.CONFIG, configId: trimmed };
 }
 
+/**
+ * The stored form of a scope's node selection, read back by
+ * parseRpcSelection: null for Auto or a scope with no selection.
+ */
+export function rpcSelectionValue(scope: RpcScope): string | null {
+  if (scope.kind !== RpcScopeKind.ORG) {
+    return null;
+  }
+  const { selection } = scope;
+  if (selection.mode === RpcSelectionMode.CONFIG) {
+    return selection.configId;
+  }
+  return selection.mode === RpcSelectionMode.PLATFORM
+    ? RpcSelectionMode.PLATFORM
+    : null;
+}
+
 export function platformScope(purpose: PlatformRpcPurpose): PlatformRpcScope {
   return { kind: RpcScopeKind.PLATFORM, purpose };
 }

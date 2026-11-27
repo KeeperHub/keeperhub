@@ -14,7 +14,7 @@
 import "server-only";
 
 import { ErrorCategory, logInfo, logSystemWarn } from "@/lib/logging";
-import { rpcScopeForOrganization } from "@/lib/rpc/engine";
+import { parseRpcSelection, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import {
   claimHeldPayment,
   deferBroadcastReconcile,
@@ -58,7 +58,10 @@ async function broadcastDueRows(limit: number): Promise<{
     try {
       const { hash } = await broadcastStoredTempoTx({
         chainId: claimed.chainId,
-        rpcScope: rpcScopeForOrganization(claimed.organizationId),
+        rpcScope: rpcScopeForOrganization(
+          claimed.organizationId,
+          parseRpcSelection(claimed.rpcSelection)
+        ),
         serialized: claimed.serializedTx,
         expectedHash: claimed.precomputedHash,
         waitForConfirmation: false,
@@ -100,7 +103,10 @@ async function reconcileBroadcastRows(limit: number): Promise<{
     try {
       const status = await checkTempoReceipt({
         chainId: row.chainId,
-        rpcScope: rpcScopeForOrganization(row.organizationId),
+        rpcScope: rpcScopeForOrganization(
+          row.organizationId,
+          parseRpcSelection(row.rpcSelection)
+        ),
         txHash: row.broadcastTxHash,
       });
       if (status === "confirmed") {
