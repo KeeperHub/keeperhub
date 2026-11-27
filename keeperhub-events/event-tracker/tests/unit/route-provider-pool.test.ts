@@ -135,7 +135,7 @@ describe("RouteProviderPool", () => {
 
   it("attributes usage to the endpoint that served it", async () => {
     const usage = new RpcUsageReporter({
-      send: vi.fn(async () => true),
+      send: vi.fn(async () => 200),
       now: () => Date.UTC(2026, 0, 1, 10, 15),
     });
     const usagePool = new RouteProviderPool({

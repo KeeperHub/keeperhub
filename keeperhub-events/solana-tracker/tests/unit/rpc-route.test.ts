@@ -308,7 +308,7 @@ describe("RoutePool", () => {
     await vi.advanceTimersByTimeAsync(0);
     await pool.stopAll();
 
-    const buckets = meter.drain();
+    const buckets = meter.pendingBuckets();
     expect(buckets).toHaveLength(1);
     expect(buckets[0]).toMatchObject({
       organizationId: "org-1",
@@ -348,12 +348,13 @@ describe("usage reporting", () => {
     now = Date.parse("2026-11-25T11:00:01Z");
     meter.record(dims, UsageCounter.WS_RECONNECTS);
 
-    const post = vi.fn((_path: string, _body: string) => Promise.resolve(true));
+    const post = vi.fn((_path: string, _body: string) => Promise.resolve(200));
     await flushUsage(meter, post);
 
     expect(post).toHaveBeenCalledTimes(1);
     expect(post.mock.calls[0][0]).toBe(RPC_USAGE_INGEST_PATH);
     expect(JSON.parse(post.mock.calls[0][1])).toEqual({
+      reportId: expect.any(String),
       buckets: [
         {
           ...dims,
@@ -385,34 +386,42 @@ describe("usage reporting", () => {
     const sizes: number[] = [];
     await flushUsage(meter, (_path, body) => {
       sizes.push((JSON.parse(body) as { buckets: unknown[] }).buckets.length);
-      return Promise.resolve(true);
+      return Promise.resolve(200);
     });
     expect(sizes).toEqual([1000, 1000, 500]);
   });
 
-  it("keeps counts from a failed post for the next attempt, within a bound", async () => {
+  it("sends an unanswered report again unchanged, within a bound", async () => {
     const meter = new UsageMeter(2);
     meter.record(dims, UsageCounter.REQUESTS, 4);
     await flushUsage(meter, () => Promise.reject(new Error("down")));
     meter.record(dims, UsageCounter.REQUESTS);
-    expect(meter.size).toBe(1);
+    expect(meter.size).toBe(2);
 
     const bodies: string[] = [];
     await flushUsage(meter, (_path, body) => {
       bodies.push(body);
-      return Promise.resolve(true);
+      return Promise.resolve(200);
     });
-    expect(JSON.parse(bodies[0]).buckets[0].counters).toEqual({ requests: 5 });
+    expect(JSON.parse(bodies[0]).buckets[0].counters).toEqual({ requests: 4 });
+    expect(JSON.parse(bodies[1]).buckets[0].counters).toEqual({ requests: 1 });
 
     meter.record({ ...dims, configId: "a" }, UsageCounter.REQUESTS);
     meter.record({ ...dims, configId: "b" }, UsageCounter.REQUESTS);
     meter.record({ ...dims, configId: "c" }, UsageCounter.REQUESTS);
-    expect(meter.drain().map((b) => b.configId)).toEqual(["b", "c"]);
+    expect(meter.pendingBuckets().map((b) => b.configId)).toEqual(["b", "c"]);
+  });
+
+  it("drops a report the app refuses", async () => {
+    const meter = new UsageMeter();
+    meter.record(dims, UsageCounter.REQUESTS);
+    await flushUsage(meter, () => Promise.resolve(400));
+    expect(meter.size).toBe(0);
   });
 
   it("flushes once more on stop", async () => {
     const meter = new UsageMeter();
-    const post = vi.fn(() => Promise.resolve(true));
+    const post = vi.fn(() => Promise.resolve(200));
     const reporter = createUsageReporter(meter, post, 60_000);
     reporter.start();
     meter.record(dims, UsageCounter.EVENTS_RECEIVED);
@@ -428,7 +437,7 @@ describe("usage reporting", () => {
     vi.stubGlobal("fetch", fetchMock);
     const body = JSON.stringify({ buckets: [] });
 
-    expect(await postSigned(RPC_USAGE_INGEST_PATH, body)).toBe(true);
+    expect(await postSigned(RPC_USAGE_INGEST_PATH, body)).toBe(200);
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${APP_URL}${RPC_USAGE_INGEST_PATH}`);

@@ -29,9 +29,3 @@ export const RPC_USAGE_MAX_RETAINED_BUCKETS = 20_000;
 
 /** How long an organization route may take to start before it is torn down. */
 export const ROUTE_START_TIMEOUT_MS = 20_000;
-
-const HOUR_MS = 3_600_000;
-
-export function utcHourStart(timestampMs: number): string {
-  return new Date(Math.floor(timestampMs / HOUR_MS) * HOUR_MS).toISOString();
-}

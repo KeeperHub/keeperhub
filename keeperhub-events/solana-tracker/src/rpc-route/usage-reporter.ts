@@ -3,13 +3,12 @@ import { signHmacHeaders } from "../../lib/utils/fetch-utils";
 import {
   RPC_USAGE_FLUSH_INTERVAL_MS,
   RPC_USAGE_INGEST_PATH,
-  RPC_USAGE_MAX_BUCKETS_PER_REQUEST,
   RPC_USAGE_POST_TIMEOUT_MS,
 } from "./constants";
 import type { UsageMeter } from "./usage-meter";
 
-/** Sends one raw JSON body to an internal app path; resolves true on a 2xx. */
-export type SignedPost = (path: string, body: string) => Promise<boolean>;
+/** Sends one raw JSON body to an internal app path; resolves with the HTTP status, 0 for none. */
+export type SignedPost = (path: string, body: string) => Promise<number>;
 
 /** Signs the exact bytes it sends, the same scheme discovery uses for its GET. */
 export const postSigned: SignedPost = async (path, body) => {
@@ -22,32 +21,16 @@ export const postSigned: SignedPost = async (path, body) => {
     },
     body,
     signal: AbortSignal.timeout(RPC_USAGE_POST_TIMEOUT_MS),
-  });
-  return response.ok;
+  }).catch(() => null);
+  return response?.status ?? 0;
 };
 
-/** Reports the meter in bounded requests; unsent buckets go back for the next run. Never logs. */
-export async function flushUsage(
+/** Reports the meter; a report that got no answer is kept for the next run. Never logs. */
+export function flushUsage(
   meter: UsageMeter,
   post: SignedPost = postSigned,
 ): Promise<void> {
-  const buckets = meter.drain();
-  for (let i = 0; i < buckets.length; i += RPC_USAGE_MAX_BUCKETS_PER_REQUEST) {
-    const chunk = buckets.slice(i, i + RPC_USAGE_MAX_BUCKETS_PER_REQUEST);
-    let accepted = false;
-    try {
-      accepted = await post(
-        RPC_USAGE_INGEST_PATH,
-        JSON.stringify({ buckets: chunk }),
-      );
-    } catch {
-      accepted = false;
-    }
-    if (!accepted) {
-      meter.restore(buckets.slice(i));
-      return;
-    }
-  }
+  return meter.sendWith((body) => post(RPC_USAGE_INGEST_PATH, body));
 }
 
 export interface UsageReporter {

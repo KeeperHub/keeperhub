@@ -13,13 +13,13 @@ import {
 import type { RpcUsageBucket } from "../../lib/rpc-usage.js";
 import type { FetchBlockWorkflowsResponse, RpcRoute } from "../../lib/types.js";
 
-const { apiRequest, apiRequestOnce } = vi.hoisted(() => ({
+const { apiRequest, postSignedOnce } = vi.hoisted(() => ({
   apiRequest: vi.fn(),
-  apiRequestOnce: vi.fn(),
+  postSignedOnce: vi.fn(),
 }));
 vi.mock("../../lib/http-client.js", () => ({
   apiRequest,
-  apiRequestOnce,
+  postSignedOnce,
   apiRequestWithAttempts: vi.fn(),
 }));
 
@@ -212,7 +212,7 @@ describe("BlockMonitorService organization routes", () => {
     sockets.length = 0;
     failingUrls.clear();
     apiRequest.mockReset();
-    apiRequestOnce.mockReset().mockResolvedValue({ accepted: 1 });
+    postSignedOnce.mockReset().mockResolvedValue(200);
     vi.mocked(enqueueBlockTrigger).mockClear();
     logged = [];
     for (const level of ["log", "warn", "error"] as const) {
@@ -434,11 +434,9 @@ describe("BlockMonitorService organization routes", () => {
 
     await service.stop();
 
-    expect(apiRequestOnce).toHaveBeenCalledTimes(1);
-    const [path, init] = apiRequestOnce.mock.calls[0] as [string, RequestInit];
+    expect(postSignedOnce).toHaveBeenCalledTimes(1);
+    const [path, body] = postSignedOnce.mock.calls[0] as [string, string];
     expect(path).toBe(RPC_USAGE_INGEST_PATH);
-    expect(init.method).toBe("POST");
-    const body = init.body as string;
     expect(body).not.toContain("wss://");
     const { buckets } = JSON.parse(body) as { buckets: RpcUsageBucket[] };
     expect(buckets).toHaveLength(1);

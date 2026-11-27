@@ -45,7 +45,7 @@ describe("RpcUsageReporter", () => {
 
   it("aggregates per UTC hour and attribution and posts the documented body", async () => {
     let now = T_10_05;
-    const send = vi.fn(async (_body: string) => true);
+    const send = vi.fn(async (_body: string) => 200);
     const reporter = new RpcUsageReporter({ send, now: () => now });
 
     reporter.record(ORG_ENDPOINT, RpcUsageCounter.REQUESTS, 2);
@@ -62,6 +62,7 @@ describe("RpcUsageReporter", () => {
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(sentBodies(send)[0]).toEqual({
+      reportId: expect.any(String),
       buckets: [
         {
           ...ORG_ENDPOINT,
@@ -84,7 +85,7 @@ describe("RpcUsageReporter", () => {
   });
 
   it("splits large reports into requests of at most 1000 buckets", async () => {
-    const send = vi.fn(async (_body: string) => true);
+    const send = vi.fn(async (_body: string) => 200);
     const reporter = new RpcUsageReporter({ send, now: () => T_10_05 });
     for (let i = 0; i < USAGE_MAX_BUCKETS_PER_REQUEST + 500; i += 1) {
       reporter.record(
@@ -98,25 +99,28 @@ describe("RpcUsageReporter", () => {
     expect(bodies.map((body) => body.buckets.length)).toEqual([1000, 500]);
   });
 
-  it("keeps counts from a failed post and merges them into the next one", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  it("sends an unanswered report again, unchanged, and drops a refused one", async () => {
     const send = vi
-      .fn(async (_body: string) => true)
-      .mockResolvedValueOnce(false)
-      .mockRejectedValueOnce(new Error("network down"));
+      .fn(async (_body: string) => 200)
+      .mockResolvedValueOnce(503)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(200)
+      .mockResolvedValueOnce(400);
     const reporter = new RpcUsageReporter({ send, now: () => T_10_05 });
 
     reporter.record(ORG_ENDPOINT, RpcUsageCounter.REQUESTS, 2);
     await reporter.flush();
     reporter.record(ORG_ENDPOINT, RpcUsageCounter.REQUESTS, 3);
     await reporter.flush();
-    expect(reporter.pendingBuckets()[0].counters).toEqual({ requests: 5 });
-
     await reporter.flush();
+
     const bodies = sentBodies(send) as {
+      reportId: string;
       buckets: { counters: unknown }[];
     }[];
-    expect(bodies[2].buckets[0].counters).toEqual({ requests: 5 });
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[2]).toEqual(bodies[0]);
+    expect(bodies[3].buckets[0].counters).toEqual({ requests: 3 });
     expect(reporter.pendingBuckets()).toHaveLength(0);
   });
 
@@ -124,7 +128,7 @@ describe("RpcUsageReporter", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     let now = T_10_05;
     const reporter = new RpcUsageReporter({
-      send: vi.fn(async () => false),
+      send: vi.fn(async () => 503),
       now: () => now,
       maxHeldBuckets: 2,
     });
@@ -141,7 +145,7 @@ describe("RpcUsageReporter", () => {
 
   it("posts on its interval and once more on stop", async () => {
     vi.useFakeTimers();
-    const send = vi.fn(async (_body: string) => true);
+    const send = vi.fn(async (_body: string) => 200);
     const reporter = new RpcUsageReporter({ send, now: () => T_10_05 });
     reporter.start();
     reporter.record(ORG_ENDPOINT, RpcUsageCounter.REQUESTS, 1);
@@ -166,7 +170,7 @@ describe("RpcUsageReporter", () => {
 
     await expect(
       postSignedInternal(RPC_USAGE_INGEST_PATH, rawBody),
-    ).resolves.toBe(true);
+    ).resolves.toBe(200);
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [
       string,

@@ -39,7 +39,7 @@ describe("RpcUsageReporter", () => {
 
   beforeEach(() => {
     now = T0;
-    send = vi.fn().mockResolvedValue(undefined);
+    send = vi.fn().mockResolvedValue(200);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
 
@@ -104,23 +104,38 @@ describe("RpcUsageReporter", () => {
     ]);
   });
 
-  it("keeps counts after a failed report and merges them into the next one", async () => {
+  it("sends an unanswered report again, unchanged, before the next one", async () => {
     const usage = reporter();
     usage.record(source(), RpcUsageCounter.REQUESTS);
-    send.mockRejectedValueOnce(new Error("API POST failed: 503"));
+    send.mockResolvedValueOnce(503);
 
     await usage.flush();
     usage.record(source(), RpcUsageCounter.REQUESTS);
     await usage.flush();
 
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(bodies(send)[1]).toEqual([
+    expect(send).toHaveBeenCalledTimes(3);
+    const [first, again, next] = send.mock.calls.map(
+      ([body]) => JSON.parse(body as string) as { reportId: string },
+    );
+    expect(again).toEqual(first);
+    expect(next.reportId).not.toBe(first.reportId);
+    expect(bodies(send)[2]).toEqual([
       {
         ...source(),
         hour: "2026-11-25T14:00:00.000Z",
-        counters: { requests: 2 },
+        counters: { requests: 1 },
       },
     ]);
+  });
+
+  it("drops a report the app refuses instead of sending it forever", async () => {
+    const usage = reporter();
+    usage.record(source(), RpcUsageCounter.REQUESTS);
+    send.mockResolvedValueOnce(400);
+
+    await usage.flush();
+
+    expect(usage.pendingBuckets()).toEqual([]);
   });
 
   it("bounds the retained buckets by dropping the oldest hours", async () => {

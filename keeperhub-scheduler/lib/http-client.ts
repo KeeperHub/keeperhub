@@ -10,7 +10,7 @@ const HMAC_CALLER = "scheduler";
  * call made through apiRequest is idempotent, which is what makes a retry safe:
  * the GETs by nature, the phantom POST through its dispatch key, the PATCH
  * through its terminal-status compare-and-set. A call that is not idempotent
- * uses apiRequestOnce and retries on its own schedule.
+ * uses postSignedOnce and retries on its own schedule.
  *
  * Keep in sync with the copies in keeperhub-events/event-tracker/lib/phantom.ts
  * and keeperhub-events/solana-tracker/lib/phantom.ts (those packages cannot
@@ -104,13 +104,28 @@ export function apiRequestWithAttempts<T>(
   return signedRequest<T>(path, options, MAX_ATTEMPTS);
 }
 
-/** One signed attempt, for calls that a repeat would apply twice. */
-export async function apiRequestOnce<T>(
+/**
+ * One signed POST whose caller decides what each status means; resolves with
+ * the HTTP status, or 0 when no answer arrived.
+ */
+export async function postSignedOnce(
   path: string,
-  options: RequestInit = {},
-): Promise<T> {
-  const { data } = await signedRequest<T>(path, options, 1);
-  return data;
+  body: string,
+): Promise<number> {
+  const url = `${KEEPERHUB_URL}${path}`;
+  try {
+    const response = await fetchWithTimeout(url, {
+      method: "POST",
+      body,
+      headers: {
+        "Content-Type": "application/json",
+        ...signHmacHeaders("POST", url, body),
+      },
+    });
+    return response.status;
+  } catch {
+    return 0;
+  }
 }
 
 async function signedRequest<T>(
