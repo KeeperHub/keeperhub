@@ -44,24 +44,32 @@ function redacted(text: string): string {
   return redactOrganizationHosts(redactAllUrls(text));
 }
 
+/**
+ * Some errors keep their text read-only, such as a DOMException from an
+ * abort; one that cannot be rewritten keeps its own class and text.
+ */
+function rewrite(fields: Record<string, unknown>, field: string): void {
+  const value = fields[field];
+  try {
+    if (typeof value === "string") {
+      fields[field] = redacted(value);
+    } else if (Array.isArray(value)) {
+      fields[field] = value.map((line: unknown) =>
+        typeof line === "string" ? redacted(line) : line
+      );
+    }
+  } catch {
+    // read-only field
+  }
+}
+
 function redactViemError(error: unknown, depth = 0): void {
   if (depth >= MAX_CAUSE_DEPTH || typeof error !== "object" || error === null) {
     return;
   }
   const fields = error as Record<string, unknown>;
-  for (const field of TEXT_FIELDS) {
-    const value = fields[field];
-    if (typeof value === "string") {
-      fields[field] = redacted(value);
-    }
-  }
-  if (Array.isArray(fields.metaMessages)) {
-    fields.metaMessages = fields.metaMessages.map((line: unknown) =>
-      typeof line === "string" ? redacted(line) : line
-    );
-  }
-  if (typeof fields.url === "string") {
-    fields.url = redacted(fields.url);
+  for (const field of [...TEXT_FIELDS, "metaMessages", "url"]) {
+    rewrite(fields, field);
   }
   redactViemError(fields.cause, depth + 1);
 }
