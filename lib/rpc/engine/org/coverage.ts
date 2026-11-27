@@ -19,15 +19,21 @@ import {
 
 const NODE_TYPE_TRIGGER = "trigger";
 const NODE_TYPE_ACTION = "action";
-const NETWORK_CONFIG_KEY = "network";
+/** Where triggers, and actions without their own picker key, keep the network. */
+export const DEFAULT_NETWORK_CONFIG_KEY = "network";
 const TRIGGER_TYPE_CONFIG_KEY = "triggerType";
 const PRIVATE_MEMPOOL_CONFIG_KEY = "usePrivateMempool";
 const ACTION_TYPE_CONFIG_KEY = "actionType";
 
 /** Whether an action type calls its chain over RPC; unknown types count. */
-export type ActionUsesRpc = (actionType: string) => boolean;
+/**
+ * The config key holding the network an action calls over RPC, or null when
+ * the action makes no RPC call.
+ */
+export type ActionRpcNetworkKey = (actionType: string) => string | null;
 
-const EVERY_ACTION_USES_RPC: ActionUsesRpc = () => true;
+const EVERY_ACTION_AT_DEFAULT_KEY: ActionRpcNetworkKey = () =>
+  DEFAULT_NETWORK_CONFIG_KEY;
 
 /**
  * Triggers that hold a long-lived listener on their chain. Keep in step with
@@ -74,24 +80,37 @@ function literalChainId(value: unknown): number | null {
   return Number.isInteger(chainId) ? chainId : null;
 }
 
-function nodePurpose(
+type NodeRpcUse = { purpose: RpcPurpose; networkKey: string };
+
+function nodeRpcUse(
   type: unknown,
   config: Record<string, unknown>,
-  actionUsesRpc: ActionUsesRpc
-): RpcPurpose | null {
+  networkKeyOf: ActionRpcNetworkKey
+): NodeRpcUse | null {
   if (type === NODE_TYPE_TRIGGER) {
     return SUBSCRIBING_TRIGGERS.has(String(config[TRIGGER_TYPE_CONFIG_KEY]))
-      ? RpcPurpose.SUBSCRIBE
+      ? {
+          purpose: RpcPurpose.SUBSCRIBE,
+          networkKey: DEFAULT_NETWORK_CONFIG_KEY,
+        }
       : null;
   }
   if (type === NODE_TYPE_ACTION) {
     const actionType = config[ACTION_TYPE_CONFIG_KEY];
-    if (typeof actionType === "string" && !actionUsesRpc(actionType)) {
+    const networkKey =
+      typeof actionType === "string"
+        ? networkKeyOf(actionType)
+        : DEFAULT_NETWORK_CONFIG_KEY;
+    if (networkKey === null) {
       return null;
     }
-    return config[PRIVATE_MEMPOOL_CONFIG_KEY] === true
-      ? RpcPurpose.WRITE
-      : RpcPurpose.READ;
+    return {
+      purpose:
+        config[PRIVATE_MEMPOOL_CONFIG_KEY] === true
+          ? RpcPurpose.WRITE
+          : RpcPurpose.READ,
+      networkKey,
+    };
   }
   return null;
 }
@@ -103,7 +122,7 @@ function nodePurpose(
  */
 export function chainUsagesOf(
   workflow: CoverageWorkflow,
-  actionUsesRpc: ActionUsesRpc = EVERY_ACTION_USES_RPC
+  networkKeyOf: ActionRpcNetworkKey = EVERY_ACTION_AT_DEFAULT_KEY
 ): NodeChainUsage[] {
   if (!Array.isArray(workflow.nodes)) {
     return [];
@@ -114,11 +133,12 @@ export function chainUsagesOf(
     if (!config) {
       continue;
     }
-    const chainId = literalChainId(config[NETWORK_CONFIG_KEY]);
-    const purpose = nodePurpose(node.data?.type, config, actionUsesRpc);
-    if (chainId === null || purpose === null) {
+    const use = nodeRpcUse(node.data?.type, config, networkKeyOf);
+    const chainId = use ? literalChainId(config[use.networkKey]) : null;
+    if (!use || chainId === null) {
       continue;
     }
+    const { purpose } = use;
     usages.push({
       workflowId: workflow.id,
       workflowName: workflow.name,

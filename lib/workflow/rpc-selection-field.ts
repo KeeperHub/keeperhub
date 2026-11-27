@@ -73,9 +73,14 @@ function chainSelectKey(fields: readonly ActionConfigField[]): string | null {
   return null;
 }
 
-/** True when an action's network picker selects the chain it calls over RPC. */
-export function actionUsesRpc(fields: readonly ActionConfigField[]): boolean {
-  return chainSelectKey(fields) !== null;
+/**
+ * The config key of the network an action calls over RPC, or null when its
+ * network picker, if any, does not select an RPC chain.
+ */
+export function actionRpcNetworkKey(
+  fields: readonly ActionConfigField[]
+): string | null {
+  return chainSelectKey(fields);
 }
 
 function hasRpcSelectionField(fields: readonly ActionConfigField[]): boolean {

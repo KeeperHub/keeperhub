@@ -10,7 +10,7 @@ import {
   organizationRpcConfigs,
 } from "@/lib/db/schema-rpc";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { actionUsesRpc } from "@/lib/workflow/rpc-selection-field";
+import { actionRpcNetworkKey } from "@/lib/workflow/rpc-selection-field";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import { findActionById } from "@/plugins/registry";
 import { platformRpcSource } from "../runtime";
@@ -30,18 +30,22 @@ import {
 import { OrgRpcErrorCode } from "./codes";
 
 /**
- * Whether an action calls its chain over RPC, from its plugin definition.
- * Unknown action types count as RPC users so coverage errs on the safe side.
+ * Where an action keeps the network it calls over RPC, from its plugin
+ * definition. Unknown action types are read at the usual key, so coverage
+ * errs on the safe side.
  */
-function actionTypeUsesRpc(actionType: string): boolean {
+function actionTypeNetworkKey(actionType: string): string | null {
   const action = findActionById(actionType);
-  return action ? actionUsesRpc(action.configFields) : true;
+  return action
+    ? actionRpcNetworkKey(action.configFields)
+    : DEFAULT_NETWORK_CONFIG_KEY;
 }
 
 import {
   type CoverageGap,
   type CoverageWorkflow,
   chainUsagesOf,
+  DEFAULT_NETWORK_CONFIG_KEY,
   findCoverageGaps,
   type NodeChainUsage,
 } from "./coverage";
@@ -178,7 +182,7 @@ async function loadOrgUsages(
     .where(
       and(eq(workflows.organizationId, organizationId), workflowNotDeleted())
     );
-  return rows.flatMap((row) => chainUsagesOf(row, actionTypeUsesRpc));
+  return rows.flatMap((row) => chainUsagesOf(row, actionTypeNetworkKey));
 }
 
 async function loadPlatformRecords(
@@ -266,7 +270,7 @@ export async function workflowCoverageGaps(
   workflow: CoverageWorkflow,
   previousNodes?: unknown
 ): Promise<CoverageGap[]> {
-  const usages = chainUsagesOf(workflow, actionTypeUsesRpc);
+  const usages = chainUsagesOf(workflow, actionTypeNetworkKey);
   if (usages.length === 0) {
     return [];
   }
@@ -285,7 +289,7 @@ export async function workflowCoverageGaps(
       ...state,
       usages: chainUsagesOf(
         { ...workflow, nodes: previousNodes },
-        actionTypeUsesRpc
+        actionTypeNetworkKey
       ),
     }).map(gapKey)
   );

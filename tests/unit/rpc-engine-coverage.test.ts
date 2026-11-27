@@ -133,9 +133,18 @@ describe("chainUsagesOf", () => {
     ];
     const usages = chainUsagesOf(
       { id: "wf_1", name: "Flow", nodes },
-      (actionType) => actionType !== "explore"
+      (actionType) => (actionType === "explore" ? null : "network")
     );
     expect(usages.map((usage) => usage.nodeId)).toEqual(["read"]);
+  });
+
+  it("reads an action's network from the key its picker uses", () => {
+    const nodes = [action("risk", { chain: String(BASE), actionType: "scan" })];
+    const [usage] = chainUsagesOf(
+      { id: "wf_1", name: "Flow", nodes },
+      () => "chain"
+    );
+    expect(usage?.chainId).toBe(BASE);
   });
 
   it("tolerates malformed node lists", () => {

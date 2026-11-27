@@ -5,7 +5,7 @@ import { RPC_SELECTION_CONFIG_KEY } from "@/lib/rpc/engine/scope";
 import { RpcSelectionMode } from "@/lib/rpc/engine/types";
 import {
   ADVANCED_GROUP_LABEL,
-  actionUsesRpc,
+  actionRpcNetworkKey,
   RPC_SELECTION_FIELD_TYPE,
   RPC_SELECTION_TYPE_TEXT,
   withRpcSelectionField,
@@ -92,8 +92,8 @@ describe("withRpcSelectionField", () => {
   it("leaves a network picker that does not choose RPC endpoints alone", () => {
     const explorer: ActionConfigField = { ...network, rpcRouted: false };
     expect(withRpcSelectionField([explorer])).toEqual([explorer]);
-    expect(actionUsesRpc([explorer])).toBe(false);
-    expect(actionUsesRpc([network])).toBe(true);
+    expect(actionRpcNetworkKey([explorer])).toBeNull();
+    expect(actionRpcNetworkKey([network])).toBe(network.key);
   });
 
   it("leaves fields without a network picker alone", () => {
