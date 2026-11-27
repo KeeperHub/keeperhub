@@ -206,6 +206,17 @@ vi.mock("@/lib/rpc/engine", async (importOriginal) => {
       chainId: fork.MAINNET_CHAIN_ID,
       chainName: route.chain.name,
     }),
+    telemetry: {
+      attempt: vi.fn(),
+      failure: vi.fn(),
+      success: vi.fn(),
+      latency: vi.fn(),
+      errorType: vi.fn(),
+      failover: vi.fn(),
+      recovery: vi.fn(),
+      bothFailed: vi.fn(),
+      event: vi.fn(),
+    },
     activeEndpoint: () => primary,
   };
   return {
