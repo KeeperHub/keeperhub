@@ -105,6 +105,14 @@ function endpointTransport(
       const operation = BROADCAST_METHODS.has(args.method)
         ? RpcOperationType.WRITE_BROADCAST
         : RpcOperationType.READ;
+      // Reaching the fallback while the route is on its primary is a move
+      // to the fallback, as the manager would count it.
+      if (
+        position === RpcRoutePosition.FALLBACK &&
+        client.activeEndpoint() !== endpoint
+      ) {
+        telemetry.failover();
+      }
       telemetry.attempt(position, operation);
       const startedAt = performance.now();
       try {

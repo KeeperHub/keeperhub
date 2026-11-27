@@ -106,4 +106,21 @@ describe("viemTransportsOf", () => {
     expect((error as Error).message).not.toContain(KEY);
     expect(isOrgRpcError(error)).toBe(false);
   });
+
+  it("counts a move to the fallback while the route is on its primary", async () => {
+    const client = clientFor(url, RpcOrigin.ORG);
+    const fallback: RpcEndpoint = {
+      ...client.route.primary,
+      role: RpcEndpointRole.FALLBACK,
+      url: SecretUrl.parse(url.replace("/v2/", "/v3/")),
+    };
+    const routed = { ...client, route: { ...client.route, fallback } };
+    const [, onFallback] = viemTransportsOf(routed);
+
+    await createPublicClient({ transport: onFallback })
+      .getBlockNumber()
+      .catch(() => undefined);
+
+    expect(routed.telemetry.failover).toHaveBeenCalledTimes(1);
+  });
 });
