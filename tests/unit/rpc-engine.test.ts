@@ -332,10 +332,23 @@ describe("createRpcEngine", () => {
     });
   });
 
+  it("leaves KeeperHub's own reads during a step out of its record", async () => {
+    setRpcAttributionStorage(new AsyncLocalStorage());
+    const attribution = await runWithRpcAttribution(async () => {
+      const billing = await engine.evm(
+        platformScope(PlatformRpcPurpose.BILLING),
+        1
+      );
+      await billing.manager.executeWithFailover(() => Promise.resolve("ok"));
+      return readRpcAttribution();
+    });
+    expect(attribution).toBeNull();
+  });
+
   it("leaves an unattributed client out of the step's record", async () => {
     setRpcAttributionStorage(new AsyncLocalStorage());
     const attribution = await runWithRpcAttribution(async () => {
-      await engine.evm(platformScope(PlatformRpcPurpose.BILLING), 1);
+      await engine.evm(platformScope(PlatformRpcPurpose.NO_ORGANIZATION), 1);
       await engine.evm(orgScope("org_1"), 1, { unattributed: true });
       return readRpcAttribution();
     });

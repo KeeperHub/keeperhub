@@ -27,6 +27,7 @@ import { createRouteSink, isPlatformOnlyRoute } from "./telemetry/route-sink";
 import type { RpcOperationType, RpcTelemetrySink } from "./telemetry/sink";
 import type { RpcUsageRecorder } from "./telemetry/usage";
 import {
+  PlatformRpcPurpose,
   type PrivateMempoolRequest,
   RpcChainType,
   type RpcEndpoint,
@@ -63,6 +64,18 @@ export type RouteRequest = {
   /** A check on the step's outcome, not the step's own call; left out of its attribution. */
   unattributed?: boolean;
 };
+
+/**
+ * KeeperHub's own reads during a step, such as billing or a shared cache, are
+ * not the step's traffic, just as they are not the organization's usage. A
+ * run with no organization is the exception: KeeperHub serves the step.
+ */
+function scopedRequest(scope: RpcScope, request: RouteRequest): RouteRequest {
+  const ownWork =
+    scope.kind === RpcScopeKind.PLATFORM &&
+    scope.purpose !== PlatformRpcPurpose.NO_ORGANIZATION;
+  return ownWork ? { ...request, unattributed: true } : request;
+}
 
 type RpcClient<TManager> = {
   route: RpcRoute;
@@ -334,8 +347,9 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
     async evm(
       scope: RpcScope,
       chainId: number,
-      request: RouteRequest = {}
+      requested: RouteRequest = {}
     ): Promise<EvmRpcClient> {
+      const request = scopedRequest(scope, requested);
       const resolved = await routeFor(
         RpcChainType.EVM,
         scope,
@@ -378,8 +392,9 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
     async solana(
       scope: RpcScope,
       chainId: number,
-      request: RouteRequest = {}
+      requested: RouteRequest = {}
     ): Promise<SolanaRpcClient> {
+      const request = scopedRequest(scope, requested);
       const resolved = await routeFor(
         RpcChainType.SOLANA,
         scope,
