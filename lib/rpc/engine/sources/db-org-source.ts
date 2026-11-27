@@ -44,6 +44,24 @@ export async function loadOwnRpcOnlyChains(
   return new Set(rows.map((row) => row.chainId));
 }
 
+/** One report per unreadable config per window, not one per route. */
+const UNREADABLE_REPORT_INTERVAL_MS = 10 * 60 * 1000;
+const UNREADABLE_REPORT_LIMIT = 1000;
+const unreadableReportedAt = new Map<string, number>();
+
+function shouldReportUnreadable(configId: string): boolean {
+  const now = Date.now();
+  const last = unreadableReportedAt.get(configId);
+  if (last !== undefined && now - last < UNREADABLE_REPORT_INTERVAL_MS) {
+    return false;
+  }
+  if (unreadableReportedAt.size >= UNREADABLE_REPORT_LIMIT) {
+    unreadableReportedAt.clear();
+  }
+  unreadableReportedAt.set(configId, now);
+  return true;
+}
+
 function markConfigHosts(config: OrgRpcConfig): void {
   for (const url of [
     config.httpPrimary,
@@ -85,12 +103,14 @@ export async function loadOrgRpcConfigs(
       markConfigHosts(config);
       configs.push(config);
     } catch (error) {
-      logSystemError(
-        ErrorCategory.INFRASTRUCTURE,
-        "[RPC Engine] Could not decrypt an organization RPC config",
-        error,
-        { organization_id: organizationId, config_id: row.id }
-      );
+      if (shouldReportUnreadable(row.id)) {
+        logSystemError(
+          ErrorCategory.INFRASTRUCTURE,
+          "[RPC Engine] Could not decrypt an organization RPC config",
+          error,
+          { organization_id: organizationId, config_id: row.id }
+        );
+      }
     }
   }
   return configs;

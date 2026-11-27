@@ -22,7 +22,16 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { createDbOrgRpcSource } from "@/lib/rpc/engine/sources/db-org-source";
+const { logSystemError } = vi.hoisted(() => ({ logSystemError: vi.fn() }));
+vi.mock("@/lib/logging", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/logging")>()),
+  logSystemError,
+}));
+
+import {
+  createDbOrgRpcSource,
+  loadOrgRpcConfigs,
+} from "@/lib/rpc/engine/sources/db-org-source";
 
 describe("createDbOrgRpcSource", () => {
   beforeEach(() => {
@@ -53,5 +62,24 @@ describe("createDbOrgRpcSource", () => {
 
     expect(first).toBe(second);
     expect(rows.selects).toBe(2);
+  });
+
+  it("reports a config it cannot decrypt once, not on every route", async () => {
+    rows.configs = [
+      {
+        id: "cfg_broken",
+        organizationId: "org_1",
+        chainId: 1,
+        name: "Broken",
+        enabled: true,
+        isDefault: true,
+        encryptedUrls: "not-encrypted",
+      },
+    ];
+
+    await expect(loadOrgRpcConfigs("org_1", 1)).resolves.toEqual([]);
+    await expect(loadOrgRpcConfigs("org_1", 1)).resolves.toEqual([]);
+
+    expect(logSystemError).toHaveBeenCalledTimes(1);
   });
 });
