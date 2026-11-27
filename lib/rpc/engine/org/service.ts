@@ -594,11 +594,20 @@ export async function updateOrgRpcConfig(
     verification = { ...verification, ...checked.verification };
   }
 
+  const enabled = input.enabled ?? row.enabled;
+  if (input.isDefault && !enabled) {
+    return failure(
+      OrgRpcErrorCode.INVALID_INPUT,
+      "A disabled config cannot be the default."
+    );
+  }
   const nextRow: OrganizationRpcConfigRow = {
     ...row,
     name: name ?? row.name,
-    enabled: input.enabled ?? row.enabled,
-    isDefault: input.isDefault ?? row.isDefault,
+    enabled,
+    // Disabling the default also clears it, so the chain never keeps a
+    // default the resolver skips.
+    isDefault: enabled && (input.isDefault ?? row.isDefault),
     encryptedUrls: encodeRpcConfigUrls(fullUrls),
     verification,
   };

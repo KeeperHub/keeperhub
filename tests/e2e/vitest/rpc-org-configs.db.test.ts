@@ -148,6 +148,30 @@ describe.skipIf(SKIP)("organization RPC configs (Postgres)", () => {
     expect(await defaults()).toEqual(["Archive"]);
   });
 
+  it("clears the default when it is disabled and refuses a disabled default", async () => {
+    const [archive] = (await service.listOrgRpcConfigs(ORG_ID)).filter(
+      (config) => config.name === "Archive"
+    );
+    const update = (fields: { enabled?: boolean; isDefault?: boolean }) =>
+      service.updateOrgRpcConfig({
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        configId: archive.id,
+        ...fields,
+      });
+
+    expect((await update({ enabled: false })).ok).toBe(true);
+    expect(await defaults()).toEqual([]);
+
+    expect(await update({ isDefault: true })).toMatchObject({
+      ok: false,
+      code: service.OrgRpcErrorCode.INVALID_INPUT,
+    });
+
+    expect((await update({ enabled: true, isDefault: true })).ok).toBe(true);
+    expect(await defaults()).toEqual(["Archive"]);
+  });
+
   it("refuses a second config with the same name on a chain", async () => {
     const result = await service.createOrgRpcConfig({
       organizationId: ORG_ID,
