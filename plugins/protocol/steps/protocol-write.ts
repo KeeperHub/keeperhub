@@ -318,6 +318,7 @@ export async function protocolWriteStep(
         contractAddress,
         network: input.network,
         abi: contract.abi,
+        rpcScope: rpcScopeFromStep(input),
       });
       resolvedAbi = abiResult.abi;
     } catch (error) {

@@ -140,7 +140,10 @@ async function oracleCheck(
   }
   let ethPriceUsd: number;
   try {
-    ethPriceUsd = await getFreshGasTokenPriceUsd(plan.chainId);
+    ethPriceUsd = await getFreshGasTokenPriceUsd(
+      plan.chainId,
+      rpcScopeForOrganization(plan.organizationId)
+    );
   } catch (error) {
     return `No fresh Chainlink ETH/USD price (${getErrorMessage(error)}); refusing to swap without an independent price check`;
   }

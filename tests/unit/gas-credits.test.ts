@@ -4,13 +4,17 @@ vi.mock("server-only", () => ({}));
 
 const mockReadContract = vi.fn();
 
-const { mockCreatePublicClient, mockRpcEvm, mockViemTransportOf } = vi.hoisted(
-  () => ({
-    mockCreatePublicClient: vi.fn(),
-    mockRpcEvm: vi.fn(),
-    mockViemTransportOf: vi.fn(),
-  })
-);
+const {
+  mockCreatePublicClient,
+  mockRpcEvm,
+  mockViemTransportOf,
+  mockOwnEndpointsScope,
+} = vi.hoisted(() => ({
+  mockCreatePublicClient: vi.fn(),
+  mockRpcEvm: vi.fn(),
+  mockViemTransportOf: vi.fn(),
+  mockOwnEndpointsScope: vi.fn(),
+}));
 const ROUTE_TRANSPORT = { kind: "route-transport" };
 const RPC_CLIENT = { kind: "billing-client" };
 
@@ -25,6 +29,7 @@ vi.mock("@/lib/rpc/engine", async () => ({
   ...(await vi.importActual("@/lib/rpc/engine/types")),
   ...(await vi.importActual("@/lib/rpc/engine/scope")),
   rpc: { evm: mockRpcEvm },
+  ownEndpointsScope: mockOwnEndpointsScope,
 }));
 
 vi.mock("@/lib/rpc/engine/viem", () => ({
@@ -63,6 +68,7 @@ vi.mock("@/lib/web3/chainlink-feeds", () => ({
       7002: "0x0000000000000000000000000000000000007002",
       7003: "0x0000000000000000000000000000000000007003",
       7004: "0x0000000000000000000000000000000000007004",
+      7005: "0x0000000000000000000000000000000000007005",
       8453: "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
       42161: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612",
     };
@@ -159,6 +165,7 @@ beforeEach(() => {
   mockOnConflictDoUpdate.mockResolvedValue(undefined);
   mockSelectLimit.mockResolvedValue([]);
   mockReadContract.mockReset();
+  mockOwnEndpointsScope.mockResolvedValue(null);
   mockRpcEvm.mockResolvedValue(RPC_CLIENT);
   mockViemTransportOf.mockReturnValue(ROUTE_TRANSPORT);
   // Clear ALL per-plan gas-credit env overrides (not just free/pro) so caps
@@ -446,6 +453,20 @@ describe("getFreshGasTokenPriceUsd", () => {
 
     expect(await getFreshGasTokenPriceUsd(7001)).toBe(2500);
     expect(await getFreshGasTokenPriceUsd(7001)).toBe(2500);
+    expect(mockReadContract).toHaveBeenCalledOnce();
+  });
+
+  it("reads an own-RPC-only organization's price on its endpoints, uncached", async () => {
+    const own = { kind: "org", organizationId: "org_1" };
+    mockOwnEndpointsScope.mockResolvedValue(own);
+    mockReadContract.mockResolvedValue(freshRound());
+
+    expect(await getFreshGasTokenPriceUsd(7005, own as never)).toBe(2500);
+    expect(mockRpcEvm).toHaveBeenLastCalledWith(own, 7005);
+
+    mockOwnEndpointsScope.mockResolvedValue(null);
+    mockReadContract.mockClear();
+    expect(await getFreshGasTokenPriceUsd(7005)).toBe(2500);
     expect(mockReadContract).toHaveBeenCalledOnce();
   });
 

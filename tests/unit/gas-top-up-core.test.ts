@@ -867,7 +867,10 @@ describe("executeGasTopUp", () => {
       failure: { step: "preflight", broadcastAttempted: false },
     });
     expect(result.error).toContain("more than 2% worse than the Chainlink");
-    expect(mockOraclePrice).toHaveBeenCalledWith(BASE);
+    expect(mockOraclePrice).toHaveBeenCalledWith(
+      BASE,
+      expect.objectContaining({ organizationId: expect.any(String) })
+    );
   });
 
   it("does not send the swap when the re-quote is more than 2% worse than the oracle", async () => {

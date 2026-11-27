@@ -386,9 +386,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
     const totalCostWei = totalGas * maxFeePerGasWei;
     const totalCostNative = ethers.formatEther(totalCostWei);
+    const priceScope = rpcScopeForOrganization(admin.organizationId);
     const [totalCostUsd, nativePriceUsd] = await Promise.all([
-      weiToUsd({ chainId, amountWei: totalCostWei }),
-      getNativeUsdPrice(chainId),
+      weiToUsd({ chainId, amountWei: totalCostWei, forScope: priceScope }),
+      getNativeUsdPrice(chainId, priceScope),
     ]);
 
     return NextResponse.json({

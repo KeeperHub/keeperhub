@@ -7,7 +7,7 @@ import type {
   SolanaRpcClient,
 } from "./engine";
 import { getRpcEngine } from "./runtime";
-import type { RpcRoute, RpcScope } from "./types";
+import { type RpcRoute, type RpcScope, RpcScopeKind } from "./types";
 
 export type {
   EvmRpcClient,
@@ -63,3 +63,18 @@ export const rpc: RpcEngine = {
     request?: RouteRequest
   ): Promise<SolanaRpcClient> => getRpcEngine().solana(scope, chainId, request),
 };
+
+/**
+ * The organization's scope when its calls on this chain must stay on its own
+ * endpoints, or null when a caller may use a shared read on KeeperHub's.
+ */
+export async function ownEndpointsScope(
+  scope: RpcScope | undefined,
+  chainId: number
+): Promise<RpcScope | null> {
+  if (scope?.kind !== RpcScopeKind.ORG) {
+    return null;
+  }
+  const route = await getRpcEngine().route(scope, chainId);
+  return route.ownRpcOnly ? scope : null;
+}

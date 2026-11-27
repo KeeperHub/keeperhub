@@ -7,7 +7,13 @@ import {
   gasCreditUsage,
 } from "@/lib/db/schema-extensions";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
-import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
+import {
+  ownEndpointsScope,
+  PlatformRpcPurpose,
+  platformScope,
+  type RpcScope,
+  rpc,
+} from "@/lib/rpc/engine";
 import { viemTransportOf } from "@/lib/rpc/engine/viem";
 import {
   AGGREGATOR_V3_ABI,
@@ -324,17 +330,17 @@ function reportPriceFallback(args: {
  * One Chainlink `latestRoundData` read, cached on success. Throws when the read
  * fails, the answer is older than the stale threshold, or it is not positive.
  */
+const BILLING_SCOPE = platformScope(PlatformRpcPurpose.BILLING);
+
 async function readOraclePriceUsd(
   chainId: number,
   feedAddress: Address,
-  now: number
+  now: number,
+  scope: RpcScope = BILLING_SCOPE
 ): Promise<number> {
-  // Pricing gas for billing is KeeperHub's own read, so it uses KeeperHub's
-  // endpoints whatever route the billed transaction took.
-  const rpcClient = await rpc.evm(
-    platformScope(PlatformRpcPurpose.BILLING),
-    chainId
-  );
+  // Billing prices gas on KeeperHub's endpoints whatever route the billed
+  // transaction took; only an own-RPC-only organization's check passes its own.
+  const rpcClient = await rpc.evm(scope, chainId);
   const client = createPublicClient({ transport: viemTransportOf(rpcClient) });
 
   const result = await client.readContract({
@@ -358,7 +364,10 @@ async function readOraclePriceUsd(
     throw new Error(`Invalid Chainlink price: ${price}`);
   }
 
-  ethPriceCache.set(chainId, { usd: price, fetchedAt: now });
+  // Only KeeperHub's own read feeds the price billing shares.
+  if (scope === BILLING_SCOPE) {
+    ethPriceCache.set(chainId, { usd: price, fetchedAt: now });
+  }
   return price;
 }
 
@@ -370,9 +379,20 @@ async function readOraclePriceUsd(
  * that tracks nothing.
  */
 export async function getFreshGasTokenPriceUsd(
-  chainId: number
+  chainId: number,
+  forScope?: RpcScope
 ): Promise<number> {
   const now = Date.now();
+  // An organization that uses only its own endpoints on the chain reads the
+  // price there, never from KeeperHub's endpoints or their cached answer.
+  const own = await ownEndpointsScope(forScope, chainId);
+  if (own) {
+    const feedAddress = getGasTokenUsdFeedAddress(chainId);
+    if (feedAddress === undefined) {
+      throw new Error(`No gas-token USD price feed for chain ${chainId}`);
+    }
+    return await readOraclePriceUsd(chainId, feedAddress, now, own);
+  }
   const cached = ethPriceCache.get(chainId);
 
   if (cached !== undefined && now - cached.fetchedAt < ETH_PRICE_CACHE_TTL_MS) {

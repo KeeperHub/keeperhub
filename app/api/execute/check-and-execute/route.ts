@@ -19,6 +19,7 @@ import {
 import { SCOPE_MCP_READ, SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
+import { type RpcScope, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { runWithRpcAttribution } from "@/lib/rpc/engine/step-attribution";
 import { getErrorMessage } from "@/lib/utils";
 import { normalizeErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
@@ -58,14 +59,15 @@ type ActionBody = {
 async function resolveAbiFromField(
   contractAddress: string,
   network: string,
-  abi: unknown
+  abi: unknown,
+  rpcScope: RpcScope
 ): Promise<{ abi: string } | { error: string }> {
   if (typeof abi === "string" && abi.trim() !== "") {
     return { abi };
   }
 
   try {
-    const resolved = await resolveAbi({ contractAddress, network });
+    const resolved = await resolveAbi({ contractAddress, network, rpcScope });
     return { abi: resolved.abi };
   } catch (err: unknown) {
     return {
@@ -447,10 +449,13 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const condition = body.condition as ConditionInput;
   const action = body.action as ActionBody;
 
+  // The steps below follow the organization's defaults, so the probe does too.
+  const rpcScope = rpcScopeForOrganization(apiKeyCtx.organizationId);
   const readAbiResult = await resolveAbiFromField(
     body.contractAddress as string,
     network,
-    body.abi
+    body.abi,
+    rpcScope
   );
   if ("error" in readAbiResult) {
     return NextResponse.json(
@@ -515,7 +520,8 @@ async function handlePost(request: Request): Promise<NextResponse> {
   const writeAbiResult = await resolveAbiFromField(
     action.contractAddress,
     network,
-    action.abi
+    action.abi,
+    rpcScope
   );
   if ("error" in writeAbiResult) {
     return NextResponse.json(

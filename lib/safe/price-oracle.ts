@@ -1,7 +1,13 @@
 import "server-only";
 
 import { ethers } from "ethers";
-import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
+import {
+  ownEndpointsScope,
+  PlatformRpcPurpose,
+  platformScope,
+  type RpcScope,
+  rpc,
+} from "@/lib/rpc/engine";
 
 /**
  * Native-token USD pricing for the gas estimate shown in the confirm modal.
@@ -39,21 +45,24 @@ const priceCache = new Map<number, CachedPrice>();
 
 /** Thin helper: returns the USD price of 1 native token on `chainId`. */
 export async function getNativeUsdPrice(
-  chainId: number
+  chainId: number,
+  forScope?: RpcScope
 ): Promise<number | null> {
-  const cached = priceCache.get(chainId);
-  if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
-    return cached.priceUsd;
-  }
-
   const feedAddress = NATIVE_USD_FEED[chainId];
   if (!feedAddress) {
     return null;
   }
 
   try {
+    // An organization that uses only its own endpoints on the chain reads
+    // the price there, and its answer stays out of the shared cache.
+    const own = await ownEndpointsScope(forScope, chainId);
+    const cached = priceCache.get(chainId);
+    if (!own && cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+      return cached.priceUsd;
+    }
     const { manager } = await rpc.evm(
-      platformScope(PlatformRpcPurpose.BILLING),
+      own ?? platformScope(PlatformRpcPurpose.BILLING),
       chainId
     );
     const provider = manager.getProvider();
@@ -75,10 +84,9 @@ export async function getNativeUsdPrice(
     if (!Number.isFinite(asNumber)) {
       return null;
     }
-    priceCache.set(chainId, {
-      priceUsd: asNumber,
-      cachedAt: Date.now(),
-    });
+    if (!own) {
+      priceCache.set(chainId, { priceUsd: asNumber, cachedAt: Date.now() });
+    }
     return asNumber;
   } catch {
     // Chainlink feed down or misconfigured — return null so callers can
@@ -94,8 +102,9 @@ export async function getNativeUsdPrice(
 export async function weiToUsd(options: {
   chainId: number;
   amountWei: bigint;
+  forScope?: RpcScope;
 }): Promise<number | null> {
-  const price = await getNativeUsdPrice(options.chainId);
+  const price = await getNativeUsdPrice(options.chainId, options.forScope);
   if (price === null) {
     return null;
   }

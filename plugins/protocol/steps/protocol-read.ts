@@ -131,6 +131,7 @@ export async function protocolReadStep(
         contractAddress,
         network: input.network,
         abi: contract.abi,
+        rpcScope: rpcScopeFromStep(input),
       });
       resolvedAbi = abiResult.abi;
     } catch (error) {
