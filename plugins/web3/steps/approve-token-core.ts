@@ -93,6 +93,9 @@ export type ApproveTokenCoreInput = {
   };
 };
 
+// A mined send; its call trace runs after the wallet lock is released.
+type SentApproval = { mined: Extract<ApproveTokenResult, { success: true }> };
+
 export type ApproveTokenResult =
   | {
       success: true;
@@ -472,7 +475,7 @@ async function approveTokenCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
-  return withNonceSession(txContext, walletAddress, async (session) => {
+  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<ApproveTokenResult | SentApproval> => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
@@ -629,24 +632,19 @@ async function approveTokenCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      const executedCall = await traceExecutedCallWithFailover(rpcManager, receipt.hash, {
-        target: tokenAddress,
-        abi: ERC20_ABI,
-        functionName: "approve",
-      });
-
       return {
-        success: true,
-        transactionHash: receipt.hash,
-        chainId,
-        transactionLink,
-        gasUsed: gasCostWei,
-        gasUsedUnits,
-        effectiveGasPrice,
-        approvedAmount: approvedAmountDisplay,
-        spender: spenderAddress,
-        symbol,
-        executedCall,
+        mined: {
+          success: true,
+          transactionHash: receipt.hash,
+          chainId,
+          transactionLink,
+          gasUsed: gasCostWei,
+          gasUsedUnits,
+          effectiveGasPrice,
+          approvedAmount: approvedAmountDisplay,
+          spender: spenderAddress,
+          symbol,
+        },
       };
     } catch (error) {
       logUserError(
@@ -686,6 +684,16 @@ async function approveTokenCoreImpl(
       };
     }
   });
+  if (!("mined" in sent)) {
+    return sent;
+  }
+
+  const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.mined.transactionHash, {
+    target: tokenAddress,
+    abi: ERC20_ABI,
+    functionName: "approve",
+  });
+  return { ...sent.mined, executedCall };
 }
 
 export async function approveTokenCore(

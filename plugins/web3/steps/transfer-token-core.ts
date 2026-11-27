@@ -97,6 +97,9 @@ export type TransferTokenCoreInput = {
   };
 };
 
+// A mined send; its call trace runs after the wallet lock is released.
+type SentTransfer = { mined: Extract<TransferTokenResult, { success: true }> };
+
 export type TransferTokenResult =
   | {
       success: true;
@@ -568,7 +571,7 @@ async function transferTokenCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
-  return withNonceSession(txContext, walletAddress, async (session) => {
+  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<TransferTokenResult | SentTransfer> => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     let signerAddress: string;
@@ -726,24 +729,19 @@ async function transferTokenCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      const executedCall = await traceExecutedCallWithFailover(rpcManager, receipt.hash, {
-        target: tokenAddress,
-        abi: ERC20_ABI,
-        functionName: "transfer",
-      });
-
       return {
-        success: true,
-        transactionHash: receipt.hash,
-        chainId,
-        transactionLink,
-        gasUsed: gasCostWei,
-        gasUsedUnits,
-        effectiveGasPrice,
-        amount,
-        symbol,
-        recipient: recipientAddress,
-        executedCall,
+        mined: {
+          success: true,
+          transactionHash: receipt.hash,
+          chainId,
+          transactionLink,
+          gasUsed: gasCostWei,
+          gasUsedUnits,
+          effectiveGasPrice,
+          amount,
+          symbol,
+          recipient: recipientAddress,
+        },
       };
     } catch (error) {
       logUserError(
@@ -783,6 +781,16 @@ async function transferTokenCoreImpl(
       };
     }
   });
+  if (!("mined" in sent)) {
+    return sent;
+  }
+
+  const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.mined.transactionHash, {
+    target: tokenAddress,
+    abi: ERC20_ABI,
+    functionName: "transfer",
+  });
+  return { ...sent.mined, executedCall };
 }
 
 export async function transferTokenCore(

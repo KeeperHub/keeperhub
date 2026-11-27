@@ -142,6 +142,12 @@ export type WriteContractCoreInput = {
   };
 };
 
+// A mined send; its call trace runs after the wallet lock is released.
+type SentWrite = {
+  hash: string;
+  mined: Extract<WriteContractResult, { success: true }>;
+};
+
 export type WriteContractResult =
   | {
       success: true;
@@ -773,7 +779,7 @@ async function writeContractCoreImpl(
       ? await getChainBuilderRpcUrls(chainId)
       : undefined;
 
-  return withNonceSession(txContext, walletAddress, async (session) => {
+  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<WriteContractResult | SentWrite> => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
@@ -872,24 +878,20 @@ async function writeContractCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      const executedCall = await traceExecutedCallWithFailover(rpcManager, receipt.hash, {
-        target: contractAddress,
-        abi: parsedAbi,
-        functionName: abiFunction,
-      });
-
       return {
-        success: true,
-        transactionHash: receipt.hash,
-        chainId,
-        transactionLink,
-        gasUsed: gasCostWei,
-        gasUsedUnits,
-        effectiveGasPrice,
-        result: undefined,
-        executedCall,
-        ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
-        ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
+        hash: receipt.hash,
+        mined: {
+          success: true,
+          transactionHash: receipt.hash,
+          chainId,
+          transactionLink,
+          gasUsed: gasCostWei,
+          gasUsedUnits,
+          effectiveGasPrice,
+          result: undefined,
+          ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
+          ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
+        },
       };
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {
@@ -958,6 +960,16 @@ async function writeContractCoreImpl(
       };
     }
   });
+  if (!("mined" in sent)) {
+    return sent;
+  }
+
+  const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.hash, {
+    target: contractAddress,
+    abi: parsedAbi,
+    functionName: abiFunction,
+  });
+  return { ...sent.mined, executedCall };
 }
 
 /**
