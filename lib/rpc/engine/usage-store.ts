@@ -1,11 +1,14 @@
 import "server-only";
 
-import { inArray, type SQL, sql } from "drizzle-orm";
+import { inArray, lt, type SQL, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db";
 import { isForeignKeyViolation } from "@/lib/db/errors";
 import { organization } from "@/lib/db/schema";
-import { organizationRpcUsageHourly } from "@/lib/db/schema-rpc";
+import {
+  organizationRpcUsageHourly,
+  organizationRpcUsageReports,
+} from "@/lib/db/schema-rpc";
 import { ErrorCategory, logSystemWarn, logWarn } from "@/lib/logging";
 import { processSingleton } from "./process-singleton";
 import { rpcUsageAccumulator } from "./runtime";
@@ -40,8 +43,11 @@ function rowsFrom(buckets: readonly RpcUsageBucket[]) {
   }));
 }
 
-async function writeBuckets(buckets: readonly RpcUsageBucket[]): Promise<void> {
-  await db
+async function writeBuckets(
+  buckets: readonly RpcUsageBucket[],
+  executor: Pick<typeof db, "insert"> = db
+): Promise<void> {
+  await executor
     .insert(table)
     .values(rowsFrom(buckets))
     .onConflictDoUpdate({
@@ -150,6 +156,38 @@ export async function flushRpcUsage(
 }
 
 /** The buckets whose organization exists; the rest are dropped. */
+const reports = organizationRpcUsageReports;
+
+/**
+ * Store a report from a trigger service, once: a report id already stored
+ * means the report arrived before, so it is not counted again. Returns false
+ * for such a repeat.
+ */
+export async function storeUsageReport(
+  reportId: string | undefined,
+  buckets: readonly RpcUsageBucket[]
+): Promise<boolean> {
+  return await db.transaction(async (tx) => {
+    if (reportId !== undefined) {
+      const stored = await tx
+        .insert(reports)
+        .values({ reportId })
+        .onConflictDoNothing()
+        .returning({ reportId: reports.reportId });
+      if (stored.length === 0) {
+        return false;
+      }
+      await tx
+        .delete(reports)
+        .where(lt(reports.receivedAt, sql`now() - interval '1 day'`));
+    }
+    if (buckets.length > 0) {
+      await writeBuckets(buckets, tx);
+    }
+    return true;
+  });
+}
+
 export async function bucketsForKnownOrganizations(
   buckets: readonly RpcUsageBucket[]
 ): Promise<RpcUsageBucket[]> {

@@ -2,16 +2,25 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { rpcUsageAccumulator } from "@/lib/rpc/engine";
 import type { RpcUsageBucket } from "@/lib/rpc/engine/telemetry/usage";
 import { RpcOrigin, RpcTransport } from "@/lib/rpc/engine/types";
 import {
   bucketsForKnownOrganizations,
-  flushRpcUsage,
+  storeUsageReport,
 } from "@/lib/rpc/engine/usage-store";
 
 const MAX_BUCKETS = 1000;
-const count = z.number().int().nonnegative().optional();
+const HOUR_MS = 3_600_000;
+/** The largest value the usage table's integer counters hold. */
+const INT4_MAX = 2_147_483_647;
+
+const count = z.number().int().nonnegative().max(INT4_MAX).optional();
+const latencySum = z
+  .number()
+  .int()
+  .nonnegative()
+  .max(Number.MAX_SAFE_INTEGER)
+  .optional();
 
 const bucketSchema = z.object({
   organizationId: z.string().min(1),
@@ -19,14 +28,18 @@ const bucketSchema = z.object({
   origin: z.enum(Object.values(RpcOrigin)),
   chainId: z.number().int().positive(),
   transport: z.enum(Object.values(RpcTransport)),
-  hour: z.iso.datetime(),
+  hour: z.iso
+    .datetime()
+    .refine((value) => new Date(value).getTime() % HOUR_MS === 0, {
+      message: "hour must be the start of an hour",
+    }),
   counters: z.object({
     requests: count,
     errors: count,
     timeouts: count,
     rateLimited: count,
     failovers: count,
-    latencyMsSum: count,
+    latencyMsSum: latencySum,
     latencyMsMax: count,
     wsConnects: count,
     wsReconnects: count,
@@ -35,6 +48,8 @@ const bucketSchema = z.object({
 });
 
 const bodySchema = z.object({
+  /** Set by services that resend a report unchanged until it is answered. */
+  reportId: z.string().min(1).max(128).optional(),
   buckets: z.array(bucketSchema).max(MAX_BUCKETS),
 });
 
@@ -94,9 +109,11 @@ export async function POST(request: Request): Promise<NextResponse> {
     const buckets = await bucketsForKnownOrganizations(
       parsed.data.buckets.map(toBucket)
     );
-    rpcUsageAccumulator.restore(buckets);
-    await flushRpcUsage();
-    return NextResponse.json({ accepted: buckets.length });
+    // Written here rather than through this process's own accumulator, so a
+    // failed write leaves nothing behind to be counted again when the service
+    // resends the report.
+    const stored = await storeUsageReport(parsed.data.reportId, buckets);
+    return NextResponse.json({ accepted: stored ? buckets.length : 0 });
   } catch (error) {
     logSystemError(
       ErrorCategory.DATABASE,

@@ -54,6 +54,7 @@ async function cleanup(): Promise<void> {
   try {
     await client.begin(async (tx) => {
       await tx`DELETE FROM workflows WHERE id LIKE ${pattern}`;
+      await tx`DELETE FROM organization_rpc_usage_reports WHERE report_id LIKE ${pattern}`;
       await tx`DELETE FROM member WHERE organization_id LIKE ${pattern}`;
       await tx`DELETE FROM organization WHERE id LIKE ${pattern}`;
       await tx`DELETE FROM users WHERE id LIKE ${pattern}`;
@@ -383,6 +384,45 @@ describe.skipIf(SKIP)("organization RPC configs (Postgres)", () => {
       latencyMsMax: 30,
     });
   });
+  it("stores a service's report once, however often it is sent", async () => {
+    const reportId = `${PREFIX}report`;
+    const bucket = {
+      organizationId: ORG_ID,
+      configId: null,
+      origin: types.RpcOrigin.PLATFORM,
+      chainId: SEPOLIA,
+      transport: types.RpcTransport.WSS,
+      hour: new Date("2026-01-01T10:00:00.000Z"),
+      counters: {
+        requests: 0,
+        errors: 0,
+        timeouts: 0,
+        rateLimited: 0,
+        failovers: 0,
+        latencyMsSum: 0,
+        latencyMsMax: 0,
+        wsConnects: 1,
+        wsReconnects: 0,
+        eventsReceived: 7,
+      },
+    };
+
+    expect(await usageStore.storeUsageReport(reportId, [bucket])).toBe(true);
+    expect(await usageStore.storeUsageReport(reportId, [bucket])).toBe(false);
+
+    const rows = await db
+      .select()
+      .from(organizationRpcUsageHourly)
+      .where(
+        and(
+          eq(organizationRpcUsageHourly.organizationId, ORG_ID),
+          eq(organizationRpcUsageHourly.transport, types.RpcTransport.WSS)
+        )
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.eventsReceived).toBe(7);
+  });
+
   it("lists and deletes a config whose URLs can no longer be decrypted", async () => {
     const [broken] = await db
       .insert(organizationRpcConfigs)

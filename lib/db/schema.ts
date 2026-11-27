@@ -1232,6 +1232,7 @@ export {
   organizationRpcChainPolicy,
   organizationRpcConfigs,
   organizationRpcUsageHourly,
+  organizationRpcUsageReports,
 } from "./schema-rpc";
 export {
   type NewTempoHeldPayment,

@@ -135,3 +135,17 @@ export const organizationRpcUsageHourly = pgTable(
 
 export type OrganizationRpcUsageRow =
   typeof organizationRpcUsageHourly.$inferSelect;
+
+/**
+ * Usage reports already stored, by the id the reporting service gave them, so
+ * a report sent again, after a lost reply or as a replay, is counted once.
+ * Rows older than a day are pruned as new reports arrive.
+ */
+export const organizationRpcUsageReports = pgTable(
+  "organization_rpc_usage_reports",
+  {
+    reportId: text("report_id").primaryKey(),
+    receivedAt: timestamp("received_at").notNull().defaultNow(),
+  },
+  (table) => [index("idx_org_rpc_usage_reports_received").on(table.receivedAt)]
+);

@@ -4,19 +4,15 @@ vi.mock("server-only", () => ({}));
 
 const mocks = vi.hoisted(() => ({
   authenticate: vi.fn(),
-  restore: vi.fn(),
-  flush: vi.fn(),
+  store: vi.fn(),
   known: vi.fn(),
 }));
 vi.mock("@/lib/internal-service-auth", () => ({
   authenticateInternalService: mocks.authenticate,
 }));
-vi.mock("@/lib/rpc/engine", () => ({
-  rpcUsageAccumulator: { restore: mocks.restore },
-}));
 vi.mock("@/lib/rpc/engine/usage-store", () => ({
   bucketsForKnownOrganizations: mocks.known,
-  flushRpcUsage: mocks.flush,
+  storeUsageReport: mocks.store,
 }));
 
 import { POST } from "@/app/api/internal/rpc-usage/route";
@@ -50,7 +46,7 @@ describe("POST /api/internal/rpc-usage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.authenticate.mockResolvedValue({ authenticated: true });
-    mocks.flush.mockResolvedValue(1);
+    mocks.store.mockResolvedValue(true);
     mocks.known.mockImplementation((buckets: unknown[]) =>
       Promise.resolve(buckets)
     );
@@ -64,7 +60,7 @@ describe("POST /api/internal/rpc-usage", () => {
     });
     const res = await post({ buckets: [bucket()] });
     expect(res.status).toBe(401);
-    expect(mocks.restore).not.toHaveBeenCalled();
+    expect(mocks.store).not.toHaveBeenCalled();
   });
 
   it("signs over the exact raw body", async () => {
@@ -76,14 +72,21 @@ describe("POST /api/internal/rpc-usage", () => {
   it("stores the reported counts with missing counters as zero", async () => {
     const res = await post({ buckets: [bucket()] });
     expect(res.status).toBe(200);
-    const [[buckets]] = mocks.restore.mock.calls;
+    const [[reportId, buckets]] = mocks.store.mock.calls;
+    expect(reportId).toBeUndefined();
     expect(buckets[0]).toMatchObject({
       organizationId: "org_1",
       origin: RpcOrigin.ORG,
       hour: new Date(HOUR),
       counters: { wsConnects: 1, eventsReceived: 4, requests: 0, errors: 0 },
     });
-    expect(mocks.flush).toHaveBeenCalled();
+  });
+
+  it("counts a report it already stored once", async () => {
+    mocks.store.mockResolvedValue(false);
+    const res = await post({ reportId: "rep_1", buckets: [bucket()] });
+    expect(await res.json()).toEqual({ accepted: 0 });
+    expect(mocks.store).toHaveBeenCalledWith("rep_1", expect.any(Array));
   });
 
   it("rejects malformed reports", async () => {
@@ -94,7 +97,15 @@ describe("POST /api/internal/rpc-usage", () => {
     expect(
       (await post({ buckets: [bucket({ counters: { requests: -1 } })] })).status
     ).toBe(400);
-    expect(mocks.restore).not.toHaveBeenCalled();
+    expect(
+      (await post({ buckets: [bucket({ counters: { requests: 2 ** 31 } })] }))
+        .status
+    ).toBe(400);
+    expect(
+      (await post({ buckets: [bucket({ hour: "2026-01-01T10:30:00.000Z" })] }))
+        .status
+    ).toBe(400);
+    expect(mocks.store).not.toHaveBeenCalled();
   });
 
   it("drops buckets for organizations that do not exist", async () => {
@@ -102,6 +113,6 @@ describe("POST /api/internal/rpc-usage", () => {
     const res = await post({ buckets: [bucket({ organizationId: "gone" })] });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ accepted: 0 });
-    expect(mocks.restore).toHaveBeenCalledWith([]);
+    expect(mocks.store).toHaveBeenCalledWith(undefined, []);
   });
 });
