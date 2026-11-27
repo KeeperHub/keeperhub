@@ -10,6 +10,7 @@ import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { startSafeDeployMetrics } from "@/lib/metrics/instrumentation/safe";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
 import {
   buildCreateProxyCalldata,
   buildSetupCalldata,
@@ -146,7 +147,7 @@ export async function deployOrgSafe(
     saltNonce,
   });
 
-  const rpcUrl = getRpcUrlByChainId(chainId, "primary");
+  const rpcUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.PRIMARY);
   const rpcManager = await getRpcProviderFromUrls(rpcUrl, undefined, chainId);
   const executionId = input.executionId ?? `safe-deploy-${generateId()}`;
 
@@ -408,8 +409,8 @@ export async function reconcileSafeWalletForChain(input: {
       fallbackHandler: contracts.compatibilityFallbackHandler,
     });
 
-    const rpcUrl = getRpcUrlByChainId(chainId, "primary");
-    const fallbackRpcUrl = getRpcUrlByChainId(chainId, "fallback");
+    const rpcUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.PRIMARY);
+    const fallbackRpcUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.FALLBACK);
     const rpcManager = await getRpcProviderFromUrls(
       rpcUrl,
       fallbackRpcUrl === rpcUrl ? undefined : fallbackRpcUrl,

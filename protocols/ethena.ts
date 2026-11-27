@@ -106,45 +106,45 @@ export default defineAbiProtocol({
         "get-usde-balance": { account: wallet() },
         "get-ena-balance": { account: wallet() },
         "approve-usde": { spender: wallet() },
-        // Registry order sequences the writes: deposit/mint open the
-        // share position, the cooldown calls burn shares and escrow
-        // USDe into the silo, and unstake claims it (its fabrication
-        // below marks the real cooldown elapsed first).
+        // Registry order sequences the writes: deposit/mint open the share
+        // position, then withdraw/redeem exit part of it.
         "cooldown-assets": { assets: amount("USDE", "10") },
         "cooldown-shares": { shares: amount("USDE", "10") },
         unstake: { receiver: wallet() },
         "vault-deposit": { assets: amount("USDE", "100"), receiver: wallet() },
         "vault-mint": { shares: amount("USDE", "10"), receiver: wallet() },
-        "vault-withdraw": { receiver: wallet(), owner: wallet() },
-        "vault-redeem": { receiver: wallet(), owner: wallet() },
+        "vault-withdraw": {
+          assets: amount("USDE", "10"),
+          receiver: wallet(),
+          owner: wallet(),
+        },
+        "vault-redeem": {
+          shares: amount("USDE", "10"),
+          receiver: wallet(),
+          owner: wallet(),
+        },
       },
       // approve-usde exercises the app's real approve-token path (the same
-      // one the setup above fabricates around) and unstake claims through
-      // the silo; both fan out cold contract state on a fresh fork and run
-      // past the default two-minute wait, so give them the same headroom as
-      // lido approve-steth / curve crv-approve.
+      // one the setup above fabricates around); it fans out cold contract
+      // state on a fresh fork and runs past the default two-minute wait, so
+      // give it the same headroom as lido approve-steth / curve crv-approve.
       executionWaitMs: {
         "approve-usde": 240_000,
-        unstake: 240_000,
-      },
-      fabrications: {
-        // cooldown-shares runs immediately before unstake in registry
-        // order and re-arms the cooldown timer (86400s on mainnet,
-        // verified 2026-07-08); rewrite the real cooldown's timestamp
-        // to elapsed so unstake claims the genuinely escrowed USDe.
-        unstake: [{ kind: "elapsed-cooldown", contract: contract("sUsde") }],
       },
       skipped: {
-        "vault-withdraw":
-          "cooldown mode disables ERC4626 withdraw (cooldownDuration is 86400s on mainnet, verified 2026-07-08; StakedUSDeV2 reverts while it is nonzero) - exits are covered by cooldown-shares + unstake",
-        "vault-redeem":
-          "cooldown mode disables ERC4626 redeem (cooldownDuration is 86400s on mainnet, verified 2026-07-08; StakedUSDeV2 reverts while it is nonzero) - exits are covered by cooldown-shares + unstake",
+        "cooldown-assets":
+          "cooldown mode is off on mainnet (cooldownDuration is 0, verified 2026-11-27); StakedUSDeV2 reverts cooldown calls with OperationNotAllowed - exits are covered by vault-withdraw + vault-redeem",
+        "cooldown-shares":
+          "cooldown mode is off on mainnet (cooldownDuration is 0, verified 2026-11-27); StakedUSDeV2 reverts cooldown calls with OperationNotAllowed - exits are covered by vault-withdraw + vault-redeem",
+        unstake:
+          "cooldown mode is off on mainnet (cooldownDuration is 0, verified 2026-11-27), so no cooldown can be opened to claim - exits are covered by vault-withdraw + vault-redeem",
       },
       // sUSDe (StakedUSDeV2) invariants (unnamed ERC-4626 outputs, so no
       // field): asset is a permanent address; totals/supply are large and
       // monotonic; convert/preview are pure per-share quotes; max-deposit/mint
-      // are the uncapped limits; the cooldown duration is a fixed protocol
-      // config (86400s, verified 2026-07-08). Caller-position reads (balance,
+      // are the uncapped limits; the cooldown duration is protocol config,
+      // asserted so a switch back to cooldown mode fails here first (0,
+      // verified 2026-11-27). Caller-position reads (balance,
       // max-withdraw/redeem, cooldown-status) and shared-wallet token balances
       // are history-dependent and left unasserted.
       expectations: {
@@ -159,7 +159,7 @@ export default defineAbiProtocol({
         "vault-preview-redeem": [{ nonZero: true }],
         "vault-max-deposit": [{ nonZero: true }],
         "vault-max-mint": [{ nonZero: true }],
-        "get-cooldown-duration": [{ equals: "86400" }],
+        "get-cooldown-duration": [{ equals: "0" }],
       },
       // Post-write oracle: a deposit/mint must actually credit sUSDe shares
       // (checked right after the write mines, before the cooldown burns

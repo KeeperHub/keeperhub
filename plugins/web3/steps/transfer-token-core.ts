@@ -60,11 +60,15 @@ import {
   type TransactionContext,
   withNonceSession,
 } from "@/lib/web3/transaction-manager";
+import { isMinedSend, type MinedSend, minedSend } from "@/lib/web3/mined-send";
 import {
   convertAmountForWrite,
   rawToUi,
   resolveForWrite,
 } from "@/lib/web3/ui-multiplier";
+
+// ERC-20 function this step calls, as named in ERC20_ABI.
+const TRANSFER_FUNCTION = "transfer";
 
 export type TransferTokenCoreInput = {
   network: string;
@@ -484,7 +488,7 @@ async function transferTokenCoreImpl(
         walletAddress,
         to: tokenAddress,
         abi: ERC20_ABI,
-        functionName: "transfer",
+        functionName: TRANSFER_FUNCTION,
         args: [recipientAddress, amountRaw],
       });
 
@@ -499,7 +503,7 @@ async function transferTokenCoreImpl(
         const executedCall = await traceExecutedCallWithFailover(
           rpcManager,
           sponsoredResult.transactionHash,
-          { target: tokenAddress, abi: ERC20_ABI, functionName: "transfer" }
+          { target: tokenAddress, abi: ERC20_ABI, functionName: TRANSFER_FUNCTION }
         );
 
         return {
@@ -568,7 +572,7 @@ async function transferTokenCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
-  return withNonceSession(txContext, walletAddress, async (session) => {
+  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<TransferTokenResult | MinedSend<Extract<TransferTokenResult, { success: true }>>> => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     let signerAddress: string;
@@ -674,7 +678,7 @@ async function transferTokenCoreImpl(
             roleKey: signerMode.roleKey,
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "transfer",
+            functionKey: TRANSFER_FUNCTION,
             args: [recipientAddress, amountRaw],
           },
           session,
@@ -692,7 +696,7 @@ async function transferTokenCoreImpl(
             ownerAddress: signerMode.ownerAddress,
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "transfer",
+            functionKey: TRANSFER_FUNCTION,
             args: [recipientAddress, amountRaw],
           },
           session,
@@ -708,7 +712,7 @@ async function transferTokenCoreImpl(
           {
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "transfer",
+            functionKey: TRANSFER_FUNCTION,
             args: [recipientAddress, amountRaw],
           },
           session,
@@ -726,13 +730,7 @@ async function transferTokenCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      const executedCall = await traceExecutedCallWithFailover(rpcManager, receipt.hash, {
-        target: tokenAddress,
-        abi: ERC20_ABI,
-        functionName: "transfer",
-      });
-
-      return {
+      return minedSend(receipt.hash, {
         success: true,
         transactionHash: receipt.hash,
         chainId,
@@ -743,8 +741,7 @@ async function transferTokenCoreImpl(
         amount,
         symbol,
         recipient: recipientAddress,
-        executedCall,
-      };
+      });
     } catch (error) {
       logUserError(
         ErrorCategory.TRANSACTION,
@@ -783,6 +780,15 @@ async function transferTokenCoreImpl(
       };
     }
   });
+  if (isMinedSend(sent)) {
+    const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.hash, {
+      target: tokenAddress,
+      abi: ERC20_ABI,
+      functionName: TRANSFER_FUNCTION,
+    });
+    return { ...sent.result, executedCall };
+  }
+  return sent;
 }
 
 export async function transferTokenCore(

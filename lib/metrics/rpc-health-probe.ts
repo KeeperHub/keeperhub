@@ -14,6 +14,7 @@ import "server-only";
 import { Connection } from "@solana/web3.js";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
 import { classifyRpcError } from "@/lib/rpc/providers";
+import { RPC_ENDPOINT, type RpcEndpoint } from "@/lib/rpc/rpc-endpoint";
 import { rpcProbeMetrics } from "./collectors/prometheus";
 import type { ProbeChainConfig } from "./db-metrics";
 
@@ -26,7 +27,7 @@ const PROBE_TIMEOUT_MS = Number(process.env.RPC_PROBE_TIMEOUT_MS) || 5000;
 
 type ProbeTarget = {
   chain: string;
-  provider: "primary" | "fallback";
+  provider: RpcEndpoint;
   url: string;
   chainType: string;
 };
@@ -74,14 +75,14 @@ async function runProbeAllChains(): Promise<void> {
   for (const config of chainConfigs) {
     targets.push({
       chain: config.name,
-      provider: "primary",
+      provider: RPC_ENDPOINT.PRIMARY,
       url: config.defaultPrimaryRpc,
       chainType: config.chainType,
     });
     if (config.defaultFallbackRpc) {
       targets.push({
         chain: config.name,
-        provider: "fallback",
+        provider: RPC_ENDPOINT.FALLBACK,
         url: config.defaultFallbackRpc,
         chainType: config.chainType,
       });

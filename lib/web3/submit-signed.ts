@@ -2,6 +2,7 @@ import "server-only";
 import { ethers, isError } from "ethers";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import type { BuilderRpcUrls } from "@/lib/rpc/rpc-config";
+import { RPC_ENDPOINT, type RpcEndpoint } from "@/lib/rpc/rpc-endpoint";
 import {
   type BuilderBroadcastResult,
   broadcastToBuilders,
@@ -12,7 +13,7 @@ import { OnChainPendingError } from "@/lib/web3/onchain-revert";
 export type BroadcastInfo = {
   // ISO time the regular RPC accepted the transaction.
   broadcastAt: string;
-  via: "primary" | "fallback";
+  via: RpcEndpoint;
   // Block builders that were also sent the transaction, when any were.
   builders?: BuilderBroadcastResult[];
 };
@@ -152,9 +153,11 @@ export async function submitSignedTransactionWithFailover(
     : undefined;
 
   try {
-    let via: BroadcastInfo["via"] = "primary";
+    let via: RpcEndpoint = RPC_ENDPOINT.PRIMARY;
     const response = await rpcManager.executeWithFailover((provider) => {
-      via = isFallbackProvider(rpcManager, provider) ? "fallback" : "primary";
+      via = isFallbackProvider(rpcManager, provider)
+        ? RPC_ENDPOINT.FALLBACK
+        : RPC_ENDPOINT.PRIMARY;
       return provider.broadcastTransaction(signedHex);
     }, "write-broadcast");
     const broadcastAt = new Date().toISOString();

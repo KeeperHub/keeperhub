@@ -301,7 +301,7 @@ describe("validateArgsForAbi options", () => {
         fixedArrays: true,
         checkLeaf: (_value, type, path) => {
           seen.push(`${path}:${type}`);
-          return;
+          return undefined;
         },
       }
     );
