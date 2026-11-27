@@ -16,6 +16,13 @@ const HOUR_MS = 3_600_000;
 const HTTP_OK_MIN = 200;
 const HTTP_CLIENT_ERROR_MIN = 400;
 const HTTP_SERVER_ERROR_MIN = 500;
+/**
+ * 4xx answers that say nothing about the report itself: the signature was
+ * refused during a key rotation or clock skew, or the app asked to slow down.
+ */
+const RETRYABLE_CLIENT_ERRORS: ReadonlySet<number> = new Set([
+  401, 403, 408, 429,
+]);
 
 /** The endpoint, chain and transport usage is attributed to. */
 export interface UsageSource {
@@ -53,12 +60,19 @@ export function utcHourStart(atMs: number): string {
   return new Date(Math.floor(atMs / HOUR_MS) * HOUR_MS).toISOString();
 }
 
-/** A 2xx is stored, a 4xx is refused for good, anything else may be retried. */
+/**
+ * A 2xx is stored. A 4xx about the report is refused for good; one about
+ * the caller, and anything else, is retried.
+ */
 export function reportOutcomeOf(status: number): ReportOutcome {
   if (status >= HTTP_OK_MIN && status < HTTP_CLIENT_ERROR_MIN) {
     return "stored";
   }
-  if (status >= HTTP_CLIENT_ERROR_MIN && status < HTTP_SERVER_ERROR_MIN) {
+  if (
+    status >= HTTP_CLIENT_ERROR_MIN &&
+    status < HTTP_SERVER_ERROR_MIN &&
+    !RETRYABLE_CLIENT_ERRORS.has(status)
+  ) {
     return "refused";
   }
   return "unanswered";

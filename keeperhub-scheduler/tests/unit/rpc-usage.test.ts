@@ -128,6 +128,16 @@ describe("RpcUsageReporter", () => {
     ]);
   });
 
+  it("keeps a report the app turned away for its signature", async () => {
+    const usage = reporter();
+    usage.record(source(), RpcUsageCounter.REQUESTS);
+    send.mockResolvedValueOnce(401);
+
+    await usage.flush();
+
+    expect(usage.pendingBuckets()).toHaveLength(1);
+  });
+
   it("drops a report the app refuses instead of sending it forever", async () => {
     const usage = reporter();
     usage.record(source(), RpcUsageCounter.REQUESTS);
