@@ -237,6 +237,15 @@ export function AddRpcConfigDialog({
     }
   }, [open]);
 
+  // Typed URLs carry API keys, so they are dropped as the dialog closes.
+  const changeOpen = (next: boolean): void => {
+    if (!next) {
+      setDraft(EMPTY_CREATE);
+      setErrors(NO_FORM_ERRORS);
+    }
+    onOpenChange(next);
+  };
+
   const body = buildCreateBody(draft);
   const slots = draft.chain ? slotsForChainType(draft.chain.chainType) : [];
 
@@ -259,7 +268,7 @@ export function AddRpcConfigDialog({
     setErrors(NO_FORM_ERRORS);
     try {
       await onCreate(body);
-      onOpenChange(false);
+      changeOpen(false);
     } catch (error) {
       setErrors(formErrorsFrom(error, "Could not save the RPC config."));
     } finally {
@@ -268,7 +277,7 @@ export function AddRpcConfigDialog({
   };
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
+    <Dialog onOpenChange={changeOpen} open={open}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Add RPC endpoint</DialogTitle>
@@ -329,7 +338,7 @@ export function AddRpcConfigDialog({
           <DialogFooter>
             <Button
               disabled={saving}
-              onClick={() => onOpenChange(false)}
+              onClick={() => changeOpen(false)}
               type="button"
               variant="outline"
             >
