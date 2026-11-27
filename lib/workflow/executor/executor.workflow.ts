@@ -2730,6 +2730,10 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   // `results` misses disabled nodes (which return before recording one), so
   // orphan detection needs its own run-wide record.
   const attemptedNodes = new Set<string>();
+  // For Each nodes whose loop has started. Their result is decided by the
+  // loop from then on: a throw from inside it is never recovered from the
+  // For Each step's own success row, neither in the catch nor post-drain.
+  const startedForEachLoops = new Set<string>();
 
   // Nodes whose execution is gated by a condition's routing decision, excluded
   // from orphan detection.
@@ -3698,6 +3702,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     node: WorkflowNode,
     visited: Set<string>
   ): Promise<void> {
+    startedForEachLoops.add(nodeId);
     // KEEP-468: same strict-mode treatment as action steps so an
     // unresolved array reference cannot iterate zero times silently.
     const forEachTracker = createTracker();
@@ -3795,10 +3800,6 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       label: BUILTIN_NODE_LABEL,
       data: getBuiltinVariables(),
     };
-
-    // Set once the loop starts, so a throw from inside the loop is never
-    // recovered by running the loop a second time.
-    let forEachLoopStarted = false;
 
     try {
       let result: ExecutionResult;
@@ -4071,7 +4072,6 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             : undefined;
 
         if (currentActionType === "For Each") {
-          forEachLoopStarted = true;
           await runTopLevelForEach(nodeId, node, visited);
         } else if (currentActionType === "Condition") {
           // For condition nodes, route to true/false handle targets
@@ -4121,7 +4121,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           FAILED_AFTER_RETRIES_REGEX.test(errorMessage) ||
           NO_STEP_COMPLETION_REGEX.test(errorMessage)) &&
         loopTracker.iterationOf(nodeId) === 0 &&
-        !forEachLoopStarted;
+        !startedForEachLoops.has(nodeId);
       let recordedOutput =
         isSpuriousMaxRetries && executionId
           ? (await getCompletedStepOutput(executionId, nodeId))?.output
@@ -4199,7 +4199,6 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           await continueFromCondition(nodeId, recoveredCondition, visited);
         } else if (recoveredActionType === "For Each") {
           // The loop's body edges are not top-level downstream edges.
-          forEachLoopStarted = true;
           try {
             await runTopLevelForEach(nodeId, node, visited);
           } catch (loopError) {
@@ -4390,6 +4389,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       workflowId,
       organizationId,
       organizationPlan,
+      skipNodeIds: startedForEachLoops,
     });
 
     // A node the executor never scheduled is absent from `results`, so on its
