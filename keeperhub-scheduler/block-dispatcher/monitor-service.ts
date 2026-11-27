@@ -98,10 +98,18 @@ export class BlockMonitorService {
    */
   async start(
     resumeFrom: ReadonlyMap<number, number> = new Map(),
+    routeResumeFrom: ReadonlyMap<string, number> = new Map(),
   ): Promise<void> {
     // Reset the shutdown flag so the service is restartable: on failover the
     // same process may lose leadership (stop()) and later regain it (start()).
     this.isShuttingDown = false;
+
+    for (const [key, block] of routeResumeFrom) {
+      const known = this.routeResumeBlocks.get(key);
+      if (known === undefined || block > known) {
+        this.routeResumeBlocks.set(key, block);
+      }
+    }
 
     for (const [chainId, block] of resumeFrom) {
       const known = this.resumeBlocks.get(chainId);
@@ -171,6 +179,12 @@ export class BlockMonitorService {
   getResumeBlocks(): ReadonlyMap<number, number> {
     this.captureProgress();
     return new Map(this.resumeBlocks);
+  }
+
+  /** The same per organization route key, so its monitors backfill too. */
+  getRouteResumeBlocks(): ReadonlyMap<string, number> {
+    this.captureRouteProgress();
+    return new Map(this.routeResumeBlocks);
   }
 
   getHealth(): {
@@ -269,6 +283,12 @@ export class BlockMonitorService {
     }
   }
 
+  private captureRouteProgress(): void {
+    for (const [key, entry] of this.routeMonitors) {
+      this.rememberResumeBlock(key, entry.monitor);
+    }
+  }
+
   private recordProgress(chainId: number, monitor: ChainMonitor): void {
     const { lastBlock } = monitor.getStatus();
     if (lastBlock !== null) {
@@ -312,6 +332,10 @@ export class BlockMonitorService {
       }
     }
     for (const [key, group] of routed) {
+      // Leadership can be lost while a route was being awaited above.
+      if (this.isShuttingDown) {
+        return;
+      }
       try {
         await this.syncRouteMonitor(key, group);
       } catch {
@@ -352,6 +376,9 @@ export class BlockMonitorService {
 
   // Not awaited: a slow organization endpoint must not hold up the reconcile.
   private startRouteMonitor(key: string, group: RouteGroup): void {
+    if (this.isShuttingDown) {
+      return;
+    }
     const monitor = new ChainMonitor({
       chain: group.chain,
       workflows: group.workflows,
@@ -412,9 +439,10 @@ export class BlockMonitorService {
   }
 
   private async stopAllRouteMonitors(): Promise<void> {
+    // Kept for the handover and for this process leading again.
+    this.captureRouteProgress();
     const entries = [...this.routeMonitors.values()];
     this.routeMonitors.clear();
-    this.routeResumeBlocks.clear();
     await Promise.allSettled(entries.map((entry) => entry.monitor.stop()));
   }
 }

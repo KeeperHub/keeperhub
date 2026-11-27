@@ -10,11 +10,18 @@
 /** Lease annotation holding a JSON object of chainId to last processed block. */
 export const BLOCK_PROGRESS_ANNOTATION = "keeperhub.io/block-progress";
 
-/** Parse the annotation value. Anything malformed is skipped, never thrown. */
-export function parseBlockProgress(
+/**
+ * Lease annotation holding a JSON object of organization route key to last
+ * processed block. Route keys are fingerprints and carry no URL.
+ */
+export const ROUTE_BLOCK_PROGRESS_ANNOTATION =
+  "keeperhub.io/route-block-progress";
+
+function parseProgressObject<K>(
   raw: string | undefined,
-): Map<number, number> {
-  const progress = new Map<number, number>();
+  parseKey: (key: string) => K | null,
+): Map<K, number> {
+  const progress = new Map<K, number>();
   if (!raw) {
     return progress;
   }
@@ -36,23 +43,39 @@ export function parseBlockProgress(
     return progress;
   }
 
-  for (const [key, value] of Object.entries(parsed)) {
-    const chainId = Number(key);
+  for (const [rawKey, value] of Object.entries(parsed)) {
+    const key = parseKey(rawKey);
     if (
-      Number.isSafeInteger(chainId) &&
-      chainId > 0 &&
+      key !== null &&
       typeof value === "number" &&
       Number.isSafeInteger(value) &&
       value >= 0
     ) {
-      progress.set(chainId, value);
+      progress.set(key, value);
     }
   }
   return progress;
 }
 
+/** Parse the annotation value. Anything malformed is skipped, never thrown. */
+export function parseBlockProgress(
+  raw: string | undefined,
+): Map<number, number> {
+  return parseProgressObject(raw, (key) => {
+    const chainId = Number(key);
+    return Number.isSafeInteger(chainId) && chainId > 0 ? chainId : null;
+  });
+}
+
+/** Parse the route annotation value, skipping anything malformed. */
+export function parseRouteBlockProgress(
+  raw: string | undefined,
+): Map<string, number> {
+  return parseProgressObject(raw, (key) => (key.length > 0 ? key : null));
+}
+
 export function serializeBlockProgress(
-  progress: ReadonlyMap<number, number>,
+  progress: ReadonlyMap<number | string, number>,
 ): string {
   return JSON.stringify(Object.fromEntries(progress));
 }

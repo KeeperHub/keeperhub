@@ -423,6 +423,19 @@ describe("BlockMonitorService organization routes", () => {
     expect(liveProvider(orgRoute.primary.url)).not.toBe(first);
   });
 
+  it("hands an organization route's progress over when leadership moves", async () => {
+    const orgRoute = route("k1");
+    serve([{ id: "org-b", rpcRoute: orgRoute }]);
+    await service.start();
+    await settle();
+    liveProvider(orgRoute.primary.url).emitBlock(10);
+    await settle();
+
+    await service.stop();
+
+    expect(service.getRouteResumeBlocks().get("k1")).toBe(10);
+  });
+
   it("reports usage per serving endpoint without urls", async () => {
     const orgRoute = route("k1");
     serve([{ id: "platform-a" }, { id: "org-b", rpcRoute: orgRoute }]);
