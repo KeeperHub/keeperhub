@@ -180,13 +180,17 @@ export type FailureIncidentResolution =
   | "deleted"
   | "manual_trigger";
 
-/** What opened an incident: N failures, a time limit, a schedule that did not run, or runs refused before they start. */
+/**
+ * What opened an incident: N failures, a time limit, a schedule that did not
+ * run, runs refused before they start, or N runs whose bundles did not land.
+ */
 export type FailureIncidentTrigger =
   | "count"
   | "time"
   | "missed"
   | "funding"
-  | "refused";
+  | "refused"
+  | "not_landing";
 
 /** A streak over threshold; one open per workflow, so only the inserter sends. */
 export const workflowFailureIncidents = pgTable(

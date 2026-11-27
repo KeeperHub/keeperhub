@@ -294,7 +294,7 @@ describe("chat length", () => {
     fitsEverywhere(message);
     const discord = fitChat(message.chatVariants, "discord");
     expect(discord).toMatch(/And \d+ more\./);
-    expect(discord).toContain("See all failing workflows: ");
+    expect(discord).toContain("See all alerts: ");
   });
 
   it("keeps error text when it fits, and drops it before dropping workflows", () => {
@@ -1465,5 +1465,166 @@ describe("fixed Gas Limit hints", () => {
     expect(message.text).toContain(
       "used all of its fixed Gas Limit and reverted on-chain"
     );
+  });
+});
+
+describe("bundles not landing", () => {
+  const incident = {
+    failureCount: 3,
+    firstFailedAt: new Date("2026-10-28T11:00:00Z"),
+    lastError:
+      "Not landed: a bundle in this run did not land in any of the blocks it was sent for.",
+    openedBy: "not_landing" as const,
+  };
+
+  it("says the bundles have not landed in the last N runs and names the likely causes", () => {
+    const message = renderMessage(
+      { ...org, kind: "alert", workflow, incident },
+      now
+    );
+    expect(message.subject).toContain(
+      "Keeper: bundles have not landed in the last 3 runs"
+    );
+    for (const cause of [
+      "tip is too low",
+      "another keeper already made the call",
+      "builders",
+      "could not be checked; these may still land",
+      "No gas is paid unless a bundle lands",
+    ]) {
+      expect(message.text).toContain(cause);
+    }
+    expect(message.text).not.toContain("same wallet");
+    expect(message.text).toContain("Not landing since 2026-10-28 11:00 UTC");
+    expect(message.text).not.toContain("Last error");
+    expect(message.text).not.toContain("Failed runs:");
+    expect(message.text).toContain("Open the workflow:");
+    expect(message.text).not.toContain("failing workflow");
+    expect(message.html).not.toContain("View failed runs");
+    expect(message.html).not.toContain("Open the failing workflow");
+    // Nothing failed: the amber "Check" look of missed runs, not red "Action needed".
+    expect(message.subject).toContain("Check: ");
+    expect(message.subject).not.toContain("Action needed");
+    expect(message.html).toContain("#b45309");
+    expect(message.html).not.toContain("#b91c1c");
+  });
+
+  it("reminds as still not landing", () => {
+    const message = renderMessage(
+      {
+        ...org,
+        kind: "reminder",
+        workflow,
+        incident,
+        reminderNumber: 1,
+      },
+      now
+    );
+    expect(message.subject).toContain("Still not landing");
+    expect(message.subject).toContain(
+      "bundles still not landing (3 runs in a row)"
+    );
+    const last = renderMessage(
+      {
+        ...org,
+        kind: "reminder",
+        workflow,
+        incident,
+        reminderNumber: 7,
+        maxReminders: 7,
+      },
+      now
+    );
+    expect(last.text).toContain(
+      "until its bundles land or someone turns it off."
+    );
+  });
+
+  it("says bundles land again only when the run's own bundle landed", () => {
+    const recovery = (extra: object) =>
+      renderMessage(
+        {
+          ...org,
+          kind: "recovery",
+          workflow,
+          incident,
+          resolvedAt: new Date("2026-10-28T11:30:00Z"),
+          ...extra,
+        },
+        now
+      );
+    const landed = recovery({ bundleLanded: true });
+    expect(landed.text).toContain("bundles are landing again");
+    expect(landed.text).toContain("A bundle landed after 3 runs");
+    const succeeded = recovery({});
+    expect(succeeded.text).toContain("the last run succeeded");
+    expect(succeeded.text).not.toContain("landing again");
+    const failed = recovery({ ranButFailed: true });
+    expect(failed.text).toContain("the last run failed instead");
+    // The workflow never stopped, so it did not start again.
+    expect(failed.subject).toContain("Resolved: ");
+    expect(failed.subject).not.toContain("Started again");
+    expect(landed.subject).toContain("Resolved: ");
+  });
+
+  it("lists a not landing workflow in a grouped alert by its own words", () => {
+    const row = (i: number) => ({
+      id: `wf-${i}`,
+      name: `Workflow ${i}`,
+      triggerLabel: "Schedule",
+      failureCount: 5,
+      lastError: "RPC 429",
+    });
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [
+        { ...row(1), name: "Keeper", failureCount: 3, openedBy: "not_landing" },
+        row(2),
+        row(3),
+      ],
+    });
+    expect(message.text).toContain(
+      "Keeper: bundles have not landed in the last 3 runs"
+    );
+    expect(message.text).toContain("See all alerts: ");
+    expect(message.html).toContain("See all alerts");
+    expect(message.text).not.toContain("failing workflows:");
+    // Not landing is counted on its own, never as failing.
+    expect(message.subject).toContain(
+      "Action needed: 3 workflows need attention: 2 started failing, 1 not landing bundles"
+    );
+    expect(message.text).toContain("such as an RPC provider");
+  });
+
+  it("calls a group of only not landing workflows a check, with no failure cause", () => {
+    const row = (i: number) => ({
+      id: `wf-${i}`,
+      name: `Keeper ${i}`,
+      triggerLabel: "Schedule",
+      failureCount: 3,
+      openedBy: "not_landing" as const,
+    });
+    const message = renderMessage({
+      ...org,
+      kind: "grouped",
+      workflows: [row(1), row(2)],
+    });
+    expect(message.subject).toContain(
+      "Check: 2 workflows are not landing bundles"
+    );
+    expect(message.text).not.toContain("started failing");
+    expect(message.text).not.toContain("such as an RPC provider");
+    // Its own cause, so no line ends on a bare space and no paragraph is empty.
+    const cause =
+      "Their bundles were sent but not seen in their target blocks; nothing failed. Check the tip and builders.";
+    for (const out of [message.text, message.chat]) {
+      expect(out).toContain(`not landing bundles. ${cause}\n`);
+    }
+    expect(message.html).toContain(`<p>${cause}</p>`);
+    expect(message.html).not.toMatch(/<p>\s*<\/p>/);
+    // The amber badge and a plain button, as for one not landing workflow.
+    expect(message.html).toContain("background:#b45309");
+    expect(message.html).not.toContain("background:#b91c1c");
   });
 });

@@ -34,6 +34,7 @@ import {
   type BodyNodeOutputs,
   type BodyStepRunner,
   type NestedForEachHandler,
+  nestedLoopDepth,
   type RunBodyContext,
   runBodyNode,
   type SpuriousRecoveryResolver,
@@ -91,6 +92,8 @@ type RunIterationOptions = {
   edges: WorkflowEdge[];
   forEachNodeId: string;
   iterationIndex?: number;
+  // Set for a nested body: the loops around it.
+  loopDepth?: number;
   stepResultFor: StepResultFor;
   /** Optional override for the step runner (defaults to one that calls
    *  stepResultFor and records calls). */
@@ -158,7 +161,11 @@ async function runIteration(
     bodyVisited,
     bodyResults,
     scopedOutputs,
-    iterationMeta: { iterationIndex, forEachNodeId },
+    iterationMeta: {
+      iterationIndex,
+      forEachNodeId,
+      ...(options.loopDepth !== undefined && { loopDepth: options.loopDepth }),
+    },
     runStep: options.stepRunner ?? defaultStepRunner,
     resolveSpuriousRecovery: options.resolveSpuriousRecovery,
     onSpuriousRecovery: options.onSpuriousRecovery,
@@ -752,6 +759,40 @@ describe("runBodyNode: step context", () => {
     expect(observed?.nodeType).toBe("web3/read-contract");
     expect(observed?.executionId).toBe("exec-test");
     expect(observed?.organizationId).toBe("org-test");
+    expect(observed).not.toHaveProperty("loopDepth");
+  });
+
+  it("tells a step in a nested body how many loops enclose it", async () => {
+    const nodes = [
+      makeForEach("inner"),
+      makeAction("a", "web3/write-contract"),
+    ];
+    const edges = [edge("inner", "a", "loop")];
+    let observed: StepContext | undefined;
+    await runIteration({
+      nodes,
+      edges,
+      forEachNodeId: "inner",
+      loopDepth: 2,
+      stepResultFor: () => ({ success: true }),
+      stepRunner: async ({ stepContext }) => {
+        observed = stepContext;
+        return { success: true };
+      },
+    });
+    expect(observed?.loopDepth).toBe(2);
+  });
+
+  it("counts one more loop for each For Each started inside a body", () => {
+    // A top-level loop's body has no depth (one loop).
+    const outer = { iterationIndex: 0, forEachNodeId: "outer" };
+    const middle = {
+      iterationIndex: 1,
+      forEachNodeId: "middle",
+      loopDepth: nestedLoopDepth(outer),
+    };
+    expect(middle.loopDepth).toBe(2);
+    expect(nestedLoopDepth(middle)).toBe(3);
   });
 });
 

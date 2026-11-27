@@ -22,6 +22,7 @@ import {
   readSimulationSettings,
   simulateCallAtNextBlock,
   simulateSendAtNextBlock,
+  TargetBlockPassedError,
   tagNextBlockSimulation,
 } from "@/lib/web3/next-block-simulation";
 
@@ -2064,6 +2065,66 @@ describe("next-block simulation", () => {
       const error = await send().catch((e: unknown) => e);
       expect(error).not.toBeInstanceOf(NextBlockSimulationUnsupportedError);
       expect(isNonRetryableError(error)).toBe(false);
+    });
+  });
+
+  describe("a send for a later target block", () => {
+    function sendFor(
+      targetBlock: number,
+      basedOn?: Awaited<ReturnType<typeof send>>["simulation"]
+    ): ReturnType<typeof simulateSendAtNextBlock> {
+      return simulateSendAtNextBlock(managerFor(provider), {
+        chainId: CHAIN_ID,
+        tx: RUN_TX,
+        options: {
+          timestampOffsetSec: SLOT,
+          targetBlock,
+          ...(basedOn ? { basedOn } : {}),
+        },
+      });
+    }
+
+    it("simulates the target's number, one slot per block after the next", async () => {
+      node.unlockAt = node.latestTimestamp + 2 * SLOT;
+      // Target 1 is still too soon; target 2 is the first that passes.
+      await expect(sendFor(101)).rejects.toMatchObject({
+        code: "CALL_EXCEPTION",
+      });
+      const { simulation } = await sendFor(102);
+      expect(simulation).toMatchObject({
+        baseBlock: 100,
+        assumedBlockNumber: 102,
+        assumedTimestamp: node.latestTimestamp + 2 * SLOT,
+      });
+      expect(node.seen.at(-1)?.overrides).toEqual({
+        number: ethers.toQuantity(102),
+        time: ethers.toQuantity(node.latestTimestamp + 2 * SLOT),
+      });
+    });
+
+    it("keeps the target fixed when the chain moved on, on the newer state", async () => {
+      node.latestNumber = 101;
+      node.latestTimestamp += SLOT;
+      setClock(node.latestTimestamp + 1);
+      const { simulation } = await sendFor(103);
+      expect(simulation).toMatchObject({
+        baseBlock: 101,
+        assumedBlockNumber: 103,
+        assumedTimestamp: node.latestTimestamp + 2 * SLOT,
+      });
+    });
+
+    it("ignores an earlier prediction, which names another block", async () => {
+      const basedOn = (await send()).simulation;
+      const { simulation } = await sendFor(103, basedOn);
+      expect(simulation.assumedBlockNumber).toBe(103);
+    });
+
+    it("refuses a target already mined, without retrying", async () => {
+      const error = await sendFor(100).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(TargetBlockPassedError);
+      expect(isNonRetryableError(error)).toBe(true);
+      expect(failedNextBlockCheck(error)).toBe(true);
     });
   });
 

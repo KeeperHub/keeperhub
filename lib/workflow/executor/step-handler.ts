@@ -48,6 +48,8 @@ export type StepContext = {
   triggerType?: string;
   iterationIndex?: number;
   forEachNodeId?: string;
+  // Set inside a nested For Each body: how many loops enclose the step.
+  loopDepth?: number;
   organizationId?: string;
   // Set by direct-execution routes that already reserved this execution's
   // native value against the daily cap (checkAndReserveExecution). Tells a

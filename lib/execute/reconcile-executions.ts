@@ -35,6 +35,7 @@ import {
 import {
   type RunOutcome,
   runOutcomeOf,
+  runOutcomeReason,
 } from "@/lib/workflow/executor/run-outcome";
 import { loadSuccessLogFacts } from "@/lib/workflow/executor/success-log-facts";
 
@@ -372,10 +373,11 @@ async function reconcileWorkflow(
       ? await loadSuccessLogFacts(execution.id, true)
       : undefined;
   if (logged && logged.hashes.length === 0) {
+    const outcome = runOutcomeOf(logged.signals);
     await settleWorkflow(
       execution,
-      runOutcomeOf(logged.signals, false) ?? "success",
-      null
+      outcome ?? "success",
+      outcome ? runOutcomeReason(outcome) : null
     );
     return "completed";
   }
@@ -411,15 +413,14 @@ async function reconcileWorkflow(
   );
 
   if (allVerified && !failureOrigin) {
-    // A step that did not land keeps the run not landed; a run with hashes
-    // sent a transaction, so it is never an unbilled skip.
+    // A step that did not land keeps the run not landed; a skipped bundle step skips it.
     const { signals } =
       logged ?? (await loadSuccessLogFacts(execution.id, false));
-    const outcome = runOutcomeOf(signals, true);
+    const outcome = runOutcomeOf(signals);
     await settleWorkflow(
       execution,
-      outcome === undefined ? "success" : "not_landed",
-      null,
+      outcome ?? "success",
+      outcome === undefined ? null : runOutcomeReason(outcome),
       logged?.hashes
     );
     return "completed";

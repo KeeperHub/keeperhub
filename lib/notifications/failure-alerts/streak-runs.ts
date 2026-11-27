@@ -174,10 +174,14 @@ export async function loadNewestRefusal(
 /** The key of idx_workflow_executions_workflow_started_counted (0169); written the same so the planner matches it. */
 const COUNTED_STARTED_AT_SQL = sql`(CASE WHEN ${workflowExecutions.status} <> 'skipped' THEN ${workflowExecutions.startedAt} END)`;
 
-/** Newest finished runs, without platform errors or refusals (summarizeStreak steps over them too). */
+/**
+ * Newest finished runs, without platform errors or refusals (summarizeStreak
+ * steps over them too). Not landed runs only for the not-landing streak.
+ */
 export async function loadStreakRuns(
   workflowId: string,
-  limit: number
+  limit: number,
+  options: { notLanded?: boolean } = {}
 ): Promise<StreakRun[]> {
   return await db
     .select({
@@ -202,7 +206,9 @@ export async function loadStreakRuns(
           OR ${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})`,
         sql`NOT ${REFUSED_RUN_SQL}`,
         // Stepped over by summarizeStreak; filtered here so it takes no window slot.
-        sql`${workflowExecutions.status} <> 'not_landed'`,
+        options.notLanded
+          ? undefined
+          : sql`${workflowExecutions.status} <> 'not_landed'`,
         // The index predicate, verbatim (literals), so the planner can use it.
         countedRunSql(workflowExecutions)
       )

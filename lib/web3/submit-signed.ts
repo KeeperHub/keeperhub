@@ -20,8 +20,11 @@ import {
 export type { SendReport, SendRoute } from "@/lib/web3/send-route";
 
 /** The `route` / `included` output fields; empty when nothing was sent. */
-export function sendReportFields(report: SendReport): {
-  route?: SendRoute;
+export function sendReportFields<Route extends string = SendRoute>(report: {
+  route?: Route;
+  included?: boolean;
+}): {
+  route?: Route;
   included?: boolean;
 } {
   return report.route

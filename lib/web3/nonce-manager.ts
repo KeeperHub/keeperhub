@@ -16,10 +16,22 @@
  * release path.
  */
 
-import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  gt,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { ethers } from "ethers";
 import { db } from "@/lib/db";
 import {
+  type BundleMiss,
   type BundleRun,
   type PendingTransaction,
   pendingTransactions,
@@ -34,11 +46,14 @@ import {
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { sleep } from "@/lib/sleep";
 import {
+  BUNDLE_PRE_RECORD_MS,
+  BUNDLE_WINDOW_MARGIN_BLOCKS,
   confirmRow,
   currentSendHashes,
   findMinedHash,
   historyHashes,
   LATE_BUNDLE_CHECK_MS,
+  LONGEST_BUNDLE_HOLD_MS,
   laggedMinedCount,
   MAX_BUNDLE_RUNS,
   MAX_BUNDLE_WINDOW_MS,
@@ -52,6 +67,7 @@ export type NonceSession = {
   chainId: number;
   executionId: string;
   currentNonce: number;
+  // When the lock was taken; a bundle's pre-send budget runs from it.
   startedAt: Date;
   /**
    * Set once the lock can no longer be proved held: an extension found the row
@@ -176,18 +192,17 @@ const DEFAULT_OPTIONS: Required<NonceManagerOptions> = {
   // healthy write (seconds) many times over but not a write riding out RPC
   // failover (several 186s rounds); a waiter then fails loudly rather than
   // sharing the holder's nonce. The TTL bounds *dead* holders; the retry
-  // budget bounds the wait for *live* ones.
+  // budget bounds the wait for *live* ones. A bundle holder extends the wait
+  // (see holdWaitEnd); the TTL outlives any bundle window a dead holder left.
   maxLockRetries: 600,
   lockRetryDelayMs: 200,
 };
 
-// A node a block or two behind can still report the last target as latest.
-const BUNDLE_WINDOW_MARGIN_BLOCKS = 2;
+// Past the longest end of a bundle hold, so a waiter outlasts it.
+const BUNDLE_WAIT_MARGIN_MS = 8000;
 
-// A dead holder's lock must outlive any bundle window it left behind.
-if (DEFAULT_OPTIONS.lockTtlMs <= MAX_BUNDLE_WINDOW_MS) {
-  throw new Error("Nonce lock TTL must exceed the longest bundle window");
-}
+// What a waiter already used of its longer waits: one behind a bundle, one behind a holder preparing.
+type HoldWait = { extended: boolean; preparing: boolean };
 
 type BundleWindowState = "open" | "closed" | "unreadable";
 
@@ -243,6 +258,7 @@ export class NonceManager {
     const reader = chainReader(rpc);
 
     await this.acquireLock(normalizedAddress, chainId, executionId);
+    const lockedAt = new Date();
 
     const lease: LockLease = {
       walletAddress: normalizedAddress,
@@ -293,7 +309,7 @@ export class NonceManager {
       // caller holds.
       const session: NonceSession = Object.assign(lease, {
         currentNonce: safeNonce,
-        startedAt: new Date(),
+        startedAt: lockedAt,
       });
 
       console.log(
@@ -710,7 +726,8 @@ export class NonceManager {
   /**
    * Record a bundle before the first builder request: every signed hash at
    * this nonce, the last block it targets, and the step that sent it. A crash
-   * mid-send still leaves a row that reconcile respects.
+   * mid-send still leaves a row that reconcile respects. Returns every hash
+   * the same step has signed at this nonce, kept history included.
    */
   async recordBundle(
     session: NonceSession,
@@ -722,12 +739,12 @@ export class NonceManager {
       gasPrice?: string;
       node?: BundleRun["node"];
     }
-  ): Promise<void> {
+  ): Promise<string[]> {
     const [first] = bundle.hashes;
     if (!first) {
       throw new Error("A bundle needs at least one signed transaction");
     }
-    await this.upsertPending(session, nonce, {
+    const runs = await this.upsertPending(session, nonce, {
       txHash: first,
       workflowId: bundle.workflowId,
       gasPrice: bundle.gasPrice,
@@ -741,6 +758,13 @@ export class NonceManager {
         },
       },
     });
+    const sameStep = runs.filter(
+      (run) =>
+        run.executionId === session.executionId &&
+        run.node?.id === bundle.node?.id &&
+        run.node?.iterationIndex === bundle.node?.iterationIndex
+    );
+    return [...new Set(sameStep.flatMap((run) => run.hashes))];
   }
 
   /** Confirm a nonce by key, with the hash that was mined. */
@@ -755,11 +779,26 @@ export class NonceManager {
       .where(this.ownRow(session, nonce));
   }
 
-  /** Mark a nonce nothing was mined at as dropped, so the next session reuses it. */
-  async markNonceDropped(session: NonceSession, nonce: number): Promise<void> {
+  /**
+   * Mark a nonce nothing was mined at as dropped, so the next session reuses
+   * it. `missed` marks the row's newest bundle entry as a decided miss.
+   */
+  async markNonceDropped(
+    session: NonceSession,
+    nonce: number,
+    missed?: BundleMiss
+  ): Promise<void> {
+    const runs = pendingTransactions.bundleRuns;
     await db
       .update(pendingTransactions)
-      .set({ status: "dropped" })
+      .set({
+        status: "dropped",
+        ...(missed && {
+          bundleRuns: sql`CASE WHEN jsonb_array_length(${runs}) > 0
+            THEN jsonb_set(${runs}, ARRAY[(jsonb_array_length(${runs}) - 1)::text], (${runs} -> -1) || ${JSON.stringify({ missed })}::jsonb)
+            ELSE ${runs} END`,
+        }),
+      })
       .where(
         and(
           this.ownRow(session, nonce),
@@ -792,7 +831,7 @@ export class NonceManager {
       gasPrice?: string;
       bundle: { lastTargetBlock: number; run: BundleRun } | null;
     }
-  ): Promise<void> {
+  ): Promise<BundleRun[]> {
     const fields = {
       txHash: row.txHash,
       workflowId: row.workflowId,
@@ -801,7 +840,7 @@ export class NonceManager {
       executionId: session.executionId,
     };
     const cutoff = Date.now() - LATE_BUNDLE_CHECK_MS;
-    await db
+    const upsert = db
       .insert(pendingTransactions)
       .values({
         walletAddress: session.walletAddress,
@@ -837,6 +876,15 @@ export class NonceManager {
           confirmedAt: sql`null`,
         },
       });
+    if (!row.bundle) {
+      await upsert;
+      return [];
+    }
+    // Only a bundle reads its row back: the history its step signed at this nonce.
+    const [written] = await upsert.returning({
+      bundleRuns: pendingTransactions.bundleRuns,
+    });
+    return written?.bundleRuns ?? [];
   }
 
   /**
@@ -997,7 +1045,9 @@ export class NonceManager {
     chainId: number,
     executionId: string
   ): Promise<void> {
-    for (let attempt = 0; attempt < this.maxLockRetries; attempt++) {
+    let retries = this.maxLockRetries;
+    const holdWait: HoldWait = { extended: false, preparing: false };
+    for (let attempt = 0; attempt < retries; attempt++) {
       const now = new Date();
       const expiresAt = new Date(now.getTime() + this.lockTtlMs);
 
@@ -1094,6 +1144,19 @@ export class NonceManager {
       }
 
       await sleep(this.lockRetryDelayMs);
+      if (attempt + 1 === retries) {
+        const waitEnd = await this.holdWaitEnd(
+          walletAddress,
+          chainId,
+          holdWait
+        );
+        if (waitEnd !== undefined) {
+          retries += Math.max(
+            0,
+            Math.ceil((waitEnd - Date.now()) / this.lockRetryDelayMs)
+          );
+        }
+      }
     }
 
     // Exhausting the budget means the wallet is oversubscribed, not that the
@@ -1101,11 +1164,9 @@ export class NonceManager {
     // lock is the only thing that measures the overload. Reported as a user
     // error so it carries an actionable message and counts a metric without
     // paging, and phrased so the author knows which lever to pull.
-    const waitSeconds = Math.round(
-      (this.maxLockRetries * this.lockRetryDelayMs) / 1000
-    );
+    const waitSeconds = Math.round((retries * this.lockRetryDelayMs) / 1000);
     const failure = new Error(
-      `Wallet is saturated: could not acquire the nonce lock for ${walletAddress}:${chainId} after ${waitSeconds}s. Transactions from one wallet are sent one at a time, so reduce this workflow's trigger rate or spread writes across additional wallets.`
+      `Wallet is saturated: could not acquire the nonce lock for ${walletAddress}:${chainId} after ${waitSeconds}s. Transactions from one wallet are sent one at a time (a bundle step holds its wallet until its outcome is decided), so reduce this workflow's trigger rate or spread writes across additional wallets.`
     );
     logUserError(
       ErrorCategory.CONFIGURATION,
@@ -1115,10 +1176,128 @@ export class NonceManager {
         wallet_address: walletAddress,
         chain_id: String(chainId),
         execution_id: executionId,
-        max_retries: String(this.maxLockRetries),
+        max_retries: String(retries),
       }
     );
     throw failure;
+  }
+
+  /**
+   * Where a waiter whose budget ran out keeps waiting to, read from the live
+   * holder: behind a bundle (a pending bundle row recorded under its lock),
+   * to its longest hold's end; on a wallet that sends bundles here, behind a
+   * holder still inside the pre-record budget with no row yet (a bundle may
+   * be preparing), to that budget's end, then it checks again, whoever holds
+   * the lock then. At most one of each, so the wait stays bounded.
+   */
+  private async holdWaitEnd(
+    walletAddress: string,
+    chainId: number,
+    wait: HoldWait
+  ): Promise<number | undefined> {
+    if (wait.extended) {
+      return;
+    }
+    const holder = await this.lockHolder(walletAddress, chainId);
+    if (!holder) {
+      return;
+    }
+    // Holder pod and waiter clocks differ by less than the margin.
+    if (holder.bundle) {
+      wait.extended = true;
+      return holder.lockedAt + LONGEST_BUNDLE_HOLD_MS + BUNDLE_WAIT_MARGIN_MS;
+    }
+    const prepared =
+      holder.lockedAt + BUNDLE_PRE_RECORD_MS + BUNDLE_WAIT_MARGIN_MS;
+    if (
+      wait.preparing ||
+      prepared <= Date.now() ||
+      !(await this.sendsBundles(walletAddress, chainId))
+    ) {
+      return;
+    }
+    wait.preparing = true;
+    return prepared;
+  }
+
+  /** Whether this wallet sent a bundle on this chain within the late-landing window. */
+  private async sendsBundles(
+    walletAddress: string,
+    chainId: number
+  ): Promise<boolean> {
+    try {
+      const [row] = await db
+        .select({ submittedAt: pendingTransactions.submittedAt })
+        .from(pendingTransactions)
+        .where(
+          and(
+            eq(pendingTransactions.walletAddress, walletAddress),
+            eq(pendingTransactions.chainId, chainId),
+            ne(pendingTransactions.bundleRuns, sql`'[]'::jsonb`),
+            gt(
+              pendingTransactions.submittedAt,
+              new Date(Date.now() - LATE_BUNDLE_CHECK_MS)
+            )
+          )
+        )
+        .limit(1);
+      return row !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The live holder's lock time, and whether it recorded a pending bundle row
+   * here under this lock; undefined when the lock is free or unreadable.
+   */
+  private async lockHolder(
+    walletAddress: string,
+    chainId: number
+  ): Promise<{ lockedAt: number; bundle: boolean } | undefined> {
+    try {
+      const [holder] = await db
+        .select({
+          lockedBy: walletLocks.lockedBy,
+          lockedAt: walletLocks.lockedAt,
+        })
+        .from(walletLocks)
+        .where(
+          and(
+            eq(walletLocks.walletAddress, walletAddress),
+            eq(walletLocks.chainId, chainId),
+            gt(walletLocks.expiresAt, sql`NOW()`)
+          )
+        )
+        .limit(1);
+      if (!(holder?.lockedBy && holder.lockedAt)) {
+        return;
+      }
+      const lockedAt = holder.lockedAt.getTime();
+      // Since the lock (less clock skew): an earlier step's stale row of the same run does not count.
+      const since = Math.max(
+        lockedAt - BUNDLE_WAIT_MARGIN_MS,
+        Date.now() - MAX_BUNDLE_WINDOW_MS
+      );
+      const [bundle] = await db
+        .select({ nonce: pendingTransactions.nonce })
+        .from(pendingTransactions)
+        .where(
+          and(
+            eq(pendingTransactions.walletAddress, walletAddress),
+            eq(pendingTransactions.chainId, chainId),
+            eq(pendingTransactions.status, "pending"),
+            eq(pendingTransactions.executionId, holder.lockedBy),
+            isNotNull(pendingTransactions.lastTargetBlock),
+            gt(pendingTransactions.submittedAt, new Date(since))
+          )
+        )
+        .limit(1);
+      return { lockedAt, bundle: bundle !== undefined };
+    } catch {
+      // Unreadable: the plain budget stands, and the waiter fails loudly.
+      return;
+    }
   }
 
   /**

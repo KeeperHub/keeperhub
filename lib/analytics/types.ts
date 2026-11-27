@@ -42,7 +42,7 @@ export type NormalizedStatus =
   // pay-as-you-go charge) or skipped behind a live run. Its own status so it stays out of the error count and
   // the success-rate denominator.
   | "skipped"
-  // Ran, but a transaction in it did not land in a block: neither a success nor an error.
+  // Ran, but a bundle in it was not seen in its target blocks: neither a success nor an error.
   | "not_landed"
   | "cancelled";
 

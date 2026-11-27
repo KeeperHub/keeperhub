@@ -129,11 +129,13 @@ type Schema = typeof import("@/lib/db/schema");
 type Extensions = typeof import("@/lib/db/schema-extensions");
 type Nonces = typeof import("@/lib/web3/nonce-manager");
 type Late = typeof import("@/lib/web3/bundles/late-landing-sweep");
+type InFlightModule = typeof import("@/lib/web3/bundles/in-flight");
 let db: Db;
 let schema: Schema;
 let ext: Extensions;
 let nonces: Nonces;
 let late: Late;
+let inFlight: InFlightModule;
 let seq = 0;
 
 const hash = (c: string): string => `0x${c.repeat(64)}`;
@@ -395,6 +397,7 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
     ext = await import("@/lib/db/schema-extensions");
     nonces = await import("@/lib/web3/nonce-manager");
     late = await import("@/lib/web3/bundles/late-landing-sweep");
+    inFlight = await import("@/lib/web3/bundles/in-flight");
     await db.insert(schema.users).values({
       id: USER_ID,
       name: "late bundle owner",
@@ -465,6 +468,43 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
         }),
       ]);
       expect(execution?.gasUsedWei).toBe(String(FEE_WEI));
+    });
+
+    it("confirms a bundle left pending as not-checked straight from pending, and re-settles its run", async () => {
+      const bundleRun = await run("not_landed");
+      // The step could not decide: the row stays pending, never dropped.
+      const manager = new nonces.NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        CHAIN_ID,
+        bundleRun,
+        provider({ transactionCount: 7, latestBlock: 100 }) as never
+      );
+      await manager.recordBundle(session, 7, {
+        hashes: [hash("1"), hash("2")],
+        lastTargetBlock: 102,
+        node: { id: "write-1", name: "Write Contract" },
+      });
+      await manager.endSession(session);
+      await logStep(bundleRun, "write-1", {
+        route: "bundle",
+        notIncludedReason: "not-checked",
+      });
+      expect((await rowAt(7))?.status).toBe("pending");
+
+      await settleAt({
+        transactionCount: 8,
+        latestBlock: 600,
+        mined: { [hash("1")]: 1 },
+      });
+
+      expect(await rowAt(7)).toMatchObject({
+        status: "confirmed",
+        txHash: hash("1"),
+      });
+      const execution = await executionOf(bundleRun);
+      expect(execution?.status).toBe("success");
+      expect(execution?.error).toBeNull();
     });
 
     it("marks a dropped bundle replaced when the nonce's own endpoint finds no hash; the run stays not landed", async () => {
@@ -762,6 +802,210 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
     });
   });
 
+  describe("replay of a step that sent its bundle", () => {
+    const record = async (executionId: string, nodeId: string) => {
+      const manager = new nonces.NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        CHAIN_ID,
+        executionId,
+        provider({ transactionCount: 7, latestBlock: 100 }) as never
+      );
+      await manager.recordBundle(session, 7, {
+        hashes: [hash("1"), hash("2")],
+        lastTargetBlock: 102,
+        workflowId: WORKFLOW_ID,
+        node: { id: nodeId, name: "Write Contract", iterationIndex: 0 },
+      });
+      await manager.endSession(session);
+    };
+    const check = (
+      executionId: string,
+      nodeId: string,
+      iterationIndex = 0,
+      sessionNonce?: number
+    ) =>
+      inFlight.bundleInFlight({
+        workflowId: WORKFLOW_ID,
+        chainId: CHAIN_ID,
+        walletAddress: WALLET.toUpperCase().replace("0X", "0x"),
+        step: { executionId, nodeId, iterationIndex },
+        readLatestBlock: async () => 500,
+        sessionNonce,
+      });
+    // A crash replay comes minutes after its run started.
+    const startedLongAgo = async (executionId: string) => {
+      await setRun(executionId, {
+        startedAt: new Date(Date.now() - 30 * 60_000),
+      });
+    };
+    // The replay's session: reconcile runs, then the step checks with its nonce.
+    const replaySession = async (executionId: string, view: ChainView) => {
+      const manager = new nonces.NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        CHAIN_ID,
+        executionId,
+        provider(view, 1) as never
+      );
+      await manager.endSession(session);
+      return session.currentNonce;
+    };
+
+    it("finds its pending row after the window (a crash replay), and its landing once confirmed", async () => {
+      const bundleRun = await run("running");
+      await startedLongAgo(bundleRun);
+      await record(bundleRun, "write-1");
+      await setRow(7, { submittedAt: new Date(Date.now() - 10 * 60_000) });
+      expect(await check(bundleRun, "write-1")).toEqual({ kind: "replay" });
+      expect(await check(bundleRun, "write-1", 1)).toEqual({ kind: "none" });
+      expect(await check(bundleRun, "write-2")).toEqual({ kind: "none" });
+
+      await setRow(7, { status: "confirmed", txHash: hash("2") });
+      expect(await check(bundleRun, "write-1")).toEqual({
+        kind: "replay",
+        landedHash: hash("2"),
+      });
+      // Another run of the workflow is not held by a landed row.
+      expect(await check(await run("running"), "write-1")).toEqual({
+        kind: "none",
+      });
+    });
+
+    it("signs again after its row was dropped while the nonce is unused: it reuses that nonce", async () => {
+      const bundleRun = await run("running");
+      await startedLongAgo(bundleRun);
+      await record(bundleRun, "write-1");
+      await setRow(7, { status: "dropped" });
+      const nonce = await replaySession(bundleRun, {
+        transactionCount: 7,
+        latestBlock: 500,
+      });
+      expect(nonce).toBe(7);
+      expect(await check(bundleRun, "write-1", 0, nonce)).toEqual({
+        kind: "none",
+      });
+    });
+
+    it("signs nothing for a dropped row whose nonce is used but not proved mined or replaced", async () => {
+      const bundleRun = await run("running");
+      await startedLongAgo(bundleRun);
+      await record(bundleRun, "write-1");
+      await setRow(7, { status: "dropped" });
+      // Our bundle was mined at 7, but the session's receipt read fails.
+      const nonce = await replaySession(bundleRun, {
+        transactionCount: 8,
+        latestBlock: 500,
+        mined: { [hash("2")]: 1 },
+      });
+      expect(nonce).toBe(8);
+      expect((await rowAt(7))?.status).toBe("dropped");
+      expect(await check(bundleRun, "write-1", 0, nonce)).toEqual({
+        kind: "replay",
+      });
+      // Before the lock the session nonce is unknown: the check under it decides.
+      expect(await check(bundleRun, "write-1")).toEqual({ kind: "none" });
+    });
+
+    it("signs again once another KeeperHub send took the dropped nonce: the row is that send's now", async () => {
+      const bundleRun = await run("running");
+      await startedLongAgo(bundleRun);
+      await record(bundleRun, "write-1");
+      await setRow(7, { status: "dropped" });
+      // Another run's normal send reuses nonce 7 and is mined.
+      const manager = new nonces.NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        CHAIN_ID,
+        await run("running"),
+        provider({ transactionCount: 7, latestBlock: 500 }) as never
+      );
+      await manager.recordTransaction(session, 7, hash("9"));
+      await manager.confirmTransaction(hash("9"));
+      await manager.endSession(session);
+      expect((await rowAt(7))?.status).toBe("confirmed");
+      // Our bundle can no longer land at 7: the replay signs again.
+      expect(await check(bundleRun, "write-1", 0, 8)).toEqual({ kind: "none" });
+      expect(await check(bundleRun, "write-1")).toEqual({ kind: "none" });
+    });
+
+    it("returns a decided miss to its replay: the drop marks the step's entry", async () => {
+      const bundleRun = await run("running");
+      await startedLongAgo(bundleRun);
+      const manager = new nonces.NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        CHAIN_ID,
+        bundleRun,
+        provider({ transactionCount: 7, latestBlock: 100 }) as never
+      );
+      await manager.recordBundle(session, 7, {
+        hashes: [hash("1")],
+        lastTargetBlock: 102,
+        workflowId: WORKFLOW_ID,
+        node: { id: "write-1", name: "Write Contract", iterationIndex: 0 },
+      });
+      await manager.markNonceDropped(session, 7, "not-picked");
+      await manager.endSession(session);
+      const row = await rowAt(7);
+      expect(row?.status).toBe("dropped");
+      expect(row?.bundleRuns.at(-1)?.missed).toBe("not-picked");
+      for (const sessionNonce of [undefined, 7, 8]) {
+        expect(await check(bundleRun, "write-1", 0, sessionNonce)).toEqual({
+          kind: "replay",
+          missed: "not-picked",
+        });
+      }
+      // Another step is not this one's replay.
+      expect(await check(bundleRun, "write-2", 0, 8)).toEqual({ kind: "none" });
+    });
+
+    it("tells a step every hash it signed at the nonce, its earlier send kept in the history", async () => {
+      const bundleRun = await run("running");
+      await startedLongAgo(bundleRun);
+      await record(bundleRun, "write-1");
+      await setRow(7, { status: "dropped" });
+      const manager = new nonces.NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        CHAIN_ID,
+        bundleRun,
+        provider({ transactionCount: 7, latestBlock: 500 }) as never
+      );
+      const node = { id: "write-1", name: "Write Contract", iterationIndex: 0 };
+      const step = await manager.recordBundle(session, 7, {
+        hashes: [hash("3")],
+        lastTargetBlock: 502,
+        workflowId: WORKFLOW_ID,
+        node,
+      });
+      // A plain send leaves no row marked: only a bundle's entry carries the miss.
+      await manager.markNonceDropped(session, 7);
+      await manager.endSession(session);
+      expect([...step].sort()).toEqual(
+        [hash("1"), hash("2"), hash("3")].sort()
+      );
+      expect((await rowAt(7))?.bundleRuns.at(-1)?.missed).toBeUndefined();
+    });
+
+    it("signs again for a row proved replaced", async () => {
+      const bundleRun = await run("running");
+      await startedLongAgo(bundleRun);
+      await record(bundleRun, "write-1");
+      await setRow(7, { status: "replaced" });
+      expect(await check(bundleRun, "write-1", 0, 8)).toEqual({ kind: "none" });
+    });
+
+    it("reads only rows sent since the run started", async () => {
+      const bundleRun = await run("running");
+      await record(bundleRun, "write-1");
+      await setRow(7, { submittedAt: new Date(Date.now() - 10 * 60_000) });
+      expect(await check(bundleRun, "write-1")).toEqual({ kind: "none" });
+      await startedLongAgo(bundleRun);
+      expect(await check(bundleRun, "write-1")).toEqual({ kind: "replay" });
+    });
+  });
+
   describe("sweep", () => {
     it("re-settles an idle wallet's dropped bundle mined later, one read per hash", async () => {
       const bundleRun = await run("not_landed");
@@ -789,6 +1033,97 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
         txHash: hash("2"),
       });
       expect(await statusOf(bundleRun)).toBe("success");
+    });
+
+    // A not-checked step's row, recorded `ageMs` ago and never dropped.
+    const notCheckedRow = async (ageMs: number): Promise<string> => {
+      const bundleRun = await run("not_landed");
+      const manager = new nonces.NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        CHAIN_ID,
+        bundleRun,
+        provider({ transactionCount: 7, latestBlock: 100 }) as never
+      );
+      await manager.recordBundle(session, 7, {
+        hashes: [hash("1"), hash("2")],
+        lastTargetBlock: 102,
+        node: { id: "write-1", name: "Write Contract" },
+      });
+      await manager.endSession(session);
+      await logStep(bundleRun, "write-1", {
+        route: "bundle",
+        notIncludedReason: "not-checked",
+      });
+      await setRow(7, { submittedAt: new Date(Date.now() - ageMs) });
+      return bundleRun;
+    };
+    // Window (6 x 12 s + 60 s) plus a second.
+    const CLOSED_MS = 133_000;
+
+    it("settles a not-checked run whose bundle landed with no later session on the wallet", async () => {
+      const bundleRun = await notCheckedRow(CLOSED_MS);
+      sweepChain.view = {
+        transactionCount: 8,
+        latestBlock: 600,
+        mined: { [hash("2")]: 1 },
+      };
+      await sweep();
+      expect(await rowAt(7)).toMatchObject({
+        status: "confirmed",
+        txHash: hash("2"),
+      });
+      expect(await statusOf(bundleRun)).toBe("success");
+    });
+
+    it("drops a closed-window pending row nothing was mined at, as reconcile would", async () => {
+      const bundleRun = await notCheckedRow(CLOSED_MS);
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      await sweep();
+      expect((await rowAt(7))?.status).toBe("dropped");
+      expect(await statusOf(bundleRun)).toBe("not_landed");
+    });
+
+    it("lets a live holder's confirm win over the sweep's drop by time", async () => {
+      const bundleRun = await run("running");
+      const manager = new nonces.NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        CHAIN_ID,
+        bundleRun,
+        provider({ transactionCount: 7, latestBlock: 100 }) as never
+      );
+      try {
+        await manager.recordBundle(session, 7, {
+          hashes: [hash("1"), hash("2")],
+          lastTargetBlock: 102,
+          workflowId: WORKFLOW_ID,
+          node: { id: "write-1", name: "Write Contract" },
+        });
+        await setRow(7, { submittedAt: new Date(Date.now() - CLOSED_MS) });
+        sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+        await sweep();
+        expect((await rowAt(7))?.status).toBe("dropped");
+        // The holder's last poll then sees its bundle mined.
+        await manager.confirmNonce(session, 7, hash("2"));
+      } finally {
+        await manager.endSession(session);
+      }
+      expect(await rowAt(7)).toMatchObject({
+        status: "confirmed",
+        txHash: hash("2"),
+      });
+    });
+
+    it("leaves a pending row whose window is still open to its session", async () => {
+      await notCheckedRow(10_000);
+      sweepChain.view = {
+        transactionCount: 8,
+        latestBlock: 600,
+        mined: { [hash("2")]: 1 },
+      };
+      await sweep();
+      expect((await rowAt(7))?.status).toBe("pending");
     });
 
     it("reads no receipt while nothing is mined at the nonce", async () => {

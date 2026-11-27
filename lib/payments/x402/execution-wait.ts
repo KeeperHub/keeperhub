@@ -7,7 +7,7 @@ import {
 } from "@/lib/agentic-wallet/constants";
 import { db } from "@/lib/db";
 import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
-import { isErrorStatus } from "@/lib/errors/execution-status";
+import { isErrorStatus, NOT_LANDED_LATER } from "@/lib/errors/execution-status";
 
 /**
  * Default timeout for waiting on read-workflow completion before falling back
@@ -284,8 +284,7 @@ export async function buildCallCompletionResponse(
     return {
       executionId,
       status: "error",
-      error:
-        "Execution finished, but a transaction in it did not land in a block (it can still land within about a day)",
+      error: `Execution finished, but a bundle in it was not seen in its target blocks. ${NOT_LANDED_LATER}`,
       code: "not_landed",
     };
   }

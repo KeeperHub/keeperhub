@@ -5,6 +5,7 @@ import type {
 import {
   amountField,
   balanceCheckSuccessOutput,
+  bundleOutputFields,
   checkErrorOutput,
   contractAddressField,
   evmNetworkField,
@@ -2156,6 +2157,7 @@ const web3Plugin: IntegrationPlugin = {
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
         ...sendRouteOutputFields(),
+        ...bundleOutputFields(),
         {
           field: "error",
           description:

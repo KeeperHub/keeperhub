@@ -35,9 +35,17 @@ describe("transferFundsCore on Solana - Send as", () => {
   });
 
   it("refuses an unknown sendMode", async () => {
-    const result = await transferFundsCore({ ...SOLANA, sendMode: "bundle" });
+    const result = await transferFundsCore({ ...SOLANA, sendMode: "Bundle" });
     expect(result).toMatchObject({ success: false, errorClass: "user" });
     expect((result as { error: string }).error).toContain("sendMode must be");
+  });
+
+  it("refuses a bundle, which only Write Contract sends", async () => {
+    const result = await transferFundsCore({ ...SOLANA, sendMode: "bundle" });
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    expect((result as { error: string }).error).toContain(
+      "bundles are only available on Write Contract steps"
+    );
   });
 
   it.each([

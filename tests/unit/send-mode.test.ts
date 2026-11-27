@@ -915,7 +915,7 @@ describe("unknown sendMode values", () => {
     "private_relay",
     " private-relay",
     "private-relay ",
-    "bundle",
+    "Bundle",
     "{{@x:X.mode}}",
     true,
     1,
@@ -925,7 +925,7 @@ describe("unknown sendMode values", () => {
     );
   });
 
-  it.each([undefined, null, "", "transaction", "private-relay"])(
+  it.each([undefined, null, "", "transaction", "private-relay", "bundle"])(
     "lets %j through",
     (value) => {
       expect(unknownSendModeIssue(value)).toBeUndefined();

@@ -1798,6 +1798,9 @@ describe("run outcome from step outputs", () => {
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("not_landed");
     expect(set).not.toHaveProperty("billable");
+    // The runs list shows why; no error classification is written.
+    expect(set?.error).toContain("Not landed: a bundle in this run");
+    expect(set?.errorType).toBeNull();
   });
 
   it("writes skipped, still billable, for a bundle already in flight", async () => {
@@ -1806,6 +1809,8 @@ describe("run outcome from step outputs", () => {
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("skipped");
     expect(set).not.toHaveProperty("billable");
+    expect(set?.error).toContain("Any other steps still ran");
+    expect(set?.errorType).toBeNull();
   });
 
   describe("tracked hashes and another pod's signal", () => {
@@ -1855,11 +1860,11 @@ describe("run outcome from step outputs", () => {
       expect(getExecUpdate()?.set.status).toBe("not_landed");
     });
 
-    it("reads a skip on another pod as not_landed when this pod sent a transaction", async () => {
+    it("reads a skip on another pod as skipped, even when this pod sent a transaction", async () => {
       recordTransactionHashIfPresent(transfer, sent);
       mockGasRows = [{ gasUsedWei: null, skippedInFlight: true }];
       await finalize("success");
-      expect(getExecUpdate()?.set.status).toBe("not_landed");
+      expect(getExecUpdate()?.set.status).toBe("skipped");
     });
 
     it("scans the logs for the outcome when the finish aggregate fails, even with tracked hashes", async () => {
@@ -1950,7 +1955,7 @@ describe("run outcome from step outputs", () => {
     expect(set).not.toHaveProperty("billable");
   });
 
-  it("ends a skip as not_landed, billable, when another step sent a transaction", async () => {
+  it("ends a skip as skipped, billable, even when another step sent a transaction", async () => {
     recordTransactionHashIfPresent(
       { ...stepContext, nodeId: "transfer-1", nodeType: "web3/transfer-funds" },
       { transactionHash: `0x${"a".repeat(64)}`, chainId: 1 }
@@ -1958,8 +1963,9 @@ describe("run outcome from step outputs", () => {
     recordRunOutcomeIfPresent(stepContext, inFlight);
     await finalize("success");
     const set = getExecUpdate()?.set;
-    expect(set?.status).toBe("not_landed");
+    expect(set?.status).toBe("skipped");
     expect(set).not.toHaveProperty("billable");
+    expect(set?.error).toContain("the bundle step sent no transaction");
   });
 
   it("ignores the outcome keys on any step that is not Write Contract", async () => {
@@ -2159,6 +2165,37 @@ describe("run outcome from step outputs", () => {
         reason: "outcome_unknown",
       }
     );
+  });
+
+  it("self-heals a missed bundle to not_landed with its reason", async () => {
+    mockExecution = {
+      status: "error",
+      error: "exceeded max retries",
+      completedAt: new Date(Date.now() - 5000),
+      startedAt: new Date(Date.now() - 30_000),
+    };
+    allLogs = [
+      {
+        id: "log_missed",
+        nodeId: "write-contract-1",
+        nodeType: "web3/write-contract",
+        status: "success",
+        outputRaw: notIncluded,
+      },
+    ] as unknown as LogRow[];
+    recordRunOutcomeIfPresent(stepContext, notIncluded);
+
+    await logStepCompleteDb({
+      logId: "log_missed",
+      startTime: Date.now() - 1000,
+      status: "success",
+      outputRaw: notIncluded,
+      executionId,
+    });
+
+    const heal = updateCalls.find((c) => c.target === workflowExecutionsMock);
+    expect(heal?.set.status).toBe("not_landed");
+    expect(heal?.set.error).toContain("Not landed: a bundle in this run");
   });
 
   it("does not self-heal to success when the outcome cannot be read", async () => {

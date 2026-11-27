@@ -23,8 +23,24 @@ const BUNDLE_BLOCK_MS = 12_000;
 export const MAX_BUNDLE_WINDOW_MS =
   MAX_BUNDLE_TARGET_BLOCKS * BUNDLE_BLOCK_MS + 60_000;
 
+/** A node a block or two behind can still report the last target as latest. */
+export const BUNDLE_WINDOW_MARGIN_BLOCKS = 2;
+
 /** Budget for the receipt reads of rows with bundle history at session start (lock held). */
 export const SESSION_HISTORY_SCAN_MS = 10_000;
+
+// A bundle step's work under the lock before its row is recorded: simulate, gas, sign.
+const BUNDLE_PRE_SEND_MS = 30_000;
+
+// These are budgets, not estimates: a send past BUNDLE_PRE_RECORD_MS from the lock
+// is refused unsent, and reads after the row is recorded stop at its window's end.
+/** Longest from taking the lock to recording the row; later, nothing is sent. */
+export const BUNDLE_PRE_RECORD_MS =
+  SESSION_HISTORY_SCAN_MS + BUNDLE_PRE_SEND_MS;
+
+/** Longest a bundle step holds its wallet's lock; a sender behind it waits this long. */
+export const LONGEST_BUNDLE_HOLD_MS =
+  BUNDLE_PRE_RECORD_MS + MAX_BUNDLE_WINDOW_MS;
 
 /** A dropped row this old whose nonce passed with none of its hashes mined is closed out. */
 export const REPLACED_AFTER_MS = 10 * 60_000;

@@ -354,6 +354,23 @@ describe("withValueCap", () => {
     ]);
   });
 
+  it("releases a success the caller says moved nothing", async () => {
+    state.caps = [{ dailyValueCapWei: "1000" }];
+    const run = vi
+      .fn<() => Promise<{ success: boolean; moved: boolean }>>()
+      .mockResolvedValue({ success: true, moved: false });
+
+    await withValueCap(
+      { organizationId: "org_1", valueWei: "100" },
+      run,
+      (result) => result.moved
+    );
+
+    expect(state.updates).toEqual([
+      expect.objectContaining({ status: "released" }),
+    ]);
+  });
+
   it("releases and rethrows when the run throws", async () => {
     state.caps = [{ dailyValueCapWei: "1000" }];
     const run = vi.fn().mockRejectedValue(new Error("kaboom"));

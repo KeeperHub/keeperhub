@@ -16,6 +16,7 @@ import {
   type SendModeChain,
   sendModeConflict,
   sendModeOption,
+  USE_NORMAL_HINT,
   unknownSendModeIssue,
   unsupportedSendMode,
 } from "@/lib/web3/send-mode";
@@ -225,6 +226,17 @@ function nodeIssues(
   const mode = resolveSendMode(config);
   if (mode === SEND_MODE.TRANSACTION) {
     return {};
+  }
+  // Run time can send bundles; saving one opens once the editor offers it.
+  if (mode === SEND_MODE.BUNDLE && !kept.route) {
+    return {
+      issue: issueFor(
+        index,
+        node,
+        mode,
+        `Send as: Bundle is not available yet. ${USE_NORMAL_HINT}`
+      ),
+    };
   }
   const reason =
     kept.legacy || kept.route

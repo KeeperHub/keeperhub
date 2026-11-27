@@ -4,6 +4,7 @@
 export const SEND_MODE = {
   TRANSACTION: "transaction",
   PRIVATE_RELAY: "private-relay",
+  BUNDLE: "bundle",
 } as const;
 
 export type SendMode = (typeof SEND_MODE)[keyof typeof SEND_MODE];
@@ -20,7 +21,7 @@ export function chainHasPrivateRelay(row: {
 }
 
 /** How to switch a step to Normal, in the editor's words and the API's. */
-const USE_NORMAL_HINT =
+export const USE_NORMAL_HINT =
   'Set Send as to Normal transaction (sendMode: "transaction").';
 
 /** The run-time refusal of Private relay on a chain without one. */
@@ -74,9 +75,8 @@ export const SEND_MODE_OPTIONS: readonly SendModeOption[] = [
   },
 ];
 
-const SEND_MODE_VALUES: ReadonlySet<string> = new Set(
-  SEND_MODE_OPTIONS.map((option) => option.value)
-);
+// Bundle is known at run time; it joins the menu once the editor offers it.
+const SEND_MODE_VALUES: ReadonlySet<string> = new Set(Object.values(SEND_MODE));
 
 /**
  * Choices a write action cannot send with yet, and why. Not offered there;

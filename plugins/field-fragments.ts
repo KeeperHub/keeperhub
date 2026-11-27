@@ -8,6 +8,7 @@
  * diverge from a fragment goes back to an inline literal in its action - do
  * not add override parameters here.
  */
+import { NOT_LANDED_LATER } from "@/lib/errors/execution-status";
 import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
@@ -221,12 +222,52 @@ export function sendRouteOutputFields(): OutputField[] {
     {
       field: "route",
       description:
-        "How KeeperHub routed the send on an EVM network: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as) or sponsored (gas-sponsored). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent, or when only the private relay was tried and it never confirmed taking the transaction; more values may be added.",
+        "How KeeperHub routed the send on an EVM network: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as), sponsored (gas-sponsored), bundle (Write Contract sent as a bundle to block builders) or skipped-in-flight (Write Contract with Send as Bundle sent nothing because this workflow's earlier bundle could still land). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent (except skipped-in-flight), or when only the private relay was tried and it never confirmed taking the transaction; more values may be added.",
     },
     {
       field: "included",
       description:
-        "True when the transaction was seen in a block (one confirmation, not final); it may have reverted, so check error too. False when it was sent but is not in a block. Absent when route is absent.",
+        "True when the transaction was seen in a block (one confirmation, not final); it may have reverted, so check error too. False when it was sent but is not in a block, and on a skipped-in-flight bundle step. Absent when route is absent.",
+    },
+  ];
+}
+
+/** Write Contract outputs when Send as is Bundle (sendMode "bundle"). */
+export function bundleOutputFields(): OutputField[] {
+  return [
+    {
+      field: "includedBlock",
+      description:
+        'Bundle only (route "bundle"): the block the transaction was included in. Absent when it was not included.',
+    },
+    {
+      field: "notIncludedReason",
+      description: `Bundle only: why the bundle did not land in any of its blocks. not-picked: no builder included it, though the call would still succeed. no-longer-needed: the call would now revert, so no builder could include it. not-checked: KeeperHub could not tell whether it landed (the network could not be read in time, or this step ran again after sending its bundle); it may still land. With it, success is true, included is false, there is no transactionHash, and the run ends Not landed. No gas is paid unless it lands. ${NOT_LANDED_LATER} This step's output is not updated.`,
+    },
+    {
+      field: "targetBlocks",
+      description:
+        "Bundle only: the block numbers the bundle was sent for, in order.",
+    },
+    {
+      field: "targetTipsGwei",
+      description:
+        "Bundle only: the maximum priority fee (tip) in gwei of the transaction sent for each target block, in the order of targetBlocks. The tip paid can be lower when the base fee leaves less room under Max Fee.",
+    },
+    {
+      field: "builders",
+      description:
+        "Bundle only: one entry per block builder, { name, accepted, error? }. accepted is true when the builder took the bundle for any target, false when it refused every one, null when its answer was unclear. error is the builder's answer (shortened, links and long hex removed) or a KeeperHub note when there was no usable answer (no answer in time, unreadable answer, ...).",
+    },
+    {
+      field: "bundleTargetsSkipped",
+      description:
+        "Bundle only: blocks no transaction was sent for, { block, reason }, where reason is simulation-failed, target-passed or max-fee-below-projected-base-fee. Absent when none were skipped.",
+    },
+    {
+      field: "inFlightUntilBlock",
+      description:
+        'Bundle only (route "skipped-in-flight"): the block after which the earlier bundle this step waited behind can no longer land.',
     },
   ];
 }

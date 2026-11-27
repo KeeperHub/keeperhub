@@ -43,6 +43,9 @@ export type NextBlockSimulationOptions = {
   basedOn?: NextBlockSimulation;
   // The block that triggered the run: the check waits for the RPC to reach it.
   triggerBlock?: TriggerBlock;
+  // Simulate this block number instead of the next one, on the latest state;
+  // its time is one slot per block after the next block's. Ignores basedOn.
+  targetBlock?: number;
 };
 
 export type NextBlockSimulation = {
@@ -802,6 +805,19 @@ async function latestReaching(
   }
 }
 
+/** The target block was already mined when its simulation ran. */
+export class TargetBlockPassedError extends Error {
+  override readonly name = "TargetBlockPassedError" as const;
+  // A later read only finds the chain further on.
+  readonly nonRetryable = true;
+  readonly targetBlock: number;
+
+  constructor(targetBlock: number) {
+    super(`Block ${targetBlock} was already mined before it could be checked`);
+    this.targetBlock = targetBlock;
+  }
+}
+
 async function prepare(
   provider: ethers.JsonRpcProvider,
   chainId: number,
@@ -814,7 +830,8 @@ async function prepare(
     options.triggerBlock,
     wait
   );
-  const { basedOn } = options;
+  const basedOn =
+    options.targetBlock === undefined ? options.basedOn : undefined;
   // Reuse an earlier check's prediction only while nothing moved, so a wait
   // never sends on a stale check.
   if (
@@ -847,24 +864,25 @@ async function prepare(
       'Next-block simulation cannot predict the next block\'s time on this network: recent blocks share a timestamp. Set "Next block timestamp offset" to 1 (the call may then pass a few blocks early), or set "Simulate at" back to "Latest block".'
     );
   }
-  const time = predictedTime(
-    chainId,
-    latest.timestamp,
-    offset,
-    currentSeconds()
-  );
+  const number = options.targetBlock ?? latest.number + 1;
+  if (number <= latest.number) {
+    throw new TargetBlockPassedError(number);
+  }
+  const time =
+    predictedTime(chainId, latest.timestamp, offset, currentSeconds()) +
+    (number - latest.number - 1) * offset;
   return {
     blockTag: toQuantity(latest.number),
     blockGasLimit: latest.gasLimit,
     time,
     overrides: {
-      number: toQuantity(latest.number + 1),
+      number: toQuantity(number),
       time: toQuantity(time),
     },
     simulation: {
       mode: "next-block",
       baseBlock: latest.number,
-      assumedBlockNumber: latest.number + 1,
+      assumedBlockNumber: number,
       assumedTimestamp: time,
       timestampOffsetSec: offset,
       rpcMethod: "eth_call+blockOverrides",

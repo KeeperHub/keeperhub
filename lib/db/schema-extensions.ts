@@ -551,7 +551,15 @@ export type BundleRun = {
   signedAt: number;
   // Lets a late landing name its hash on the run.
   node?: { id: string; name: string; iterationIndex?: number };
+  // Set when the step decided the miss and dropped the row, so a replay returns it.
+  missed?: BundleMiss;
 };
+
+/** A bundle miss its step decided: no builder picked it, it now reverts, or none accepted it. */
+export type BundleMiss =
+  | "not-picked"
+  | "no-longer-needed"
+  | "no-builder-accepted";
 
 export const pendingTransactions = pgTable(
   "pending_transactions",

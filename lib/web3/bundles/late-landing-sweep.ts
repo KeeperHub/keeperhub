@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { ethers } from "ethers";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
@@ -14,6 +14,7 @@ import {
   historyHashes,
   LATE_BUNDLE_CHECK_MS,
   laggedMinedCount,
+  MAX_BUNDLE_WINDOW_MS,
   ownerOf,
   REPLACED_AFTER_MS,
   type ReceiptView,
@@ -38,9 +39,11 @@ type Read = <T>(
 /**
  * Receipt checks for dropped bundle rows younger than LATE_BUNDLE_CHECK_MS,
  * newest first, so a late landing settles its run even when the wallet sends
- * nothing more. Runs still not landed with a confirmed bundle row (confirmed
- * while the run was going, or a settle that threw) are settled again first.
- * The deadline is checked between rows and between reads.
+ * nothing more. Pending bundle rows whose window closed (a not-checked step,
+ * a crashed send) are dropped first, as reconcile would, so they are read
+ * too. Runs still not landed with a confirmed bundle row (confirmed while the
+ * run was going, or a settle that threw) are settled again first. The
+ * deadline is checked between rows and between reads.
  */
 export async function sweepLateBundles(
   now: Date,
@@ -76,6 +79,7 @@ export async function sweepLateBundles(
   };
   const cutoff = new Date(now.getTime() - LATE_BUNDLE_CHECK_MS);
   await settleConfirmedRuns(cutoff, deadline, readReceipt, summary);
+  await dropClosedWindows(now, cutoff);
 
   const rows = await db
     .select({
@@ -211,6 +215,30 @@ async function settleConfirmedRuns(
       );
     }
   }
+}
+
+/**
+ * Pending bundle rows whose window has closed, dropped as a session's
+ * reconcile would. Guarded on status: a live session's confirm or drop wins.
+ * By time, not block: on a stalled chain a row can drop with a target ahead,
+ * which is harmless (one nonce lands once, and the dropped pass settles it).
+ */
+async function dropClosedWindows(now: Date, cutoff: Date): Promise<void> {
+  await db
+    .update(pendingTransactions)
+    .set({ status: "dropped" })
+    .where(
+      and(
+        eq(pendingTransactions.status, "pending"),
+        isNotNull(pendingTransactions.lastTargetBlock),
+        ne(pendingTransactions.bundleRuns, sql`'[]'::jsonb`),
+        lt(
+          pendingTransactions.submittedAt,
+          new Date(now.getTime() - MAX_BUNDLE_WINDOW_MS)
+        ),
+        gt(pendingTransactions.submittedAt, cutoff)
+      )
+    );
 }
 
 async function markReplaced(row: RowKey): Promise<boolean> {

@@ -504,11 +504,13 @@ export async function releaseReservation(reservationId: string): Promise<void> {
  * Wrap a value-moving execution so it is charged against the org's daily cap.
  * Reserves `valueWei` before running `run`, then settles on a successful result
  * or releases on a failed result or a thrown error. A zero value skips the cap.
+ * `settles` overrides which results keep the reservation (default: success).
  * Returns the run result, or a cap-exceeded failure without running.
  */
 export async function withValueCap<T extends { success: boolean }>(
   params: ReserveParams,
-  run: () => Promise<T>
+  run: () => Promise<T>,
+  settles: (result: T) => boolean = (result) => result.success
 ): Promise<T | { success: false; error: string }> {
   if (params.valueWei === "0" || BigInt(params.valueWei) <= BigInt(0)) {
     return await run();
@@ -527,7 +529,7 @@ export async function withValueCap<T extends { success: boolean }>(
     throw error;
   }
 
-  if (result.success) {
+  if (settles(result)) {
     await settleReservation(reservation.reservationId);
   } else {
     await releaseReservation(reservation.reservationId);
@@ -587,6 +589,9 @@ type StepValueCapArgs = {
   valueCapReserved?: boolean;
 };
 
+/** Which EVM results keep their reservation; default: every success. */
+type Settles<T> = (result: T) => boolean;
+
 /**
  * Charge a workflow/protocol step's native value against the org's daily cap.
  * Routes Solana steps to the lamports cap and EVM steps to the wei cap via
@@ -595,7 +600,8 @@ type StepValueCapArgs = {
  */
 export function withStepValueCap<T extends { success: boolean }>(
   args: StepValueCapArgs,
-  run: () => Promise<T>
+  run: () => Promise<T>,
+  settles?: Settles<T>
 ): Promise<T | { success: false; error: string }> {
   if (args.valueCapReserved || !args.organizationId) {
     return run();
@@ -633,6 +639,7 @@ export function withStepValueCap<T extends { success: boolean }>(
       source: args.source ?? "workflow",
       ref: args.executionId,
     },
-    run
+    run,
+    settles
   );
 }

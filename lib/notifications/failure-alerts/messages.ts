@@ -111,6 +111,8 @@ export type MessageInput =
       testNote?: string;
       /** A late schedule ran again, but that run failed. */
       ranButFailed?: boolean;
+      /** A not-landing incident ended with a run whose bundle was mined. */
+      bundleLanded?: boolean;
       /** When the incident closed; the send can be 30 minutes later. */
       resolvedAt?: Date | null;
       /** A late schedule's first run since: when it started. */
@@ -457,6 +459,12 @@ function failingHeadline(
   if (incident.openedBy === "funding" && !still) {
     return ["Wallet out of funds: ", name, " cannot pay for its transaction"];
   }
+  if (incident.openedBy === "not_landing") {
+    const missed = plural(incident.failureCount, "run", "runs");
+    return still
+      ? [name, `: bundles still not landing (${missed} in a row)`]
+      : [name, `: bundles have not landed in the last ${missed}`];
+  }
   const runs = `${plural(incident.failureCount, "failed run", "failed runs")} in a row`;
   if (incident.openedBy === "time" && !still) {
     return [
@@ -615,6 +623,16 @@ const FUNDING_NEXT_STEP =
   "Add funds to the wallet that pays for it; the next run picks them up. The error above shows what it had and what it needed.";
 const FAILING_NEXT_STEP =
   "It keeps running and failing until someone fixes it, pauses its alerts or disables it.";
+const NOT_LANDING_DETAIL =
+  "Each of these runs sent a bundle to block builders, and none was seen in its target blocks (or it could not be checked; these may still land). No gas is paid unless a bundle lands, but these runs count towards usage.";
+const NOT_LANDING_NEXT_STEP =
+  "Likely causes: the tip is too low for builders to pick it (raise Priority Fee or the tip increase), another keeper already made the call (notIncludedReason no-longer-needed: normal when racing others; a higher tip can help win), or the chosen builders rarely build blocks (pick more builders). With notIncludedReason not-checked the network could not be read, and these may still land. See notIncludedReason and builders on the Write Contract step.";
+function lastReminderUntil(refused: boolean, notLanding: boolean): string {
+  if (refused) {
+    return "its runs are accepted again";
+  }
+  return notLanding ? "its bundles land" : "it works";
+}
 const MISSED_NEXT_STEP =
   "You can run it by hand from the editor; you will be told when it runs on its own again.";
 /** What fixes a plan or billing refusal. */
@@ -683,6 +701,7 @@ function renderAlert(
     ? fixLink(appUrl, input.organizationId, refusalFixLink(refused.reason))
     : null;
   const reminder = input.kind === "reminder";
+  const notLanding = incident.openedBy === "not_landing";
   const headlineParts = input.disabled
     ? disabledHeadline(
         workflow,
@@ -698,7 +717,7 @@ function renderAlert(
   );
   // A funds alert already says what to do; the hint would repeat it.
   const hint =
-    missed || incident.openedBy === "funding"
+    missed || notLanding || incident.openedBy === "funding"
       ? null
       : errorHint(incident.lastError);
   const { open, runs, sample } = workflowLinks(input, workflow.id);
@@ -719,6 +738,8 @@ function renderAlert(
     nextStep = MISSED_NEXT_STEP;
   } else if (incident.openedBy === "funding") {
     nextStep = FUNDING_NEXT_STEP;
+  } else if (notLanding) {
+    nextStep = NOT_LANDING_NEXT_STEP;
   }
   // Refused runs need someone to act (plan, billing): they keep "Action needed".
   const count =
@@ -729,20 +750,30 @@ function renderAlert(
   if (missed && !(refused || input.disabled)) {
     label = "Check";
   } else if (reminder && !input.disabled) {
-    label = refused ? `Action needed${count}` : `Still failing${count}`;
+    label = `Still failing${count}`;
+    if (refused) {
+      label = `Action needed${count}`;
+    } else if (notLanding) {
+      label = `Still not landing${count}`;
+    }
+  } else if (notLanding && !input.disabled) {
+    label = "Check";
   }
   const last =
     reminder &&
     !input.disabled &&
     input.reminderNumber !== undefined &&
     input.reminderNumber >= (input.maxReminders ?? MAX_REMINDERS);
-  const amber = missed && !refused && !input.disabled;
+  // Nothing failed in a missed or not landing run: amber, not red.
+  const amber = ((missed && !refused) || notLanding) && !input.disabled;
   const accent = amber ? "#b45309" : "#b91c1c";
   const tint = amber ? "#fffbeb" : "#fef2f2";
   const ago = formatDuration(now.getTime() - incident.firstFailedAt.getTime());
   let since = `Failing since ${formatUtc(incident.firstFailedAt)}.`;
   if (incident.openedBy === "refused") {
     since = `Refused since ${formatUtc(incident.firstFailedAt)}, ${ago} ago.`;
+  } else if (notLanding) {
+    since = `Not landing since ${formatUtc(incident.firstFailedAt)}, ${ago} ago.`;
   } else if (missed) {
     since = `Due at ${formatUtc(incident.firstFailedAt)}, ${ago} ago.`;
   }
@@ -751,11 +782,19 @@ function renderAlert(
     ? `${refusedLeadCapital(incident.openedBy)}: ${refusedReason(refused)}.`
     : null;
   const missedDetail = refusedDetail ?? MISSED_DETAIL;
-  const detail = missed
-    ? missedDetail
-    : `Last error: ${shortError(incident.lastError)}`;
+  // A detail line in place of "Last error": a not landed run did not fail.
+  let plainDetail: string | null = null;
+  if (missed) {
+    plainDetail = missedDetail;
+  } else if (notLanding) {
+    plainDetail = NOT_LANDING_DETAIL;
+  }
+  const detail = plainDetail ?? `Last error: ${shortError(incident.lastError)}`;
 
   let chatDetail: ChatText | null = missed ? [MISSED_DETAIL] : null;
+  if (notLanding) {
+    chatDetail = [NOT_LANDING_DETAIL];
+  }
   if (refused) {
     chatDetail = [
       `${refusedLeadCapital(incident.openedBy)}: `,
@@ -765,12 +804,18 @@ function renderAlert(
   }
   // The same lines, in the same order, for email text, chat and the HTML.
   const lastLine = last
-    ? `This is the last reminder. It stays under Failing now on the Alerts page until ${refused ? "its runs are accepted again" : "it works"} or someone turns it off.`
+    ? `This is the last reminder. It stays under Failing now on the Alerts page until ${lastReminderUntil(Boolean(refused), notLanding)} or someone turns it off.`
     : null;
   const lines = [since, history, detail, hint, nextStep, lastLine].filter(
     (line): line is string => Boolean(line)
   );
-  let links = [`Open the failing workflow: ${open}`, `Failed runs: ${runs}`];
+  const openLabel = notLanding
+    ? "Open the workflow"
+    : "Open the failing workflow";
+  let links = [
+    `${openLabel}: ${open}`,
+    `${notLanding ? "Runs" : "Failed runs"}: ${runs}`,
+  ];
   if (sample) {
     links = [`${SAMPLE_LINK}: ${open}`];
   } else if (missed) {
@@ -782,7 +827,7 @@ function renderAlert(
   if (funds) {
     links = [`Add funds: ${funds}`, ...links];
   }
-  let buttons = `${emailButton(open, "Open the failing workflow", "danger")}${emailButton(runs, "View failed runs")}`;
+  let buttons = `${emailButton(open, openLabel, notLanding ? "primary" : "danger")}${emailButton(runs, notLanding ? "View runs" : "View failed runs")}`;
   if (sample) {
     buttons = emailButton(open, SAMPLE_LINK);
   } else if (fix) {
@@ -812,8 +857,8 @@ ${foot.text}`;
       <div><strong>${escapeHtml(since)}</strong></div>
       ${history ? `<div>${escapeHtml(history)}</div>` : ""}
       ${
-        missed
-          ? `<div style="margin-top: 8px;">${escapeHtml(missedDetail)}</div>`
+        plainDetail
+          ? `<div style="margin-top: 8px;">${escapeHtml(plainDetail)}</div>`
           : `<div style="margin-top: 8px;">Last error: <code>${escapeHtml(shortError(incident.lastError))}</code></div>`
       }
       ${hint ? `<div style="margin-top: 8px;">${escapeHtml(hint)}</div>` : ""}
@@ -838,7 +883,7 @@ ${foot.text}`;
           ...headlineParts,
           ".",
         ],
-        lastError: missed ? null : incident.lastError,
+        lastError: missed || notLanding ? null : incident.lastError,
         middle: [since, history, hint, nextStep, lastLine],
         detail: chatDetail,
         links,
@@ -879,7 +924,7 @@ type GroupedWorkflow = Extract<
   { kind: "grouped" }
 >["workflows"][number];
 
-const DIGEST_NOTE = `You get this about once a day, for up to ${MAX_REMINDERS} days, while they keep failing or not running. To stop it for one workflow, pause its alerts in its Properties; to stop it for all, turn off "Remind once a day" in Settings > Alerts.`;
+const DIGEST_NOTE = `You get this about once a day, for up to ${MAX_REMINDERS} days, while they keep failing, not running or not landing bundles. To stop it for one workflow, pause its alerts in its Properties; to stop it for all, turn off "Remind once a day" in Settings > Alerts.`;
 
 /** A grouped alert lists this many workflows, then "And N more". */
 const GROUPED_LIST_MAX = 10;
@@ -913,22 +958,32 @@ function sortGrouped(workflows: GroupedWorkflow[]): GroupedWorkflow[] {
 
 /** "3 workflows started failing (1 turned off)", "25 workflows are not running", or both, adding up. */
 function groupedHeadline(
-  failing: number,
-  notRunning: number,
+  counts: { failing: number; notRunning: number; notLanding: number },
   turnedOff: number,
   reminder = false
 ): string {
+  const { failing, notRunning, notLanding } = counts;
   const off = turnedOff > 0 ? ` (${turnedOff} turned off)` : "";
-  const verb = reminder ? "still failing" : "started failing";
-  if (notRunning === 0) {
+  const still = reminder ? "still " : "";
+  if (notRunning === 0 && notLanding === 0) {
     return reminder
       ? `${plural(failing, "workflow is", "workflows are")} still failing${off}`
       : `${plural(failing, "workflow", "workflows")} started failing${off}`;
   }
-  if (failing === 0) {
-    return `${plural(notRunning, "workflow is", "workflows are")} ${reminder ? "still " : ""}not running`;
+  if (failing === 0 && notLanding === 0) {
+    return `${plural(notRunning, "workflow is", "workflows are")} ${still}not running`;
   }
-  return `${plural(failing + notRunning, "workflow needs", "workflows need")} attention: ${failing} ${verb}${off}, ${notRunning} not running`;
+  if (failing === 0 && notRunning === 0) {
+    return `${plural(notLanding, "workflow is", "workflows are")} ${still}not landing bundles`;
+  }
+  const parts = [
+    failing > 0
+      ? `${failing} ${reminder ? "still failing" : "started failing"}${off}`
+      : null,
+    notRunning > 0 ? `${notRunning} not running` : null,
+    notLanding > 0 ? `${notLanding} not landing bundles` : null,
+  ].filter(Boolean);
+  return `${plural(failing + notRunning + notLanding, "workflow needs", "workflows need")} attention: ${parts.join(", ")}`;
 }
 
 function lowerFirst(text: string): string {
@@ -956,7 +1011,11 @@ function renderGrouped(
   const workflows = sortGrouped(input.workflows.map(withRefused));
   const turnedOff = workflows.filter((w) => w.workflowDisabled).length;
   const notRunning = workflows.filter((w) => isNotRunning(w.openedBy)).length;
-  const failing = workflows.length - notRunning;
+  // Not landing is neither failing nor not running: nothing failed.
+  const notLanding = workflows.filter(
+    (w) => w.openedBy === "not_landing"
+  ).length;
+  const failing = workflows.length - notRunning - notLanding;
   const refusedAny = workflows.some(
     (w) => isNotRunning(w.openedBy) && w.refused
   );
@@ -977,17 +1036,24 @@ function renderGrouped(
       ? fixLink(appUrl, input.organizationId, planFixLink(onlyKind))
       : null;
   const headline = groupedHeadline(
-    failing,
-    notRunning,
+    { failing, notRunning, notLanding },
     turnedOff,
     input.reminder
   );
-  const label = input.reminder ? "Daily reminder" : "Action needed";
+  // Only bundles not landing: amber "Check", as for one such workflow.
+  const allNotLanding = notLanding === workflows.length;
+  let label = allNotLanding ? "Check" : "Action needed";
+  if (input.reminder) {
+    label = "Daily reminder";
+  }
   const errorText = (w: { lastError?: string | null }): string | null =>
     w.lastError ? errorExcerpt(w.lastError, GROUPED_ERROR_CHARS) : null;
   const cause = [
     failing > 0 && !input.reminder
       ? "This often means a shared cause, such as an RPC provider or a wallet out of gas."
+      : null,
+    allNotLanding && !input.reminder
+      ? "Their bundles were sent but not seen in their target blocks; nothing failed. Check the tip and builders."
       : null,
     input.reminder ? DIGEST_NOTE : null,
     fix
@@ -1020,6 +1086,9 @@ function renderGrouped(
     : null;
   // What a not-running workflow says in place of its failure count.
   const state = (w: GroupedWorkflow): string => {
+    if (w.openedBy === "not_landing") {
+      return `: bundles have not landed in the last ${plural(w.failureCount, "run", "runs")}`;
+    }
     if (!isNotRunning(w.openedBy)) {
       return `: ${plural(w.failureCount, "failed run", "failed runs")} in a row${disabledNote(w)}`;
     }
@@ -1041,7 +1110,7 @@ function renderGrouped(
     lines.push(moreLine);
   }
   const fundsLine = `${funds ? `Add funds: ${funds}\n` : ""}${fix ? `${fix.label}: ${fix.url}\n` : ""}`;
-  const seeAll = `See all failing workflows: ${settingsUrl(appUrl, input.organizationId)}`;
+  const seeAll = `See all alerts: ${settingsUrl(appUrl, input.organizationId)}`;
   const chatLine = (w: GroupedWorkflow, withError: boolean): ChatPart[] => {
     const error = withError ? reasonOf(w) : null;
     return [
@@ -1055,7 +1124,11 @@ function renderGrouped(
   const chatList = (count: number, withError: boolean): ChatText => {
     const rest = workflows.length - count;
     return joinLines([
-      [...orgTag(orgName), ...backup.chat, `${label}: ${headline}. ${cause}`],
+      [
+        ...orgTag(orgName),
+        ...backup.chat,
+        `${label}: ${headline}.${cause ? ` ${cause}` : ""}`,
+      ],
       ...workflows.slice(0, count).map((w) => chatLine(w, withError)),
       rest > 0 ? `And ${rest} more.` : null,
       funds ? `Add funds: ${funds}` : null,
@@ -1068,7 +1141,7 @@ function renderGrouped(
   for (let count = shown.length; count >= 1; count -= 1) {
     chatVariants.push(chatList(count, false));
   }
-  const text = `${backup.text}In ${orgName}, ${lowerFirst(headline)}. ${cause}
+  const text = `${backup.text}In ${orgName}, ${lowerFirst(headline)}.${cause ? ` ${cause}` : ""}
 
 ${lines.join("\n")}
 
@@ -1076,9 +1149,9 @@ ${fundsLine}${seeAll}
 
 ${foot.text}`;
   const html = emailLayout(
-    `<span style="display:inline-block; background:#b91c1c; color:#fff; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border-radius:4px; margin-bottom:8px;">${label}</span><br>${escapeHtml(headline)}`,
+    `<span style="display:inline-block; background:${allNotLanding ? "#b45309" : "#b91c1c"}; color:#fff; font-size:12px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border-radius:4px; margin-bottom:8px;">${label}</span><br>${escapeHtml(headline)}`,
     `${backup.html}
-    <p>${escapeHtml(cause)}</p>
+    ${cause ? `<p>${escapeHtml(cause)}</p>` : ""}
     <ul style="padding-left: 20px;">${shown
       .map((w) => {
         const reason = reasonOf(w);
@@ -1086,7 +1159,7 @@ ${foot.text}`;
       })
       .join("")}</ul>
     ${moreLine ? `<p>${moreLine}</p>` : ""}
-    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all failing workflows", "danger")}${funds ? emailButton(funds, "Add funds") : ""}${fix ? emailButton(fix.url, fix.label) : ""}</p>`,
+    <p>${emailButton(settingsUrl(appUrl, input.organizationId), "See all alerts", allNotLanding ? "primary" : "danger")}${funds ? emailButton(funds, "Add funds") : ""}${fix ? emailButton(fix.url, fix.label) : ""}</p>`,
     foot.html
   );
   return {
@@ -1111,15 +1184,26 @@ function renderRecovery(
   const span = formatDuration(
     endedAt.getTime() - incident.firstFailedAt.getTime()
   );
-  const tail =
-    isNotRunning(incident.openedBy) && input.ranButFailed
-      ? " ran, but the run failed"
-      : " is running again";
+  let tail = " is running again";
+  if (isNotRunning(incident.openedBy) && input.ranButFailed) {
+    tail = " ran, but the run failed";
+  } else if (incident.openedBy === "not_landing") {
+    tail = ": the last run succeeded";
+    if (input.ranButFailed) {
+      tail = ": the last run failed instead";
+    } else if (input.bundleLanded) {
+      tail = ": bundles are landing again";
+    }
+  }
   let detail = `It succeeded after ${plural(incident.failureCount, "failed run", "failed runs")} (failing for ${span}). Working since ${formatUtc(endedAt)}.`;
   if (incident.openedBy === "refused") {
     detail = input.ranButFailed
       ? `Its runs are being accepted again after ${span} of refusals, but the first one failed. You will be told if it keeps failing.`
       : `Its runs are being accepted again after ${span} of refusals. Running since ${formatUtc(endedAt)}.`;
+  } else if (incident.openedBy === "not_landing") {
+    detail = input.ranButFailed
+      ? `After ${plural(incident.failureCount, "run", "runs")} whose bundles did not land (${span}), a run failed instead. You will be told if it keeps failing.`
+      : `${input.bundleLanded ? "A bundle landed" : "A run succeeded"} after ${plural(incident.failureCount, "run", "runs")} whose bundles did not land (${span}). Working since ${formatUtc(endedAt)}.`;
   } else if (incident.openedBy === "missed") {
     detail = input.ranButFailed
       ? `It started ${span} after it was due. You will be told if it keeps failing.`
@@ -1127,7 +1211,11 @@ function renderRecovery(
   }
   const headlineParts = [user(workflow.name), tail];
   const headline = plain(headlineParts);
-  const prefix = input.ranButFailed ? "Started again" : "Resolved";
+  // A not landing workflow never stopped, so a failed run resolves it rather than starting it again.
+  const prefix =
+    input.ranButFailed && incident.openedBy !== "not_landing"
+      ? "Started again"
+      : "Resolved";
   const { runs: link, sample } = workflowLinks(input, workflow.id);
   const linkLabel = sample ? SAMPLE_LINK : "View runs";
   const foot = footer(input);

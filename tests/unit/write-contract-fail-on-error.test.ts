@@ -46,6 +46,8 @@ vi.mock("@/lib/db/schema", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: () => ({}),
   and: () => ({}),
+  // Column defaults in lib/db/schema-extensions.ts run at import time.
+  sql: () => ({}),
 }));
 
 vi.mock("@/lib/utils/id", () => ({

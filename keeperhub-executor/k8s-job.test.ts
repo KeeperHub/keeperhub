@@ -249,6 +249,28 @@ describe("createWorkflowJob", () => {
     expect(getEnvVar(envVars, "TURNKEY_API_PRIVATE_KEY")).toBeUndefined();
   });
 
+  it("references the bundle searcher key as an optional secret ref, never plaintext", async () => {
+    (getRunnerSystemEnvVars as Mock).mockReturnValue([
+      { name: "BUNDLE_SEARCHER_PRIVATE_KEY", value: "should-be-ignored" },
+    ]);
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const envVars = getJobEnvVars(getSubmittedJob());
+    const refs = envVars.filter((v) => v.name === "BUNDLE_SEARCHER_PRIVATE_KEY");
+    expect(refs).toHaveLength(1);
+    expect(refs[0].value).toBeUndefined();
+    expect(getSecretRef(envVars, "BUNDLE_SEARCHER_PRIVATE_KEY")).toEqual({
+      name: "keeperhub-executor-common-bundle-searcher-private-key",
+      key: "keeperhub-executor-common-bundle-searcher-private-key",
+      optional: true,
+    });
+  });
+
   it("includes SCHEDULE_ID for scheduled triggers", async () => {
     await createWorkflowJob({
       workflowId: "wf-1",

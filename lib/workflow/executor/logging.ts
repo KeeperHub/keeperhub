@@ -62,6 +62,7 @@ import {
   NO_RUN_OUTCOME_SIGNALS,
   type RunOutcome,
   runOutcomeOf,
+  runOutcomeReason,
 } from "@/lib/workflow/executor/run-outcome";
 import {
   EXCEEDED_MAX_RETRIES_REGEX,
@@ -262,6 +263,8 @@ async function resolveSuccessFacts(
 ): Promise<{
   hashes: TransactionHashEntry[];
   outcome: RunOutcome | undefined;
+  // The reason the run's row shows when the outcome applies.
+  outcomeReason: string | undefined;
   outcomeKnown: boolean;
 }> {
   const tracked = getTransactionHashes(executionId);
@@ -274,12 +277,14 @@ async function resolveSuccessFacts(
     mergeSignals(getRunOutcomeSignals(executionId), finish.signals),
     logged?.signals ?? NO_RUN_OUTCOME_SIGNALS
   );
-  const outcome = runOutcomeOf(signals, hashes.length > 0);
+  const outcome = runOutcomeOf(signals);
   const outcomeKnown = finish.signalsKnown || logged?.read === true;
+  // Unread logs may hold another pod's missed bundle, so only not_landed is safe to keep.
+  const kept = outcomeKnown || outcome === "not_landed" ? outcome : undefined;
   return {
     hashes,
-    // Unread logs may hold another pod's send, so only not_landed is safe to keep.
-    outcome: outcomeKnown || outcome === "not_landed" ? outcome : undefined,
+    outcome: kept,
+    outcomeReason: kept && runOutcomeReason(kept),
     outcomeKnown,
   };
 }
@@ -574,6 +579,7 @@ async function selfHealWorkflowAfterLateStepCommit(
   const {
     hashes: resolvedHashes,
     outcome: runOutcome,
+    outcomeReason,
     outcomeKnown,
   } = await resolveSuccessFacts(executionId, finishFacts);
   // A success written without the outcome could hide a send that did not land.
@@ -600,7 +606,7 @@ async function selfHealWorkflowAfterLateStepCommit(
     .update(workflowExecutions)
     .set({
       status: runOutcome ?? "success",
-      error: null,
+      error: outcomeReason ?? null,
       // The classification columns are written alongside `error` at finalize.
       // Clearing only the message left a success row still labelled with the
       // spurious failure (e.g. E-0002), which the UI reads as a failed run.
@@ -1102,10 +1108,16 @@ export async function logWorkflowCompleteDb(
   const {
     hashes: transactionHashes,
     outcome: runOutcome,
+    outcomeReason,
     outcomeKnown,
   } = resolvedStatus === "success"
     ? await resolveSuccessFacts(params.executionId, finishFacts)
-    : { hashes: [], outcome: undefined, outcomeKnown: true };
+    : {
+        hashes: [],
+        outcome: undefined,
+        outcomeReason: undefined,
+        outcomeKnown: true,
+      };
 
   // KEEP-966: independently reconcile every claimed hash against the chain
   // before "success" can be written. Runs after the KEEP-1549 spurious-error
@@ -1209,6 +1221,7 @@ export async function logWorkflowCompleteDb(
   } else if (executionStatus === "success" && runOutcome) {
     // Only a success becomes not landed or skipped; any error wins.
     executionStatus = runOutcome;
+    resolvedError = outcomeReason;
   } else if (executionStatus === "success" && !outcomeKnown) {
     // The logs could not be read: the reconciler reads the outcome later.
     executionStatus = "unconfirmed";

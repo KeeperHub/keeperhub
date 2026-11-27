@@ -1225,14 +1225,14 @@ export function recordWorkflowExecutionFinished(labels: {
   });
 }
 
-// Runs that sent no transaction: refused before they started, or stopped behind
-// an earlier run's in-flight transaction. Its own series rather than a
+// Runs refused before they started, or whose bundle step skipped behind an
+// earlier run's bundle in flight. Its own series rather than a
 // `finished` status: such a run belongs in neither the error count nor the
 // success-rate denominator, but it still has to be visible in Prometheus.
 const workflowExecutionsSkipped = getOrCreateCounter(
   apiRegistry,
   "keeperhub_workflow_executions_skipped_total",
-  "Workflow executions skipped without sending a transaction, by org_slug and reason: plan refusals (execution_limit, plan_feature, payg_unpaid) and lifecycle skips the executor resolves (not_found, deleted, deactivated, org_deactivated, disabled, schedule_invalid), which never started, and bundle_in_flight (the run found an earlier run's transaction still in flight and sent nothing; steps before it that send nothing may have run). Not failures.",
+  "Workflow executions skipped, by org_slug and reason: plan refusals (execution_limit, plan_feature, payg_unpaid) and lifecycle skips the executor resolves (not_found, deleted, deactivated, org_deactivated, disabled, schedule_invalid), which never started, and bundle_in_flight (a bundle step found an earlier run's bundle in flight and sent nothing; the run's other steps still ran and may have sent transactions). Not failures.",
   ["org_slug", "reason"]
 );
 

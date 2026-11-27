@@ -122,9 +122,9 @@ async function waitForExecution(executionId, { deadlineMs = 10 * 60 * 1000 } = {
 ```
 
 Check `status !== "success"` rather than `status === "error"`. A run can also end `system_error`,
-`cancelled`, `skipped` (sent no transaction) or `not_landed` (a transaction in it did not land in
-a block; it can still become `success`, or `error` if the call reverted, if the transaction is
-mined within about a day), and all of them report `completed: true`, so a check for `error` alone
+`cancelled`, `skipped` (refused, skipped behind a run still going, or a bundle step skipped behind
+an earlier bundle) or `not_landed` (a bundle in it was not seen in its target blocks; a bundle that could not be checked can
+still land within about a day, and then the run changes to `success`, or to `error` if the call reverted), and all of them report `completed: true`, so a check for `error` alone
 lets a run that did not succeed through as a success. Use `completed` here, or `pollIntervalHint` of `0` on the
 status endpoint, as the terminal signal rather than a fixed list of status names.
 

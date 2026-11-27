@@ -131,8 +131,8 @@ Returns real-time execution status with progress tracking.
 | `error` | Failed with error | yes |
 | `system_error` | Failed for an infrastructure reason, or was reaped after going stale | yes |
 | `cancelled` | Manually cancelled | yes |
-| `skipped` | Sent no transaction: refused before it started, skipped behind a run that was still going, or stopped because a transaction from an earlier run of the workflow was still in flight (steps before it that send nothing may have run). Not a failure. Counts towards usage only in that last case | yes |
-| `not_landed` | Finished, but a transaction in it did not land in a block (for example no block builder picked it up). Neither a success nor a failure, and counts towards usage. It can still change: if the transaction is mined later (within about a day; less for a workflow that sends very often from one wallet, which keeps a shorter history) the run becomes `success`, or `error` if the call reverted. Re-read the run if that matters, and put a deadline in the calldata of calls that must not run late | yes |
+| `skipped` | Refused before it started, skipped behind a run that was still going, or a Send as Bundle step sent no transaction because an earlier run's bundle could still land (the run's other steps still ran, and may have sent transactions). Not a failure. Counts towards usage only in that last case | yes |
+| `not_landed` | Finished, but a bundle in it was not seen in its target blocks (for example no block builder picked it up). Neither a success nor a failure, and counts towards usage. A bundle that could not be checked (`notIncludedReason` `not-checked`) can still land within about a day (less for a workflow that sends very often from one wallet, which keeps a shorter history); then the run changes to `success`, or to `error` if the call reverted. Re-read the run if that matters, and put a deadline in the calldata of calls that must not run late | yes |
 
 Treat this list as a lower bound rather than a closed set, and decide terminality from the `pollIntervalHint` response body field (or the `X-Poll-Interval-Hint` response header) rather than from the status string. The server computes that hint from its own terminal set, so it stays correct for statuses added after your client shipped; `0` means terminal. A client that routes an unrecognised status into a failing `default` branch reports a failure for a run that is still settling.
 
@@ -199,7 +199,7 @@ Blocks until the execution reaches a terminal state (`success`, `error`, `system
 | `completed` | boolean | `true` once the execution reached a terminal state; `false` if the wait timed out while still running |
 | `transactionHashes` | array | Ordered on-chain writes (same shape as the status endpoint) |
 | `output` | object | Workflow output |
-| `error` | string \| null | Error message when `status` is `error` |
+| `error` | string \| null | Error message when `status` is `error` or `system_error`. For `skipped` and `not_landed` it is a short reason, not a failure (for example why a bundle step skipped); it is cleared if a late landing changes the run to `success` |
 | `gasUsedWei` | string \| null | Run-total gas in wei |
 | `completedAt` | timestamp \| null | When the execution finished, null while running |
 

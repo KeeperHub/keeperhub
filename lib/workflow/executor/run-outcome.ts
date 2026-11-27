@@ -1,9 +1,13 @@
 import { type AnyColumn, type SQL, sql } from "drizzle-orm";
+import {
+  RUN_OUTCOME_ACTION_TYPES,
+  RUN_OUTCOME_OUTPUT,
+} from "./run-outcome-keys";
 
 /**
- * A finished run that would be a success but is not: a transaction in it did
- * not land (`not_landed`), or it sent nothing because an earlier run's bundle
- * was still in flight (`skipped`).
+ * A finished run that would be a success but is not: a bundle in it did not
+ * land (`not_landed`), or a bundle step skipped because an earlier run's
+ * bundle was still in flight (`skipped`, even when other steps sent).
  */
 export type RunOutcome = "skipped" | "not_landed";
 
@@ -12,19 +16,6 @@ export type RunOutcomeSignals = {
   skippedInFlight: boolean;
   notIncluded: boolean;
 };
-
-/** The output keys a step sets the run outcome with, shared by the TS and SQL readers. */
-export const RUN_OUTCOME_OUTPUT = {
-  routeKey: "route",
-  skippedInFlightRoute: "skipped-in-flight",
-  notIncludedReasonKey: "notIncludedReason",
-} as const;
-
-// Only Write Contract (and its legacy name) sends bundles, so only it may set the outcome.
-const RUN_OUTCOME_ACTION_TYPES: readonly string[] = [
-  "web3/write-contract",
-  "Write Contract",
-];
 
 export const NO_RUN_OUTCOME_SIGNALS: RunOutcomeSignals = {
   skippedInFlight: false,
@@ -84,20 +75,30 @@ export function hasSignal(signals: RunOutcomeSignals): boolean {
 }
 
 /**
- * The outcome of a run that would otherwise be a success. A skip is only
- * `skipped` when no step in the run sent a transaction.
+ * The outcome of a run that would otherwise be a success. A bundle that may
+ * still land wins; a skip is `skipped` whatever other steps sent.
  */
 export function runOutcomeOf(
-  signals: RunOutcomeSignals,
-  sentTransaction: boolean
+  signals: RunOutcomeSignals
 ): RunOutcome | undefined {
   if (signals.notIncluded) {
     return "not_landed";
   }
   if (signals.skippedInFlight) {
-    return sentTransaction ? "not_landed" : "skipped";
+    return "skipped";
   }
   return;
+}
+
+/**
+ * The short reason a not landed or skipped run carries in `error`, so the
+ * runs list says why. A late landing that settles the run clears it.
+ */
+export function runOutcomeReason(outcome: RunOutcome): string {
+  if (outcome === "skipped") {
+    return "Skipped: this workflow's earlier bundle could still land, so the bundle step sent no transaction. Any other steps still ran.";
+  }
+  return "Not landed: a bundle in this run was not seen in any of the blocks it was sent for (or could not be checked). No gas is paid unless a bundle lands; see the Write Contract step's notIncludedReason.";
 }
 
 // Characters the SQL filter strips: a subset of what hasVisibleText skips,

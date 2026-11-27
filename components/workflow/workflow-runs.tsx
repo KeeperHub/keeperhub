@@ -26,7 +26,10 @@ import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import { api, type ExecutionSummary } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
-import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
+import {
+  NOT_LANDED_LATER,
+  type NodeExecutionStatus,
+} from "@/lib/errors/execution-status";
 import {
   type RefusalFixLink,
   refusalFixHref,
@@ -827,11 +830,14 @@ function getStatusLabel(status: string): string {
     case "skipped":
       return "Skipped - expand for the reason";
     case "not_landed":
-      return "Not landed - a transaction did not land in a block (it can still land within about a day)";
+      return `Not landed - a bundle was not seen in its target blocks. ${NOT_LANDED_LATER}`;
     default:
       return "Pending - has not run yet";
   }
 }
+
+// The run row's status already says Not landed; the reason follows it.
+const NOT_LANDED_PREFIX = /^Not landed:\s*/;
 
 // Component for rendering individual execution log entries
 function ExecutionLogEntry({
@@ -1447,11 +1453,13 @@ export function WorkflowRuns({
           (log) => log.status === "error"
         );
         const showRunError = Boolean(runErrorMessage) && !hasFailedStep;
-        // Never started: say why, and how often its row counted it.
-        const shownReason =
-          execution.status === "skipped" && execution.error
-            ? shownRefusal(execution.error)
-            : null;
+        // Skipped or not landed: say why, and how often a refused row counted it.
+        let shownReason: string | null = null;
+        if (execution.status === "skipped" && execution.error) {
+          shownReason = shownRefusal(execution.error);
+        } else if (execution.status === "not_landed" && execution.error) {
+          shownReason = execution.error.replace(NOT_LANDED_PREFIX, "");
+        }
         const skippedReason = shownReason
           ? `${shownReason.charAt(0).toUpperCase()}${shownReason.slice(1)}`
           : null;
@@ -1573,9 +1581,17 @@ export function WorkflowRuns({
                 {showSkipped && (
                   <div className={cn("p-4", executionLogs.length > 0 && "pb-0")}>
                     <Alert>
-                      <SkipForward />
+                      {execution.status === "not_landed" ? (
+                        <CircleOff />
+                      ) : (
+                        <SkipForward />
+                      )}
                       <AlertDescription className="flex flex-col items-start gap-1.5">
-                        {skippedReason && <span>{skippedReason}</span>}
+                        {skippedReason && (
+                          <span data-testid="run-outcome-reason">
+                            {skippedReason}
+                          </span>
+                        )}
                         {refusedLine && (
                           <span data-testid="run-refusal-count">
                             {refusedLine}.

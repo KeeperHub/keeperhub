@@ -431,7 +431,7 @@ describe("workflow runs", () => {
     expect(mockLoadSignals).toHaveBeenCalledWith("we_1", false);
     expect(workflowUpdates()[0].values).toEqual({
       status: "not_landed",
-      error: null,
+      error: expect.stringContaining("Not landed: a bundle in this run"),
       completedAt: expect.any(Date),
     });
     expect(mockRecordFinished).toHaveBeenCalledWith({
@@ -441,7 +441,7 @@ describe("workflow runs", () => {
     });
   });
 
-  it("settles a sent run that also found a bundle in flight as not_landed, never skipped", async () => {
+  it("settles a sent run whose bundle step skipped in flight as skipped", async () => {
     verifyResolves("success");
     mockLoadSignals.mockResolvedValue({
       skippedInFlight: true,
@@ -450,7 +450,7 @@ describe("workflow runs", () => {
 
     await run([], [workflowRow()]);
 
-    expect(workflowUpdates()[0].values.status).toBe("not_landed");
+    expect(workflowUpdates()[0].values.status).toBe("skipped");
   });
 
   describe("a success finalize that could not read its logs (no hashes on the row)", () => {

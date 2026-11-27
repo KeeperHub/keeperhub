@@ -28,6 +28,10 @@ vi.mock("server-only", () => ({}));
 
 import { pendingTransactions, walletLocks } from "@/lib/db/schema-extensions";
 import {
+  BUNDLE_PRE_RECORD_MS,
+  LONGEST_BUNDLE_HOLD_MS,
+} from "@/lib/web3/bundles/bundle-history";
+import {
   NonceLockLostError,
   NonceManager,
   resetNonceManager,
@@ -770,6 +774,181 @@ describe.skipIf(shouldSkip)("Nonce Manager E2E", () => {
       ).rejects.toThrow(FAILED_LOCK_REGEX);
 
       await manager1.endSession(session1);
+    }, 15_000);
+
+    it("waits past the plain budget only while a bundle holds the wallet, until its longest hold ends", async () => {
+      const holder = new NonceManager();
+      const provider = {
+        ...createMockProvider(5),
+        getBlockNumber: async () => 50,
+      };
+      const holderId = `${testExecutionId}_bundle`;
+      const { session } = await holder.startSession(
+        TEST_WALLET,
+        TEST_CHAIN_ID,
+        holderId,
+        provider as any
+      );
+      // The hold ends at most LONGEST_BUNDLE_HOLD_MS after the lock, plus the waiter's margin.
+      const lockedAt = new Date(
+        Date.now() - LONGEST_BUNDLE_HOLD_MS - 8000 + 1500
+      );
+      await db
+        .update(walletLocks)
+        .set({ lockedAt })
+        .where(eq(walletLocks.walletAddress, TEST_WALLET_NORMALIZED));
+      const waiter = () =>
+        new NonceManager({
+          maxLockRetries: 3,
+          lockRetryDelayMs: 50,
+        }).startSession(
+          TEST_WALLET,
+          TEST_CHAIN_ID,
+          `${testExecutionId}_waiter`,
+          provider as any
+        );
+
+      // A plain holder: the waiter gives up after its own short budget.
+      await expect(waiter()).rejects.toThrow(FAILED_LOCK_REGEX);
+
+      await holder.recordBundle(session, 5, {
+        hashes: [`0x${"ab".repeat(32)}`],
+        lastTargetBlock: 100,
+        workflowId: "wf_bundle",
+      });
+      const waiting = waiter();
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await holder.endSession(session);
+      const { session: next } = await waiting;
+      expect(next.executionId).toBe(`${testExecutionId}_waiter`);
+      await new NonceManager().endSession(next);
+    }, 15_000);
+
+    // The holder took the lock so long ago that its pre-record budget (plus the margin) ends in about 1.5 s.
+    const preparingHolder = async (suffix: string) => {
+      const holder = new NonceManager();
+      const provider = {
+        ...createMockProvider(5),
+        getBlockNumber: async () => 50,
+      };
+      const { session } = await holder.startSession(
+        TEST_WALLET,
+        TEST_CHAIN_ID,
+        `${testExecutionId}_${suffix}`,
+        provider as any
+      );
+      await db
+        .update(walletLocks)
+        .set({
+          lockedAt: new Date(Date.now() - BUNDLE_PRE_RECORD_MS - 8000 + 1500),
+        })
+        .where(eq(walletLocks.walletAddress, TEST_WALLET_NORMALIZED));
+      // The wallet sent a bundle here before, so a young holder may be preparing one.
+      await db.insert(pendingTransactions).values({
+        walletAddress: TEST_WALLET_NORMALIZED,
+        chainId: TEST_CHAIN_ID,
+        nonce: 1,
+        txHash: `0x${"a1".repeat(32)}`,
+        executionId: `${testExecutionId}_earlier`,
+        status: "confirmed",
+        bundleRuns: [
+          {
+            executionId: `${testExecutionId}_earlier`,
+            hashes: [`0x${"a1".repeat(32)}`],
+            signedAt: Date.now(),
+          },
+        ],
+      });
+      const waiter = () =>
+        new NonceManager({
+          maxLockRetries: 3,
+          lockRetryDelayMs: 50,
+        }).startSession(
+          TEST_WALLET,
+          TEST_CHAIN_ID,
+          `${testExecutionId}_waiter`,
+          provider as any
+        );
+      return { holder, session, waiter };
+    };
+
+    it("waits for a holder still preparing, then out its hold once it recorded a bundle", async () => {
+      const { holder, session, waiter } = await preparingHolder("preparing");
+      const waiting = waiter();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await holder.recordBundle(session, 5, {
+        hashes: [`0x${"ab".repeat(32)}`],
+        lastTargetBlock: 100,
+        workflowId: "wf_bundle",
+      });
+      // Past the preparing wait: only the hold behind the bundle keeps the waiter.
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      await holder.endSession(session);
+      const { session: next } = await waiting;
+      expect(next.executionId).toBe(`${testExecutionId}_waiter`);
+      await new NonceManager().endSession(next);
+    }, 15_000);
+
+    it("fails after waiting for a holder still preparing that recorded no bundle", async () => {
+      const { holder, session, waiter } = await preparingHolder("plain");
+      const started = Date.now();
+      await expect(waiter()).rejects.toThrow(FAILED_LOCK_REGEX);
+      expect(Date.now() - started).toBeGreaterThan(1000);
+      await holder.endSession(session);
+    }, 15_000);
+
+    it("does not wait for a young holder on a wallet that sent no bundle here", async () => {
+      const { holder, session, waiter } = await preparingHolder("nobundles");
+      await db
+        .delete(pendingTransactions)
+        .where(eq(pendingTransactions.walletAddress, TEST_WALLET_NORMALIZED));
+      const started = Date.now();
+      await expect(waiter()).rejects.toThrow(FAILED_LOCK_REGEX);
+      expect(Date.now() - started).toBeLessThan(1000);
+      await holder.endSession(session);
+    }, 15_000);
+
+    it("does not wait behind a stale bundle row the holder's run recorded before this lock", async () => {
+      const holderId = `${testExecutionId}_stale`;
+      const holder = new NonceManager();
+      const provider = {
+        ...createMockProvider(5),
+        getBlockNumber: async () => 50,
+      };
+      const { session } = await holder.startSession(
+        TEST_WALLET,
+        TEST_CHAIN_ID,
+        holderId,
+        provider as any
+      );
+      await holder.recordBundle(session, 5, {
+        hashes: [`0x${"ac".repeat(32)}`],
+        lastTargetBlock: 100,
+        workflowId: "wf_bundle",
+      });
+      // An earlier step's row: recorded a minute before this lock was taken.
+      await db
+        .update(pendingTransactions)
+        .set({ submittedAt: new Date(Date.now() - 60_000) })
+        .where(eq(pendingTransactions.walletAddress, TEST_WALLET_NORMALIZED));
+      await db
+        .update(walletLocks)
+        .set({ lockedAt: new Date(Date.now() - BUNDLE_PRE_RECORD_MS - 10_000) })
+        .where(eq(walletLocks.walletAddress, TEST_WALLET_NORMALIZED));
+      const started = Date.now();
+      await expect(
+        new NonceManager({
+          maxLockRetries: 3,
+          lockRetryDelayMs: 50,
+        }).startSession(
+          TEST_WALLET,
+          TEST_CHAIN_ID,
+          `${testExecutionId}_waiter`,
+          provider as any
+        )
+      ).rejects.toThrow(FAILED_LOCK_REGEX);
+      expect(Date.now() - started).toBeLessThan(1000);
+      await holder.endSession(session);
     }, 15_000);
   });
 

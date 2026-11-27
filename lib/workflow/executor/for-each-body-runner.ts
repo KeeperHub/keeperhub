@@ -53,7 +53,14 @@ export type BodyNodeOutputs = Record<string, { label: string; data: unknown }>;
 export type IterationMeta = {
   iterationIndex: number;
   forEachNodeId: string;
+  // For Each loops around this body when nested (2 or more); unset is one.
+  loopDepth?: number;
 };
+
+/** Loops around the body of a For Each started inside the body `outer` describes. */
+export function nestedLoopDepth(outer: IterationMeta | undefined): number {
+  return (outer?.loopDepth ?? 1) + 1;
+}
 
 /** Step runner callback. The runner is responsible for invoking the actual
  *  step (e.g. via the workflow SDK in production, or a vi.fn() in tests). */
@@ -373,6 +380,9 @@ export async function runBodyNode(
       nodeType: actionType,
       iterationIndex: ctx.iterationMeta?.iterationIndex,
       forEachNodeId: ctx.iterationMeta?.forEachNodeId,
+      ...(ctx.iterationMeta?.loopDepth !== undefined && {
+        loopDepth: ctx.iterationMeta.loopDepth,
+      }),
     };
 
     const stepResult = await ctx.runStep({

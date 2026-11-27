@@ -241,14 +241,35 @@ describe("getSendRpcProvider: every step's route", () => {
     expect(state.chainChecks).toBe(1);
   });
 
+  it("refuses a bundle on any step that does not allow one, before any RPC", async () => {
+    const refused = await outcome(ETHEREUM, { sendMode: "bundle" });
+    expect(refused.outcome).toBe("refused");
+    expect(refused.error).toBeInstanceOf(InvalidSendModeError);
+    expect((refused.error as Error).message).toBe(
+      'This step is set to Send as: Bundle, but bundles are only available on Write Contract steps. Set Send as to Normal transaction (sendMode: "transaction").'
+    );
+    expect(state.calls).toBe(0);
+  });
+
+  it("reads through the public RPC for a bundle where one is allowed", async () => {
+    state.chain = ETHEREUM;
+    const send = await getSendRpcProvider(
+      { sendMode: "bundle", usePrivateMempool: false },
+      { chainId: 1, allowBundle: true }
+    );
+    expect(send.rpcManager.hasPrivateRelayPrimary()).toBe(false);
+    expect(send.relayRequested).toBe(false);
+    expect(send.bundleRequested).toBe(true);
+  });
+
   it("names the editor label and the API value in every refusal", async () => {
     const noRelay = await outcome(BASE, { sendMode: "private-relay" });
     expect((noRelay.error as Error).message).toContain(
       'Set Send as to Normal transaction (sendMode: "transaction").'
     );
-    const unknown = await outcome(ETHEREUM, { sendMode: "bundle" });
+    const unknown = await outcome(ETHEREUM, { sendMode: "Bundle" });
     expect((unknown.error as Error).message).toBe(
-      'sendMode must be "transaction" (Normal transaction) or "private-relay" (Private relay), not "bundle".'
+      'sendMode must be "transaction" (Normal transaction) or "private-relay" (Private relay), not "Bundle".'
     );
     const batch = await outcome(
       ETHEREUM,

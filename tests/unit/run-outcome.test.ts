@@ -8,6 +8,7 @@ import {
   NO_RUN_OUTCOME_SIGNALS,
   runOutcomeLogSql,
   runOutcomeOf,
+  runOutcomeReason,
   signalsOfStep,
 } from "@/lib/workflow/executor/run-outcome";
 import type { StepContext } from "@/lib/workflow/executor/step-handler";
@@ -74,18 +75,17 @@ describe("runOutcomeOf", () => {
     notIncluded,
   });
 
-  it("is skipped only when nothing was sent", () => {
-    expect(runOutcomeOf(signals(true, false), false)).toBe("skipped");
-    expect(runOutcomeOf(signals(true, false), true)).toBe("not_landed");
+  it("is skipped for a skipped bundle step, whatever other steps sent", () => {
+    expect(runOutcomeOf(signals(true, false))).toBe("skipped");
   });
 
-  it("is not_landed for any not-included step, sent or not", () => {
-    expect(runOutcomeOf(signals(false, true), false)).toBe("not_landed");
-    expect(runOutcomeOf(signals(true, true), false)).toBe("not_landed");
+  it("is not_landed for any not-included step, a skip beside it too", () => {
+    expect(runOutcomeOf(signals(false, true))).toBe("not_landed");
+    expect(runOutcomeOf(signals(true, true))).toBe("not_landed");
   });
 
   it("is nothing without a signal", () => {
-    expect(runOutcomeOf(NO_RUN_OUTCOME_SIGNALS, true)).toBeUndefined();
+    expect(runOutcomeOf(NO_RUN_OUTCOME_SIGNALS)).toBeUndefined();
   });
 });
 
@@ -151,5 +151,28 @@ describe("recordRunOutcomeIfPresent", () => {
       { notIncludedReason: "not-picked" }
     );
     expect(getRunOutcomeSignals(executionId)).toEqual(NO_RUN_OUTCOME_SIGNALS);
+  });
+});
+
+describe("runOutcomeReason", () => {
+  it("says the skipped step sent no transaction and other steps still ran", () => {
+    expect(runOutcomeReason("skipped")).toBe(
+      "Skipped: this workflow's earlier bundle could still land, so the bundle step sent no transaction. Any other steps still ran."
+    );
+  });
+
+  it("says a missed bundle pays no gas unless it lands", () => {
+    expect(runOutcomeReason("not_landed")).toContain(
+      "No gas is paid unless a bundle lands"
+    );
+    // A not-checked bundle may have landed: the reason never claims it did not.
+    expect(runOutcomeReason("not_landed")).toContain("or could not be checked");
+  });
+
+  it("matches what a step's output signals", () => {
+    const skip = signalsOfStep(WRITE, { route: "skipped-in-flight" });
+    expect(runOutcomeReason(runOutcomeOf(skip) ?? "not_landed")).toMatch(
+      /^Skipped:/
+    );
   });
 });

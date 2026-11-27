@@ -533,6 +533,7 @@ async function renderRow(
             workflow,
             incident: alertIncident,
             ranButFailed: context.ranButFailed === true,
+            bundleLanded: context.bundleLanded === true,
             resolvedAt: incident.resolvedAt,
             ranAt:
               typeof context.ranAt === "string"
@@ -701,14 +702,17 @@ async function sendRow(
     link: content.link,
     pagerDutyGroup:
       typeof row.context?.group === "string" ? row.context.group : undefined,
-    // A missed run is usually our scheduler, not an emergency of theirs.
-    pagerDutySeverity:
-      (row.incidentId && (await ctx.incident(row.incidentId))?.openedBy) ===
-      "missed"
-        ? "warning"
-        : "error",
+    // A missed run is usually our scheduler, and bundles that missed cost
+    // nothing: neither is an emergency of theirs.
+    pagerDutySeverity: WARNING_ONLY.has(
+      (row.incidentId && (await ctx.incident(row.incidentId))?.openedBy) || ""
+    )
+      ? "warning"
+      : "error",
   });
 }
+
+const WARNING_ONLY: ReadonlySet<string> = new Set(["missed", "not_landing"]);
 
 async function finishRow(
   row: DeliveryRow,

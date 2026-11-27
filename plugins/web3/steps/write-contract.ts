@@ -4,6 +4,7 @@ import { withPluginMetrics } from "@/lib/metrics/instrumentation/plugin";
 import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
+import { bundleMovedNoValue } from "@/lib/workflow/executor/run-outcome-keys";
 import {
   applyFailOnError,
   type WriteContractCoreInput,
@@ -76,7 +77,9 @@ export async function writeContractStep(
               input as typeof input & { payerParam?: unknown };
             coreResult = await writeContractCore(coreInput);
             return coreResult;
-          }
+          },
+          // A bundle that moved nothing and cannot still land frees its value.
+          (core) => core.success && !bundleMovedNoValue(core)
         );
         return result === coreResult
           ? applyFailOnError(result, input.failOnError)

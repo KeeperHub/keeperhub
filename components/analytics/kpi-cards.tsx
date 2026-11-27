@@ -29,6 +29,7 @@ import {
   analyticsRangeAtom,
   analyticsSummaryAtom,
 } from "@/lib/atoms/analytics";
+import { NOT_LANDED_LATER } from "@/lib/errors/execution-status";
 import { cn } from "@/lib/utils";
 
 function formatDuration(ms: number | null): string {
@@ -114,8 +115,7 @@ function DeltaDisplay({
 
 // Shown on Total Runs, where a user notices runs are missing: skipped and not
 // landed runs are neither a success nor a failure, so they belong in no rate.
-const SKIPPED_TOOLTIP =
-  "Runs that finished, successfully or not, over this period. Runs still in flight, runs you cancelled, skipped runs and not landed runs are excluded. A skipped run sent no transaction: the trigger fired but the run did not start (the plan's monthly execution limit was reached, the workflow uses an action your plan does not include, a pay-as-you-go charge could not be collected, or the workflow cannot run, for example it was turned off or its schedule was removed), a Block trigger set to skip while running fired while the previous run was still going, or the run found a transaction from an earlier run still in flight and stopped before sending its own. Refusals of one workflow for the same reason share one skipped run per hour, and the skips behind one running run share one skipped run, so the skipped count can be lower than the number of refused or skipped triggers. Skipped runs do not count towards your success rate, and count towards your usage only when they found an earlier run's transaction in flight. A run marked Not landed finished, but a transaction in it did not land in a block: neither a success nor a failure, but it still counts towards your usage. It can still land later (within about a day); then the run changes to Success, or to Error if the call reverted.";
+const SKIPPED_TOOLTIP = `Runs that finished, successfully or not, over this period. Runs still in flight, runs you cancelled, skipped runs and not landed runs are excluded. A skipped run is one where the trigger fired but the run did not start (the plan's monthly execution limit was reached, the workflow uses an action your plan does not include, a pay-as-you-go charge could not be collected, or the workflow cannot run, for example it was turned off or its schedule was removed), a Block trigger set to skip while running fired while the previous run was still going, or a bundle step found an earlier run's bundle still in flight and sent nothing (the run's other steps still ran, and may have sent transactions). Refusals of one workflow for the same reason share one skipped run per hour, and the skips behind one running run share one skipped run, so the skipped count can be lower than the number of refused or skipped triggers. Skipped runs do not count towards your success rate, and count towards your usage only when a bundle step found an earlier run's bundle in flight. A run marked Not landed finished, but a bundle in it was not seen in its target blocks: neither a success nor a failure, but it still counts towards your usage. ${NOT_LANDED_LATER}`;
 
 const COMPARISON_LABELS: Record<TimeRange, string> = {
   "1h": "the previous hour",

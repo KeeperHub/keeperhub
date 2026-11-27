@@ -483,7 +483,7 @@ export function refusedLead(
   return `its ${openedBy === "refused" ? "" : "scheduled "}runs are being refused before they start`;
 }
 
-const SKIPPED_PREFIX = /^Execution skipped:\s*/i;
+const SKIPPED_PREFIX = /^(?:Execution skipped|Skipped):\s*/i;
 /** The executor's "workflow is not executable (<code>)" codes, in plain words. */
 const NOT_EXECUTABLE_WORDS: Record<NotExecutableReason, string> = {
   deleted: "the workflow is deleted",
@@ -494,7 +494,7 @@ const NOT_EXECUTABLE_WORDS: Record<NotExecutableReason, string> = {
   anonymous_owner: "the owner has no account",
 };
 
-/** A stored refusal as shown: no "Execution skipped:" prefix, executor codes in plain words. */
+/** A stored refusal as shown: no "Execution skipped:" or "Skipped:" prefix, executor codes in plain words. */
 export function shownRefusal(reason: string): string {
   return reason
     .replace(SKIPPED_PREFIX, "")

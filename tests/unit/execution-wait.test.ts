@@ -302,7 +302,7 @@ describe("buildCallCompletionResponse (KEEP-265)", () => {
       executionId: "exec-nl",
       status: "error",
       error:
-        "Execution finished, but a transaction in it did not land in a block (it can still land within about a day)",
+        "Execution finished, but a bundle in it was not seen in its target blocks. A bundle that could not be checked can still land within about a day; then the run changes to Success, or to Error if the call reverted.",
       code: "not_landed",
     });
     expect(mockFindFirstExecution).toHaveBeenCalledTimes(1);

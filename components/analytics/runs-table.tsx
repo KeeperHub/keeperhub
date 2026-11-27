@@ -50,6 +50,7 @@ import {
 } from "@/lib/atoms/analytics";
 import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
+import { NOT_LANDED_LATER } from "@/lib/errors/execution-status";
 import type { ChainDisplay } from "@/lib/hooks/use-chain-display";
 import {
   ChainDisplayProvider,
@@ -250,9 +251,8 @@ function formatTimeAgo(dateString: string): string {
 // one answers "whose fault is it and what do I do about it".
 const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
   skipped:
-    "The run sent no transaction. Either the trigger fired but the run did not start (the monthly execution limit was reached, the workflow uses an action your plan does not include, or a pay-as-you-go charge could not be collected), a Block trigger set to skip while running found the previous run still going, or the run found a transaction from an earlier run still in flight and stopped before sending its own (steps before that, such as reads or messages, may have run). Not a failure, and it does not count towards your success rate. It counts towards your usage only when it found an earlier run's transaction in flight.",
-  not_landed:
-    "The run finished, but a transaction in it did not land in a block, for example because no block builder picked it up or the call would have failed by then. It can still land later (within about a day); then the run changes to Success, or to Error if the call reverted. No gas is paid unless it lands. Not a failure and not a success, but it still counts towards your usage.",
+    "The trigger fired but the run did not start (the monthly execution limit was reached, the workflow uses an action your plan does not include, or a pay-as-you-go charge could not be collected), a Block trigger set to skip while running found the previous run still going, or a bundle step found an earlier run's bundle still in flight and sent nothing (the run's other steps still ran, and may have sent transactions). Not a failure, and it does not count towards your success rate. It counts towards your usage only when a bundle step found an earlier run's bundle in flight.",
+  not_landed: `The run finished, but a bundle in it was not seen in any of its target blocks (or could not be checked), for example because no block builder picked it up or the call would have failed by then. ${NOT_LANDED_LATER} No gas is paid unless a bundle lands. Not a failure and not a success, but it still counts towards your usage.`,
   error:
     "The run started and failed on something in the workflow itself: bad input, a missing or invalid credential, or a 4xx from an endpoint you configured. Fix the workflow and run it again.",
   external_error:
@@ -511,11 +511,34 @@ function ExpandedStepRows({
     );
   }
 
+  // A skipped or not landed run says why in `error`; it is not a failure.
+  const outcomeNote =
+    (run.status === "skipped" || run.status === "not_landed") && run.error
+      ? run.error
+      : null;
   if (steps.length > 0) {
-    return steps.map((step) => <StepLogRow key={step.id} step={step} />);
+    return (
+      <>
+        {outcomeNote && (
+          <tr>
+            <td
+              className="py-2 pl-10 pr-3 text-xs text-muted-foreground"
+              colSpan={8}
+            >
+              <span className="wrap-anywhere" data-testid="run-outcome-note">
+                {outcomeNote}
+              </span>
+            </td>
+          </tr>
+        )}
+        {steps.map((step) => (
+          <StepLogRow key={step.id} step={step} />
+        ))}
+      </>
+    );
   }
 
-  const errorMessage = getCustomerRunErrorMessage(run);
+  const errorMessage = getCustomerRunErrorMessage(run) ?? outcomeNote;
   return (
     <tr>
       <td className="py-2 pl-10 pr-3 text-xs text-muted-foreground" colSpan={8}>

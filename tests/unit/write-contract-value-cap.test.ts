@@ -165,3 +165,102 @@ describe("writeContractStep value-cap interaction", () => {
     expect(result).toEqual({ ...coreFailure, softened: true });
   });
 });
+
+describe("writeContractStep value cap for bundles", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Mirrors withValueCap: run, then settle when `settles` says so, else release.
+  async function capOutcome(core: object): Promise<"settled" | "released"> {
+    let outcome: "settled" | "released" | undefined;
+    mockWriteContractCore.mockResolvedValue(core);
+    mockWithStepValueCap.mockImplementation(
+      async (
+        _args: unknown,
+        run: () => Promise<{ success: boolean }>,
+        settles: (result: { success: boolean }) => boolean = (result) =>
+          result.success
+      ) => {
+        const result = await run();
+        outcome = settles(result) ? "settled" : "released";
+        return result;
+      }
+    );
+    await writeContractStep({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: "[]",
+      abiFunction: "kick",
+      ethValue: "1",
+      _context: {
+        nodeId: "node-1",
+        nodeName: "Write",
+        nodeType: "web3/write-contract",
+        organizationId: "org-1",
+        executionId: "exec-1",
+      },
+    });
+    if (!outcome) {
+      throw new Error("the value cap was not consulted");
+    }
+    return outcome;
+  }
+
+  const sent = { route: "bundle", targetBlocks: [11, 12] };
+
+  it.each([
+    [
+      "skipped in flight",
+      { success: true, route: "skipped-in-flight", included: false },
+      "released",
+    ],
+    [
+      "not picked (decided miss)",
+      {
+        success: true,
+        ...sent,
+        included: false,
+        notIncludedReason: "not-picked",
+      },
+      "released",
+    ],
+    [
+      "not checked (may still land)",
+      {
+        success: true,
+        ...sent,
+        included: false,
+        notIncludedReason: "not-checked",
+      },
+      "settled",
+    ],
+    [
+      "landed",
+      { success: true, ...sent, included: true, transactionHash: "0xab" },
+      "settled",
+    ],
+    [
+      "a replay that may still land (keeps its own charge)",
+      {
+        success: true,
+        route: "bundle",
+        included: false,
+        notIncludedReason: "not-checked",
+      },
+      "settled",
+    ],
+    [
+      "a replay that landed (keeps its own charge)",
+      {
+        success: true,
+        route: "bundle",
+        included: true,
+        transactionHash: "0xab",
+      },
+      "settled",
+    ],
+  ])("%s: the reservation is %s", async (_name, core, expected) => {
+    expect(await capOutcome(core)).toBe(expected);
+  });
+});

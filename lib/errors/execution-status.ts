@@ -16,6 +16,10 @@ export const ERROR_STATUSES = ["error", "system_error"] as const;
 
 export type ErrorStatus = (typeof ERROR_STATUSES)[number];
 
+/** Why a not landed run may still change: only a bundle that could not be checked can land later. */
+export const NOT_LANDED_LATER =
+  "A bundle that could not be checked can still land within about a day; then the run changes to Success, or to Error if the call reverted.";
+
 /** True when an execution status is one of the two failure statuses. */
 export function isErrorStatus(status: string): status is ErrorStatus {
   return (ERROR_STATUSES as readonly string[]).includes(status);
@@ -27,11 +31,11 @@ export function isErrorStatus(status: string): status is ErrorStatus {
  * the same set, and so adding a status shows up as a type error everywhere it
  * has to be handled.
  *
- * `skipped` is a run that sent no transaction: refused before it started (over
- * the plan's execution limit, a gated action, or an unpaid pay-as-you-go
- * charge), a Block trigger dispatch skipped while a previous run was still
- * live, or a run that found an earlier run's transaction still in flight and
- * stopped before sending (non-sending steps before it may have run). It is
+ * `skipped` is a run refused before it started (over the plan's execution
+ * limit, a gated action, or an unpaid pay-as-you-go charge), a Block trigger
+ * dispatch skipped while a previous run was still live, or a run whose bundle
+ * step found an earlier run's bundle in flight and sent nothing (its other
+ * steps still ran and may have sent transactions). It is
  * terminal and not a failure, so it belongs outside both the error count and
  * the success-rate denominator; only the in-flight kind is billable.
  *

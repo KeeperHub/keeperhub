@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLANS } from "@/lib/billing/plans";
+import { NOT_LANDED_LATER } from "@/lib/errors/execution-status";
 import {
   ErrorCategory,
   logSystemError,
@@ -724,10 +725,10 @@ type ExecutionDigestEmailData = {
     total: number;
     success: number;
     error: number;
-    // Runs that sent no transaction (refused, or skipped behind a live run or an in-flight
-    // transaction). Rendered in its own neutral section: not failures, carry no rate.
+    // Runs refused, skipped behind a live run, or whose bundle step skipped behind an
+    // in-flight bundle. Rendered in its own neutral section: not failures, carry no rate.
     skipped: number;
-    // A transaction in the run did not land in a block: neutral, no rate, still billable.
+    // A bundle in the run was not seen in its target blocks: neutral, no rate, still billable.
     notLanded?: number;
     distinctWorkflows: number;
     transactionCount: number;
@@ -911,7 +912,7 @@ export async function sendWorkflowExecutionDigestEmail(
   // Omitted entirely when nothing was refused, which is the normal case.
   const skippedText = stats.skipped
     ? `
-Skipped: ${stats.skipped} (sent no transaction: refused, a previous run was still running, or an earlier run's transaction was still in flight; not failures)
+Skipped: ${stats.skipped} (refused, a previous run was still running, or a bundle step sent no transaction because an earlier run's bundle was still in flight; not failures)
 ${topSkipped
   .map(
     (w) =>
@@ -926,7 +927,7 @@ ${topSkipped
   const notLanded = stats.notLanded ?? 0;
   const notLandedText = notLanded
     ? `
-Not landed: ${notLanded} (a transaction did not land in a block; not failures, but they count towards your usage; one can still land within about a day and change status)
+Not landed: ${notLanded} (a bundle was not seen in its target blocks; not failures, but they count towards your usage. ${NOT_LANDED_LATER})
 `
     : "";
 
@@ -1052,8 +1053,8 @@ ${socialText}
 
   const skippedSection = stats.skipped
     ? `<div style="text-align:left; margin-top:28px;">
-      <p style="margin:0 0 4px;"><span style="color:#666; font-weight:bold; font-size:17px;">Skipped: ${stats.skipped}</span> <span style="color:#999; font-size:13px;">- Runs that sent no transaction: refused, a previous run was still running, or an earlier run's transaction was still in flight</span></p>
-      <p style="margin:0 0 10px; color:#999; font-size:12px;">These runs are not failures and do not count towards your success rate. They count towards your usage only when an earlier run's transaction was still in flight.</p>
+      <p style="margin:0 0 4px;"><span style="color:#666; font-weight:bold; font-size:17px;">Skipped: ${stats.skipped}</span> <span style="color:#999; font-size:13px;">- Runs refused, skipped behind a previous run still running, or whose bundle step sent no transaction because an earlier run's bundle was still in flight</span></p>
+      <p style="margin:0 0 10px; color:#999; font-size:12px;">These runs are not failures and do not count towards your success rate. They count towards your usage only when an earlier run's bundle was still in flight.</p>
       <table style="width:100%; border-collapse:collapse;">${tableHeader("Skipped")}${skippedRows}</table>
     </div>`
     : "";
@@ -1092,7 +1093,7 @@ ${socialText}
     ${
       notLanded
         ? `<div style="text-align:left; margin-top:28px;">
-      <p style="margin:0;"><span style="color:#666; font-weight:bold; font-size:17px;">Not landed: ${notLanded}</span> <span style="color:#999; font-size:13px;">- Runs where a transaction did not land in a block. Not failures, but they count towards your usage. One can still land within about a day and change status.</span></p>
+      <p style="margin:0;"><span style="color:#666; font-weight:bold; font-size:17px;">Not landed: ${notLanded}</span> <span style="color:#999; font-size:13px;">- Runs where a bundle was not seen in its target blocks. Not failures, but they count towards your usage. ${NOT_LANDED_LATER}</span></p>
     </div>`
         : ""
     }

@@ -399,6 +399,8 @@ export async function POST(request: Request): Promise<NextResponse> {
           `web3/${actionSlug}`,
           SEND_MODE.PRIVATE_RELAY
         ),
+        // A bundle's gas is estimated like a normal send's.
+        allowBundle: actionSlug === "write-contract",
       }));
     } catch (error) {
       if (rpcRelayErrorClass(error) === ExecutionErrorType.USER) {

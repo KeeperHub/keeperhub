@@ -37,6 +37,7 @@ const RUNNER_GID = 1000;
 // derivable from the env var (e.g. DATABASE_URL -> db-url), so it is listed
 // explicitly. Verified against techops-staging and techops-prod (2026-06-02).
 const SECRET_ENV_SLUGS: Record<string, string> = {
+  BUNDLE_SEARCHER_PRIVATE_KEY: "bundle-searcher-private-key",
   DATABASE_URL: "db-url",
   INTEGRATION_ENCRYPTION_KEY: "integration-encryption-key",
   CHAIN_RPC_CONFIG: "chain-rpc-config",

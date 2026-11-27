@@ -143,10 +143,10 @@ export type OrgExecutionDigest = {
   // Every failed run in the window, platform failures included, so the digest
   // rates a run the same way the analytics dashboard does.
   error: number;
-  // Runs that sent no transaction: refused, or skipped behind a live run or an in-flight
-  // transaction. Reported on their own rather than as failures, and excluded from `total`.
+  // Runs refused, skipped behind a live run, or whose bundle step skipped behind an
+  // in-flight bundle. Reported on their own rather than as failures, and excluded from `total`.
   skipped: number;
-  // A transaction in the run did not land in a block: neither a success nor a
+  // A bundle in the run was not seen in its target blocks: neither a success nor a
   // failure, so no rate. Included in `total`.
   notLanded: number;
   // Distinct workflows that ran at least once over the window.
@@ -308,7 +308,7 @@ export async function getOrgExecutionDigest(
 /**
  * Workflows whose runs the platform refused over the window, with the reason
  * carried on the most recent one. Same shape as the failing list, deliberately
- * kept apart from it: these runs did not fail, they sent no transaction.
+ * kept apart from it: these runs did not fail.
  */
 async function getTopSkippedWorkflows(
   windowFilter: ReturnType<typeof and>

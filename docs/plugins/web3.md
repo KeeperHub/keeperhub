@@ -625,6 +625,27 @@ Execute state-changing functions on smart contracts using your Turnkey wallet. R
 
 Both fields are absent when nothing was sent, and when only the private relay was tried and it never confirmed taking the transaction (the step then fails with the transaction hash, as it may still land). So `included` absent with `error` set and no `transactionHash` means KeeperHub found no sign the transaction was sent. Every EVM write action reports them (Write Contract, Batch Write Contract, Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token and protocol writes); a Solana transfer does not.
 
+### Bundle outputs
+
+Write Contract has more outputs that are only set on a step sent as a bundle to block builders. Sending as a bundle is not available yet: a `sendMode` of `"bundle"` is refused at save.
+
+- `route` is `bundle` when the bundle was sent. It is `skipped-in-flight` when the step sent nothing because an earlier bundle from the same workflow could still land; then `included` is `false` and `inFlightUntilBlock` is the block after which that earlier bundle can no longer land. Branch on `route` to tell a skip from a miss.
+- `includedBlock`: the block the transaction was included in.
+- `notIncludedReason`: why the bundle did not land in any of its blocks. With it, `success` is `true`, `included` is `false`, there is no `transactionHash`, and the run ends Not landed. No gas is paid unless it lands.
+  - `not-picked`: no builder included it, though the call would still succeed (for example the tip was too low).
+  - `no-longer-needed`: the call would now revert, so no builder could include it.
+  - `not-checked`: KeeperHub could not tell whether it landed (the network could not be read in time, or the step ran again after sending its bundle). Only this value is expected to still land; with the other two the miss is decided.
+  - A bundle that could not be checked can still land within about a day; then the run changes to Success, or to Error if the call reverted. The step's output is not updated. The value its call sends counts toward the organization's daily spending cap for that UTC day, even if it never lands.
+  - With `not-picked` or `no-longer-needed`, or when the step fails because no block builder accepted the bundle, the value its call sends does not count toward the daily spending cap. In the rare case a builder still includes that bundle later (against its target blocks or its own answer), the value is not counted then either.
+- `targetBlocks`: the blocks the bundle was sent for, in order.
+- `targetTipsGwei`: the maximum priority fee (tip) in gwei for each target block. The tip paid can be lower when the base fee leaves less room under Max Fee.
+- `builders`: one entry per block builder, `{ name, accepted, error? }`. `accepted` is `true` when the builder took the bundle for any target, `false` when it refused every one, `null` when its answer was unclear. `error` is the builder's answer, shortened, or a KeeperHub note when there was no usable answer (no answer in time, unreadable answer, ...).
+- `bundleTargetsSkipped`: blocks no transaction was sent for, `{ block, reason }`, where `reason` is `simulation-failed`, `target-passed` or `max-fee-below-projected-base-fee`.
+
+Before anything is signed, a bundle step fails (nothing sent, nothing paid) when the wallet cannot hold Gas Limit x Max Fee plus the value, when an earlier transaction from the wallet is still waiting to be mined, when the priority fee is 0, or when preparing the bundle took more than 40 seconds (a slow RPC or signer). A bundle step cannot run inside a For Each that is itself inside another For Each yet; a single For Each works.
+
+A wallet sends one bundle at a time on each network. A bundle step holds its wallet on that network until its outcome is decided, at most about three minutes. Other KeeperHub sends from that wallet on that network (any workflow, or the API) wait for it instead of failing. Several bundle workflows on one wallet queue behind each other, and a send waiting behind two bundles in a row can fail with "Wallet is saturated". A transaction sent from the wallet outside KeeperHub does not wait: if it uses the bundle's nonce, the step fails, because the bundle can no longer be included. The step fails only once KeeperHub finds that transaction on chain; until then it reports `not-checked`. When a run is retried after a crash, a step that already sent its bundle never signs a second one: it reports the landed transaction, the miss it already decided, or `not-checked`. Not landed runs do not count as failures, so they never alert as failed runs; a workflow whose bundles keep missing gets its own alert (see [Failure Alerts API](/api/failure-alerts)).
+
 If the action's config sets `strict: false` (see [Chains API](/api/chains)), a relay that refuses the transaction makes it go out publicly, and `route` is `public`. A transaction the relay accepted and later dropped is not sent again publicly.
 
 A write that was sent but has no receipt within the wait (up to 10 minutes) fails the run whatever `Fail workflow on error` says: it may still be mined, so do not send it again on this alone. Its node output shows `included: false`; use workflow failure alerts (see [Failure Alerts API](/api/failure-alerts)) to hear about it. A next step only sees `included: false` when another transaction with the same nonce replaced it and `Fail workflow on error` is off.

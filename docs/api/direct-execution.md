@@ -489,6 +489,8 @@ POST /api/execute/contract-call
 
 Call any smart contract function. Automatically detects read vs write operations.
 
+A write waits while a workflow's bundle step holds the same wallet on that network (up to about three minutes; see [Bundle outputs](/plugins/web3#bundle-outputs)), and the response comes only after that. Set your client timeout above three minutes for writes from a wallet that also sends bundles, and always send an `Idempotency-Key`: a retry after a client timeout then cannot send a second transaction.
+
 ### Request Body
 
 ```json

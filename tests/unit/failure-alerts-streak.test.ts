@@ -4,7 +4,9 @@ import {
   isAutomatedRun,
   isOutOfFunds,
   isRefusedRun,
+  landedSince,
   type StreakRun,
+  summarizeNotLanding,
   summarizeStreak,
 } from "@/lib/notifications/failure-alerts/streak";
 
@@ -356,5 +358,93 @@ describe("refused runs", () => {
     expect(
       isRefusedRun({ status: "error", errorCategory: null, billable: false })
     ).toBe(false);
+  });
+});
+
+describe("bundles not landing", () => {
+  it("is a streak once the newest runs, threshold of them, all ended not landed", () => {
+    const streak = summarizeNotLanding(
+      runs(["not_landed", "not_landed", "not_landed", "success"]),
+      null,
+      3
+    );
+    expect(streak).toMatchObject({ count: 3, lastRunId: "run-0" });
+    expect(streak?.firstFailedAt).toEqual(new Date(BASE - 2 * 15 * 60 * 1000));
+  });
+
+  it("is no streak below the threshold, or when a success or a failure is newer", () => {
+    expect(
+      summarizeNotLanding(
+        runs(["not_landed", "not_landed", "success"]),
+        null,
+        3
+      )
+    ).toBeNull();
+    expect(
+      summarizeNotLanding(
+        runs(["error", "not_landed", "not_landed", "not_landed"]),
+        null,
+        3
+      )
+    ).toBeNull();
+  });
+
+  it("steps over what the failure streak steps over: a person's run, a platform error, a skip", () => {
+    expect(
+      summarizeNotLanding(
+        runs([
+          "not_landed",
+          "success:manual",
+          "error:system",
+          "skipped",
+          "not_landed",
+          "not_landed",
+        ]),
+        null,
+        3
+      )?.count
+    ).toBe(3);
+  });
+
+  it("counts only from countingSince", () => {
+    const since = new Date(BASE - 20 * 60 * 1000);
+    expect(
+      summarizeNotLanding(
+        runs(["not_landed", "not_landed", "not_landed"]),
+        since,
+        3
+      )
+    ).toBeNull();
+  });
+
+  it("never touches the failure streak: not landed runs neither count nor reset it", () => {
+    const summary = summarizeStreak(
+      runs(["not_landed", "error", "not_landed", "error", "success"]),
+      null,
+      10
+    );
+    expect(summary.failures).toBe(2);
+  });
+
+  it("ends only when the newest counted run since the streak began landed or failed", () => {
+    const list = runs(["success", "not_landed", "not_landed", "not_landed"]);
+    const since = list[3].startedAt;
+    expect(landedSince(list, since)?.id).toBe("run-0");
+    // Manual runs and platform errors are stepped over, as for the streak.
+    expect(
+      landedSince(runs(["error:system", "success:manual", "error"]), since)?.id
+    ).toBe("run-2");
+    expect(landedSince(runs(["not_landed", "not_landed"]), since)).toBeNull();
+    // An older run re-settled late, with newer misses after it: still open.
+    expect(
+      landedSince(
+        runs(["not_landed", "success", "not_landed", "not_landed"]),
+        since
+      )
+    ).toBeNull();
+    // A run older than the streak never ends it.
+    expect(
+      landedSince(runs(["not_landed", "success"]), list[0].startedAt)
+    ).toBeNull();
   });
 });

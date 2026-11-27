@@ -421,7 +421,7 @@ describe("sendMode must be a known value", () => {
     " private-relay",
     true,
     "{{@x:X.mode}}",
-    "bundle",
+    "Bundle",
   ])("refuses %j on every save path, with one issue", async (sendMode) => {
     const node = write("a", { network: "1", sendMode });
     const direct = await validateSendModeForSave([node]);
@@ -439,6 +439,33 @@ describe("sendMode must be a known value", () => {
         all.issues.filter((issue) => issue.field === "sendMode")
       ).toHaveLength(1);
     }
+  });
+
+  it("refuses a new bundle step on every save path until the editor offers it", async () => {
+    const node = write("a", { network: "1", sendMode: "bundle" });
+    const direct = await validateSendModeForSave([node]);
+    expect(direct.issues).toHaveLength(1);
+    expect(direct.issues[0].message).toBe(
+      'Send as: Bundle is not available yet. Set Send as to Normal transaction (sendMode: "transaction").'
+    );
+    for (const options of [{ keepLegacy: true }, { savedNodes: [] }, {}]) {
+      const all = await validateWorkflowNodesForSave(
+        [write("a", { network: "1", sendMode: "bundle" })],
+        options
+      );
+      expect(
+        all.issues.filter((issue) => issue.field === "sendMode")
+      ).toHaveLength(1);
+    }
+  });
+
+  it("keeps a bundle step saved as it is", async () => {
+    const saved = write("a", { network: "1", sendMode: "bundle" });
+    const result = await validateSendModeForSave(
+      [write("a", { network: "1", sendMode: "bundle", abiFunction: "run" })],
+      { savedNodes: [saved] }
+    );
+    expect(result.issues).toEqual([]);
   });
 
   it("gives Batch with the relay one issue that names the value to send", async () => {
