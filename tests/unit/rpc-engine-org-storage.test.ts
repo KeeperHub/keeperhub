@@ -135,6 +135,33 @@ describe("flushRpcUsage", () => {
     expect(accumulator.size).toBe(0);
   });
 
+  it("finishes only after a flush already running has written", async () => {
+    let finishFirst: () => void = () => undefined;
+    dbMock.onConflictDoUpdate
+      .mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finishFirst = resolve;
+        })
+      )
+      .mockResolvedValueOnce(undefined);
+    const accumulator = new RpcUsageAccumulator();
+    accumulator.record(key, { requests: 1 });
+    const first = flushRpcUsage(accumulator);
+    accumulator.record(key, { requests: 2 });
+
+    let secondDone = false;
+    const second = flushRpcUsage(accumulator).then((written) => {
+      secondDone = true;
+      return written;
+    });
+    await Promise.resolve();
+    expect(secondDone).toBe(false);
+
+    finishFirst();
+    await expect(first).resolves.toBe(1);
+    await expect(second).resolves.toBe(1);
+  });
+
   it("does nothing when there is nothing to write", async () => {
     dbMock.onConflictDoUpdate.mockClear();
     await expect(flushRpcUsage(new RpcUsageAccumulator())).resolves.toBe(0);

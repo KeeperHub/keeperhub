@@ -126,13 +126,7 @@ async function writeEachOrganization(
   return written;
 }
 
-/**
- * Add every bucket recorded so far to the stored hourly rows. Buckets that
- * fail to write go back into the accumulator for the next flush.
- */
-export async function flushRpcUsage(
-  accumulator: RpcUsageAccumulator = rpcUsageAccumulator
-): Promise<number> {
+async function flushOnce(accumulator: RpcUsageAccumulator): Promise<number> {
   const buckets = accumulator.drain();
   if (buckets.length === 0) {
     return 0;
@@ -155,7 +149,29 @@ export async function flushRpcUsage(
   }
 }
 
-/** The buckets whose organization exists; the rest are dropped. */
+const runningFlushes = new WeakMap<RpcUsageAccumulator, Promise<number>>();
+
+/**
+ * Add every bucket recorded so far to the stored hourly rows. Buckets that
+ * fail to write go back into the accumulator for the next flush. A flush
+ * waits for one already running, so a caller that exits after it, such as
+ * a shutdown, knows that one's write has finished too.
+ */
+export async function flushRpcUsage(
+  accumulator: RpcUsageAccumulator = rpcUsageAccumulator
+): Promise<number> {
+  let running = runningFlushes.get(accumulator);
+  while (running) {
+    await running.catch(() => 0);
+    running = runningFlushes.get(accumulator);
+  }
+  const flush = flushOnce(accumulator).finally(() => {
+    runningFlushes.delete(accumulator);
+  });
+  runningFlushes.set(accumulator, flush);
+  return await flush;
+}
+
 const reports = organizationRpcUsageReports;
 
 /**
@@ -188,6 +204,7 @@ export async function storeUsageReport(
   });
 }
 
+/** The buckets whose organization exists; the rest are dropped. */
 export async function bucketsForKnownOrganizations(
   buckets: readonly RpcUsageBucket[]
 ): Promise<RpcUsageBucket[]> {
