@@ -1,8 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { member } from "@/lib/db/schema";
+import { member, organization } from "@/lib/db/schema";
 import {
-  AUTH_METHOD_API_KEY,
   type AuthMethod,
   getDualAuthContext,
 } from "@/lib/middleware/auth-helpers";
@@ -30,9 +29,12 @@ export const ORG_ANY_MEMBER: ReadonlySet<OrgRole> = new Set(
   Object.values(OrgRoles)
 );
 
+const SESSION_AUTH: AuthMethod = "session";
+
 /**
  * Resolve the caller and require one of `allowedRoles` in the organization
- * named by the route. An API key only reaches the organization it belongs to.
+ * named by the route. An API key or OAuth token only reaches the organization
+ * it was issued for, and a deactivated organization is reached by no one.
  */
 export async function requireOrgRole(
   request: Request,
@@ -47,15 +49,20 @@ export async function requireOrgRole(
   if (!userId) {
     return { ok: false, status: 400, error: "Auth context missing user" };
   }
-  if (authMethod === AUTH_METHOD_API_KEY && callerOrgId !== organizationId) {
+  if (authMethod !== SESSION_AUTH && callerOrgId !== organizationId) {
     return { ok: false, status: 403, error: FORBIDDEN };
   }
 
   const [membership] = await db
     .select({ role: member.role })
     .from(member)
+    .innerJoin(organization, eq(organization.id, member.organizationId))
     .where(
-      and(eq(member.organizationId, organizationId), eq(member.userId, userId))
+      and(
+        eq(member.organizationId, organizationId),
+        eq(member.userId, userId),
+        isNull(organization.deactivatedAt)
+      )
     )
     .limit(1);
 
