@@ -1,6 +1,6 @@
 {
-  "id": "475cb4be-9a9d-449e-a297-a7656674458d",
-  "prevId": "c0c8cd3d-a851-447d-9818-0e60657c6905",
+  "id": "f86a9d79-c159-4f7d-bec8-f29e7a1b3e48",
+  "prevId": "ea5224fe-ea88-4bbc-9aa2-2c0f34a01735",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1273,6 +1273,24 @@
         "completed_at": {
           "name": "completed_at",
           "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rpc_origin": {
+          "name": "rpc_origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rpc_config_id": {
+          "name": "rpc_config_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rpc_failed_over": {
+          "name": "rpc_failed_over",
+          "type": "boolean",
           "primaryKey": false,
           "notNull": false
         }
@@ -7544,6 +7562,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "rpc_selection": {
+          "name": "rpc_selection",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "serialized_tx": {
           "name": "serialized_tx",
           "type": "text",
@@ -9043,6 +9067,24 @@
         "deleted_at": {
           "name": "deleted_at",
           "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rpc_origin": {
+          "name": "rpc_origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rpc_config_id": {
+          "name": "rpc_config_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rpc_failed_over": {
+          "name": "rpc_failed_over",
+          "type": "boolean",
           "primaryKey": false,
           "notNull": false
         }
@@ -11075,6 +11117,48 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.organization_rpc_usage_reports": {
+      "name": "organization_rpc_usage_reports",
+      "schema": "",
+      "columns": {
+        "report_id": {
+          "name": "report_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_org_rpc_usage_reports_received": {
+          "name": "idx_org_rpc_usage_reports_received",
+          "columns": [
+            {
+              "expression": "received_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

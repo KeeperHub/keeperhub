@@ -1,6 +1,6 @@
 {
-  "id": "ea5224fe-ea88-4bbc-9aa2-2c0f34a01735",
-  "prevId": "858dbee7-0084-4249-bf3d-1fb5222ea40e",
+  "id": "858dbee7-0084-4249-bf3d-1fb5222ea40e",
+  "prevId": "475cb4be-9a9d-449e-a297-a7656674458d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -7558,12 +7558,6 @@
         },
         "memo": {
           "name": "memo",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rpc_selection": {
-          "name": "rpc_selection",
           "type": "text",
           "primaryKey": false,
           "notNull": false
