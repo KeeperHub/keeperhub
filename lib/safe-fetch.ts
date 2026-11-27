@@ -12,6 +12,7 @@ import { captureException } from "@sentry/nextjs";
 import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 import { logWarn } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
+import { BoundedCache } from "@/lib/rpc/providers/bounded-cache";
 import {
   SSRF_BLOCKED_HOST_EXACT,
   SSRF_BLOCKED_HOST_SUFFIXES,
@@ -334,6 +335,23 @@ function initialBlockAlreadyRecorded(): boolean {
   return pluginContext.getStore()?.initialBlockRecorded === true;
 }
 
+const ORGANIZATION_HOST_LIMIT = 10_000;
+const organizationHosts = new BoundedCache<true>(ORGANIZATION_HOST_LIMIT);
+
+/**
+ * A host an organization chose for its own RPC endpoint. Providers put keys
+ * in subdomains, so a block on such a host is recorded without naming it.
+ */
+export function markOrganizationHost(hostname: string): void {
+  organizationHosts.set(stripIpv6Brackets(hostname).toLowerCase(), true);
+}
+
+function isOrganizationHost(hostname: string): boolean {
+  return (
+    organizationHosts.get(stripIpv6Brackets(hostname).toLowerCase()) === true
+  );
+}
+
 function recordBlock(ctx: BlockContext, shadow: boolean): void {
   const metrics = getMetricsCollector();
   metrics.incrementCounter("safe_fetch.blocks.total", {
@@ -347,8 +365,12 @@ function recordBlock(ctx: BlockContext, shadow: boolean): void {
   // hostname/resolved_ip with "Added label not included in initial labelset"
   // and turns shadow mode into a synchronous throw.
   const modeSuffix = shadow ? " (shadow mode)" : "";
+  const organization = isOrganizationHost(ctx.hostname);
+  const target = organization ? "an organization RPC endpoint" : ctx.hostname;
   const resolvedSuffix =
-    ctx.resolvedIp !== undefined && ctx.resolvedIp !== ctx.hostname
+    !organization &&
+    ctx.resolvedIp !== undefined &&
+    ctx.resolvedIp !== ctx.hostname
       ? ` -> ${ctx.resolvedIp}`
       : "";
   const pluginSuffix =
@@ -359,7 +381,7 @@ function recordBlock(ctx: BlockContext, shadow: boolean): void {
   // initial labelset rejects hostname/resolved_ip and turns shadow mode into
   // a synchronous throw.
   logWarn(
-    `[safe-fetch] Blocked outbound request${modeSuffix}: ${ctx.hostname}${resolvedSuffix} (reason=${ctx.reason})${pluginSuffix}`
+    `[safe-fetch] Blocked outbound request${modeSuffix}: ${target}${resolvedSuffix} (reason=${ctx.reason})${pluginSuffix}`
   );
 
   captureException(new Error(`safe-fetch block: ${ctx.reason}`), {
@@ -368,11 +390,11 @@ function recordBlock(ctx: BlockContext, shadow: boolean): void {
       safe_fetch_reason: ctx.reason,
       safe_fetch_shadow: shadow ? "true" : "false",
       plugin_name: ctx.plugin ?? "unknown",
+      safe_fetch_target: organization ? "organization" : "other",
     },
-    extra: {
-      hostname: ctx.hostname,
-      resolved_ip: ctx.resolvedIp,
-    },
+    extra: organization
+      ? {}
+      : { hostname: ctx.hostname, resolved_ip: ctx.resolvedIp },
   });
 }
 

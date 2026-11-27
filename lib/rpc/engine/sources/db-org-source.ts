@@ -5,6 +5,7 @@ import {
   organizationRpcConfigs,
 } from "@/lib/db/schema-rpc";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { markOrganizationHost } from "@/lib/safe-fetch";
 import { orgRpcConfigFromRow } from "../org/codec";
 import type { OrgRpcConfig, OrgRpcPolicy, OrgRpcState } from "../types";
 import { EMPTY_ORG_RPC_STATE, type OrgRpcSource } from "./org-source";
@@ -43,6 +44,20 @@ export async function loadOwnRpcOnlyChains(
   return new Set(rows.map((row) => row.chainId));
 }
 
+function markConfigHosts(config: OrgRpcConfig): void {
+  for (const url of [
+    config.httpPrimary,
+    config.httpFallback,
+    config.wssPrimary,
+    config.wssFallback,
+    config.privateTx,
+  ]) {
+    if (url) {
+      markOrganizationHost(url.hostname);
+    }
+  }
+}
+
 /**
  * Decrypt every config of one organization on one chain. A config that
  * cannot be decrypted is left out, which fails closed: under own RPC only
@@ -66,7 +81,9 @@ export async function loadOrgRpcConfigs(
   const configs: OrgRpcConfig[] = [];
   for (const row of rows) {
     try {
-      configs.push(orgRpcConfigFromRow(row));
+      const config = orgRpcConfigFromRow(row);
+      markConfigHosts(config);
+      configs.push(config);
     } catch (error) {
       logSystemError(
         ErrorCategory.INFRASTRUCTURE,

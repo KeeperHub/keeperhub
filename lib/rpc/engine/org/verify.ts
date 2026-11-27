@@ -1,7 +1,11 @@
 import { Connection } from "@solana/web3.js";
 import { ethers, type WebSocketLike } from "ethers";
 import WebSocket from "ws";
-import { SsrfBlockedError, validatingLookup } from "@/lib/safe-fetch";
+import {
+  markOrganizationHost,
+  SsrfBlockedError,
+  validatingLookup,
+} from "@/lib/safe-fetch";
 import { safeSolanaFetch } from "../../providers/solana";
 import { safeEthersGetUrl } from "../../safe-ethers-fetch";
 import { SOLANA_GENESIS_HASHES } from "../../solana-chains";
@@ -177,6 +181,7 @@ export async function verifyRpcUrl(
       checkedAt
     );
   }
+  markOrganizationHost(url.hostname);
 
   // Organization URLs usually carry an API key, so only encrypted schemes.
   const transport = SLOT_TRANSPORT[slot];

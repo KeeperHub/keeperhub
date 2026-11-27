@@ -70,6 +70,7 @@ import {
   isBlockedHost,
   isBlockedIp,
   isShadowMode,
+  markOrganizationHost,
   SsrfBlockedError,
   type SsrfBlockReason,
   safeFetch,
@@ -520,6 +521,27 @@ describe("safeFetch (shadow mode)", () => {
         }),
       })
     );
+  });
+
+  it("records a block on an organization's host without naming it", async () => {
+    markOrganizationHost("key123.org-rpc.example");
+    fakeDns.set("key123.org-rpc.example", [
+      { address: "127.0.0.1", family: 4 },
+    ]);
+    try {
+      await safeFetch("http://key123.org-rpc.example:9999/", {
+        plugin: "rpc-evm",
+      });
+    } catch {
+      // The connect fails with no listener; only the record matters here.
+    }
+
+    const report = captureException.mock.calls.at(-1)?.[1] as {
+      tags: Record<string, string>;
+      extra: Record<string, unknown>;
+    };
+    expect(report.tags.safe_fetch_target).toBe("organization");
+    expect(JSON.stringify(report)).not.toContain("key123");
   });
 
   it("records exactly one block in shadow mode for a hostname-pattern URL", async () => {
