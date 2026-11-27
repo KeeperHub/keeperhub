@@ -27,6 +27,14 @@ export class OrgRpcError extends Error {
   }
 }
 
+/**
+ * Mark an error thrown by a library on an organization's endpoint as that
+ * organization's, keeping its own class so the library's handling still works.
+ */
+export function markOrgRpcError(error: object): void {
+  Object.defineProperty(error, ORG_RPC_ERROR_BRAND, { value: true });
+}
+
 function hasBrand(candidate: object): boolean {
   return (candidate as Record<symbol, unknown>)[ORG_RPC_ERROR_BRAND] === true;
 }

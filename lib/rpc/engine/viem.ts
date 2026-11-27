@@ -1,12 +1,32 @@
 import "server-only";
 
-import { fallback, http, type Transport } from "viem";
+import {
+  fallback,
+  HttpRequestError,
+  http,
+  TimeoutError,
+  type Transport,
+} from "viem";
 import { safeFetch } from "@/lib/safe-fetch";
+import { classifyRpcError } from "../providers";
+import { redactAllUrls } from "../scrub-rpc-urls";
 import type { EvmRpcClient } from "./engine";
-import type { RpcEndpoint } from "./types";
+import { markOrgRpcError } from "./org-rpc-error";
+import { RpcErrorType, RpcOperationType } from "./telemetry/sink";
+import { type RpcEndpoint, RpcOrigin, RpcRoutePosition } from "./types";
 
 /** safeFetch label shared with the ethers transport in safe-ethers-fetch. */
 const SAFE_FETCH_PLUGIN = "rpc-evm";
+
+const BROADCAST_METHODS = new Set([
+  "eth_sendRawTransaction",
+  "eth_sendTransaction",
+]);
+
+/** How deep a cause chain is cleaned; viem nests a few levels at most. */
+const MAX_CAUSE_DEPTH = 8;
+
+const TEXT_FIELDS = ["message", "shortMessage", "details", "stack"] as const;
 
 function safeViemFetch(
   input: RequestInfo | URL,
@@ -15,25 +35,103 @@ function safeViemFetch(
   return safeFetch(input, { ...init, plugin: SAFE_FETCH_PLUGIN });
 }
 
-function endpointTransport(endpoint: RpcEndpoint): Transport {
-  return http(endpoint.url.reveal(), { fetchFn: safeViemFetch });
+/**
+ * viem writes the request URL into its errors' text, API key included. Strip
+ * every URL from the error and its causes before it leaves the transport.
+ */
+function redactViemError(error: unknown, depth = 0): void {
+  if (depth >= MAX_CAUSE_DEPTH || typeof error !== "object" || error === null) {
+    return;
+  }
+  const fields = error as Record<string, unknown>;
+  for (const field of TEXT_FIELDS) {
+    const value = fields[field];
+    if (typeof value === "string") {
+      fields[field] = redactAllUrls(value);
+    }
+  }
+  if (Array.isArray(fields.metaMessages)) {
+    fields.metaMessages = fields.metaMessages.map((line: unknown) =>
+      typeof line === "string" ? redactAllUrls(line) : line
+    );
+  }
+  if (typeof fields.url === "string") {
+    fields.url = redactAllUrls(fields.url);
+  }
+  redactViemError(fields.cause, depth + 1);
+}
+
+const HTTP_TOO_MANY_REQUESTS = 429;
+
+function classifyViemError(error: unknown): RpcErrorType {
+  if (error instanceof TimeoutError) {
+    return RpcErrorType.TIMEOUT;
+  }
+  if (error instanceof HttpRequestError) {
+    return error.status === HTTP_TOO_MANY_REQUESTS
+      ? RpcErrorType.RATE_LIMIT
+      : RpcErrorType.CONNECTION;
+  }
+  return classifyRpcError(error);
+}
+
+function endpointTransport(
+  client: EvmRpcClient,
+  endpoint: RpcEndpoint,
+  position: RpcRoutePosition
+): Transport {
+  const base = http(endpoint.url.reveal(), { fetchFn: safeViemFetch });
+  const { telemetry } = client;
+  return (config) => {
+    const transport = base(config);
+    const request: typeof transport.request = async (args, options) => {
+      const operation = BROADCAST_METHODS.has(args.method)
+        ? RpcOperationType.WRITE_BROADCAST
+        : RpcOperationType.READ;
+      telemetry.attempt(position, operation);
+      const startedAt = performance.now();
+      try {
+        const result = await transport.request(args, options);
+        telemetry.latency(position, performance.now() - startedAt, operation);
+        telemetry.success(position, operation);
+        return result;
+      } catch (error) {
+        telemetry.latency(position, performance.now() - startedAt, operation);
+        telemetry.failure(position, operation);
+        telemetry.errorType(position, classifyViemError(error), operation);
+        redactViemError(error);
+        if (endpoint.origin === RpcOrigin.ORG && typeof error === "object") {
+          markOrgRpcError(error as object);
+        }
+        throw error;
+      }
+    };
+    return { ...transport, request };
+  };
 }
 
 /**
  * One viem transport per endpoint of the client's route, the endpoint
  * currently serving calls first. For code that must try endpoints one by
- * one, like a receipt poll that rotates on a wedged node.
+ * one, like a receipt poll that rotates on a wedged node. Calls are counted
+ * like the client's own, and their errors carry no URL.
  */
 export function viemTransportsOf(client: EvmRpcClient): Transport[] {
-  const active = client.activeEndpoint();
-  const endpoints = [client.route.primary, client.route.fallback].filter(
-    (endpoint): endpoint is RpcEndpoint => endpoint !== undefined
-  );
-  const ordered = [
-    active,
-    ...endpoints.filter((endpoint) => endpoint !== active),
+  const { primary, fallback: fallbackEndpoint } = client.route;
+  const positioned: [RpcEndpoint, RpcRoutePosition][] = [
+    [primary, RpcRoutePosition.PRIMARY],
   ];
-  return ordered.map(endpointTransport);
+  if (fallbackEndpoint) {
+    positioned.push([fallbackEndpoint, RpcRoutePosition.FALLBACK]);
+  }
+  const active = client.activeEndpoint();
+  const ordered = [
+    ...positioned.filter(([endpoint]) => endpoint === active),
+    ...positioned.filter(([endpoint]) => endpoint !== active),
+  ];
+  return ordered.map(([endpoint, position]) =>
+    endpointTransport(client, endpoint, position)
+  );
 }
 
 /** A viem transport over the client's route, failing over like the manager. */

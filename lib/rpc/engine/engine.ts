@@ -65,6 +65,8 @@ export type RouteRequest = {
 type RpcClient<TManager> = {
   route: RpcRoute;
   manager: TManager;
+  /** Where calls made outside the manager, like viem's, are reported. */
+  telemetry: RpcTelemetrySink;
   /** The endpoint currently serving calls, for per-step attribution. */
   activeEndpoint(): RpcEndpoint;
 };
@@ -268,6 +270,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
       const client = {
         route: resolved,
         manager,
+        telemetry: sink,
         activeEndpoint: activeEndpointOf(resolved, manager),
       };
       if (!request.unattributed) {
@@ -306,6 +309,7 @@ export function createRpcEngine(deps: RpcEngineDeps): RpcEngine {
       const client = {
         route: resolved,
         manager,
+        telemetry: sink,
         activeEndpoint: activeEndpointOf(resolved, manager),
       };
       if (!request.unattributed) {

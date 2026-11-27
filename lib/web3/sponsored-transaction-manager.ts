@@ -370,6 +370,8 @@ async function waitForSponsoredReceipt(
     }`,
     sendTransactionStatusId,
     txHash,
+    // Carries an organization endpoint's failure, so logging keeps it local.
+    cause: lastError,
   });
 }
 

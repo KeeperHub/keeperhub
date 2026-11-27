@@ -45,15 +45,19 @@ vi.mock("@/lib/web3/turnkey-sponsored-tx", () => ({
 // another answer, which is the whole point of trying more than one.
 const mockWaitForTransactionReceipt = vi.fn();
 
+type MockTransport = () => { value: { url: string } };
+
 vi.mock("viem", () => ({
-  createPublicClient: ({ transport }: { transport: { url: string } }) => ({
+  createPublicClient: ({ transport }: { transport: MockTransport }) => ({
     waitForTransactionReceipt: (args: Record<string, unknown>) =>
-      mockWaitForTransactionReceipt({ ...args, url: transport.url }),
+      mockWaitForTransactionReceipt({ ...args, url: transport().value.url }),
   }),
   encodeFunctionData: () => "0xencoded",
-  http: (url: string) => ({ url }),
-  fallback: (transports: { url: string }[]) => transports[0],
+  http: (url: string) => () => ({ request: vi.fn(), value: { url } }),
+  fallback: (transports: MockTransport[]) => transports[0],
   BaseError: class BaseError extends Error {},
+  HttpRequestError: class HttpRequestError extends Error {},
+  TimeoutError: class TimeoutError extends Error {},
 }));
 
 vi.mock("@/lib/logging", () => ({
@@ -155,6 +159,17 @@ function evmClient(
   return {
     route,
     manager: {} as RpcProviderManager,
+    telemetry: {
+      attempt: vi.fn(),
+      failure: vi.fn(),
+      success: vi.fn(),
+      latency: vi.fn(),
+      errorType: vi.fn(),
+      failover: vi.fn(),
+      recovery: vi.fn(),
+      bothFailed: vi.fn(),
+      event: vi.fn(),
+    },
     activeEndpoint: () => route.primary,
   };
 }
