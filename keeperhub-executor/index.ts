@@ -1224,7 +1224,7 @@ async function listen(): Promise<void> {
 
   // In-process runs count organization RPC usage here; this process never
   // runs the Next.js instrumentation hook that starts the flusher.
-  const { startRpcUsageFlusher } = await import(
+  const { flushRpcUsage, startRpcUsageFlusher } = await import(
     "../lib/rpc/engine/usage-store"
   );
   startRpcUsageFlusher();
@@ -1446,6 +1446,8 @@ async function listen(): Promise<void> {
         `[Executor] Drain timed out with ${inFlight.size} message(s) still in flight; their rows are left for the reaper and the messages redeliver after the visibility timeout`
       );
     }
+    // Usage counted since the last periodic flush would otherwise be lost.
+    await flushRpcUsage().catch(() => undefined);
     await queryClient.end();
     console.log("[Executor] Shutdown complete");
     process.exit(drained ? 0 : 1);
