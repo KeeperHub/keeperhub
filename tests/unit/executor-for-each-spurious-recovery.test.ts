@@ -120,10 +120,16 @@ type RunResult = {
   results: Record<string, { success: boolean; error?: string }>;
 };
 
-function run(): Promise<RunResult> {
+const doneCollectEdges: WorkflowEdge[] = [
+  { id: "e1", source: "trigger", target: "loop" },
+  { id: "e2", source: "loop", target: "trace", sourceHandle: "loop" },
+  { id: "e3", source: "loop", target: "collect", sourceHandle: "done" },
+];
+
+function run(runEdges: WorkflowEdge[] = edges): Promise<RunResult> {
   return executeWorkflow({
     nodes,
-    edges,
+    edges: runEdges,
     triggerInput: {},
     executionId: EXECUTION_ID,
     workflowId: "wf-1",
@@ -161,6 +167,15 @@ describe("executeWorkflow: For Each spurious max-retries recovery", () => {
       { iterationIndex: 1, endpoint: "https://rpc.example/0xb" },
       { iterationIndex: 2, endpoint: "https://rpc.example/0xc" },
     ]);
+  });
+
+  it("succeeds with the Collect on the done handle", async () => {
+    const result = await run(doneCollectEdges);
+
+    expect(result.results.collect).toMatchObject({ success: true });
+    expect(result.success).toBe(true);
+    expect(mocks.collectStep).toHaveBeenCalledOnce();
+    expect(httpCalls()).toHaveLength(3);
   });
 
   it("runs the body inside the loop when the For Each step is recovered", async () => {

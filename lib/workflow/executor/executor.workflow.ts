@@ -3451,6 +3451,9 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           data: collectData,
         };
         currentVisited.add(aggregateCollectNodeId);
+        // Not dispatched through executeNode, so the orphan scan would
+        // otherwise report a done-handle Collect as never executed.
+        attemptedNodes.add(aggregateCollectNodeId);
 
         // Skip the legacy in-body Collect in mixed wiring: don't re-fire it,
         // but mark it visited so the parent DAG dispatcher leaves it alone.
