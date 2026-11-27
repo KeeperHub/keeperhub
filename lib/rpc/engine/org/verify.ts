@@ -1,14 +1,11 @@
 import { Connection } from "@solana/web3.js";
 import { ethers, type WebSocketLike } from "ethers";
 import WebSocket from "ws";
-import {
-  markOrganizationHost,
-  SsrfBlockedError,
-  validatingLookup,
-} from "@/lib/safe-fetch";
+import { SsrfBlockedError, validatingLookup } from "@/lib/safe-fetch";
 import { safeSolanaFetch } from "../../providers/solana";
 import { safeEthersGetUrl } from "../../safe-ethers-fetch";
 import { SOLANA_GENESIS_HASHES } from "../../solana-chains";
+import { runCheckingOrganizationUrl } from "../organization-hosts";
 import { resolveEndpointAddresses } from "../public-endpoint";
 import { SecretUrl } from "../secret-url";
 import { type RpcChain, RpcChainType, RpcTransport } from "../types";
@@ -156,9 +153,17 @@ function chainMismatchMessage(chain: RpcChain): string {
  * know nothing about RPC vendors: the URL either answers for this chain or
  * it is refused. No result ever contains the URL.
  */
-export async function verifyRpcUrl(
+export function verifyRpcUrl(
   input: VerifyRpcUrlInput,
   probe: RpcProbe = liveRpcProbe
+): Promise<RpcUrlCheck> {
+  // Anything the check logs about its host is kept nameless.
+  return runCheckingOrganizationUrl(() => checkRpcUrl(input, probe));
+}
+
+async function checkRpcUrl(
+  input: VerifyRpcUrlInput,
+  probe: RpcProbe
 ): Promise<RpcUrlCheck> {
   const { slot, chain } = input;
   const checkedAt = new Date().toISOString();
@@ -181,7 +186,6 @@ export async function verifyRpcUrl(
       checkedAt
     );
   }
-  markOrganizationHost(url.hostname);
 
   // Organization URLs usually carry an API key, so only encrypted schemes.
   const transport = SLOT_TRANSPORT[slot];

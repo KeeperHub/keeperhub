@@ -12,7 +12,7 @@ import { captureException } from "@sentry/nextjs";
 import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 import { logWarn } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
-import { BoundedCache } from "@/lib/rpc/providers/bounded-cache";
+import { isOrganizationHost } from "@/lib/rpc/engine/organization-hosts";
 import {
   SSRF_BLOCKED_HOST_EXACT,
   SSRF_BLOCKED_HOST_SUFFIXES,
@@ -333,23 +333,6 @@ function currentPlugin(): string | undefined {
 
 function initialBlockAlreadyRecorded(): boolean {
   return pluginContext.getStore()?.initialBlockRecorded === true;
-}
-
-const ORGANIZATION_HOST_LIMIT = 10_000;
-const organizationHosts = new BoundedCache<true>(ORGANIZATION_HOST_LIMIT);
-
-/**
- * A host an organization chose for its own RPC endpoint. Providers put keys
- * in subdomains, so a block on such a host is recorded without naming it.
- */
-export function markOrganizationHost(hostname: string): void {
-  organizationHosts.set(stripIpv6Brackets(hostname).toLowerCase(), true);
-}
-
-function isOrganizationHost(hostname: string): boolean {
-  return (
-    organizationHosts.get(stripIpv6Brackets(hostname).toLowerCase()) === true
-  );
 }
 
 function recordBlock(ctx: BlockContext, shadow: boolean): void {

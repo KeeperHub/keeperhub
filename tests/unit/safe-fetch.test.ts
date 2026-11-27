@@ -65,12 +65,12 @@ vi.mock("@/lib/metrics", () => ({
   }),
 }));
 
+import { markOrganizationHost } from "@/lib/rpc/engine/organization-hosts";
 import {
   assertUrlIsPublic,
   isBlockedHost,
   isBlockedIp,
   isShadowMode,
-  markOrganizationHost,
   SsrfBlockedError,
   type SsrfBlockReason,
   safeFetch,

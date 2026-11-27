@@ -5,8 +5,8 @@ import {
   organizationRpcConfigs,
 } from "@/lib/db/schema-rpc";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { markOrganizationHost } from "@/lib/safe-fetch";
 import { orgRpcConfigFromRow } from "../org/codec";
+import { markOrganizationHost } from "../organization-hosts";
 import type { OrgRpcConfig, OrgRpcPolicy, OrgRpcState } from "../types";
 import { EMPTY_ORG_RPC_STATE, type OrgRpcSource } from "./org-source";
 
