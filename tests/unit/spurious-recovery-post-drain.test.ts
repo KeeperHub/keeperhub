@@ -299,6 +299,26 @@ describe("reconcileSpuriousFailures (KEEP-398 post-drain pass)", () => {
       expect(mockIncrementCounter).not.toHaveBeenCalled();
     });
 
+    it("leaves a node in skipNodeIds failed even when it has a success row", async () => {
+      recordStepSuccess(executionId, nodeId, { arrayLength: 3 });
+      const results: Record<string, ExecutionResult> = {
+        [nodeId]: {
+          success: false,
+          error: 'Step "collectStep" exceeded max retries (1 retry)',
+        },
+      };
+
+      await reconcileSpuriousFailures({
+        executionId,
+        results,
+        skipNodeIds: new Set([nodeId]),
+      });
+
+      expect(results[nodeId].success).toBe(false);
+      expect(mockFetchSingle).not.toHaveBeenCalled();
+      expect(mockIncrementCounter).not.toHaveBeenCalled();
+    });
+
     it("does not modify the counter when results object is empty", async () => {
       const results: Record<string, ExecutionResult> = {};
 

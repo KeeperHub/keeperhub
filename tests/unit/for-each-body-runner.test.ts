@@ -833,8 +833,12 @@ describe("runBodyNode: KEEP-543 / KEEP-586 authority-backed recovery", () => {
       iterationIndex: 3,
       stepResultFor: () => undefined,
       stepRunner: throwingRunner,
-      resolveSpuriousRecovery: ({ nodeId, iterationMeta }) => {
-        if (nodeId === "read" && iterationMeta.iterationIndex === 3) {
+      resolveSpuriousRecovery: ({ nodeId, iterationMeta, errorMessage }) => {
+        if (
+          nodeId === "read" &&
+          iterationMeta.iterationIndex === 3 &&
+          errorMessage.includes("exceeded max retries")
+        ) {
           return Promise.resolve({ output: recoveredOutput });
         }
         return Promise.resolve(null);

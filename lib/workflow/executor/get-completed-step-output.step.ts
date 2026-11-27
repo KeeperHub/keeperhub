@@ -80,6 +80,7 @@ fetchCompletedStepOutputStep.maxRetries = 1;
  * path so each iteration recovers its own output, not whichever iteration was
  * last to write.
  */
+// biome-ignore lint/suspicious/useAwait: workflow "use step" requires async
 export async function fetchCompletedStepOutputAtIterationStep(
   executionId: string,
   nodeId: string,
@@ -88,6 +89,22 @@ export async function fetchCompletedStepOutputAtIterationStep(
 ): Promise<{ outputRaw: unknown } | null> {
   "use step";
 
+  return queryCompletedIterationSuccessRow(
+    executionId,
+    nodeId,
+    forEachNodeId,
+    iterationIndex
+  );
+}
+
+fetchCompletedStepOutputAtIterationStep.maxRetries = 1;
+
+async function queryCompletedIterationSuccessRow(
+  executionId: string,
+  nodeId: string,
+  forEachNodeId: string,
+  iterationIndex: number
+): Promise<{ outputRaw: unknown } | null> {
   const row = await db.transaction(async (tx) => {
     await tx.execute(sql`SET LOCAL statement_timeout = '2s'`);
     return tx.query.workflowExecutionLogs.findFirst({
@@ -111,7 +128,70 @@ export async function fetchCompletedStepOutputAtIterationStep(
   return { outputRaw: row.outputRaw as unknown };
 }
 
-fetchCompletedStepOutputAtIterationStep.maxRetries = 1;
+async function queryIterationStepAttemptInFlight(
+  executionId: string,
+  nodeId: string,
+  forEachNodeId: string,
+  iterationIndex: number
+): Promise<boolean> {
+  const row = await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL statement_timeout = '2s'`);
+    return tx.query.workflowExecutionLogs.findFirst({
+      where: and(
+        eq(workflowExecutionLogs.executionId, executionId),
+        eq(workflowExecutionLogs.nodeId, nodeId),
+        eq(workflowExecutionLogs.forEachNodeId, forEachNodeId),
+        eq(workflowExecutionLogs.iterationIndex, iterationIndex),
+        eq(workflowExecutionLogs.status, "running")
+      ),
+      columns: { id: true },
+    });
+  });
+
+  return row !== undefined;
+}
+
+/**
+ * Iteration-scoped `awaitCompletedStepOutputStep`: waits for the success row of
+ * one For Each iteration, and keeps waiting while that iteration's earlier
+ * attempt of the step is still running.
+ */
+// biome-ignore lint/suspicious/useAwait: workflow "use step" requires async
+export async function awaitCompletedStepOutputAtIterationStep(
+  executionId: string,
+  nodeId: string,
+  forEachNodeId: string,
+  iterationIndex: number,
+  timeoutMs: number,
+  intervalMs: number,
+  inFlightTimeoutMs?: number
+): Promise<{ outputRaw: unknown } | null> {
+  "use step";
+
+  return pollForCompletedOutput(
+    () =>
+      queryCompletedIterationSuccessRow(
+        executionId,
+        nodeId,
+        forEachNodeId,
+        iterationIndex
+      ),
+    {
+      timeoutMs,
+      intervalMs,
+      extendWhile: () =>
+        queryIterationStepAttemptInFlight(
+          executionId,
+          nodeId,
+          forEachNodeId,
+          iterationIndex
+        ),
+      maxTimeoutMs: inFlightTimeoutMs,
+    }
+  );
+}
+
+awaitCompletedStepOutputAtIterationStep.maxRetries = 1;
 
 /**
  * Poll `workflow_execution_logs` for a step's recorded success for up to
