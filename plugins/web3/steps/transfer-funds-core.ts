@@ -26,10 +26,10 @@ import {
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
   type EvmRpcClient,
+  isOrgSettingRouteError,
+  rpc,
   RPC_SELECTION_CONFIG_KEY,
   RpcPurpose,
-  RpcRouteError,
-  rpc,
   rpcScopeFromStep,
 } from "@/lib/rpc/engine";
 import { isSolanaChain } from "@/lib/rpc/solana-chains";
@@ -253,7 +253,7 @@ async function transferFundsCoreImpl(
       { plugin_name: "web3", action_name: "transfer-funds" }
     );
     const errorClass =
-      error instanceof RpcRouteError
+      isOrgSettingRouteError(error)
         ? ExecutionErrorType.USER
         : rpcRelayErrorClass(error);
     return {

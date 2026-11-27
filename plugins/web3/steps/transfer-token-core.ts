@@ -27,10 +27,10 @@ import {
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
   type EvmRpcClient,
+  isOrgSettingRouteError,
+  rpc,
   RPC_SELECTION_CONFIG_KEY,
   RpcPurpose,
-  RpcRouteError,
-  rpc,
   rpcScopeFromStep,
 } from "@/lib/rpc/engine";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
@@ -377,7 +377,7 @@ async function transferTokenCoreImpl(
       }
     );
     const errorClass =
-      error instanceof RpcRouteError
+      isOrgSettingRouteError(error)
         ? ExecutionErrorType.USER
         : rpcRelayErrorClass(error);
     return {

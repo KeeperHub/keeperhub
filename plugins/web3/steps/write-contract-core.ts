@@ -29,12 +29,12 @@ import {
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
-  type EvmRpcClient,
   builderRpcUrlsFor,
+  type EvmRpcClient,
+  isOrgSettingRouteError,
+  rpc,
   RPC_SELECTION_CONFIG_KEY,
   RpcPurpose,
-  RpcRouteError,
-  rpc,
   rpcScopeFromStep,
 } from "@/lib/rpc/engine";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
@@ -472,7 +472,7 @@ async function writeContractCoreImpl(
       // A route the step's RPC settings rule out, or a private-mempool relay
       // that never answered, is not our platform failing; the rest is.
       errorClass:
-        error instanceof RpcRouteError
+        isOrgSettingRouteError(error)
           ? ExecutionErrorType.USER
           : (rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM),
     };

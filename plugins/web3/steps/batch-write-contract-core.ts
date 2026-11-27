@@ -34,12 +34,12 @@ import { getErrorMessage, resolveFailOnError } from "@/lib/utils";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
-  type EvmRpcClient,
   builderRpcUrlsFor,
+  type EvmRpcClient,
+  isOrgSettingRouteError,
+  rpc,
   RPC_SELECTION_CONFIG_KEY,
   RpcPurpose,
-  RpcRouteError,
-  rpc,
   rpcScopeFromStep,
 } from "@/lib/rpc/engine";
 import {
@@ -648,7 +648,7 @@ async function batchWriteContractCoreImpl(
       success: false,
       error: getErrorMessage(error),
       errorClass:
-        error instanceof RpcRouteError
+        isOrgSettingRouteError(error)
           ? ExecutionErrorType.USER
           : ExecutionErrorType.SYSTEM,
     };

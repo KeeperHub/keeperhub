@@ -15,9 +15,9 @@ import {
 } from "@/lib/explorer";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
-  RpcPurpose,
-  RpcRouteError,
+  isOrgSettingRouteError,
   rpc,
+  RpcPurpose,
   rpcScopeFromStep,
 } from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
@@ -372,7 +372,7 @@ async function queryTransactionsInner(
       success: false,
       destinationError: true,
       error: getErrorMessage(error),
-      ...(error instanceof RpcRouteError && {
+      ...(isOrgSettingRouteError(error) && {
         errorClass: ExecutionErrorType.USER,
       }),
     };

@@ -18,7 +18,11 @@ export type {
   SolanaRpcClient,
 } from "./engine";
 export { createRpcEngine } from "./engine";
-export { RpcRouteError, RpcRouteErrorCode } from "./route-error";
+export {
+  isOrgSettingRouteError,
+  RpcRouteError,
+  RpcRouteErrorCode,
+} from "./route-error";
 export { orgRpcSource, rpcUsageAccumulator } from "./runtime";
 export {
   orgScope,

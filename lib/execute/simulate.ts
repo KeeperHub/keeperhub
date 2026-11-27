@@ -13,7 +13,11 @@ import {
   type INSUFFICIENT_BALANCE_CODE,
 } from "@/lib/execute/native-balance";
 import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
-import { RpcRouteError, rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
+import {
+  isOrgSettingRouteError,
+  rpc,
+  rpcScopeForOrganization,
+} from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { isNonRetryableError } from "@/lib/rpc/providers/error-classification";
@@ -610,11 +614,11 @@ export async function getRpcManagerForChain(
     );
     return { success: true, rpc: client.manager, chainId };
   } catch (error) {
-    if (error instanceof RpcRouteError) {
+    if (isOrgSettingRouteError(error)) {
       return {
         success: false,
         failureKind: "validation",
-        error: error.message,
+        error: getErrorMessage(error),
       };
     }
     return {

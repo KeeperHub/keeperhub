@@ -6,9 +6,9 @@ import { createHeldPayment } from "@/lib/tempo/held-payments";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
-  RpcRouteError,
-  type RpcScope,
+  isOrgSettingRouteError,
   rpc,
+  type RpcScope,
   rpcSelectionValue,
 } from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
@@ -173,8 +173,8 @@ export async function executeHoldPayment(
   try {
     ({ manager: rpcManager } = await rpc.evm(input.rpcScope, chainId));
   } catch (error) {
-    if (error instanceof RpcRouteError) {
-      return validationFailure(error.message);
+    if (isOrgSettingRouteError(error)) {
+      return validationFailure(getErrorMessage(error));
     }
     return infrastructureFailure(getErrorMessage(error));
   }

@@ -65,3 +65,14 @@ export class RpcRouteError extends Error {
     this.chainId = chainId;
   }
 }
+
+/**
+ * True for a refusal the organization's own RPC settings caused, which the
+ * person running the workflow can fix; false for any other error, including
+ * a route refused by KeeperHub's own chain setup.
+ */
+export function isOrgSettingRouteError(error: unknown): boolean {
+  return (
+    error instanceof RpcRouteError && ORG_SETTING_ROUTE_ERRORS.has(error.code)
+  );
+}

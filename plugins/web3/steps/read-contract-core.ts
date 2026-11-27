@@ -18,10 +18,10 @@ import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
+  isOrgSettingRouteError,
+  rpc,
   RPC_SELECTION_CONFIG_KEY,
   RpcPurpose,
-  RpcRouteError,
-  rpc,
   rpcScopeFromStep,
 } from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
@@ -388,7 +388,7 @@ async function readContractInner(
       destinationError: true,
       error: getErrorMessage(error),
       errorClass:
-        error instanceof RpcRouteError
+        isOrgSettingRouteError(error)
           ? ExecutionErrorType.USER
           : ExecutionErrorType.SYSTEM,
     };
