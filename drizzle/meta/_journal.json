@@ -1233,6 +1233,13 @@
       "when": 1795794377577,
       "tag": "0175_rpc_usage_reports",
       "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1795807419580,
+      "tag": "0176_rpc_step_endpoints",
+      "breakpoints": true
     }
   ]
 }

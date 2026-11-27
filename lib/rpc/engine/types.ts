@@ -31,6 +31,17 @@ export type RpcEndpointRole =
 export const RpcRoutePosition = RPC_ENDPOINT;
 export type RpcRoutePosition = RpcEndpointPosition;
 
+/** How much one endpoint served a step or a direct execution. */
+export type RpcEndpointUsage = {
+  origin: RpcOrigin;
+  /** The organization config, when `origin` is org. */
+  configId: string | null;
+  /** Whether it served as the route's primary or its fallback. */
+  position: RpcRoutePosition;
+  requests: number;
+  errors: number;
+};
+
 export const RpcChainType = {
   EVM: "evm",
   SOLANA: "solana",

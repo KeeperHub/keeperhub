@@ -3,6 +3,7 @@
  * Replaces server actions with API endpoints
  */
 
+import type { RpcEndpointUsageView } from "@/lib/analytics/types";
 import type { PlanName } from "@/lib/billing/plans";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import type {
@@ -981,6 +982,7 @@ export const workflowApi = {
         rpcOrigin: RpcOrigin | null;
         rpcConfigName: string | null;
         rpcFailedOver: boolean | null;
+        rpcEndpoints: RpcEndpointUsageView[];
       }>;
     }>(`/api/workflows/executions/${executionId}/logs`),
 

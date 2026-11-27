@@ -9,15 +9,18 @@ import {
 } from "@/lib/analytics/rpc-usage";
 import {
   KEEPERHUB_ENDPOINT_LABEL,
+  namedRpcEndpoints,
   REMOVED_CONFIG_LABEL,
   type RpcUsageRow,
+  rpcEndpointUsageLabel,
+  rpcStepConfigIds,
   rpcStepEndpointLabel,
   rpcUsageBreakdown,
   rpcUsageBuckets,
   shareOf,
   summarizeRpcUsage,
 } from "@/lib/analytics/rpc-usage-shape";
-import { RpcOrigin } from "@/lib/rpc/engine/types";
+import { RpcOrigin, RpcRoutePosition } from "@/lib/rpc/engine/types";
 import { DAY_MS, HOUR_MS } from "@/lib/utils/duration";
 
 const H0 = "2026-01-01T00:00:00.000Z";
@@ -143,6 +146,76 @@ describe("labels", () => {
     expect(
       rpcStepEndpointLabel({ rpcOrigin: null, rpcConfigName: null })
     ).toBeNull();
+  });
+
+  it("labels each endpoint a step used, marking a fallback", () => {
+    expect(
+      rpcEndpointUsageLabel({
+        origin: RpcOrigin.ORG,
+        configName: "Main",
+        position: RpcRoutePosition.PRIMARY,
+      })
+    ).toBe("Your endpoint: Main");
+    expect(
+      rpcEndpointUsageLabel({
+        origin: RpcOrigin.PLATFORM,
+        configName: null,
+        position: RpcRoutePosition.FALLBACK,
+      })
+    ).toBe(`${KEEPERHUB_ENDPOINT_LABEL} (fallback)`);
+  });
+
+  it("names a step's endpoints and orders them by calls", () => {
+    const usage = [
+      {
+        origin: RpcOrigin.PLATFORM,
+        configId: null,
+        position: RpcRoutePosition.FALLBACK,
+        requests: 1,
+        errors: 0,
+      },
+      {
+        origin: RpcOrigin.ORG,
+        configId: "cfg-1",
+        position: RpcRoutePosition.PRIMARY,
+        requests: 3,
+        errors: 1,
+      },
+      {
+        origin: RpcOrigin.ORG,
+        configId: "cfg-gone",
+        position: RpcRoutePosition.PRIMARY,
+        requests: 2,
+        errors: 0,
+      },
+    ];
+    const named = namedRpcEndpoints(usage, new Map([["cfg-1", "Main"]]));
+    expect(named.map((entry) => [entry.configId, entry.configName])).toEqual([
+      ["cfg-1", "Main"],
+      ["cfg-gone", null],
+      [null, null],
+    ]);
+    expect(namedRpcEndpoints(null, new Map())).toEqual([]);
+  });
+
+  it("collects every config a set of steps names", () => {
+    expect(
+      rpcStepConfigIds([
+        { rpcConfigId: "cfg-1", rpcEndpoints: null },
+        {
+          rpcConfigId: null,
+          rpcEndpoints: [
+            {
+              origin: RpcOrigin.ORG,
+              configId: "cfg-2",
+              position: RpcRoutePosition.PRIMARY,
+              requests: 1,
+              errors: 0,
+            },
+          ],
+        },
+      ]).sort()
+    ).toEqual(["cfg-1", "cfg-2"]);
   });
 
   it("computes shares without dividing by zero", () => {

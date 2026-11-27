@@ -7,7 +7,7 @@
 
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import type { RpcOrigin } from "@/lib/rpc/engine/types";
+import type { RpcEndpointUsage, RpcOrigin } from "@/lib/rpc/engine/types";
 
 export type { TransactionHashEntry } from "@/lib/db/schema";
 
@@ -277,6 +277,14 @@ export type StepLog = {
   rpcConfigName: string | null;
   /** True when one of the step's own calls moved from primary to fallback. */
   rpcFailedOver: boolean;
+  /** Every endpoint the step's calls reached; empty for steps recorded before this was kept. */
+  rpcEndpoints: RpcEndpointUsageView[];
+};
+
+/** One endpoint's share of a step's calls, with the config's current name. */
+export type RpcEndpointUsageView = RpcEndpointUsage & {
+  /** Null for KeeperHub endpoints and for configs since removed. */
+  configName: string | null;
 };
 
 export type AnalyticsStreamEvent = {

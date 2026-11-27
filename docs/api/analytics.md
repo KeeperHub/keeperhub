@@ -393,12 +393,15 @@ A bare array, with no envelope:
     "rpcOrigin": null,
     "rpcConfigId": null,
     "rpcConfigName": null,
-    "rpcFailedOver": false
+    "rpcFailedOver": false,
+    "rpcEndpoints": []
   }
 ]
 ```
 
 `rpcOrigin` says which endpoint served the step's RPC calls: `org` for one of the organization's own endpoints, named by `rpcConfigId` and `rpcConfigName`, or `platform` for KeeperHub. It is `null` for steps that made no RPC call. `rpcConfigName` is `null` when the endpoint has since been removed. `rpcFailedOver` is `true` when one of the step's own calls moved from the primary endpoint to the fallback.
+
+`rpcEndpoints` lists every endpoint the step's calls reached, the busiest first. Each entry has `origin`, `configId` and `configName` as above, `position` (`primary` or `fallback` in the step's route), `requests` and `errors`. A step that failed over from its own endpoint to KeeperHub lists both. Reads KeeperHub makes for its own purposes during the step, such as checking the gas it sponsored, are not listed. Steps recorded before this field existed return an empty list.
 
 A step's input and output are not part of this response: the log carries what the
 run did (`nodeName`, `nodeType`, `status`, timings, `error`) and the on-chain

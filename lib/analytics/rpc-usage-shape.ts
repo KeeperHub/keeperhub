@@ -3,8 +3,13 @@
  * breakdown, the time series and the step endpoint label. Client safe, so
  * the run details label endpoints the same way the API groups them.
  */
-import { RpcOrigin } from "@/lib/rpc/engine/types";
+import {
+  type RpcEndpointUsage,
+  RpcOrigin,
+  RpcRoutePosition,
+} from "@/lib/rpc/engine/types";
 import type {
+  RpcEndpointUsageView,
   RpcOwnOnlyChainUsage,
   RpcUsageBreakdownRow,
   RpcUsageBucket,
@@ -174,13 +179,61 @@ export function rpcStepEndpointLabel(step: {
   rpcOrigin: RpcOrigin | null;
   rpcConfigName: string | null;
 }): string | null {
-  if (step.rpcOrigin === null) {
-    return null;
+  return step.rpcOrigin === null
+    ? null
+    : endpointName(step.rpcOrigin, step.rpcConfigName);
+}
+
+function endpointName(origin: RpcOrigin, configName: string | null): string {
+  return origin === RpcOrigin.ORG
+    ? `Your endpoint: ${configName ?? REMOVED_CONFIG_LABEL.toLowerCase()}`
+    : KEEPERHUB_ENDPOINT_LABEL;
+}
+
+/** Every config a set of steps names, for one name lookup. */
+export function rpcStepConfigIds(
+  steps: Array<{
+    rpcConfigId: string | null;
+    rpcEndpoints: RpcEndpointUsage[] | null;
+  }>
+): string[] {
+  const ids = new Set<string>();
+  for (const step of steps) {
+    if (step.rpcConfigId) {
+      ids.add(step.rpcConfigId);
+    }
+    for (const usage of step.rpcEndpoints ?? []) {
+      if (usage.configId) {
+        ids.add(usage.configId);
+      }
+    }
   }
-  if (step.rpcOrigin === RpcOrigin.ORG) {
-    return `Your endpoint: ${step.rpcConfigName ?? REMOVED_CONFIG_LABEL.toLowerCase()}`;
-  }
-  return KEEPERHUB_ENDPOINT_LABEL;
+  return [...ids];
+}
+
+/** A step's endpoints with their names, the busiest first. */
+export function namedRpcEndpoints(
+  usage: RpcEndpointUsage[] | null,
+  names: ReadonlyMap<string, string>
+): RpcEndpointUsageView[] {
+  return (usage ?? [])
+    .map((entry) => ({
+      ...entry,
+      configName: entry.configId ? (names.get(entry.configId) ?? null) : null,
+    }))
+    .sort((a, b) => b.requests - a.requests);
+}
+
+/** How the run details name one endpoint a step used. */
+export function rpcEndpointUsageLabel(usage: {
+  origin: RpcOrigin;
+  configName: string | null;
+  position: RpcRoutePosition;
+}): string {
+  const name = endpointName(usage.origin, usage.configName);
+  return usage.position === RpcRoutePosition.FALLBACK
+    ? `${name} (fallback)`
+    : name;
 }
 
 /** Share of `part` in `total` as a 0..1 fraction, null when total is zero. */

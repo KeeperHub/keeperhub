@@ -46,6 +46,7 @@ import {
   RpcChainType,
   RpcEndpointRole,
   RpcOrigin,
+  RpcRoutePosition,
 } from "@/lib/rpc/engine/types";
 import {
   clearRpcProviderManagerCache,
@@ -329,6 +330,7 @@ describe("createRpcEngine", () => {
       rpcOrigin: RpcOrigin.ORG,
       rpcConfigId: "cfg_main",
       rpcFailedOver: false,
+      rpcEndpoints: [],
     });
   });
 
@@ -356,6 +358,7 @@ describe("createRpcEngine", () => {
       rpcOrigin: RpcOrigin.PLATFORM,
       rpcConfigId: null,
       rpcFailedOver: false,
+      rpcEndpoints: [],
     });
   });
 
@@ -377,6 +380,28 @@ describe("createRpcEngine", () => {
     });
     expect(failedOver?.rpcFailedOver).toBe(true);
     expect(later?.rpcFailedOver).toBe(false);
+    // Each endpoint the failed-over step reached, with its own counts.
+    const positions = failedOver?.rpcEndpoints.map((usage) => usage.position);
+    expect(positions).toEqual(
+      expect.arrayContaining([
+        RpcRoutePosition.PRIMARY,
+        RpcRoutePosition.FALLBACK,
+      ])
+    );
+    const primary = failedOver?.rpcEndpoints.find(
+      (usage) => usage.position === RpcRoutePosition.PRIMARY
+    );
+    expect(primary?.errors).toBeGreaterThan(0);
+    expect(primary?.requests).toBeGreaterThanOrEqual(primary?.errors ?? 0);
+    // The manager stays on its fallback, so the next step reads there,
+    // once and without an error.
+    expect(later?.rpcEndpoints).toEqual([
+      expect.objectContaining({
+        position: RpcRoutePosition.FALLBACK,
+        requests: 1,
+        errors: 0,
+      }),
+    ]);
   });
 
   it("fails for an unknown chain", async () => {

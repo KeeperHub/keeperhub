@@ -14,7 +14,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { StepRpcEndpoint } from "@/components/rpc/step-rpc-endpoint";
+import {
+  StepRpcEndpoint,
+  StepRpcEndpointsInline,
+} from "@/components/rpc/step-rpc-endpoint";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -428,6 +431,7 @@ function StepLogRow({ step }: StepLogRowProps): ReactNode {
             </span>
           </span>
           <StepRpcEndpoint step={step} />
+          <StepRpcEndpointsInline endpoints={step.rpcEndpoints} />
           {step.error ? <StepErrorMessage message={step.error} /> : null}
         </div>
       </td>

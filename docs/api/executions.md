@@ -255,7 +255,8 @@ A step's `input`, `output` or `outputRaw` larger than 1 MiB is returned as `{ "_
       "rpcOrigin": "platform",
       "rpcConfigId": null,
       "rpcConfigName": null,
-      "rpcFailedOver": false
+      "rpcFailedOver": false,
+      "rpcEndpoints": []
     }
   ]
 }
@@ -283,6 +284,7 @@ A step's `input`, `output` or `outputRaw` larger than 1 MiB is returned as `{ "_
 | `rpcConfigId` | string \| null | The organization endpoint that served the step, when `rpcOrigin` is `org` |
 | `rpcConfigName` | string \| null | That endpoint's name; `null` when it has since been removed |
 | `rpcFailedOver` | boolean \| null | `true` when one of the step's calls moved from the primary endpoint to the fallback |
+| `rpcEndpoints` | array | Every endpoint the step's calls reached, the busiest first: `origin`, `configId`, `configName`, `position` (`primary` or `fallback`), `requests` and `errors`. Empty for steps that made no RPC call or were recorded before this field existed |
 
 ### Output shapes by node type
 

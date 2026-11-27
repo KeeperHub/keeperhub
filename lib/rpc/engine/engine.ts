@@ -17,6 +17,7 @@ import { EMPTY_ORG_RPC_STATE, type OrgRpcSource } from "./sources/org-source";
 import type { PlatformRpcSource } from "./sources/platform-source";
 import {
   noteRpcCall,
+  noteRpcCallFailure,
   noteRpcClient,
   noteRpcFailover,
 } from "./step-attribution";
@@ -159,6 +160,12 @@ function managerCacheKey(route: RpcRoute, request: RouteRequest): string {
   return request.unattributed ? `${tuned}${UNATTRIBUTED_CACHE_SUFFIX}` : tuned;
 }
 
+function endpointAt(route: RpcRoute, position: RpcRoutePosition): RpcEndpoint {
+  return position === RpcRoutePosition.FALLBACK && route.fallback
+    ? route.fallback
+    : route.primary;
+}
+
 /**
  * Report each call attempt to the step making it. Managers are shared, but
  * a call runs in its caller's context, so the step that made it is noted.
@@ -170,12 +177,12 @@ function attributedSink(
   return {
     ...sink,
     attempt(position: RpcRoutePosition, operation: RpcOperationType): void {
-      noteRpcCall(
-        position === RpcRoutePosition.FALLBACK && route.fallback
-          ? route.fallback
-          : route.primary
-      );
+      noteRpcCall(endpointAt(route, position), position);
       sink.attempt(position, operation);
+    },
+    failure(position: RpcRoutePosition, operation: RpcOperationType): void {
+      noteRpcCallFailure(endpointAt(route, position), position);
+      sink.failure(position, operation);
     },
     failover(): void {
       noteRpcFailover();

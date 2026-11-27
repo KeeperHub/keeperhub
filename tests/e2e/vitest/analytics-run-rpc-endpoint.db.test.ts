@@ -6,6 +6,7 @@ import type {
   FacetDimension,
   RunFacets,
   RunQueryFilters,
+  StepLog,
   UnifiedRun,
 } from "../../../lib/analytics/types";
 import {
@@ -17,7 +18,7 @@ import {
 } from "../../../lib/db/schema";
 import { directExecutions } from "../../../lib/db/schema-extensions";
 import { organizationRpcConfigs } from "../../../lib/db/schema-rpc";
-import { RpcOrigin } from "../../../lib/rpc/engine/types";
+import { RpcOrigin, RpcRoutePosition } from "../../../lib/rpc/engine/types";
 
 vi.mock("server-only", () => ({}));
 // tests/setup.ts stubs @/lib/db; the filter under test runs in Postgres.
@@ -61,6 +62,10 @@ type GetUnifiedRuns = (
   range: "7d",
   options?: RunQueryFilters & { limit?: number }
 ) => Promise<{ runs: UnifiedRun[] }>;
+type GetStepLogs = (
+  executionId: string,
+  organizationId: string
+) => Promise<StepLog[]>;
 type GetRunFacets = (
   organizationId: string,
   range: "7d",
@@ -72,6 +77,7 @@ describe.skipIf(SKIP)("analytics runs by rpc endpoint", () => {
   let db: ReturnType<typeof drizzle>;
   let getUnifiedRuns: GetUnifiedRuns;
   let getRunFacets: GetRunFacets;
+  let getStepLogs: GetStepLogs;
 
   async function cleanup(): Promise<void> {
     await queryClient`DELETE FROM direct_executions WHERE id LIKE ${`${PREFIX}%`}`;
@@ -186,6 +192,17 @@ describe.skipIf(SKIP)("analytics runs by rpc endpoint", () => {
         rpcOrigin: endpoint?.origin ?? null,
         rpcConfigId: endpoint?.configId ?? null,
         rpcFailedOver: endpoint ? false : null,
+        rpcEndpoints: endpoint
+          ? [
+              {
+                origin: endpoint.origin,
+                configId: endpoint.configId,
+                position: RpcRoutePosition.PRIMARY,
+                requests: 2,
+                errors: 0,
+              },
+            ]
+          : null,
         startedAt: now,
       }))
     );
@@ -208,7 +225,7 @@ describe.skipIf(SKIP)("analytics runs by rpc endpoint", () => {
       }))
     );
 
-    ({ getUnifiedRuns, getRunFacets } = await import(
+    ({ getUnifiedRuns, getRunFacets, getStepLogs } = await import(
       "@/lib/analytics/queries"
     ));
   });
@@ -287,5 +304,24 @@ describe.skipIf(SKIP)("analytics runs by rpc endpoint", () => {
     const facets = await getRunFacets(ORG_ID, "7d");
     expect(facets.rpcEndpointCounts).toEqual({});
     expect(facets.rpcConfigNames).toEqual({});
+  });
+
+  it("names each endpoint a step reached in the run details", async () => {
+    const steps = await getStepLogs(runId("mixed"), ORG_ID);
+    expect(
+      steps.map((step) =>
+        step.rpcEndpoints.map((usage) => [usage.origin, usage.configName])
+      )
+    ).toEqual([
+      [[RpcOrigin.ORG, "Mainnet main"]],
+      [[RpcOrigin.PLATFORM, null]],
+    ]);
+    const removed = await getStepLogs(runId("removed"), ORG_ID);
+    expect(removed[0]?.rpcEndpoints[0]?.configName).toBeNull();
+    expect(removed[0]?.rpcConfigName).toBeNull();
+  });
+
+  it("shows another organization's run details nothing", async () => {
+    expect(await getStepLogs(runId("neighbour"), ORG_ID)).toEqual([]);
   });
 });

@@ -61,7 +61,7 @@
       "path": "/api/workflows/{workflowId}/executions",
       "route_file": "app/api/workflows/[workflowId]/executions/route.ts",
       "source": "docs/api/executions.md",
-      "line": 360
+      "line": 362
     },
     {
       "method": "GET",
@@ -103,7 +103,7 @@
       "path": "/api/analytics/spend-cap",
       "route_file": "app/api/analytics/spend-cap/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 422
+      "line": 425
     },
     {
       "method": "GET",
@@ -111,7 +111,7 @@
       "route_file": "app/api/analytics/stream/route.ts",
       "streaming": true,
       "source": "docs/api/analytics.md",
-      "line": 447
+      "line": 450
     },
     {
       "method": "GET",

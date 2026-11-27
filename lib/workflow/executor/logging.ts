@@ -879,6 +879,7 @@ export async function logStepCompleteDb(
             rpcOrigin: params.rpc.rpcOrigin,
             rpcConfigId: params.rpc.rpcConfigId,
             rpcFailedOver: params.rpc.rpcFailedOver,
+            rpcEndpoints: params.rpc.rpcEndpoints,
           }
         : {}),
     })

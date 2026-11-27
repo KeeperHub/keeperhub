@@ -20,7 +20,10 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { StepRpcEndpoint } from "@/components/rpc/step-rpc-endpoint";
+import {
+  StepRpcEndpoint,
+  StepRpcEndpoints,
+} from "@/components/rpc/step-rpc-endpoint";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { api, type ExecutionSummary } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
@@ -36,6 +39,7 @@ import {
   OUTPUT_DISPLAY_CONFIGS,
   type OutputDisplayConfig,
 } from "@/lib/output-display-configs";
+import type { RpcEndpointUsageView } from "@/lib/analytics/types";
 import type { RpcOrigin } from "@/lib/rpc/engine/types";
 import { cn } from "@/lib/utils";
 import { startSerialPoll } from "@/lib/utils/serial-poll";
@@ -89,6 +93,7 @@ type ExecutionLog = {
   rpcOrigin: RpcOrigin | null;
   rpcConfigName: string | null;
   rpcFailedOver: boolean | null;
+  rpcEndpoints: RpcEndpointUsageView[];
 };
 
 type WorkflowExecution = ExecutionSummary;
@@ -885,7 +890,7 @@ function ExecutionLogEntry({
           <div className="flex items-center gap-3">
             {/* Step content */}
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {isExpanded ? (
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : (
@@ -931,6 +936,7 @@ function ExecutionLogEntry({
               )
             )}
             {middleContent}
+            <StepRpcEndpoints endpoints={log.rpcEndpoints} />
             {isTruncatedOutput(log.output) ? (
               <TruncatedDataNotice
                 bytes={log.output.originalSize}
@@ -1160,6 +1166,7 @@ export function WorkflowRuns({
         rpcOrigin?: RpcOrigin | null;
         rpcConfigName?: string | null;
         rpcFailedOver?: boolean | null;
+        rpcEndpoints?: RpcEndpointUsageView[];
       }>,
       _workflow?: {
         nodes: unknown;
@@ -1182,6 +1189,7 @@ export function WorkflowRuns({
         rpcOrigin: log.rpcOrigin ?? null,
         rpcConfigName: log.rpcConfigName ?? null,
         rpcFailedOver: log.rpcFailedOver ?? null,
+        rpcEndpoints: log.rpcEndpoints ?? [],
       })),
     []
   );

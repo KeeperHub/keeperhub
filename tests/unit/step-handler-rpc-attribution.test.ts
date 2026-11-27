@@ -84,6 +84,7 @@ describe("withStepLogging RPC attribution", () => {
       rpcOrigin: RpcOrigin.ORG,
       rpcConfigId: "cfg-1",
       rpcFailedOver: false,
+      rpcEndpoints: [],
     });
   });
 
@@ -100,6 +101,7 @@ describe("withStepLogging RPC attribution", () => {
       rpcOrigin: RpcOrigin.PLATFORM,
       rpcConfigId: null,
       rpcFailedOver: true,
+      rpcEndpoints: [],
     });
   });
 

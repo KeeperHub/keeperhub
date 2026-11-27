@@ -27,7 +27,6 @@ import {
   gasCreditUsage,
   organizationSpendCaps,
 } from "@/lib/db/schema-extensions";
-import { organizationRpcConfigs } from "@/lib/db/schema-rpc";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ERROR_STATUSES } from "@/lib/errors/execution-status";
 import {
@@ -40,12 +39,14 @@ import {
 } from "@/lib/execute/value-ledger";
 import { getRetentionConfig } from "@/lib/retention/config";
 import { getOrgLogRetentionCutoff } from "@/lib/retention/progress";
+import { rpcConfigNamesOf } from "@/lib/rpc/engine/org/config-names";
 import { RpcOrigin } from "@/lib/rpc/engine/types";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { attachAlertsSent } from "./alert-sent";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
 import { likePattern } from "./like-pattern";
+import { namedRpcEndpoints, rpcStepConfigIds } from "./rpc-usage-shape";
 import { MAX_RUN_LIMIT } from "./runs-query";
 import type { BucketSqlInterval } from "./time-range";
 import {
@@ -2203,29 +2204,13 @@ async function computeRpcEndpointFacets(
       (rpcEndpointCounts[row.endpoint] ?? 0) + (Number(row.value) || 0);
   }
 
-  const configIds = Object.keys(rpcEndpointCounts).filter(
-    (endpoint) => !RPC_ORIGINS.has(endpoint)
+  const names = await rpcConfigNamesOf(
+    organizationId,
+    Object.keys(rpcEndpointCounts).filter(
+      (endpoint) => !RPC_ORIGINS.has(endpoint)
+    )
   );
-  const configs =
-    configIds.length > 0
-      ? await db
-          .select({
-            id: organizationRpcConfigs.id,
-            name: organizationRpcConfigs.name,
-          })
-          .from(organizationRpcConfigs)
-          .where(
-            and(
-              eq(organizationRpcConfigs.organizationId, organizationId),
-              inArray(organizationRpcConfigs.id, configIds)
-            )
-          )
-      : [];
-  const rpcConfigNames: Record<string, string> = {};
-  for (const config of configs) {
-    rpcConfigNames[config.id] = config.name;
-  }
-  return { rpcEndpointCounts, rpcConfigNames };
+  return { rpcEndpointCounts, rpcConfigNames: Object.fromEntries(names) };
 }
 
 /**
@@ -2437,8 +2422,8 @@ export async function getStepLogs(
       stepGasWei: sql<string | null>`${stepOwnGasWei}::text`,
       rpcOrigin: workflowExecutionLogs.rpcOrigin,
       rpcConfigId: workflowExecutionLogs.rpcConfigId,
-      rpcConfigName: organizationRpcConfigs.name,
       rpcFailedOver: workflowExecutionLogs.rpcFailedOver,
+      rpcEndpoints: workflowExecutionLogs.rpcEndpoints,
     })
     .from(workflowExecutionLogs)
     .innerJoin(
@@ -2446,14 +2431,6 @@ export async function getStepLogs(
       eq(workflowExecutionLogs.executionId, workflowExecutions.id)
     )
     .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-    // A removed config leaves the step attributed with no name to show.
-    .leftJoin(
-      organizationRpcConfigs,
-      and(
-        eq(organizationRpcConfigs.id, workflowExecutionLogs.rpcConfigId),
-        eq(organizationRpcConfigs.organizationId, workflows.organizationId)
-      )
-    )
     .where(
       and(
         eq(workflowExecutionLogs.executionId, executionId),
@@ -2464,6 +2441,12 @@ export async function getStepLogs(
       )
     )
     .orderBy(workflowExecutionLogs.startedAt);
+
+  // A removed config leaves the step attributed with no name to show.
+  const configNames = await rpcConfigNamesOf(
+    organizationId,
+    rpcStepConfigIds(result)
+  );
 
   return result.map((row) => ({
     id: row.id,
@@ -2484,8 +2467,11 @@ export async function getStepLogs(
     sponsored: row.sponsoredGasWei !== null,
     rpcOrigin: row.rpcOrigin,
     rpcConfigId: row.rpcConfigId,
-    rpcConfigName: row.rpcConfigName,
+    rpcConfigName: row.rpcConfigId
+      ? (configNames.get(row.rpcConfigId) ?? null)
+      : null,
     rpcFailedOver: row.rpcFailedOver === true,
+    rpcEndpoints: namedRpcEndpoints(row.rpcEndpoints, configNames),
   }));
 }
 

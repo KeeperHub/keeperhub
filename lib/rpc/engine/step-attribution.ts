@@ -9,7 +9,12 @@
  * a registered storage every function is a no-op.
  */
 import { processSingleton } from "@/lib/rpc/engine/process-singleton";
-import { type RpcEndpoint, RpcOrigin } from "@/lib/rpc/engine/types";
+import {
+  type RpcEndpoint,
+  type RpcEndpointUsage,
+  RpcOrigin,
+  type RpcRoutePosition,
+} from "@/lib/rpc/engine/types";
 
 type AttributedEndpoint = Pick<RpcEndpoint, "origin" | "configId">;
 
@@ -27,6 +32,8 @@ type RpcAttributionCollector = {
   configId: string | null;
   /** True once a call of the run moved from its primary to its fallback. */
   failedOver: boolean;
+  /** Every endpoint a call of the run reached, by origin, config and position. */
+  endpoints: Map<string, RpcEndpointUsage>;
   parent: RpcAttributionCollector | undefined;
 };
 
@@ -40,6 +47,7 @@ export type RpcAttribution = {
   rpcOrigin: RpcOrigin;
   rpcConfigId: string | null;
   rpcFailedOver: boolean;
+  rpcEndpoints: RpcEndpointUsage[];
 };
 
 const storageSlot = processSingleton<{
@@ -65,6 +73,7 @@ export function runWithRpcAttribution<T>(fn: () => T): T {
     servedByOrg: false,
     configId: null,
     failedOver: false,
+    endpoints: new Map(),
     parent: storage.getStore(),
   };
   return storage.run(collector, fn);
@@ -97,14 +106,46 @@ export function noteRpcClient(client: AttributableRpcClient): void {
 }
 
 /*
- * The two below are called from a call's telemetry, in the caller's context,
+ * The three below are called from a call's telemetry, in the caller's context,
  * so a manager shared across steps reports each call to the step that made
  * it rather than its own current state.
  */
 
-/** A call of the current run was served by `endpoint`. */
-export function noteRpcCall(endpoint: AttributedEndpoint): void {
+function noteEndpointUsage(
+  endpoint: AttributedEndpoint,
+  position: RpcRoutePosition,
+  field: "requests" | "errors"
+): void {
+  const configId = endpoint.configId ?? null;
+  const key = JSON.stringify([endpoint.origin, configId, position]);
+  forEachCollector((collector) => {
+    const usage = collector.endpoints.get(key) ?? {
+      origin: endpoint.origin,
+      configId,
+      position,
+      requests: 0,
+      errors: 0,
+    };
+    usage[field] += 1;
+    collector.endpoints.set(key, usage);
+  });
+}
+
+/** A call of the current run went to `endpoint`, at `position` in its route. */
+export function noteRpcCall(
+  endpoint: AttributedEndpoint,
+  position: RpcRoutePosition
+): void {
   noteServed(endpoint);
+  noteEndpointUsage(endpoint, position, "requests");
+}
+
+/** That call failed. */
+export function noteRpcCallFailure(
+  endpoint: AttributedEndpoint,
+  position: RpcRoutePosition
+): void {
+  noteEndpointUsage(endpoint, position, "errors");
 }
 
 /** A call of the current run moved from its primary to its fallback. */
@@ -128,6 +169,9 @@ function deriveRpcAttribution(
     rpcOrigin: collector.servedByOrg ? RpcOrigin.ORG : RpcOrigin.PLATFORM,
     rpcConfigId: collector.servedByOrg ? collector.configId : null,
     rpcFailedOver: collector.failedOver,
+    rpcEndpoints: [...collector.endpoints.values()].map((usage) => ({
+      ...usage,
+    })),
   };
 }
 

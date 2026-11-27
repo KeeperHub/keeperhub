@@ -37,10 +37,13 @@ import { GET } from "@/app/api/workflows/executions/[executionId]/logs/route";
 
 const EXECUTION_ID = "exec_1";
 
-function step(
-  id: string,
-  rpc: { rpcOrigin: string | null; rpcConfigId: string | null }
-): Record<string, unknown> {
+type StepRpc = {
+  rpcOrigin: string | null;
+  rpcConfigId: string | null;
+  rpcEndpoints?: unknown[] | null;
+};
+
+function step(id: string, rpc: StepRpc): Record<string, unknown> {
   return {
     id,
     executionId: EXECUTION_ID,
@@ -54,12 +57,17 @@ function step(
     error: null,
     timestamp: new Date("2026-09-23T00:03:07Z"),
     rpcFailedOver: false,
+    rpcEndpoints: null,
     ...rpc,
   };
 }
 
 type Body = {
-  logs: Array<{ id: string; rpcConfigName: string | null }>;
+  logs: Array<{
+    id: string;
+    rpcConfigName: string | null;
+    rpcEndpoints: Array<{ configId: string | null; configName: string | null }>;
+  }>;
 };
 
 async function call(): Promise<Body> {
@@ -108,6 +116,42 @@ describe("GET /api/workflows/executions/[executionId]/logs rpc endpoint", () => 
     expect(nameOf(body, "removed")).toBeNull();
     expect(nameOf(body, "platform")).toBeNull();
     expect(nameOf(body, "no-rpc")).toBeNull();
+  });
+
+  it("names every endpoint a step reached, the busiest first", async () => {
+    mockFindMany.mockResolvedValue([
+      step("mixed", {
+        rpcOrigin: "org",
+        rpcConfigId: "cfg_1",
+        rpcEndpoints: [
+          {
+            origin: "platform",
+            configId: null,
+            position: "fallback",
+            requests: 1,
+            errors: 0,
+          },
+          {
+            origin: "org",
+            configId: "cfg_1",
+            position: "primary",
+            requests: 4,
+            errors: 1,
+          },
+        ],
+      }),
+    ]);
+    mockSelectWhere.mockResolvedValue([{ id: "cfg_1", name: "Mainnet main" }]);
+
+    const body = await call();
+
+    expect(body.logs[0]?.rpcEndpoints).toEqual([
+      expect.objectContaining({
+        configId: "cfg_1",
+        configName: "Mainnet main",
+      }),
+      expect.objectContaining({ configId: null, configName: null }),
+    ]);
   });
 
   it("skips the lookup when no step was served by an org config", async () => {

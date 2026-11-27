@@ -3,13 +3,14 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   type AttributableRpcClient,
   noteRpcCall,
+  noteRpcCallFailure,
   noteRpcClient,
   noteRpcFailover,
   readRpcAttribution,
   runWithRpcAttribution,
   setRpcAttributionStorage,
 } from "@/lib/rpc/engine/step-attribution";
-import { RpcOrigin } from "@/lib/rpc/engine/types";
+import { RpcOrigin, RpcRoutePosition } from "@/lib/rpc/engine/types";
 
 type FakeEndpoint = { origin: RpcOrigin; configId: string | null };
 
@@ -51,6 +52,7 @@ describe("rpc step attribution", () => {
       rpcOrigin: RpcOrigin.PLATFORM,
       rpcConfigId: null,
       rpcFailedOver: false,
+      rpcEndpoints: [],
     });
   });
 
@@ -66,6 +68,7 @@ describe("rpc step attribution", () => {
       rpcOrigin: RpcOrigin.ORG,
       rpcConfigId: "cfg-2",
       rpcFailedOver: false,
+      rpcEndpoints: [],
     });
   });
 
@@ -73,7 +76,7 @@ describe("rpc step attribution", () => {
     const result = await runWithRpcAttribution(async () => {
       noteRpcClient(fakeClient(orgEndpoint("cfg-1")));
       await Promise.resolve();
-      noteRpcCall(PLATFORM);
+      noteRpcCall(PLATFORM, RpcRoutePosition.FALLBACK);
       noteRpcFailover();
       return readRpcAttribution();
     });
@@ -82,6 +85,15 @@ describe("rpc step attribution", () => {
       rpcOrigin: RpcOrigin.ORG,
       rpcConfigId: "cfg-1",
       rpcFailedOver: true,
+      rpcEndpoints: [
+        {
+          origin: RpcOrigin.PLATFORM,
+          configId: null,
+          position: RpcRoutePosition.FALLBACK,
+          requests: 1,
+          errors: 0,
+        },
+      ],
     });
   });
 
@@ -91,18 +103,46 @@ describe("rpc step attribution", () => {
         noteRpcClient(fakeClient(orgEndpoint("cfg-1")));
         await Promise.resolve();
         noteRpcFailover();
-        noteRpcCall(orgEndpoint("cfg-1-fallback"));
+        noteRpcCall(orgEndpoint("cfg-1"), RpcRoutePosition.FALLBACK);
         return readRpcAttribution();
       }),
       runWithRpcAttribution(async () => {
         noteRpcClient(fakeClient(orgEndpoint("cfg-1")));
         await new Promise((resolve) => setTimeout(resolve, 5));
-        noteRpcCall(orgEndpoint("cfg-1"));
+        noteRpcCall(orgEndpoint("cfg-1"), RpcRoutePosition.PRIMARY);
         return readRpcAttribution();
       }),
     ]);
     expect(failed?.rpcFailedOver).toBe(true);
     expect(steady?.rpcFailedOver).toBe(false);
+  });
+
+  it("counts each endpoint's calls and failures by position", async () => {
+    const result = await runWithRpcAttribution(async () => {
+      const own = orgEndpoint("cfg-1");
+      noteRpcCall(own, RpcRoutePosition.PRIMARY);
+      noteRpcCallFailure(own, RpcRoutePosition.PRIMARY);
+      noteRpcCall(own, RpcRoutePosition.PRIMARY);
+      await Promise.resolve();
+      noteRpcCall(PLATFORM, RpcRoutePosition.FALLBACK);
+      return readRpcAttribution();
+    });
+    expect(result?.rpcEndpoints).toEqual([
+      {
+        origin: RpcOrigin.ORG,
+        configId: "cfg-1",
+        position: RpcRoutePosition.PRIMARY,
+        requests: 2,
+        errors: 1,
+      },
+      {
+        origin: RpcOrigin.PLATFORM,
+        configId: null,
+        position: RpcRoutePosition.FALLBACK,
+        requests: 1,
+        errors: 0,
+      },
+    ]);
   });
 
   it("keeps sibling runs apart", async () => {
