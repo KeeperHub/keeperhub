@@ -60,6 +60,7 @@ import {
   type TransactionContext,
   withNonceSession,
 } from "@/lib/web3/transaction-manager";
+import { isMinedSend, type MinedSend, minedSend } from "@/lib/web3/mined-send";
 import {
   convertAmountForWrite,
   rawToUi,
@@ -96,9 +97,6 @@ export type TransferTokenCoreInput = {
     workflowId?: string;
   };
 };
-
-// A mined send; its call trace runs after the wallet lock is released.
-type SentTransfer = { mined: Extract<TransferTokenResult, { success: true }> };
 
 export type TransferTokenResult =
   | {
@@ -571,7 +569,7 @@ async function transferTokenCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
-  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<TransferTokenResult | SentTransfer> => {
+  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<TransferTokenResult | MinedSend<Extract<TransferTokenResult, { success: true }>>> => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     let signerAddress: string;
@@ -729,20 +727,18 @@ async function transferTokenCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      return {
-        mined: {
-          success: true,
-          transactionHash: receipt.hash,
-          chainId,
-          transactionLink,
-          gasUsed: gasCostWei,
-          gasUsedUnits,
-          effectiveGasPrice,
-          amount,
-          symbol,
-          recipient: recipientAddress,
-        },
-      };
+      return minedSend(receipt.hash, {
+        success: true,
+        transactionHash: receipt.hash,
+        chainId,
+        transactionLink,
+        gasUsed: gasCostWei,
+        gasUsedUnits,
+        effectiveGasPrice,
+        amount,
+        symbol,
+        recipient: recipientAddress,
+      });
     } catch (error) {
       logUserError(
         ErrorCategory.TRANSACTION,
@@ -781,16 +777,15 @@ async function transferTokenCoreImpl(
       };
     }
   });
-  if (!("mined" in sent)) {
-    return sent;
+  if (isMinedSend(sent)) {
+    const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.hash, {
+      target: tokenAddress,
+      abi: ERC20_ABI,
+      functionName: "transfer",
+    });
+    return { ...sent.result, executedCall };
   }
-
-  const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.mined.transactionHash, {
-    target: tokenAddress,
-    abi: ERC20_ABI,
-    functionName: "transfer",
-  });
-  return { ...sent.mined, executedCall };
+  return sent;
 }
 
 export async function transferTokenCore(

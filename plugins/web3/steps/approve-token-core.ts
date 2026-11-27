@@ -56,6 +56,7 @@ import {
   type TransactionContext,
   withNonceSession,
 } from "@/lib/web3/transaction-manager";
+import { isMinedSend, type MinedSend, minedSend } from "@/lib/web3/mined-send";
 import {
   convertAmountForWrite,
   resolveForWrite,
@@ -92,9 +93,6 @@ export type ApproveTokenCoreInput = {
     workflowId?: string;
   };
 };
-
-// A mined send; its call trace runs after the wallet lock is released.
-type SentApproval = { mined: Extract<ApproveTokenResult, { success: true }> };
 
 export type ApproveTokenResult =
   | {
@@ -475,7 +473,7 @@ async function approveTokenCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
-  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<ApproveTokenResult | SentApproval> => {
+  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<ApproveTokenResult | MinedSend<Extract<ApproveTokenResult, { success: true }>>> => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
@@ -632,20 +630,18 @@ async function approveTokenCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      return {
-        mined: {
-          success: true,
-          transactionHash: receipt.hash,
-          chainId,
-          transactionLink,
-          gasUsed: gasCostWei,
-          gasUsedUnits,
-          effectiveGasPrice,
-          approvedAmount: approvedAmountDisplay,
-          spender: spenderAddress,
-          symbol,
-        },
-      };
+      return minedSend(receipt.hash, {
+        success: true,
+        transactionHash: receipt.hash,
+        chainId,
+        transactionLink,
+        gasUsed: gasCostWei,
+        gasUsedUnits,
+        effectiveGasPrice,
+        approvedAmount: approvedAmountDisplay,
+        spender: spenderAddress,
+        symbol,
+      });
     } catch (error) {
       logUserError(
         ErrorCategory.TRANSACTION,
@@ -684,16 +680,15 @@ async function approveTokenCoreImpl(
       };
     }
   });
-  if (!("mined" in sent)) {
-    return sent;
+  if (isMinedSend(sent)) {
+    const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.hash, {
+      target: tokenAddress,
+      abi: ERC20_ABI,
+      functionName: "approve",
+    });
+    return { ...sent.result, executedCall };
   }
-
-  const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.mined.transactionHash, {
-    target: tokenAddress,
-    abi: ERC20_ABI,
-    functionName: "approve",
-  });
-  return { ...sent.mined, executedCall };
+  return sent;
 }
 
 export async function approveTokenCore(
