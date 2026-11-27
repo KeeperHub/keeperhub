@@ -33,7 +33,7 @@ type SendRpc = {
 };
 
 /** Send as Bundle on a step that cannot send one; never sent publicly instead. */
-const BUNDLE_REFUSAL = `This step is set to Send as: Bundle, but bundles are only available on Write Contract steps. ${USE_NORMAL_HINT}`;
+const BUNDLE_REFUSAL = `This step is set to Send as: Bundle (sendMode: "bundle"), but bundles are only available on Write Contract steps. ${USE_NORMAL_HINT}`;
 
 function refuseUnknownOrBundle(input: SendAsInput, allowBundle: boolean): void {
   const invalid = unknownSendModeIssue(input.sendMode);

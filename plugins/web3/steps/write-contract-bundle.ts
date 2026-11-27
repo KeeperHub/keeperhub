@@ -46,6 +46,7 @@ import {
 } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import { preflightGasBalance } from "@/lib/web3/gas-preflight";
+import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
@@ -75,7 +76,7 @@ import type {
 
 type Failure = Extract<WriteContractResult, { success: false }>;
 
-const SET_TO_BUNDLE = "This step is set to Send as: Bundle, but";
+const SET_TO_BUNDLE = 'This step is set to Send as: Bundle (sendMode: "bundle"), but';
 
 /** The step context a bundle needs: a workflow run of a Write Contract node. */
 type BundleStepContext = NonNullable<WriteContractCoreInput["_context"]>;
@@ -232,6 +233,8 @@ type BundleWrite = {
     hash: string,
     options: TraceExecutedCallOptions
   ) => Promise<ExecutedCall | undefined>;
+  // The block that triggered the run, if any: the targets start after it.
+  triggerBlock?: TriggerBlock;
   txContext: TransactionContext;
   contractAddress: string;
   parsedAbi: unknown[];
@@ -637,6 +640,7 @@ export async function writeAsBundle(
           signer,
           rpcManager: write.rpcManager,
           chainId: write.chainId,
+          triggerBlock: write.triggerBlock,
           call: {
             from: write.walletAddress,
             to: write.contractAddress,

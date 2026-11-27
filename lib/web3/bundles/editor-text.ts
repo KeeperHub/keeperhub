@@ -38,7 +38,7 @@ export function bundleTipsText(input: {
   // A Priority Fee above the limit is kept, so later tips do not rise from it.
   const limitRule =
     limit !== undefined && first !== undefined && first > limit
-      ? `Later tips stay at your Priority Fee, which is above the network's tip limit (${gwei(limit)} gwei).`
+      ? `Later tips stay at your Priority Fee, which is above the network's tip limit (${gwei(limit)} gwei on this network).`
       : `Later tips stop at the network's tip limit${limit === undefined ? "" : ` (${gwei(limit)} gwei on this network)`}.`;
   const capNote =
     cap === undefined

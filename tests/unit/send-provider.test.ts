@@ -246,7 +246,7 @@ describe("getSendRpcProvider: every step's route", () => {
     expect(refused.outcome).toBe("refused");
     expect(refused.error).toBeInstanceOf(InvalidSendModeError);
     expect((refused.error as Error).message).toBe(
-      'This step is set to Send as: Bundle, but bundles are only available on Write Contract steps. Set Send as to Normal transaction (sendMode: "transaction").'
+      'This step is set to Send as: Bundle (sendMode: "bundle"), but bundles are only available on Write Contract steps. Set Send as to Normal transaction (sendMode: "transaction").'
     );
     expect(state.calls).toBe(0);
   });

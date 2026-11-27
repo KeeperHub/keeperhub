@@ -772,14 +772,19 @@ const currentSeconds = (): number => Math.floor(Date.now() / MS_PER_SECOND);
 const TRIGGER_WAIT_READS = 8;
 const TRIGGER_WAIT_MS = 250;
 
-type TriggerWait = { readsLeft: number };
+export type TriggerWait = { readsLeft: number };
 
-const newTriggerWait = (): TriggerWait => ({
+export const newTriggerWait = (): TriggerWait => ({
   readsLeft: TRIGGER_WAIT_READS,
 });
 
+/** The RPC stayed below the block that triggered the run for the whole wait. */
+export class TriggerBlockNotReachedError extends Error {
+  override readonly name = "TriggerBlockNotReachedError" as const;
+}
+
 // The RPC's latest block, once it has reached the block that triggered the run.
-async function latestReaching(
+export async function latestReaching(
   provider: ethers.JsonRpcProvider,
   chainId: number,
   trigger: TriggerBlock | undefined,
@@ -797,7 +802,7 @@ async function latestReaching(
     }
     wait.readsLeft -= 1;
     if (wait.readsLeft <= 0) {
-      throw new Error(
+      throw new TriggerBlockNotReachedError(
         `Next-block simulation: the RPC has not reached the block that triggered the run (${RETRY_HINT}). If this keeps happening, the RPC lags the block trigger: use another RPC for this network (see "RPC Preferences" in the API docs), or set "Simulate at" back to "Latest block"`
       );
     }

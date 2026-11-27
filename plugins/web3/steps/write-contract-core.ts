@@ -89,6 +89,7 @@ import {
 } from "@/lib/web3/next-block-simulation";
 import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
+import { resolveSendMode, SEND_MODE } from "@/lib/web3/send-mode";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import {
@@ -367,15 +368,19 @@ async function writeContractCoreImpl(
   }
   const { priorityFeeOverride, maxFeeOverride } = fees;
 
-  const simulationSettings = readSimulationSettings(
-    simulateAt,
-    simulateTimestampOffsetSec,
-    _context?.triggerBlock
-  );
-  if (!simulationSettings.ok) {
+  // Simulate at is hidden and ignored with Bundle: a stale stored value cannot fail the step.
+  const simulationSettings =
+    resolveSendMode(input) === SEND_MODE.BUNDLE
+      ? undefined
+      : readSimulationSettings(
+          simulateAt,
+          simulateTimestampOffsetSec,
+          _context?.triggerBlock
+        );
+  if (simulationSettings && !simulationSettings.ok) {
     return simulationSettings.failure;
   }
-  const simulation = simulationSettings.options;
+  const simulation = simulationSettings?.options;
 
   // Validate contract address
   if (!ethers.isAddress(contractAddress)) {
@@ -741,6 +746,7 @@ async function writeContractCoreImpl(
       rpcUrl,
       rpcManager,
       traceExecuted,
+      triggerBlock: _context?.triggerBlock,
       txContext,
       contractAddress,
       parsedAbi,

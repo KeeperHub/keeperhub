@@ -2,9 +2,9 @@
 -- so this timeout covers only this file's statements.
 SET LOCAL lock_timeout = '3s';
 --> statement-breakpoint
--- Lock workflow_executions first, holding nothing else while waiting. A not_landed
--- run also queues the alert check (it proves the workflow runs). Drop and create
--- in one transaction: no gap without the trigger, and no PG 14+ syntax.
+-- Lock workflow_executions first (deployed with 0171/0172, their ShareLock on it is
+-- already held). A not_landed run also queues the alert check (it proves the workflow
+-- runs). Drop and create in one transaction: no gap without the trigger, and no PG 14+ syntax.
 DROP TRIGGER IF EXISTS queue_alert_check ON workflow_executions;
 --> statement-breakpoint
 CREATE TRIGGER queue_alert_check

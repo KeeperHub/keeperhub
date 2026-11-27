@@ -84,6 +84,19 @@ type ChainGasConfig = GasStrategyConfig;
 
 const MAX_GAS_LIMIT_MULTIPLIER_OVERRIDE = 10;
 
+const DECIMAL_TEXT = /^\d+(\.\d+)?$/;
+
+// A finite number or decimal text, else null: Number() reads null, "" and false as 0.
+function gweiNumber(raw: unknown): number | null {
+  let value = Number.NaN;
+  if (typeof raw === "number") {
+    value = raw;
+  } else if (typeof raw === "string" && DECIMAL_TEXT.test(raw.trim())) {
+    value = Number(raw);
+  }
+  return Number.isFinite(value) ? value : null;
+}
+
 const DEFAULT_CONFIG: GasStrategyConfig = {
   gasLimitMultiplier: 2.0,
   volatilityThreshold: 0.3,
@@ -458,10 +471,12 @@ export class AdaptiveGasStrategy {
 
   /** `priorityFeeLimit` for a chain row already read, in gwei; null when not a number. */
   tipLimitGwei(chainId: number, gasConfig: unknown): number | null {
-    const limit = Number(
-      mergeChainGasConfig(this.config, chainId, gasConfig).maxPriorityFeeGwei
-    );
-    return Number.isFinite(limit) ? limit : null;
+    const raw: unknown = mergeChainGasConfig(
+      this.config,
+      chainId,
+      gasConfig
+    ).maxPriorityFeeGwei;
+    return gweiNumber(raw);
   }
 
   // Caller-supplied maxFeePerGas ceiling. The tip is lowered with it so the

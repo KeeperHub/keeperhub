@@ -44,7 +44,8 @@ const fromNotLanded = (executionId: string): SQL | undefined =>
     eq(workflowExecutions.status, "not_landed")
   );
 
-/** How the error of a run a late revert ended starts; later landings still add to it. */
+// How the error of a run a late revert ended starts; later landings still add to it. Do not
+// reword (older rows match on it). A step can throw it too: harmless, only the run's own rows are added.
 export const LATE_REVERT_ERROR =
   "Transaction reverted: a transaction in this run was mined later and reverted";
 

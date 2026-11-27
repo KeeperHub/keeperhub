@@ -103,7 +103,7 @@ describe("bundleTipsText", () => {
     });
     expect(above).toContain("Tips: 8, 8 and 8 gwei");
     expect(above).toContain(
-      "Later tips stay at your Priority Fee, which is above the network's tip limit (5 gwei)."
+      "Later tips stay at your Priority Fee, which is above the network's tip limit (5 gwei on this network)."
     );
     expect(above).not.toContain("stop at the network's tip limit");
     // At the limit exactly, tips still stop there.

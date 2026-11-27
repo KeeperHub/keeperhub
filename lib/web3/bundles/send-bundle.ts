@@ -14,10 +14,14 @@ import { getErrorMessage } from "@/lib/utils";
 import type { GasOverrides } from "@/lib/web3/chain-adapter/types";
 import { fixedGasLimit, MAX_FEE_GWEI } from "@/lib/web3/gas-defaults";
 import { getGasStrategy } from "@/lib/web3/gas-strategy";
+import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   isNextBlockSimulationUnsupported,
+  latestReaching,
+  newTriggerWait,
   simulateSendAtNextBlock,
   TargetBlockPassedError,
+  TriggerBlockNotReachedError,
 } from "@/lib/web3/next-block-simulation";
 import { getNonceManager, type NonceSession } from "@/lib/web3/nonce-manager";
 import type { BuilderEndpoint } from "./builders";
@@ -98,6 +102,8 @@ type BundleSendInput = {
   signer: ethers.Signer;
   rpcManager: RpcProviderManager;
   chainId: number;
+  // The block that triggered the run: targets start after the RPC reaches it.
+  triggerBlock?: TriggerBlock;
   call: { from: string; to: string; data: string; value?: bigint };
   contractInterface?: ethers.Interface;
   gas: GasOverrides;
@@ -133,6 +139,15 @@ const TOO_SLOW: Extract<BundleSendOutcome, { kind: "refused" }> = {
   report: {},
 };
 
+// The RPC stayed below the trigger block for the whole wait: nothing was signed or sent.
+const TRIGGER_NOT_REACHED: Extract<BundleSendOutcome, { kind: "refused" }> = {
+  kind: "refused",
+  error:
+    "The RPC has not reached the block that triggered the run, so nothing was sent. Run it again. If this keeps happening, the RPC lags the block trigger: use another RPC for this network.",
+  errorClass: ExecutionErrorType.EXTERNAL,
+  report: {},
+};
+
 const POLL_MS = 1000;
 
 type Simulated = { block: number; gasEstimate: bigint };
@@ -154,7 +169,7 @@ async function simulateTargets(
         gasLimit: fixed,
         contractInterface: input.contractInterface,
         tx: input.call,
-        options: { targetBlock: block },
+        options: { targetBlock: block, triggerBlock: input.triggerBlock },
       })
     )
   );
@@ -167,7 +182,10 @@ async function simulateTargets(
       passed.push({ block, gasEstimate: result.value.gasEstimate });
       continue;
     }
-    if (isNextBlockSimulationUnsupported(result.reason)) {
+    if (
+      isNextBlockSimulationUnsupported(result.reason) ||
+      result.reason instanceof TriggerBlockNotReachedError
+    ) {
       throw result.reason;
     }
     if (result.reason instanceof TargetBlockPassedError) {
@@ -417,6 +435,9 @@ export async function sendBundleInSession(
     if (error instanceof DeadlinePassedError) {
       return TOO_SLOW;
     }
+    if (error instanceof TriggerBlockNotReachedError) {
+      return TRIGGER_NOT_REACHED;
+    }
     throw error;
   }
 }
@@ -432,12 +453,13 @@ async function sendInBudget(
   if (!provider) {
     throw new Error("Signer has no provider");
   }
+  // On a block trigger, wait for the RPC to reach that block, so no target is already mined.
+  const wait = newTriggerWait();
   const latestBlock = await inBudget(
-    input.rpcManager.executeWithFailover((p) => p.getBlock("latest"))
+    input.rpcManager.executeWithFailover((p) =>
+      latestReaching(p, input.chainId, input.triggerBlock, wait)
+    )
   );
-  if (!latestBlock) {
-    throw new Error("The RPC returned no latest block");
-  }
   const latest = latestBlock.number;
   const blocks = Array.from({ length: input.blocks }, (_, i) => latest + i + 1);
 
@@ -658,7 +680,12 @@ function maxFeeRefusal(
       ? "the base fee the target blocks may reach"
       : `the base fee the target blocks may reach (${groupedGwei(projected)} gwei)`;
   if (userMaxFeeBinds) {
-    return `Max fee ${groupedGwei(maxFee)} gwei is below ${reach}, so nothing was sent. Raise the max fee or leave it empty.`;
+    // At the highest Max Fee a user may set, raising it is not possible.
+    const advice =
+      maxFee >= MAX_FEE_WEI
+        ? "Run it again later."
+        : "Raise the max fee or leave it empty.";
+    return `Max fee ${groupedGwei(maxFee)} gwei is below ${reach}, so nothing was sent. ${advice}`;
   }
   return `The fee cap of ${groupedGwei(maxFee)} gwei, the most a bundle step signs, is below ${reach}, so nothing was sent. Run it again later.`;
 }

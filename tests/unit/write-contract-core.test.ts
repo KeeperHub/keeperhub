@@ -286,6 +286,36 @@ vi.mock("@/lib/web3/trace-executed-call", () => ({
     mockTraceExecutedCall(...args),
 }));
 
+// The bundle route and send, stubbed per test; the real ones otherwise.
+const bundleStub = vi.hoisted(() => ({
+  prepare: undefined as ((...args: unknown[]) => unknown) | undefined,
+  write: undefined as ((...args: unknown[]) => unknown) | undefined,
+}));
+vi.mock(
+  "@/plugins/web3/steps/write-contract-bundle",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/plugins/web3/steps/write-contract-bundle")
+      >();
+    return {
+      ...actual,
+      prepareBundleRoute: (...args: unknown[]) =>
+        bundleStub.prepare
+          ? bundleStub.prepare(...args)
+          : actual.prepareBundleRoute(
+              ...(args as Parameters<typeof actual.prepareBundleRoute>)
+            ),
+      writeAsBundle: (...args: unknown[]) =>
+        bundleStub.write
+          ? bundleStub.write(...args)
+          : actual.writeAsBundle(
+              ...(args as Parameters<typeof actual.writeAsBundle>)
+            ),
+    };
+  }
+);
+
 // Capture txContext passed to withNonceSession
 let capturedTxContext: Record<string, unknown> | null = null;
 vi.mock("@/lib/web3/transaction-manager", () => ({
@@ -931,6 +961,31 @@ describe("writeContractCore simulateAt next-block", () => {
       broadcastAttempted: false,
     });
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stale Simulate at on a bundle step and passes the trigger block to the bundle send", async () => {
+    const triggerBlock = { chainId: 16_602, number: 101 };
+    const write = vi.fn(async () => ({ success: true }));
+    bundleStub.prepare = async () => ({ ok: true, route: {} });
+    bundleStub.write = write;
+    try {
+      const result = await writeContractCore({
+        ...baseInput,
+        sendMode: "bundle",
+        allowBundle: true,
+        // An offset that fails a normal step's check.
+        simulateAt: "next-block",
+        simulateTimestampOffsetSec: "0",
+        _context: { organizationId: "org-1", triggerBlock },
+      });
+      expect(result).toEqual({ success: true });
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({ triggerBlock })
+      );
+    } finally {
+      bundleStub.prepare = undefined;
+      bundleStub.write = undefined;
+    }
   });
 
   it("recognises the unsupported error from another module copy", async () => {

@@ -38,6 +38,8 @@ const h = vi.hoisted(() => ({
   events: [] as string[],
   // Per target block: a gas estimate, or an error to throw.
   simulations: new Map<number, bigint | Error>(),
+  // The options of every target simulation, in call order.
+  simOptions: [] as unknown[],
   sendBundle: vi.fn(),
   recordBundle: vi.fn(),
   confirmNonce: vi.fn(),
@@ -57,6 +59,7 @@ vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => {
     ) => {
       const block = request.options.targetBlock ?? 0;
       h.events.push(`simulate:${block}`);
+      h.simOptions.push(request.options);
       const answer = h.simulations.get(block);
       if (answer instanceof Error) {
         throw answer;
@@ -114,7 +117,10 @@ import {
   BundleSigningError,
   sendBundleInSession,
 } from "@/lib/web3/bundles/send-bundle";
-import { NextBlockSimulationUnsupportedError } from "@/lib/web3/next-block-simulation";
+import {
+  NextBlockSimulationUnsupportedError,
+  TriggerBlockNotReachedError,
+} from "@/lib/web3/next-block-simulation";
 
 type BundleSendInput = Parameters<typeof sendBundleInSession>[0];
 
@@ -154,6 +160,10 @@ type Chain = {
   txs: Map<number, MinedTx[]>;
   // The latest block's base fee; 10 gwei when unset.
   baseFee?: bigint;
+  // Numbers the next latest-block reads return before `block` (a lagging RPC).
+  latestReads?: number[];
+  // Latest-block reads made.
+  latestCount: number;
 };
 
 type MinedTx = { from: string; nonce: number; hash: string };
@@ -171,15 +181,18 @@ let signed: string[];
 
 function manager() {
   const provider = {
-    getBlock: async (tag?: unknown, prefetch?: boolean) =>
-      prefetch
-        ? await blockWithTxs(tag as number)
-        : {
-            number: chain.block,
-            baseFeePerGas: chain.baseFee ?? gwei("10"),
-            gasUsed: BigInt(15_000_000),
-            gasLimit: BigInt(30_000_000),
-          },
+    getBlock: async (tag?: unknown, prefetch?: boolean) => {
+      if (prefetch) {
+        return await blockWithTxs(tag as number);
+      }
+      chain.latestCount += 1;
+      return {
+        number: chain.latestReads?.shift() ?? chain.block,
+        baseFeePerGas: chain.baseFee ?? gwei("10"),
+        gasUsed: BigInt(15_000_000),
+        gasLimit: BigInt(30_000_000),
+      };
+    },
     getBlockNumber: async () => {
       if (chain.readsFail) {
         throw new Error("rpc down");
@@ -288,6 +301,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.events = [];
   h.simulations = new Map();
+  h.simOptions = [];
   h.sendBundle.mockImplementation(accept);
   h.getGasConfig.mockResolvedValue({
     gasLimit: BigInt(60_000),
@@ -309,6 +323,7 @@ beforeEach(() => {
     callHangs: false,
     fallback: null,
     txs: new Map(),
+    latestCount: 0,
   };
   signed = [];
 });
@@ -634,6 +649,22 @@ describe("sendBundleInSession", () => {
     nothingSigned(progress);
   });
 
+  it("at the highest Max Fee a user may set, does not advise raising it", async () => {
+    chain.baseFee = gwei("20000");
+    h.getGasConfig.mockResolvedValue({
+      gasLimit: BigInt(60_000),
+      maxFeePerGas: gwei("10000"),
+      maxPriorityFeePerGas: gwei("1"),
+    });
+    const outcome = await sendBundleInSession(
+      input({ gas: { maxFeeOverride: gwei("10000") } })
+    );
+    expect(outcome).toMatchObject({ kind: "refused", errorClass: "user" });
+    expect(outcome.kind === "refused" && outcome.error).toBe(
+      "Max fee 10,000 gwei is below the base fee the target blocks may reach (20,000 gwei), so nothing was sent. Run it again later."
+    );
+  });
+
   it("blames the user's own Max Fee when it skips every target", async () => {
     h.getGasConfig.mockResolvedValue({
       gasLimit: BigInt(60_000),
@@ -901,6 +932,63 @@ describe("sendBundleInSession", () => {
       NONCE,
       earlier
     );
+  });
+
+  it("on a block trigger, waits for the RPC to reach that block and targets the blocks after it", async () => {
+    const triggerBlock = { chainId: 1, number: LATEST };
+    chain.latestReads = [LATEST - 1, LATEST - 1];
+    const outcome = await sendBundleInSession(input({ triggerBlock }));
+    expect(chain.latestCount).toBeGreaterThanOrEqual(3);
+    expect(outcome.report).toMatchObject({
+      targetBlocks: [LATEST + 1, LATEST + 2, LATEST + 3],
+    });
+    // Each target's check waits for the trigger block on its own RPC too.
+    expect(h.simOptions).toEqual([
+      { targetBlock: LATEST + 1, triggerBlock },
+      { targetBlock: LATEST + 2, triggerBlock },
+      { targetBlock: LATEST + 3, triggerBlock },
+    ]);
+  });
+
+  it("refuses before signing when the RPC stays below the trigger block: nothing sent", async () => {
+    chain.block = LATEST - 1;
+    const progress = { sent: false };
+    const outcome = await sendBundleInSession(
+      input({ progress, triggerBlock: { chainId: 1, number: LATEST } })
+    );
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      errorClass: ExecutionErrorType.EXTERNAL,
+      error: expect.stringContaining(
+        "has not reached the block that triggered the run, so nothing was sent"
+      ),
+    });
+    expect(h.simOptions).toEqual([]);
+    expect(h.events).not.toContain("nonce");
+    nothingSigned(progress);
+  });
+
+  it("refuses before signing when a target's check finds its RPC below the trigger block", async () => {
+    h.simulations.set(LATEST + 2, new TriggerBlockNotReachedError("lagging"));
+    const progress = { sent: false };
+    const outcome = await sendBundleInSession(
+      input({ progress, triggerBlock: { chainId: 1, number: LATEST } })
+    );
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      errorClass: ExecutionErrorType.EXTERNAL,
+    });
+    nothingSigned(progress);
+  });
+
+  it("does not wait for a trigger block on another chain", async () => {
+    const outcome = await sendBundleInSession(
+      input({ triggerBlock: { chainId: 8453, number: LATEST + 500 } })
+    );
+    expect(chain.latestCount).toBe(1);
+    expect(outcome.report).toMatchObject({
+      targetBlocks: [LATEST + 1, LATEST + 2, LATEST + 3],
+    });
   });
 
   it("refuses before signing once the work since the lock passed its budget: nothing sent", async () => {

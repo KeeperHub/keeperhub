@@ -711,6 +711,34 @@ describe("Send as Bundle at save", () => {
     expect(broken.issues[0]).toMatchObject({ field: "bundleBlocks" });
   });
 
+  it("with the rollout off, lets a bundle step through as saved when only the server-filled flag differs", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
+    // Stored with a Safe connection: any re-check would refuse it.
+    const saved = bundle({
+      usePrivateMempool: false,
+      web3Connection: "safe:0xabc",
+    });
+    const same = await check(
+      [bundle({ web3Connection: "safe:0xabc", abiFunction: "run" })],
+      { savedNodes: [saved] }
+    );
+    expect(same.issues).toEqual([]);
+    expect(rows.queries).toBe(0);
+  });
+
+  it("with the rollout off, a bundle step whose connection alone changed is checked again", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
+    const saved = bundle({
+      usePrivateMempool: false,
+      web3Connection: "safe:0xabc",
+    });
+    const moved = await check([bundle({ web3Connection: "safe:0xdef" })], {
+      savedNodes: [saved],
+    });
+    expect(moved.issues).toHaveLength(1);
+    expect(moved.issues[0]).toMatchObject({ field: "web3Connection" });
+  });
+
   it.each([
     ["web3/transfer-funds"],
     ["web3/batch-write-contract"],

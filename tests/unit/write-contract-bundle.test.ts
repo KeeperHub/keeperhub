@@ -66,9 +66,6 @@ vi.mock("@/lib/web3/chain-adapter", () => ({
       `https://scan.example/tx/${hash}`,
   }),
 }));
-vi.mock("@/lib/web3/trace-executed-call", () => ({
-  traceExecutedCallWithFailover: async () => undefined,
-}));
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { logSystemError } from "@/lib/logging";
@@ -273,7 +270,11 @@ async function route(): Promise<BundleRoute> {
 // A mined receipt for the landed-replay reads, else null.
 let replayReceipt: Record<string, unknown> | null | Error = null;
 
-async function write(): Promise<WriteContractResult> {
+type BundleWrite = Parameters<typeof writeAsBundle>[0];
+
+async function write(
+  overrides: Partial<BundleWrite> = {}
+): Promise<WriteContractResult> {
   return await writeAsBundle({
     route: await route(),
     chainId: 1,
@@ -302,8 +303,23 @@ async function write(): Promise<WriteContractResult> {
     functionKey: "kick",
     args: [],
     gas: {},
+    ...overrides,
   });
 }
+
+// A bundle that landed and succeeded at block 12.
+const landed = (hash: string) => ({
+  kind: "included",
+  gasLimit: BigInt(60_000),
+  mined: {
+    hash,
+    blockNumber: 12,
+    succeeded: true,
+    gasUnits: BigInt(40_000),
+    feeWei: BigInt(40_000) * BigInt(11),
+  },
+  report: REPORT,
+});
 
 const signals = (output: WriteContractResult) =>
   signalsOfStep("web3/write-contract", output);
@@ -545,6 +561,30 @@ describe("writeAsBundle", () => {
     });
   });
 
+  it("included: traces the landed call once and returns it as executedCall", async () => {
+    const hash = `0x${"ab".repeat(32)}`;
+    h.send.mockResolvedValue(landed(hash));
+    const call = { functionName: "kick", args: [] } as never;
+    const traceExecuted = vi.fn(async () => call);
+    const result = await write({ traceExecuted });
+    expect(traceExecuted).toHaveBeenCalledTimes(1);
+    expect(traceExecuted).toHaveBeenCalledWith(hash, {
+      target: `0x${"cc".repeat(20)}`,
+      abi: ABI,
+      functionName: "kick",
+    });
+    expect(result).toMatchObject({ success: true, executedCall: call });
+  });
+
+  it("included: a trace that finds nothing leaves executedCall out, still a success", async () => {
+    h.send.mockResolvedValue(landed(`0x${"ab".repeat(32)}`));
+    const traceExecuted = vi.fn(async () => undefined);
+    const result = await write({ traceExecuted });
+    expect(traceExecuted).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(true);
+    expect((result as { executedCall?: unknown }).executedCall).toBeUndefined();
+  });
+
   it("a mined revert fails the step with the hash, as a normal send does", async () => {
     const hash = `0x${"cd".repeat(32)}`;
     h.send.mockResolvedValue({
@@ -695,6 +735,17 @@ describe("writeAsBundle", () => {
     expect(sent.node).toEqual({ id: "write-1", name: "Kick" });
     expect(sent.blocks).toBe(3);
     expect(sent.workflowId).toBe("wf-1");
+  });
+
+  it("passes the block that triggered the run to the send", async () => {
+    h.send.mockResolvedValue({
+      kind: "not-included",
+      reason: "not-picked",
+      report: REPORT,
+    });
+    const triggerBlock = { chainId: 1, number: 9 };
+    await write({ triggerBlock });
+    expect(h.send.mock.calls[0][0]).toMatchObject({ triggerBlock });
   });
 });
 

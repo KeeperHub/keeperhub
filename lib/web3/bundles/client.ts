@@ -98,7 +98,8 @@ async function postBundle(
         "x-flashbots-signature": signature,
       },
       body,
-      // Never re-send the signed body to wherever a redirect points.
+      // Never re-send the signed body to wherever a redirect points. "manual", not "error":
+      // a 3xx reads as refused (not forwarded) rather than as an unknown network error.
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
       plugin: "bundle-builder",

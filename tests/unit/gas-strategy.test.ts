@@ -816,6 +816,19 @@ describe("AdaptiveGasStrategy", () => {
       }
     });
 
+    it("lists no tip limit for a malformed row value, never 0", () => {
+      resetGasStrategy();
+      try {
+        for (const bad of [null, "", " ", false, true, "1e3", [], {}]) {
+          expect(chainTipLimitGwei(1, { maxPriorityFeeGwei: bad })).toBe(null);
+        }
+        expect(chainTipLimitGwei(1, { maxPriorityFeeGwei: "12.5" })).toBe(12.5);
+        expect(chainTipLimitGwei(1, { maxPriorityFeeGwei: 0 })).toBe(0);
+      } finally {
+        resetGasStrategy();
+      }
+    });
+
     it("should ignore config after first initialization", () => {
       const strategy1 = getGasStrategy({ gasLimitMultiplier: 1.5 });
       const strategy2 = getGasStrategy({ gasLimitMultiplier: 3.0 });
