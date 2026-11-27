@@ -136,6 +136,51 @@ describe("SolanaConnection", () => {
     void conn.stop();
   });
 
+  it("ticks from the HTTP endpoint while an organization route's socket delivers nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      const slots: number[] = [];
+      const conn = new SolanaConnection({
+        chainId: 101,
+        source: "getblock",
+        endpoints: [{ rpcUrl: "https://org.example/key", pollSlots: true }],
+        commitment: "confirmed",
+        onSlot: (slot) => slots.push(slot),
+      });
+      conn.start();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(slots).toEqual([100]);
+
+      hooks.instances[0]?.fireSlot(101);
+      slots.length = 0;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(slots).toEqual([]);
+      await conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never polls an endpoint that does not ask for it", async () => {
+    vi.useFakeTimers();
+    try {
+      const slots: number[] = [];
+      const conn = new SolanaConnection({
+        chainId: 101,
+        source: "getblock",
+        endpoints: [{ rpcUrl: "https://kh.example/key" }],
+        commitment: "confirmed",
+        onSlot: (slot) => slots.push(slot),
+      });
+      conn.start();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(slots).toEqual([]);
+      await conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("passes the resolved finality through to reads", async () => {
     hooks.slot = 555;
     const conn = new SolanaConnection({

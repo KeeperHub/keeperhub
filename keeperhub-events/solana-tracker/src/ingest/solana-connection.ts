@@ -66,12 +66,25 @@ const FIRST_SLOT_GRACE_MS = 20_000;
  */
 const REMOVE_SUB_TIMEOUT_MS = 5_000;
 
+/**
+ * How often an endpoint that polls for slots asks for the tip while its
+ * socket delivers nothing. The slot is only a wake-up: each tick processes
+ * everything up to the tip, so a slower tick loses no block.
+ */
+const SLOT_POLL_INTERVAL_MS = 1_000;
+
 export interface Endpoint {
   rpcUrl: string;
   /** Absent for organization routes: web3.js derives it from `rpcUrl`. */
   wssUrl?: string;
   /** Set only for organization routes. */
   usage?: UsageRecorder;
+  /**
+   * Set for organization routes: a provider may serve no socket at the URL
+   * web3.js derives, so while the socket delivers no slot, ticks come from
+   * polling the HTTP endpoint instead.
+   */
+  pollSlots?: boolean;
 }
 
 /**
@@ -184,6 +197,8 @@ export class SolanaConnection {
   private connection: Connection | null = null;
   private slotSubId: number | null = null;
   private watchdog: ReturnType<typeof setInterval> | null = null;
+  private slotPoll: ReturnType<typeof setInterval> | null = null;
+  private polling = false;
   private activeIndex = 0;
   private lastSlotAt: number | null = null;
   private subscribedAt: number | null = null;
@@ -222,6 +237,37 @@ export class SolanaConnection {
         SLOT_STALENESS_CHECK_MS,
       );
     }
+    if (!this.slotPoll && this.opts.endpoints.some((e) => e.pollSlots)) {
+      this.slotPoll = setInterval(
+        () => void this.pollSlot(),
+        SLOT_POLL_INTERVAL_MS,
+      );
+    }
+  }
+
+  /** A slot tick over HTTP, only while the socket is not delivering. */
+  private async pollSlot(): Promise<void> {
+    const endpoint = this.opts.endpoints[this.activeIndex];
+    if (
+      this.stopped ||
+      this.polling ||
+      !endpoint?.pollSlots ||
+      this.currentState() === "live"
+    ) {
+      return;
+    }
+    this.polling = true;
+    const epoch = this.epoch;
+    try {
+      const slot = await this.getCurrentSlot();
+      if (!this.stopped && epoch === this.epoch) {
+        this.opts.onSlot(slot);
+      }
+    } catch {
+      // Counted as an error on the endpoint; the next tick tries again.
+    } finally {
+      this.polling = false;
+    }
   }
 
   async stop(): Promise<void> {
@@ -232,6 +278,10 @@ export class SolanaConnection {
     if (this.watchdog) {
       clearInterval(this.watchdog);
       this.watchdog = null;
+    }
+    if (this.slotPoll) {
+      clearInterval(this.slotPoll);
+      this.slotPoll = null;
     }
     await this.removeSub();
     this.connection = null;

@@ -102,8 +102,11 @@ export function registrationEndpoints(
   if (registration.route) {
     const { primary, fallback } = registration.route;
     return fallback
-      ? [{ rpcUrl: primary.url }, { rpcUrl: fallback.url }]
-      : [{ rpcUrl: primary.url }];
+      ? [
+          { rpcUrl: primary.url, pollSlots: true },
+          { rpcUrl: fallback.url, pollSlots: true },
+        ]
+      : [{ rpcUrl: primary.url, pollSlots: true }];
   }
   const endpoints: Endpoint[] = [
     { rpcUrl: registration.rpcUrl, wssUrl: registration.wssUrl },
