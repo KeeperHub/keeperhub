@@ -1,7 +1,9 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { type Chain, chains } from "@/lib/db/schema";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logWarn } from "@/lib/logging";
+import { getErrorMessage } from "@/lib/utils";
+import { type BuilderRpcUrls, normalizeBuilderRpcUrls } from "../../rpc-config";
 import { SecretUrl } from "../secret-url";
 import { type PlatformEndpoints, type RpcChain, RpcChainType } from "../types";
 
@@ -116,4 +118,24 @@ export function createDbPlatformRpcSource(
       cache.clear();
     },
   };
+}
+
+// Builder endpoints are optional, so a failed lookup returns undefined.
+export async function getChainBuilderRpcUrls(
+  chainId: number
+): Promise<BuilderRpcUrls | undefined> {
+  try {
+    const rows = await db
+      .select({ builderRpcUrls: chains.builderRpcUrls })
+      .from(chains)
+      .where(and(eq(chains.chainId, chainId), eq(chains.isEnabled, true)))
+      .limit(1);
+    return normalizeBuilderRpcUrls(rows[0]?.builderRpcUrls);
+  } catch (error) {
+    logWarn(
+      `[RPC Engine] Builder endpoint lookup failed: ${getErrorMessage(error)}`,
+      { chain_id: String(chainId) }
+    );
+    return undefined;
+  }
 }

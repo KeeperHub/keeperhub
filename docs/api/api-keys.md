@@ -71,7 +71,7 @@ POST /api/keys
 
 **Admin or owner required.** Key creation and revocation enforce an organization role floor of admin. The role is checked before the step-up below, so a member receives `403` with `code: "not_admin_or_owner"` and is never issued a challenge - no signature will resolve it.
 
-**Step-up confirmation required.** Key creation sits behind the same confirmation gate as wallet withdrawals: the first request returns `401` with `code: "signature_required"` and a `challenge` to sign (or `factors_required` when a non-wallet factor is outstanding). The dashboard handles this with a wallet popup or an authenticator prompt. Scripted clients must answer it themselves - see [Headless Onboarding](/api/headless-onboarding#2-create-an-organization-api-key) for the retry protocol.
+**Step-up confirmation required.** Key creation sits behind the same confirmation gate as wallet withdrawals: the first request returns `401` with `code: "signature_required"` and a `challenge` to sign (or `factors_required` when a non-wallet factor is outstanding). The dashboard handles this with a wallet popup or an authenticator prompt. Scripted clients must answer it themselves - see [Headless Onboarding](/api/headless-onboarding#2-manage-keys-over-the-api) for the retry protocol.
 
 #### Request Body
 

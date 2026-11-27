@@ -12,7 +12,10 @@
  * confirmed payable (not view) in lib/contracts/abis/multicall3.json.
  */
 import "server-only";
-import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
+import {
+  type BroadcastInfo,
+  isPreBroadcastNetworkError,
+} from "@/lib/web3/submit-signed";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { eq } from "drizzle-orm";
@@ -32,6 +35,7 @@ import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
   type EvmRpcClient,
+  getChainBuilderRpcUrls,
   RPC_SELECTION_CONFIG_KEY,
   RpcPurpose,
   RpcRouteError,
@@ -152,6 +156,8 @@ export type BatchWriteContractResult =
     simulation?: NextBlockSimulation;
     // The block the per-call results were checked against.
     resultsSimulation?: NextBlockSimulation;
+    // How the transaction went out; builder labels only, never URLs.
+    broadcast?: BroadcastInfo;
   }
   | {
     success: false;
@@ -788,6 +794,12 @@ async function batchWriteContractCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
+  // Looked up before the wallet lock; private mempool sends stay on the relay.
+  const builderRpcUrls =
+    simulation !== undefined && !usePrivateMempool
+      ? await getChainBuilderRpcUrls(chainId)
+      : undefined;
+
   return withNonceSession(txContext, walletAddress, async (session) => {
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
@@ -823,6 +835,7 @@ async function batchWriteContractCoreImpl(
             simulation && checkedAt
               ? { ...simulation, basedOn: checkedAt }
               : simulation,
+          builderRpcUrls,
         }
       );
 
@@ -844,6 +857,7 @@ async function batchWriteContractCoreImpl(
         totalCalls: results.length,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
         ...(checkedAt ? { resultsSimulation: checkedAt } : {}),
+        ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
       };
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {

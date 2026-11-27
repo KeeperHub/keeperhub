@@ -5,6 +5,7 @@ import type {
 import {
   amountField,
   balanceCheckSuccessOutput,
+  broadcastOutput,
   checkErrorOutput,
   contractAddressField,
   evmNetworkField,
@@ -1851,6 +1852,7 @@ const web3Plugin: IntegrationPlugin = {
           description:
             "With Next block, the predicted block the per-call check before the send ran against. It differs from simulation when a new block or slot came before the send, which then checked again.",
         },
+        broadcastOutput(),
       ],
       configFields: [
         evmPrivateNetworkField(),
@@ -2153,6 +2155,7 @@ const web3Plugin: IntegrationPlugin = {
             "Error message if the call failed. Also set when failOnError is off and an execution failure was softened into success=true, e.g. 'Contract call failed: Error(Splitter/kicked-too-soon)'. Match this string in a downstream Condition node (contains/matchesRegex) to filter known errors from ones that should alert.",
         },
         simulationOutput(),
+        broadcastOutput(),
       ],
       configFields: [
         evmPrivateNetworkField(),

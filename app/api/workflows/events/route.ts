@@ -158,6 +158,7 @@ export async function GET(request: Request) {
         defaultFallbackWss: chains.defaultFallbackWss,
         usePrivateMempoolRpc: chains.usePrivateMempoolRpc,
         defaultPrivateRpcUrl: chains.defaultPrivateRpcUrl,
+        builderRpcUrls: chains.builderRpcUrls,
         isTestnet: chains.isTestnet,
         isEnabled: chains.isEnabled,
         status: chains.status,

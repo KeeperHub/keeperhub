@@ -3,6 +3,7 @@
 import { toHex } from "viem";
 import { createSiweMessage } from "viem/siwe";
 import { authClient } from "@/lib/auth-client";
+import { captchaFetchOptions } from "@/lib/turnstile-token";
 import type { Eip1193Provider } from "@/lib/wallet/connect-types";
 
 export type WalletLoginResult =
@@ -70,9 +71,11 @@ export async function loginWithWallet(
       params: [toHex(message), address],
     });
 
+    const fetchOptions = await captchaFetchOptions();
     const verifyResult = await authClient.siwe.verify({
       message,
       signature,
+      ...(fetchOptions ? { fetchOptions } : {}),
     });
     if (verifyResult.error || !verifyResult.data?.success) {
       return {

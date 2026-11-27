@@ -1,5 +1,5 @@
 import { api, type SavedWorkflow } from "@/lib/api-client";
-import { authClient } from "@/lib/auth-client";
+import { signInAnonymously } from "@/lib/auth-client";
 import { latestVisibleWorkflow } from "@/lib/workflow/latest-workflow";
 
 type StartedWorkflow = {
@@ -23,7 +23,7 @@ export async function startNewWorkflow({
 }): Promise<StartedWorkflow> {
   if (isAnonymous) {
     if (!hasSession) {
-      await authClient.signIn.anonymous();
+      await signInAnonymously();
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     const existing = await api.workflow

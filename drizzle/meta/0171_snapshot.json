@@ -1,6 +1,6 @@
 {
-  "id": "858dbee7-0084-4249-bf3d-1fb5222ea40e",
-  "prevId": "475cb4be-9a9d-449e-a297-a7656674458d",
+  "id": "475cb4be-9a9d-449e-a297-a7656674458d",
+  "prevId": "c0c8cd3d-a851-447d-9818-0e60657c6905",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -974,6 +974,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "builder_rpc_urls": {
+          "name": "builder_rpc_urls",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "is_testnet": {
           "name": "is_testnet",
           "type": "boolean",
@@ -1267,24 +1273,6 @@
         "completed_at": {
           "name": "completed_at",
           "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rpc_origin": {
-          "name": "rpc_origin",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rpc_config_id": {
-          "name": "rpc_config_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rpc_failed_over": {
-          "name": "rpc_failed_over",
-          "type": "boolean",
           "primaryKey": false,
           "notNull": false
         }
@@ -9055,24 +9043,6 @@
         "deleted_at": {
           "name": "deleted_at",
           "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rpc_origin": {
-          "name": "rpc_origin",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rpc_config_id": {
-          "name": "rpc_config_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rpc_failed_over": {
-          "name": "rpc_failed_over",
-          "type": "boolean",
           "primaryKey": false,
           "notNull": false
         }

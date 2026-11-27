@@ -30,6 +30,7 @@ import {
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
   type EvmRpcClient,
+  getChainBuilderRpcUrls,
   RPC_SELECTION_CONFIG_KEY,
   RpcPurpose,
   RpcRouteError,
@@ -78,6 +79,7 @@ import {
 import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
+import type { BroadcastInfo } from "@/lib/web3/submit-signed";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import { traceExecutedCallWithFailover } from "@/lib/web3/trace-executed-call";
 import {
@@ -184,6 +186,8 @@ export type WriteContractResult =
       error?: string;
       rejection?: RevertKind;
       simulation?: NextBlockSimulation;
+      // How the transaction went out; builder labels only, never URLs.
+      broadcast?: BroadcastInfo;
     }
   | {
       success: false;
@@ -770,6 +774,14 @@ async function writeContractCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
+  // Looked up before the wallet lock; private mempool sends stay on the relay.
+  const builderRpcUrls =
+    simulation !== undefined &&
+    !usePrivateMempool &&
+    signerMode.kind === SIGNER_MODE.EOA
+      ? await getChainBuilderRpcUrls(chainId)
+      : undefined;
+
   return withNonceSession(txContext, walletAddress, async (session) => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
@@ -858,6 +870,7 @@ async function writeContractCoreImpl(
             workflowId,
             rpcManager,
             simulation,
+            builderRpcUrls,
           }
         );
       }
@@ -885,6 +898,7 @@ async function writeContractCoreImpl(
         result: undefined,
         executedCall,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
+        ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
       };
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {
