@@ -31,6 +31,15 @@ const h = vi.hoisted(() => ({
   // The options the last nonce session was asked for, and an error it throws instead.
   sessionOptions: undefined as unknown,
   sessionError: undefined as Error | undefined,
+  // linkBundleReservation calls: a replay's own reservation joins the row's nonce.
+  links: [] as unknown[][],
+}));
+
+vi.mock("@/lib/web3/nonce-manager", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/web3/nonce-manager")>()),
+  linkBundleReservation: async (...args: unknown[]) => {
+    h.links.push(args);
+  },
 }));
 
 vi.mock("@/lib/web3/bundles/builders", async (importOriginal) => ({
@@ -136,6 +145,7 @@ beforeEach(() => {
   h.inFlight.mockResolvedValue({ kind: "none" });
   h.affordable = true;
   h.sessions = 0;
+  h.links = [];
   h.sessionOptions = undefined;
   h.sessionError = undefined;
 });
@@ -417,7 +427,11 @@ describe("writeAsBundle", () => {
       gasUsed: BigInt(40_000),
       gasPrice: BigInt(11),
     };
-    h.inFlight.mockResolvedValue({ kind: "replay", landedHash: "0xab" });
+    h.inFlight.mockResolvedValue({
+      kind: "replay",
+      nonce: 7,
+      landedHash: "0xab",
+    });
     const result = await write();
     expect(result).toMatchObject({
       success: true,
@@ -441,7 +455,7 @@ describe("writeAsBundle", () => {
     };
     h.inFlight
       .mockResolvedValueOnce({ kind: "none" })
-      .mockResolvedValueOnce({ kind: "replay", landedHash: "0xab" });
+      .mockResolvedValueOnce({ kind: "replay", nonce: 7, landedHash: "0xab" });
     expect(await write()).toMatchObject({
       included: true,
       transactionHash: "0xab",
@@ -450,9 +464,10 @@ describe("writeAsBundle", () => {
     expect(h.sessions).toBe(1);
   });
 
-  it("a replay of a decided miss returns that miss, signs nothing and holds its value (on no row, so it counts nothing)", async () => {
+  it("a replay of a decided miss returns that miss, signs nothing and holds its value", async () => {
     h.inFlight.mockResolvedValue({
       kind: "replay",
+      nonce: 7,
       missed: "no-longer-needed",
     });
     const result = await write();
@@ -470,6 +485,7 @@ describe("writeAsBundle", () => {
   it("a replay of a bundle no builder accepted fails again as it did, signing nothing", async () => {
     h.inFlight.mockResolvedValue({
       kind: "replay",
+      nonce: 7,
       missed: "no-builder-accepted",
     });
     const result = await write();
@@ -486,11 +502,39 @@ describe("writeAsBundle", () => {
     );
     expect(error).not.toContain("builders output");
     expect(h.send).not.toHaveBeenCalled();
+    // Each builder that answered still read the signed bytes: the value is held.
+    expect(bundleReservationEnd(result)).toBe("hold");
+  });
+
+  it("a replay links its own reservation to the replayed row's nonce, so the cap counts it once", async () => {
+    h.inFlight.mockResolvedValue({
+      kind: "replay",
+      nonce: 7,
+      missed: "not-picked",
+    });
+    const replayRoute = { ...(await route()), valueReservationId: "res-2" };
+    await write({ route: replayRoute });
+    expect(h.links).toEqual([
+      [
+        "res-2",
+        { chainId: 1, walletAddress: `0x${"aa".repeat(20)}`, nonce: 7 },
+      ],
+    ]);
+  });
+
+  it("a replay with no reservation (no value) links nothing", async () => {
+    h.inFlight.mockResolvedValue({ kind: "replay", nonce: 7 });
+    await write();
+    expect(h.links).toEqual([]);
   });
 
   it("a landed replay whose receipt cannot be read is not-checked (the sweep settles the run)", async () => {
     replayReceipt = new Error("rpc down");
-    h.inFlight.mockResolvedValue({ kind: "replay", landedHash: "0xab" });
+    h.inFlight.mockResolvedValue({
+      kind: "replay",
+      nonce: 7,
+      landedHash: "0xab",
+    });
     expect(await write()).toEqual({
       success: true,
       route: "bundle",
@@ -774,13 +818,35 @@ describe("bundleReservationEnd (value cap)", () => {
     targetBlocks: [11, 12],
   });
 
-  it("releases a skip and a failure", () => {
+  it("releases a skip, a failure before sending and a mined revert", () => {
     expect(
       bundleReservationEnd({ success: true, route: "skipped-in-flight" })
     ).toBe("release");
     expect(
       bundleReservationEnd({ success: false, route: "bundle", included: false })
     ).toBe("release");
+    expect(
+      bundleReservationEnd({ success: false, broadcastAttempted: false })
+    ).toBe("release");
+    expect(
+      bundleReservationEnd({
+        success: false,
+        route: "bundle",
+        included: true,
+        broadcastAttempted: true,
+      })
+    ).toBe("release");
+  });
+
+  it("holds a send no builder accepted: each builder still read the signed bytes", () => {
+    expect(
+      bundleReservationEnd({
+        success: false,
+        route: "bundle",
+        included: false,
+        broadcastAttempted: true,
+      })
+    ).toBe("hold");
   });
 
   it("holds a decided miss: its signed transactions can still be mined", () => {
@@ -847,7 +913,7 @@ describe("bundle step vs the run's time limit", () => {
     expect(h.send.mock.calls[0][0]).toMatchObject({ runDeadline: deadline });
   });
 
-  it("a lock wait that ran into the limit is the same refusal, nothing sent", async () => {
+  it("a lock wait that ran into the limit says the wallet was busy, nothing sent", async () => {
     vi.stubEnv(RUN_DEADLINE_AT_ENV, String(Date.now() + NEED_MS + 1000));
     h.sessionError = new NonceLockWaitEndedError("still in use");
     const result = await write();
@@ -856,7 +922,45 @@ describe("bundle step vs the run's time limit", () => {
       errorClass: ExecutionErrorType.USER,
       broadcastAttempted: false,
     });
+    expect(!result.success && result.error).toContain(
+      "The wallet was busy with another send on this network"
+    );
     expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("skips the landed call's trace when too little time is left to write the run", async () => {
+    vi.stubEnv(RUN_DEADLINE_AT_ENV, String(Date.now() + NEED_MS + 1000));
+    h.send.mockImplementation(async () => {
+      // The bundle took most of the run: only the margin and a second are left.
+      vi.stubEnv(
+        RUN_DEADLINE_AT_ENV,
+        String(Date.now() + BUNDLE_RUN_MARGIN_MS + 1000)
+      );
+      return landed(`0x${"ab".repeat(32)}`);
+    });
+    const traceExecuted = vi.fn(async () => ({}) as never);
+    const result = await write({ traceExecuted });
+    expect(traceExecuted).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: true, included: true });
+    expect((result as { executedCall?: unknown }).executedCall).toBeUndefined();
+  });
+
+  it("stops waiting for a slow trace at the time left less the margin, still a success", async () => {
+    vi.stubEnv(RUN_DEADLINE_AT_ENV, String(Date.now() + NEED_MS + 1000));
+    h.send.mockImplementation(async () => {
+      vi.stubEnv(
+        RUN_DEADLINE_AT_ENV,
+        String(Date.now() + BUNDLE_RUN_MARGIN_MS + 2500)
+      );
+      return landed(`0x${"ab".repeat(32)}`);
+    });
+    const traceExecuted = vi.fn(() => new Promise<undefined>(() => undefined));
+    const started = Date.now();
+    const result = await write({ traceExecuted });
+    expect(traceExecuted).toHaveBeenCalledTimes(1);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(result).toMatchObject({ success: true, included: true });
+    expect((result as { executedCall?: unknown }).executedCall).toBeUndefined();
   });
 
   it("waits without a limit when the run's deadline is unknown", async () => {

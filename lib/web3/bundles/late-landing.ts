@@ -313,17 +313,27 @@ async function appendLandings(
   const [updated] = await db
     .update(workflowExecutions)
     .set(set)
-    .where(
-      and(
-        from,
-        ...landings.map(
-          (landing) =>
-            sql`not (coalesce(${workflowExecutions.transactionHashes}, '[]'::jsonb) @> ${JSON.stringify([{ hash: landing.mined.hash }])}::jsonb)`
-        )
-      )
-    )
+    .where(and(from, ...notListedYet([], landings)))
     .returning({ id: workflowExecutions.id });
   return updated !== undefined;
+}
+
+/**
+ * One guard per landing the run did not list when it was read: still not
+ * listed. A concurrent settle that wrote it first makes the update miss, so
+ * no hash or fee is added twice; the next sweep settles from the new list.
+ */
+function notListedYet(
+  existing: readonly TransactionHashEntry[],
+  landings: readonly Landing[]
+): SQL[] {
+  const listed = new Set(existing.map((entry) => entry.hash));
+  return landings
+    .filter((landing) => !listed.has(landing.mined.hash))
+    .map(
+      (landing) =>
+        sql`not (coalesce(${workflowExecutions.transactionHashes}, '[]'::jsonb) @> ${JSON.stringify([{ hash: landing.mined.hash }])}::jsonb)`
+    );
 }
 
 function logStaysNotLanded(executionId: string, reason: string): void {
@@ -350,7 +360,7 @@ async function resettleToError(
       errorCategory,
       ...landedColumns(existing, landings),
     })
-    .where(fromNotLanded(executionId))
+    .where(and(fromNotLanded(executionId), ...notListedYet(existing, landings)))
     .returning({ workflowId: workflowExecutions.workflowId });
   if (!updated) {
     return;
@@ -384,7 +394,7 @@ async function resettleToSuccess(
       error: null,
       ...landedColumns(existing, landings),
     })
-    .where(fromNotLanded(executionId))
+    .where(and(fromNotLanded(executionId), ...notListedYet(existing, landings)))
     .returning({ workflowId: workflowExecutions.workflowId });
   if (!updated) {
     return;

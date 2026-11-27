@@ -5004,6 +5004,31 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(await sentEmails(org, "recovery")).toHaveLength(0);
     });
 
+    it("one bundle not landing after the close, inside the hold, reopens it and withdraws the recovery", async () => {
+      const org = await countingOrg("notlandingone");
+      const wf = await makeWorkflow(org, "Bundles landing now and then");
+      await notLanded(org, wf, 3, -20);
+      await runCycle();
+      const first = await openIncident(wf);
+      expect(first?.openedBy).toBe("not_landing");
+
+      await addRun(org, wf, "success", { at: at(-8) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+
+      // One miss, under the threshold: only the hold reopens the incident.
+      await notLanded(org, wf, 1, -5);
+      await runCycle();
+      const again = await openIncident(wf);
+      expect(again?.id).toBe(first?.id);
+      const recoveries = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "recovery"
+      );
+      expect(recoveries.every((d) => d.state === "skipped")).toBe(true);
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
+      expect(await sentEmails(org, "recovery")).toHaveLength(0);
+    });
+
     it("bundles not landing: no extra read and no alert where bundles are off", async () => {
       const org = await countingOrg("notlandingoff");
       const wf = await makeWorkflow(org, "Bundles off");

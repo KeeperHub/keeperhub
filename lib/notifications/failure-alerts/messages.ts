@@ -625,7 +625,7 @@ const FUNDING_NEXT_STEP =
 const FAILING_NEXT_STEP =
   "It keeps running and failing until someone fixes it, pauses its alerts or disables it.";
 const NOT_LANDING_DETAIL =
-  "Each of these runs sent a bundle to block builders, and none was seen in its target blocks (or it could not be checked; these may still land). No gas is paid unless a bundle lands, but these runs count towards usage.";
+  "Each of these runs sent a bundle to block builders, and none was seen in its target blocks (or it could not be checked; these may still land). No gas is paid for a bundle that does not land, but these runs count towards usage.";
 const NOT_LANDING_NEXT_STEP = `Each Write Contract step says which of these applies to its bundle. ${NOT_INCLUDED_REASON_TEXT["not-picked"]} With Max Fee set in Advanced, a tip is paid only up to what Max Fee leaves above the base fee, so raise it too. ${NOT_INCLUDED_REASON_TEXT["no-longer-needed"]} That is normal when racing others. ${NOT_INCLUDED_REASON_TEXT["not-checked"]}`;
 function lastReminderUntil(refused: boolean, notLanding: boolean): string {
   if (refused) {

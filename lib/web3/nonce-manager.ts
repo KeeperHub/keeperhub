@@ -33,6 +33,7 @@ import { db } from "@/lib/db";
 import {
   type BundleMiss,
   type BundleRun,
+  orgValueReservations,
   type PendingTransaction,
   pendingTransactions,
   walletLocks,
@@ -228,6 +229,27 @@ async function bundleWindowState(
   return latest <= tx.lastTargetBlock + BUNDLE_WINDOW_MARGIN_BLOCKS
     ? "open"
     : "closed";
+}
+
+/**
+ * Store the key a bundle was recorded at on its value reservation, so the
+ * daily cap counts it by that row (value-ledger's linkedRowCounts). Run in the
+ * record's transaction, and by a replay for its own reservation.
+ */
+export async function linkBundleReservation(
+  reservationId: string,
+  key: { chainId: number; walletAddress: string; nonce: number },
+  executor: Pick<typeof db, "update"> = db
+): Promise<void> {
+  await executor
+    .update(orgValueReservations)
+    .set({
+      bundleChainId: key.chainId,
+      bundleWalletAddress: key.walletAddress,
+      bundleNonce: key.nonce,
+      updatedAt: new Date(),
+    })
+    .where(eq(orgValueReservations.id, reservationId));
 }
 
 export class NonceManager {
@@ -760,7 +782,7 @@ export class NonceManager {
     if (!first) {
       throw new Error("A bundle needs at least one signed transaction");
     }
-    const runs = await this.upsertPending(session, nonce, {
+    const row = {
       txHash: first,
       workflowId: bundle.workflowId,
       gasPrice: bundle.gasPrice,
@@ -776,7 +798,24 @@ export class NonceManager {
           }),
         },
       },
-    });
+    };
+    const { valueReservationId } = bundle;
+    // The reservation learns the row's key in the same transaction, so the
+    // cap never sees one without the other.
+    const runs = valueReservationId
+      ? await db.transaction(async (tx) => {
+          await linkBundleReservation(
+            valueReservationId,
+            {
+              chainId: session.chainId,
+              walletAddress: session.walletAddress,
+              nonce,
+            },
+            tx
+          );
+          return await this.upsertPending(session, nonce, row, tx);
+        })
+      : await this.upsertPending(session, nonce, row);
     const sameStep = runs.filter(
       (run) =>
         run.executionId === session.executionId &&
@@ -849,7 +888,8 @@ export class NonceManager {
       workflowId?: string;
       gasPrice?: string;
       bundle: { lastTargetBlock: number; run: BundleRun } | null;
-    }
+    },
+    executor: Pick<typeof db, "insert"> = db
   ): Promise<BundleRun[]> {
     const fields = {
       txHash: row.txHash,
@@ -859,7 +899,7 @@ export class NonceManager {
       executionId: session.executionId,
     };
     const cutoff = Date.now() - LATE_BUNDLE_CHECK_MS;
-    const upsert = db
+    const upsert = executor
       .insert(pendingTransactions)
       .values({
         walletAddress: session.walletAddress,

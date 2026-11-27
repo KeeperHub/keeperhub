@@ -1492,7 +1492,7 @@ describe("bundles not landing", () => {
       "most likely because someone else made it first",
       "could not be checked; these may still land",
       "It could not be checked yet, and it may still land within about a day.",
-      "No gas is paid unless a bundle lands",
+      "No gas is paid for a bundle that does not land",
     ]) {
       expect(message.text).toContain(cause);
     }

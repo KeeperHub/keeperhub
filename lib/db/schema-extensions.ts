@@ -553,7 +553,7 @@ export type BundleRun = {
   node?: { id: string; name: string; iterationIndex?: number };
   // Set when the step decided the miss and dropped the row, so a replay returns it.
   missed?: BundleMiss;
-  // The step's value reservation: a held miss counts while this row may still land.
+  // The step's value reservation, for audit; the reservation carries this row's key.
   valueReservationId?: string;
 };
 
@@ -857,7 +857,9 @@ export type NewOrganizationSpendCap = typeof organizationSpendCaps.$inferInsert;
  *
  * status: `reserved` (in-flight) -> `settled` (broadcast succeeded) | `released`
  * (denied or failed; excluded from the cap SUM) | `held` (a bundle not included
- * that can still land; counts while its bundle row says so). Wei stored as text for BigInt.
+ * that can still land). A reservation whose bundle was recorded carries that
+ * bundle's (chain, wallet, nonce), and the cap counts it by that row's status
+ * instead (see value-ledger). Wei stored as text for BigInt.
  */
 export const orgValueReservations = pgTable(
   "org_value_reservations",
@@ -878,8 +880,14 @@ export const orgValueReservations = pgTable(
     status: text("status").notNull().default("reserved"), // reserved | settled | released | held
     // Origin of the value-moving execution, for audit only.
     source: text("source"), // direct | workflow | protocol
-    // Correlation id (executionId when available), for audit only.
+    // Correlation id (executionId when available). A bundle reservation's
+    // landing is matched to its run by it.
     ref: text("ref"),
+    // Where the step's bundle was recorded (pending_transactions' key), set
+    // with the record; null for every other reservation.
+    bundleChainId: integer("bundle_chain_id"),
+    bundleWalletAddress: text("bundle_wallet_address"),
+    bundleNonce: integer("bundle_nonce"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

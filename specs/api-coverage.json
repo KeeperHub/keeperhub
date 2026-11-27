@@ -33,7 +33,7 @@
       "path": "/api/organizations/{organizationId}/failure-alerts/pause",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/pause/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 88
+      "line": 90
     },
     {
       "method": "DELETE",
@@ -111,7 +111,7 @@
       "route_file": "app/api/analytics/stream/route.ts",
       "streaming": true,
       "source": "docs/api/analytics.md",
-      "line": 364
+      "line": 366
     },
     {
       "method": "GET",
@@ -153,7 +153,7 @@
       "path": "/api/execute/{executionId}/status",
       "route_file": "app/api/execute/[executionId]/status/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 1192
+      "line": 1194
     },
     {
       "method": "GET",
@@ -195,21 +195,21 @@
       "path": "/api/organizations/{organizationId}/failure-alerts",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 57
+      "line": 59
     },
     {
       "method": "GET",
       "path": "/api/organizations/{organizationId}/failure-alerts/history",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/history/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 126
+      "line": 128
     },
     {
       "method": "GET",
       "path": "/api/organizations/{organizationId}/failure-alerts/preview",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/preview/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 116
+      "line": 118
     },
     {
       "method": "GET",
@@ -342,7 +342,7 @@
       "path": "/api/workflows/{workflowId}/failure-alerts",
       "route_file": "app/api/workflows/[workflowId]/failure-alerts/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 21
+      "line": 23
     },
     {
       "method": "GET",
@@ -405,28 +405,28 @@
       "path": "/api/execute/check-and-execute",
       "route_file": "app/api/execute/check-and-execute/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 694
+      "line": 696
     },
     {
       "method": "POST",
       "path": "/api/execute/contract-call",
       "route_file": "app/api/execute/contract-call/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 487
+      "line": 489
     },
     {
       "method": "POST",
       "path": "/api/execute/gas-top-up",
       "route_file": "app/api/execute/gas-top-up/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 785
+      "line": 787
     },
     {
       "method": "POST",
       "path": "/api/execute/transfer",
       "route_file": "app/api/execute/transfer/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 419
+      "line": 421
     },
     {
       "method": "POST",
@@ -468,7 +468,7 @@
       "path": "/api/organizations/{organizationId}/failure-alerts/test",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/test/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 96
+      "line": 98
     },
     {
       "method": "POST",
@@ -573,7 +573,7 @@
       "path": "/api/workflows/{workflowId}/simulate",
       "route_file": "app/api/workflows/[workflowId]/simulate/route.ts",
       "source": "docs/api/direct-execution.md",
-      "line": 1388
+      "line": 1390
     },
     {
       "method": "POST",
@@ -594,14 +594,14 @@
       "path": "/api/organizations/{organizationId}/failure-alerts",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 65
+      "line": 67
     },
     {
       "method": "PUT",
       "path": "/api/organizations/{organizationId}/failure-alerts/pause",
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/pause/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 87
+      "line": 89
     },
     {
       "method": "PUT",
@@ -615,7 +615,7 @@
       "path": "/api/workflows/{workflowId}/failure-alerts",
       "route_file": "app/api/workflows/[workflowId]/failure-alerts/route.ts",
       "source": "docs/api/failure-alerts.md",
-      "line": 33
+      "line": 35
     },
     {
       "method": "PUT",

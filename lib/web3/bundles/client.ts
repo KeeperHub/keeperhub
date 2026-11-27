@@ -153,8 +153,10 @@ function readBuilderAnswer(status: number, text: string | undefined): Outcome {
       error: rpcErrorText(parsed.error, status),
     };
   }
+  // A 4xx with no JSON-RPC error may come from a CDN, WAF or moved host that
+  // read the whole POST, signed bytes included: it may have sent.
   if (status >= 400) {
-    return { delivery: "refused", error: `HTTP ${status}` };
+    return { delivery: "unknown", error: `HTTP ${status}` };
   }
   if (status < 200 || status >= 300 || parsed === undefined) {
     return { delivery: "unknown", error: "unreadable answer" };

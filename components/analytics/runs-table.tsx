@@ -252,7 +252,7 @@ function formatTimeAgo(dateString: string): string {
 const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
   skipped:
     "The trigger fired but the run did not start (the monthly execution limit was reached, the workflow uses an action your plan does not include, or a pay-as-you-go charge could not be collected), a Block trigger set to skip while running found the previous run still going, or a bundle step found an earlier run's bundle still in flight and sent nothing (the run's other steps still ran, and may have sent transactions). Not a failure, and it does not count towards your success rate. It counts towards your usage only when a bundle step found an earlier run's bundle in flight.",
-  not_landed: `The run finished, but a bundle in it was not seen in any of its target blocks (or could not be checked), for example because no block builder picked it up or the call would have failed by then. ${NOT_LANDED_LATER} No gas is paid unless a bundle lands. Not a failure and not a success, but it still counts towards your usage.`,
+  not_landed: `The run finished, but a bundle in it was not seen in any of its target blocks (or could not be checked), for example because no block builder picked it up or the call would have failed by then. ${NOT_LANDED_LATER} No gas is paid for a bundle that does not land. Not a failure and not a success, but it still counts towards your usage.`,
   error:
     "The run started and failed on something in the workflow itself: bad input, a missing or invalid credential, or a 4xx from an endpoint you configured. Fix the workflow and run it again.",
   external_error:

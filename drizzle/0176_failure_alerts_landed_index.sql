@@ -4,6 +4,8 @@
 -- that is a heap filter, so a workflow whose bundles keep missing re-reads its
 -- whole not_landed tail on every run end. Same key and predicate as 0169, plus
 -- the status <> 'not_landed' the query repeats verbatim.
+-- Write cost: one more B-tree entry per counted run insert and per non-HOT
+-- finalize on workflow_executions, as 0169's near-copy already costs.
 --
 -- DB-PREP: workflow_executions is the largest table. On staging and prod an
 -- operator applies `CREATE INDEX CONCURRENTLY IF NOT EXISTS ...` (same

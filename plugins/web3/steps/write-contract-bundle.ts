@@ -37,6 +37,8 @@ import {
   BundleSigningError,
   type NotIncludedReason,
   runTimeRefusal,
+  STEP_HOLD,
+  walletBusyRefusal,
   sendBundleInSession,
 } from "@/lib/web3/bundles/send-bundle";
 import {
@@ -65,7 +67,10 @@ import {
 } from "@/lib/web3/send-mode";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import type { TraceExecutedCallOptions } from "@/lib/web3/trace-executed-call";
-import { NonceLockWaitEndedError } from "@/lib/web3/nonce-manager";
+import {
+  linkBundleReservation,
+  NonceLockWaitEndedError,
+} from "@/lib/web3/nonce-manager";
 import {
   type TransactionContext,
   withNonceSession,
@@ -270,6 +275,42 @@ async function linkOf(
   }
 }
 
+// Least time worth starting the landed call's trace with; with less it is skipped.
+const MIN_TRACE_MS = 2000;
+
+/**
+ * The landed call's trace (optional output), bounded by the run's time left
+ * less the margin to write the run, so a slow trace never gets the run stopped.
+ */
+async function traceWithinRun(
+  write: BundleWrite,
+  hash: string
+): Promise<ExecutedCall | undefined> {
+  const trace = (): Promise<ExecutedCall | undefined> =>
+    write.traceExecuted(hash, {
+      target: write.contractAddress,
+      abi: write.parsedAbi,
+      functionName: write.abiFunction,
+    });
+  const deadline = runDeadlineAt();
+  if (deadline === undefined) {
+    return await trace();
+  }
+  const leftMs = deadline - BUNDLE_RUN_MARGIN_MS - Date.now();
+  if (leftMs < MIN_TRACE_MS) {
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeUp = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), leftMs);
+  });
+  try {
+    return await Promise.race([trace(), timeUp]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function includedResult(
   write: BundleWrite,
   outcome: {
@@ -312,11 +353,7 @@ async function includedResult(
   }
   const gasUnits = mined.gasUnits ?? BigInt(0);
   const fee = mined.feeWei ?? BigInt(0);
-  const executedCall = await write.traceExecuted(mined.hash, {
-    target: write.contractAddress,
-    abi: write.parsedAbi,
-    functionName: write.abiFunction,
-  });
+  const executedCall = await traceWithinRun(write, mined.hash);
   return {
     success: true,
     ...sent,
@@ -482,16 +519,46 @@ function skippedResult(untilBlock: number): WriteContractResult {
 }
 
 /**
+ * This attempt's reservation takes the replayed row's key, so the cap counts
+ * it with the crashed attempt's at that nonce, once (value-ledger).
+ */
+async function linkReplayReservation(
+  write: BundleWrite,
+  nonce: number
+): Promise<void> {
+  const reservationId = write.route.valueReservationId;
+  if (!reservationId) {
+    return;
+  }
+  try {
+    await linkBundleReservation(reservationId, {
+      chainId: write.chainId,
+      walletAddress: write.walletAddress.toLowerCase(),
+      nonce,
+    });
+  } catch (error) {
+    // Unlinked, a held or settled reservation counts all day: the safe side.
+    logSystemError(
+      ErrorCategory.DATABASE,
+      "[Bundle] Linking a replay's value reservation failed",
+      error,
+      { chain_id: String(write.chainId) }
+    );
+  }
+}
+
+/**
  * A replay of a step that already sent its bundle signs nothing: the landed
  * result when it was mined, the miss the step decided, else not-checked (a
- * later check settles the run). Landed and not-checked keep this attempt's
- * value charge, as the crashed one's lapses; a decided miss releases it.
+ * later check settles the run). Its reservation joins the crashed attempt's
+ * at the same nonce, which counts it once whatever the result.
  */
 async function replayResult(
   write: BundleWrite,
   replay: Extract<InFlight, { kind: "replay" }>,
   contractInterface: ethers.Interface
 ): Promise<WriteContractResult> {
+  await linkReplayReservation(write, replay.nonce);
   const { landedHash, missed } = replay;
   if (missed === "no-builder-accepted") {
     // A replay keeps no builders output: say so instead of pointing to it.
@@ -570,7 +637,7 @@ function checkInFlight(
 
 type SessionEnd =
   | { done: WriteContractResult }
-  | { replayOf: string }
+  | { replayOf: Extract<InFlight, { kind: "replay" }> }
   | { outcome: BundleSendOutcome };
 
 /** Refused for the run's time left: nothing was signed or sent. */
@@ -627,12 +694,13 @@ export async function writeAsBundle(
 
   // A run stopped inside the hold leaves the wallet held and nothing written.
   const runDeadline = runDeadlineAt();
-  const tooLate = runTimeRefusal(runDeadline, LONGEST_BUNDLE_HOLD_MS);
+  const tooLate = runTimeRefusal(runDeadline, STEP_HOLD);
   if (tooLate) {
     return outOfRunTime(tooLate);
   }
 
   let ended: SessionEnd;
+  const waitStart = Date.now();
   try {
     ended = await sendInSession(write, contractInterface, data, runDeadline);
   } catch (error) {
@@ -640,18 +708,16 @@ export async function writeAsBundle(
       throw error;
     }
     return outOfRunTime(
-      runTimeRefusal(runDeadline, LONGEST_BUNDLE_HOLD_MS) ?? error.message
+      runDeadline === undefined
+        ? error.message
+        : walletBusyRefusal(runDeadline, Date.now() - waitStart)
     );
   }
   if ("done" in ended) {
     return ended.done;
   }
   if ("replayOf" in ended) {
-    return await replayResult(
-      write,
-      { kind: "replay", landedHash: ended.replayOf },
-      contractInterface
-    );
+    return await replayResult(write, ended.replayOf, contractInterface);
   }
   return await resultOf(write, ended.outcome, contractInterface);
 }
@@ -672,7 +738,7 @@ function sendInSession(
       const inFlight = await checkInFlight(write, session.currentNonce);
       // A landed replay's receipt and trace are read after the lock.
       if (inFlight.kind === "replay" && inFlight.landedHash) {
-        return { replayOf: inFlight.landedHash };
+        return { replayOf: inFlight };
       }
       const late = await inFlightResult(inFlight, write, contractInterface);
       if (late) {

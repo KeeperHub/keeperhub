@@ -30,7 +30,7 @@ export type InFlight =
   | { kind: "none" }
   | { kind: "other"; untilBlock: number }
   // landedHash: mined with it; missed: the step decided the miss; else it may still land.
-  | { kind: "replay"; landedHash?: string; missed?: BundleMiss };
+  | { kind: "replay"; nonce: number; landedHash?: string; missed?: BundleMiss };
 
 function isStep(run: BundleRun | undefined, step: BundleStep): boolean {
   return (
@@ -98,7 +98,7 @@ async function replayOf(options: {
         (run) => run.hashes.includes(row.txHash) && isStep(run, options.step)
       );
       if (mine) {
-        return { kind: "replay", landedHash: row.txHash };
+        return { kind: "replay", nonce: row.nonce, landedHash: row.txHash };
       }
       continue;
     }
@@ -111,17 +111,17 @@ async function replayOf(options: {
       continue;
     }
     if (row.status === "pending") {
-      return { kind: "replay" };
+      return { kind: "replay", nonce: row.nonce };
     }
     if (current?.missed) {
-      return { kind: "replay", missed: current.missed };
+      return { kind: "replay", nonce: row.nonce, missed: current.missed };
     }
     // Dropped: decided under the lock only, where the session nonce is known.
     if (
       options.sessionNonce !== undefined &&
       row.nonce < options.sessionNonce
     ) {
-      return { kind: "replay" };
+      return { kind: "replay", nonce: row.nonce };
     }
   }
   return;

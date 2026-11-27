@@ -179,7 +179,8 @@ describe("bundle window", () => {
     );
     const blocks = most.ok ? most.settings.blocks : 0;
     expect(blocks).toBe(MAX_BUNDLE_BLOCKS);
-    // Fails if the settings cap is raised past what the window covers.
+    // The window is derived from MAX_BUNDLE_BLOCKS, so this holds for any cap:
+    // the derivation protects the window; this pins the arithmetic.
     expect((blocks + BUNDLE_WINDOW_MARGIN_BLOCKS + 1) * SLOT_MS).toBeLessThan(
       MAX_BUNDLE_WINDOW_MS
     );

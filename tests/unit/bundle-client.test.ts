@@ -293,7 +293,26 @@ describe("builder answers (HTTP shapes)", () => {
     [
       "401 without JSON",
       json(401, "auth header cannot be empty"),
-      { delivery: "refused", error: "HTTP 401" },
+      { delivery: "unknown", error: "HTTP 401" },
+    ],
+    // A CDN, WAF or moved host in front read the signed bytes: may have sent.
+    [
+      "an HTML 403 from a WAF",
+      new Response("<html><body>Access denied</body></html>", {
+        status: 403,
+        headers: { "content-type": "text/html" },
+      }),
+      { delivery: "unknown", error: "HTTP 403" },
+    ],
+    [
+      "an HTML 404 from a moved host",
+      new Response("<html><body>Not Found</body></html>", { status: 404 }),
+      { delivery: "unknown", error: "HTTP 404" },
+    ],
+    [
+      "a bare 429 from a CDN",
+      new Response("Too Many Requests", { status: 429 }),
+      { delivery: "unknown", error: "HTTP 429" },
     ],
     [
       "404 with an empty error message",
@@ -314,14 +333,14 @@ describe("builder answers (HTTP shapes)", () => {
     expect(await answerTo(response)).toEqual(expected);
   });
 
-  it("treats a body over 16 KB as unknown on 2xx and refused on 4xx", async () => {
+  it("treats a body over 16 KB as unknown on 2xx and on 4xx", async () => {
     const pad = "x".repeat(20_000);
     expect(
       await answerTo(json(200, { jsonrpc: "2.0", id: 1, result: { pad } }))
     ).toEqual({ delivery: "unknown", error: "unreadable answer" });
     expect(
       await answerTo(json(400, { error: { code: -32_602, message: pad } }))
-    ).toEqual({ delivery: "refused", error: "HTTP 400" });
+    ).toEqual({ delivery: "unknown", error: "HTTP 400" });
   });
 
   it("treats a body cut off mid-stream as unknown", async () => {

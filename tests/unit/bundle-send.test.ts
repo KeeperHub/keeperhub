@@ -129,6 +129,7 @@ import { RpcProviderManager } from "@/lib/rpc/providers";
 import {
   BUNDLE_PRE_RECORD_MS,
   BUNDLE_RUN_MARGIN_MS,
+  LONGEST_BUNDLE_HOLD_MS,
   MAX_BUNDLE_WINDOW_MS,
 } from "@/lib/web3/bundles/bundle-history";
 import type { BuilderAnswer } from "@/lib/web3/bundles/client";
@@ -136,7 +137,10 @@ import {
   BundleRecordError,
   BundleSigningError,
   runTimeRefusal,
+  STEP_HOLD,
   sendBundleInSession,
+  WINDOW_HOLD,
+  walletBusyRefusal,
 } from "@/lib/web3/bundles/send-bundle";
 import {
   NextBlockSimulationUnsupportedError,
@@ -1313,17 +1317,39 @@ describe("sendBundleInSession", () => {
 });
 
 describe("runTimeRefusal", () => {
+  const HOLD = { ms: 1000, doing: "waiting for the bundle's blocks" };
+
   it("passes with no known deadline or with room for the hold and the margin", () => {
-    expect(runTimeRefusal(undefined, 1000, 0)).toBeUndefined();
+    expect(runTimeRefusal(undefined, HOLD, 0)).toBeUndefined();
     expect(
-      runTimeRefusal(1000 + BUNDLE_RUN_MARGIN_MS, 1000, 0)
+      runTimeRefusal(1000 + BUNDLE_RUN_MARGIN_MS, HOLD, 0)
     ).toBeUndefined();
   });
 
-  it("refuses with the seconds left and needed", () => {
-    expect(runTimeRefusal(20_500, 1000, 0)).toBe(
-      `This run has 20 s left before its time limit, and a bundle step may need up to ${Math.ceil((1000 + BUNDLE_RUN_MARGIN_MS) / 1000)} s, so nothing was sent. Put fewer bundle steps (or loop iterations that send bundles) in one run, or set Send as to Normal transaction.`
+  it("refuses with the seconds left and needed from here, and says what that time is for", () => {
+    expect(runTimeRefusal(20_500, HOLD, 0)).toBe(
+      `This run has 20 s left before its time limit, and the bundle step needs up to ${Math.ceil((1000 + BUNDLE_RUN_MARGIN_MS) / 1000)} s from here (waiting for the bundle's blocks, then finishing the run), so nothing was sent. Put fewer bundle steps (or loop iterations that send bundles) in one run, move the bundle step earlier in the run, or set Send as to Normal transaction.`
     );
-    expect(runTimeRefusal(0, 1000, 5000)).toContain("has 0 s left");
+    expect(runTimeRefusal(0, HOLD, 5000)).toContain("has 0 s left");
+  });
+
+  it("the two checks name different needs and say why: the whole step before the lock, the blocks after the record", () => {
+    expect(runTimeRefusal(0, STEP_HOLD, 0)).toContain(
+      `needs up to ${Math.ceil((LONGEST_BUNDLE_HOLD_MS + BUNDLE_RUN_MARGIN_MS) / 1000)} s from here (preparing the bundle, then waiting for its blocks,`
+    );
+    expect(runTimeRefusal(0, WINDOW_HOLD, 0)).toContain(
+      `needs up to ${Math.ceil((MAX_BUNDLE_WINDOW_MS + BUNDLE_RUN_MARGIN_MS) / 1000)} s from here (waiting for the bundle's blocks,`
+    );
+  });
+});
+
+describe("walletBusyRefusal", () => {
+  it("says the wallet was busy with another send, how long it waited, and what to do", () => {
+    const text = walletBusyRefusal(100_000, 61_400, 0);
+    expect(text).toContain(
+      "The wallet was busy with another send on this network, and after waiting 61 s for it this run has 100 s left"
+    );
+    expect(text).toContain("Run it again once the wallet is free");
+    expect(text).not.toContain("fewer bundle steps");
   });
 });

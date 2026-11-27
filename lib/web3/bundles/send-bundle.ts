@@ -30,6 +30,7 @@ import {
   BUNDLE_RUN_MARGIN_MS,
   BUNDLE_WINDOW_MARGIN_BLOCKS,
   findMinedHash,
+  LONGEST_BUNDLE_HOLD_MS,
   MAX_BUNDLE_WINDOW_MS,
   type MinedHash,
   type ReceiptView,
@@ -116,7 +117,7 @@ type BundleSendInput = {
   searcher: ethers.Signer;
   workflowId: string;
   node: NonNullable<BundleRun["node"]>;
-  // The step's value reservation, recorded on the row (see heldBundleMayMove).
+  // The step's value reservation: the record stores the row's key on it.
   valueReservationId?: string;
   // When the run is stopped (epoch ms), if known: the hold must end before it.
   runDeadline?: number;
@@ -155,25 +156,53 @@ const TRIGGER_NOT_REACHED: Extract<BundleSendOutcome, { kind: "refused" }> = {
 
 const POLL_MS = 1000;
 
+/** A stretch a bundle step holds the wallet for, and what it does in it (for the refusal). */
+export type BundleHold = { ms: number; doing: string };
+
+/** From before the lock: the whole step. */
+export const STEP_HOLD: BundleHold = {
+  ms: LONGEST_BUNDLE_HOLD_MS,
+  doing: "preparing the bundle, then waiting for its blocks",
+};
+
+/** From the record: only the blocks are left to wait for. */
+export const WINDOW_HOLD: BundleHold = {
+  ms: MAX_BUNDLE_WINDOW_MS,
+  doing: "waiting for the bundle's blocks",
+};
+
+const RUN_TIME_ADVICE =
+  "Put fewer bundle steps (or loop iterations that send bundles) in one run, move the bundle step earlier in the run, or set Send as to Normal transaction.";
+
 /**
- * The refusal when a hold of `holdMs` from now (plus the run's margin) would
- * pass the run's deadline: the run would be stopped with the wallet held and
- * nothing written. Undefined when there is room or no deadline is known.
+ * The refusal when `hold` from now (plus the run's margin) would pass the
+ * run's deadline: the run would be stopped with the wallet held and nothing
+ * written. Undefined when there is room or no deadline is known.
  */
 export function runTimeRefusal(
   runDeadline: number | undefined,
-  holdMs: number,
+  hold: BundleHold,
   now: number = Date.now()
 ): string | undefined {
   if (runDeadline === undefined) {
     return;
   }
-  const needMs = holdMs + BUNDLE_RUN_MARGIN_MS;
+  const needMs = hold.ms + BUNDLE_RUN_MARGIN_MS;
   const leftMs = runDeadline - now;
   if (leftMs >= needMs) {
     return;
   }
-  return `This run has ${Math.max(0, Math.floor(leftMs / 1000))} s left before its time limit, and a bundle step may need up to ${Math.ceil(needMs / 1000)} s, so nothing was sent. Put fewer bundle steps (or loop iterations that send bundles) in one run, or set Send as to Normal transaction.`;
+  return `This run has ${Math.max(0, Math.floor(leftMs / 1000))} s left before its time limit, and the bundle step needs up to ${Math.ceil(needMs / 1000)} s from here (${hold.doing}, then finishing the run), so nothing was sent. ${RUN_TIME_ADVICE}`;
+}
+
+/** The refusal when the wait for a busy wallet ran into the run's time limit. */
+export function walletBusyRefusal(
+  runDeadline: number,
+  waitedMs: number,
+  now: number = Date.now()
+): string {
+  const needMs = STEP_HOLD.ms + BUNDLE_RUN_MARGIN_MS;
+  return `The wallet was busy with another send on this network, and after waiting ${Math.round(waitedMs / 1000)} s for it this run has ${Math.max(0, Math.floor((runDeadline - now) / 1000))} s left before its time limit, less than the ${Math.ceil(needMs / 1000)} s the bundle step needs, so nothing was sent. Run it again once the wallet is free, keep other sends off this wallet while its bundle workflows run, or set Send as to Normal transaction.`;
 }
 
 type Simulated = { block: number; gasEstimate: bigint };
@@ -620,7 +649,7 @@ async function sendInBudget(
     return TOO_SLOW;
   }
   // And within the run: once recorded, the row holds the nonce for its window.
-  const outOfTime = runTimeRefusal(input.runDeadline, MAX_BUNDLE_WINDOW_MS);
+  const outOfTime = runTimeRefusal(input.runDeadline, WINDOW_HOLD);
   if (outOfTime) {
     return {
       kind: "refused",

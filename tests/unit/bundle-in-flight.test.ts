@@ -126,7 +126,7 @@ describe("bundleInFlight", () => {
   it("calls a pending row of the same step a replay, at any age, so it never signs twice", async () => {
     h.replayRows = [ownRow("pending")];
     expect(await inFlight()).toEqual({
-      inFlight: { kind: "replay" },
+      inFlight: { kind: "replay", nonce: 7 },
       blockReads: 0,
     });
   });
@@ -135,6 +135,7 @@ describe("bundleInFlight", () => {
     h.replayRows = [ownRow("confirmed", { txHash: "0xab" })];
     expect((await inFlight()).inFlight).toEqual({
       kind: "replay",
+      nonce: 7,
       landedHash: "0xab",
     });
   });
@@ -152,6 +153,7 @@ describe("bundleInFlight", () => {
     ];
     expect((await inFlight()).inFlight).toEqual({
       kind: "replay",
+      nonce: 7,
       landedHash: "0xaa",
     });
   });
@@ -185,6 +187,7 @@ describe("bundleInFlight", () => {
     h.replayRows = [ownRow("dropped")];
     expect((await inFlight(STEP, 100, 8)).inFlight).toEqual({
       kind: "replay",
+      nonce: 7,
     });
   });
 
@@ -204,6 +207,7 @@ describe("bundleInFlight", () => {
     for (const sessionNonce of [undefined, 7, 8]) {
       expect((await inFlight(STEP, 100, sessionNonce)).inFlight).toEqual({
         kind: "replay",
+        nonce: 7,
         missed: "not-picked",
       });
     }
@@ -224,7 +228,7 @@ describe("bundleInFlight", () => {
   it("names this step's own bundle before another run's: a landing is never lost to a skip", async () => {
     h.replayRows = [ownRow("pending")];
     h.rows = [row("run-1", 103)];
-    expect((await inFlight()).inFlight).toEqual({ kind: "replay" });
+    expect((await inFlight()).inFlight).toEqual({ kind: "replay", nonce: 7 });
   });
 
   it("counts an unreadable block as in flight", async () => {

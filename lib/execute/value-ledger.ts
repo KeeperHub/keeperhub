@@ -1,8 +1,9 @@
 import "server-only";
 
-import { and, eq, gte, ne, type SQL, sql } from "drizzle-orm";
+import { and, eq, gte, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { formatEther, formatUnits } from "viem";
 import { db } from "@/lib/db";
+import { chains } from "@/lib/db/schema";
 import {
   directExecutions,
   organizationSpendCaps,
@@ -28,28 +29,84 @@ import { logSecurityEvent } from "@/lib/logging";
 // the funds, so it keeps counting until the reconciler settles it.
 const STALE_INFLIGHT_MINUTES = 15;
 
+// A reservation with no bundle nonce: settled all day, reserved within the stale
+// window. A held one without a nonce is never written; it counts all day.
+const unlinkedRowCounts = sql`CASE
+  WHEN ${orgValueReservations.status} IN ('settled', 'held') THEN true
+  WHEN ${orgValueReservations.status} = 'reserved' THEN ${orgValueReservations.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes'
+  ELSE false END`;
+
 /**
- * A `held` reservation (a bundle step's decided miss) counts while the bundle
- * it was recorded on can still land or has landed: its row is pending or
- * dropped, or confirmed with one of its hashes. Once another transaction uses
- * the nonce (replaced, or confirmed with another hash) it stops counting.
- * No stale cutoff: a signed bundle stays valid until its nonce is used.
+ * A reservation whose bundle was recorded at (chain, wallet, nonce) counts,
+ * at any age, while that bundle may still move value: its row is pending or
+ * dropped, or confirmed with a hash of the reservation's run. Once another
+ * transaction uses the nonce it counts 0. Only one of them can be mined, so
+ * the reservations at one nonce count once, as the largest (bundleNonceTotals).
  */
-function heldBundleMayMove(reservationId: SQL): SQL {
-  return sql`EXISTS (
-    SELECT 1 FROM ${pendingTransactions}, jsonb_array_elements(${pendingTransactions.bundleRuns}) AS entry(run)
-    WHERE ${pendingTransactions.bundleRuns} @> jsonb_build_array(jsonb_build_object('valueReservationId', ${reservationId}))
-      AND entry.run->>'valueReservationId' = ${reservationId}
-      AND (${pendingTransactions.status} IN ('pending', 'dropped')
-        OR (${pendingTransactions.status} = 'confirmed' AND entry.run->'hashes' ? ${pendingTransactions.txHash})))`;
+const linkedRowCounts = sql`(${pendingTransactions.status} IS NULL
+  OR ${pendingTransactions.status} IN ('pending', 'dropped')
+  OR (${pendingTransactions.status} = 'confirmed' AND EXISTS (
+    SELECT 1 FROM jsonb_array_elements(${pendingTransactions.bundleRuns}) AS entry(run)
+    WHERE entry.run->'hashes' ? ${pendingTransactions.txHash}
+      AND entry.run->>'executionId' = ${orgValueReservations.ref})))`;
+
+/** One nonce's bundle value today: the largest reservation, and whether it may still land. */
+type BundleNonceTotal = {
+  chainId: number | null;
+  walletAddress: string | null;
+  valueWei: string;
+  rowStatus: string | null;
+  networkName: string | null;
+  symbol: string | null;
+};
+
+/** Today's bundle reservations that count, one total per (chain, wallet, nonce). */
+function bundleNonceTotals(
+  executor: Executor,
+  organizationId: string,
+  todayStart: Date
+): Promise<BundleNonceTotal[]> {
+  const reservations = orgValueReservations;
+  return executor
+    .select({
+      chainId: reservations.bundleChainId,
+      walletAddress: reservations.bundleWalletAddress,
+      valueWei: sql<string>`MAX(CAST(${reservations.valueWei} AS NUMERIC))::text`,
+      rowStatus: pendingTransactions.status,
+      networkName: chains.name,
+      symbol: chains.symbol,
+    })
+    .from(reservations)
+    .leftJoin(
+      pendingTransactions,
+      and(
+        eq(pendingTransactions.walletAddress, reservations.bundleWalletAddress),
+        eq(pendingTransactions.chainId, reservations.bundleChainId),
+        eq(pendingTransactions.nonce, reservations.bundleNonce)
+      )
+    )
+    .leftJoin(chains, eq(chains.chainId, reservations.bundleChainId))
+    .where(
+      and(
+        eq(reservations.organizationId, organizationId),
+        ne(reservations.status, "released"),
+        gte(reservations.createdAt, todayStart),
+        isNotNull(reservations.bundleNonce),
+        linkedRowCounts
+      )
+    )
+    .groupBy(
+      reservations.bundleChainId,
+      reservations.bundleWalletAddress,
+      reservations.bundleNonce,
+      pendingTransactions.status,
+      chains.name,
+      chains.symbol
+    );
 }
 
-// Settled counts all day, reserved within the stale window, held while its bundle may move.
-const ledgerRowCounts = sql`CASE
-  WHEN ${orgValueReservations.status} = 'settled' THEN true
-  WHEN ${orgValueReservations.status} = 'reserved' THEN ${orgValueReservations.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes'
-  WHEN ${orgValueReservations.status} = 'held' THEN ${heldBundleMayMove(sql`${orgValueReservations.id}`)}
-  ELSE false END`;
+const sumWei = (totals: readonly { valueWei: string }[]): bigint =>
+  totals.reduce((sum, total) => sum + BigInt(total.valueWei), BigInt(0));
 
 // biome-ignore lint/suspicious/noExplicitAny: accept either the app db or a tx
 type Executor = any;
@@ -61,7 +118,8 @@ type Executor = any;
  * ledger (`org_value_reservations`, set by workflow + protocol executions).
  *
  * Settled/completed rows count for the whole UTC day; in-flight (pending/running
- * or reserved) rows only within the stale window, so a stuck row ages out.
+ * or reserved) rows only within the stale window, so a stuck row ages out. A
+ * reservation whose bundle was recorded follows its nonce instead (linkedRowCounts).
  * Runs inside the caller's transaction so it is consistent with the FOR UPDATE.
  */
 export async function sumOrgValueTodayWei(
@@ -95,53 +153,77 @@ export async function sumOrgValueTodayWei(
         eq(orgValueReservations.organizationId, organizationId),
         ne(orgValueReservations.status, "released"),
         gte(orgValueReservations.createdAt, todayStart),
-        ledgerRowCounts
+        isNull(orgValueReservations.bundleNonce),
+        unlinkedRowCounts
       )
     );
+  const bundles = await bundleNonceTotals(executor, organizationId, todayStart);
 
   const direct = BigInt(directRows[0]?.totalWei ?? "0");
   const ledger = BigInt(ledgerRows[0]?.totalWei ?? "0");
-  return direct + ledger;
-}
-
-/** The part of today's total held by bundle steps' decided misses that may still land. */
-async function sumOrgHeldTodayWei(
-  executor: Executor,
-  organizationId: string
-): Promise<bigint> {
-  const todayStart = new Date();
-  todayStart.setUTCHours(0, 0, 0, 0);
-  const rows = await executor
-    .select({
-      totalWei: sql<string>`COALESCE(SUM(CAST(${orgValueReservations.valueWei} AS NUMERIC)), 0)::text`,
-    })
-    .from(orgValueReservations)
-    .where(
-      and(
-        eq(orgValueReservations.organizationId, organizationId),
-        eq(orgValueReservations.status, "held"),
-        gte(orgValueReservations.createdAt, todayStart),
-        heldBundleMayMove(sql`${orgValueReservations.id}`)
-      )
-    );
-  return BigInt(rows[0]?.totalWei ?? "0");
+  return direct + ledger + sumWei(bundles);
 }
 
 const DAILY_CAP_EXCEEDED = "Daily spending cap exceeded";
 
+// The wallets a refusal names at most; the rest are counted.
+const MAX_NAMED_HOLDS = 3;
+
+/** Bundle value that may still land, per wallet and network. */
+function heldByWallet(totals: readonly BundleNonceTotal[]): {
+  label: string;
+  valueWei: bigint;
+  symbol: string | null;
+}[] {
+  const held = new Map<
+    string,
+    { label: string; valueWei: bigint; symbol: string | null }
+  >();
+  for (const total of totals) {
+    if (total.rowStatus === "confirmed") {
+      continue;
+    }
+    const network = total.networkName ?? `chain ${total.chainId}`;
+    const key = `${total.chainId}:${total.walletAddress}`;
+    const entry = held.get(key) ?? {
+      label: `wallet ${total.walletAddress} on ${network}`,
+      valueWei: BigInt(0),
+      symbol: total.symbol,
+    };
+    entry.valueWei += BigInt(total.valueWei);
+    held.set(key, entry);
+  }
+  return [...held.values()];
+}
+
 /**
  * The wei cap's refusal. When bundles that were not included but may still
- * land hold part of the day's total, it says how much and when it is freed.
+ * land hold part of the day's total, it says how much, on which wallet and
+ * network, and how the hold ends.
  */
 export async function dailyValueCapRefusal(
   executor: Executor,
   organizationId: string
 ): Promise<string> {
-  const held = await sumOrgHeldTodayWei(executor, organizationId);
-  if (held <= BigInt(0)) {
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const holds = heldByWallet(
+    await bundleNonceTotals(executor, organizationId, todayStart)
+  );
+  if (holds.length === 0) {
     return DAILY_CAP_EXCEEDED;
   }
-  return `${DAILY_CAP_EXCEEDED}: ${formatEther(held)} in native value of today's total is held by Send as Bundle steps that were not included. Their signed transactions can still be mined, so that value counts until another transaction from the wallet uses their nonce.`;
+  const named = holds
+    .slice(0, MAX_NAMED_HOLDS)
+    .map(
+      (hold) =>
+        `${formatEther(hold.valueWei)} ${hold.symbol ?? "(native token)"} from ${hold.label}`
+    );
+  const more =
+    holds.length > MAX_NAMED_HOLDS
+      ? ` and ${holds.length - MAX_NAMED_HOLDS} more`
+      : "";
+  return `${DAILY_CAP_EXCEEDED}: part of today's total is held by Send as Bundle steps that were not included (${named.join("; ")}${more}). Their signed transactions can still be mined, though rarely, so that value counts until another transaction from that wallet on that network uses their nonce (for example a Normal transaction with no value) or the UTC day ends, whichever comes first.`;
 }
 
 /**
@@ -557,8 +639,8 @@ export async function settleReservation(reservationId: string): Promise<void> {
 }
 
 /**
- * Hold a reservation: a bundle step's decided miss whose signed transactions
- * can still be mined. It counts while its bundle row says so (heldBundleMayMove).
+ * Hold a reservation: a bundle step's miss whose signed transactions can
+ * still be mined. Its recorded nonce decides whether it counts (linkedRowCounts).
  */
 export async function holdReservation(reservationId: string): Promise<void> {
   if (!reservationId) {

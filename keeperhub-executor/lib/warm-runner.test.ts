@@ -178,7 +178,23 @@ describe("armRunDeadline", () => {
     vi.useFakeTimers();
     try {
       const onExpire = vi.fn();
-      armRunDeadline(300_000, onExpire);
+      armRunDeadline(300_000, onExpire, setTimeout, { NODE_ENV: "test" });
+      vi.advanceTimersByTime(299_999);
+      expect(onExpire).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onExpire).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tells the run's steps the deadline it enforces (KH_RUN_DEADLINE_AT)", () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const env: NodeJS.ProcessEnv = { NODE_ENV: "test" };
+      const onExpire = vi.fn();
+      armRunDeadline(300_000, onExpire, setTimeout, env);
+      expect(env.KH_RUN_DEADLINE_AT).toBe(String(1_300_000));
       vi.advanceTimersByTime(299_999);
       expect(onExpire).not.toHaveBeenCalled();
       vi.advanceTimersByTime(1);
@@ -190,7 +206,7 @@ describe("armRunDeadline", () => {
 
   it("does not keep the process alive on its own", () => {
     const unref = vi.fn();
-    armRunDeadline(1000, vi.fn(), () => ({ unref }));
+    armRunDeadline(1000, vi.fn(), () => ({ unref }), { NODE_ENV: "test" });
     expect(unref).toHaveBeenCalled();
   });
 });

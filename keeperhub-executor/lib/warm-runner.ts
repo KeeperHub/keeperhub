@@ -2,6 +2,7 @@ import type {
   ClaimOutcome,
   WaitForAssignmentOptions,
 } from "./warm-pool-client";
+import { RUN_DEADLINE_AT_ENV } from "../../lib/workflow/executor/runner-constants";
 import {
   assignmentToRunnerEnv,
   WARM_POOL_ENV,
@@ -156,7 +157,8 @@ export function isRunnableRow(
  * with the run. A warm pod started earlier, so its Job deadline also covers
  * the idle wait. Enforce the same per-run limit from the claim instead;
  * onExpire takes the same path as the SIGTERM the kubelet would send. The
- * timer does not keep the process alive on its own.
+ * timer does not keep the process alive on its own. The same deadline goes
+ * into `env` (RUN_DEADLINE_AT_ENV) for steps that must finish before it.
  */
 export function armRunDeadline(
   runDeadlineMs: number,
@@ -164,8 +166,10 @@ export function armRunDeadline(
   schedule: (
     callback: () => void,
     ms: number
-  ) => { unref?: () => void } = setTimeout
+  ) => { unref?: () => void } = setTimeout,
+  env: NodeJS.ProcessEnv = process.env
 ): void {
+  env[RUN_DEADLINE_AT_ENV] = String(Date.now() + runDeadlineMs);
   const timer = schedule(onExpire, runDeadlineMs);
   timer.unref?.();
 }

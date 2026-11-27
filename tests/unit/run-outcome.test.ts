@@ -169,7 +169,7 @@ describe("runOutcomeReason", () => {
 
   it("says a missed bundle pays no gas unless it lands", () => {
     expect(runOutcomeReason("not_landed")).toContain(
-      "No gas is paid unless a bundle lands"
+      "No gas is paid for a bundle that does not land"
     );
     // A not-checked bundle may have landed: the reason never claims it did not.
     expect(runOutcomeReason("not_landed")).toContain("or could not be checked");
