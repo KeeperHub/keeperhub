@@ -1,6 +1,7 @@
 import type { ethers } from "ethers";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
-import type { SendReport } from "@/lib/web3/submit-signed";
+import type { BuilderRpcUrls } from "@/lib/rpc/rpc-config";
+import type { BroadcastInfo, SendReport } from "@/lib/web3/submit-signed";
 import type {
   NextBlockSimulation,
   NextBlockSimulationOptions,
@@ -20,6 +21,8 @@ export type TransactionReceipt = {
   feeLamports?: bigint;
   // Set when the pre-send check and gas estimate ran against the next block.
   simulation?: NextBlockSimulation;
+  // When and through which RPC the transaction went out.
+  broadcast?: BroadcastInfo;
 };
 
 export type GasOverrides = {
@@ -123,4 +126,6 @@ export type TransactionOptions = {
   maxSolLamports?: bigint;
   /** Present = simulate and estimate gas as of the next block (EVM only). */
   simulation?: NextBlockSimulationOptions;
+  /** Block builders a next-block send also goes to (EVM only). */
+  builderRpcUrls?: BuilderRpcUrls;
 };

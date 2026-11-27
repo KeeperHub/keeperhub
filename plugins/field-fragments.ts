@@ -249,6 +249,14 @@ export function simulationOutput(): OutputField {
   };
 }
 
+export function broadcastOutput(): OutputField {
+  return {
+    description:
+      "When and how the transaction was sent: { broadcastAt (ISO time the RPC accepted it), via (primary or fallback RPC), builders? }. builders is present only with Next block on a network with block builder endpoints configured: [{ name, accepted, error? }] per builder that was also sent the transaction. Absent on a failed step, on gas-sponsored or Safe sends, and on Send as Bundle (see builders).",
+    field: "broadcast",
+  };
+}
+
 export function transactionLinkOutput(): OutputField {
   return {
     description: "Explorer link to view the transaction",
@@ -451,4 +459,5 @@ export const outputFragmentFactories: Record<string, () => OutputField> = {
   queryErrorOutput,
   fromWalletOutput,
   simulationOutput,
+  broadcastOutput,
 };

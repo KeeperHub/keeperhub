@@ -1401,6 +1401,8 @@ export const chains = pgTable(
       .notNull()
       .default([])
       .$type<{ name: string; url: string; supportsMinTimestamp: boolean }[]>(),
+    // Block builder endpoints for next-block sends, seeded from chain-config.
+    builderRpcUrls: jsonb("builder_rpc_urls").$type<Record<string, string>>(),
     isTestnet: boolean("is_testnet").default(false),
     isEnabled: boolean("is_enabled").default(true), // Can disable chains
     // Support maturity signal surfaced to agents via list_action_schemas:

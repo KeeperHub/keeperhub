@@ -19,6 +19,7 @@ import {
 } from "@/lib/web3/onchain-revert";
 import { pollReceipt, RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import {
+  type BroadcastInfo,
   type SendReport,
   submitSignedTransactionWithFailover,
 } from "@/lib/web3/submit-signed";
@@ -405,6 +406,7 @@ export class EvmChainAdapter implements ChainAdapter {
       // Direct `fn(...)` call kept as fallback for callers without an
       // rpcManager (legacy code paths; tracked by KEEP-548).
       let tx: ethers.TransactionResponse;
+      let broadcastInfo: BroadcastInfo | undefined;
       if (options.rpcManager) {
         const calldata = contract.interface.encodeFunctionData(
           request.functionKey,
@@ -425,9 +427,12 @@ export class EvmChainAdapter implements ChainAdapter {
           signer,
           txRequest,
           options.rpcManager,
-          options.sendReport
+          options.sendReport,
+          // Builders only for next-block sends, where the block matters.
+          simulation ? { builderRpcUrls: options.builderRpcUrls } : {}
         );
         tx = broadcast.response;
+        broadcastInfo = broadcast.broadcast;
       } else {
         tx = await fn(...request.args, {
           nonce,
@@ -448,7 +453,11 @@ export class EvmChainAdapter implements ChainAdapter {
         gasConfig,
         options
       );
-      return simulation ? { ...receipt, simulation } : receipt;
+      return {
+        ...receipt,
+        ...(simulation ? { simulation } : {}),
+        ...(broadcastInfo ? { broadcast: broadcastInfo } : {}),
+      };
     } catch (error) {
       throw simulation ? tagNextBlockSimulation(error, simulation) : error;
     }

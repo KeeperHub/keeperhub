@@ -141,6 +141,13 @@ function getBaseURL() {
 // e2e clients that cannot solve a challenge present the LOAD_TEST_BYPASS_TOKEN
 // instead (see the plugin wrapper below).
 const SIGNUP_CAPTCHA_ENDPOINT = "/sign-up/email";
+// Every endpoint that can create an account: email sign-up, anonymous
+// sessions, and wallet (SIWE) sign-in.
+const CAPTCHA_ENDPOINTS = [
+  SIGNUP_CAPTCHA_ENDPOINT,
+  "/sign-in/anonymous",
+  "/siwe/verify",
+];
 const captchaSecretKey = process.env.TURNSTILE_SECRET_KEY;
 const captchaForceEnabled = process.env.TURNSTILE_ENFORCE === "true";
 // start custom keeperhub code //
@@ -189,7 +196,7 @@ const captchaRequired =
   process.env.NEXT_PHASE !== "phase-production-build";
 if (captchaRequired && !captchaSecretKey) {
   throw new Error(
-    "TURNSTILE_SECRET_KEY is required in production (or when TURNSTILE_ENFORCE=true) - refusing to expose /sign-up/email without captcha verification"
+    "TURNSTILE_SECRET_KEY is required in production (or when TURNSTILE_ENFORCE=true) - refusing to expose sign-up endpoints without captcha verification"
   );
 }
 // start custom keeperhub code //
@@ -213,13 +220,13 @@ function buildTurnstilePlugin(secretKey: string): ReturnType<typeof captcha> {
   const turnstile = captcha({
     provider: "cloudflare-turnstile",
     secretKey,
-    endpoints: [SIGNUP_CAPTCHA_ENDPOINT],
+    endpoints: CAPTCHA_ENDPOINTS,
   });
   return {
     ...turnstile,
     onRequest: (request, ctx) => {
       if (
-        request.url.includes(SIGNUP_CAPTCHA_ENDPOINT) &&
+        CAPTCHA_ENDPOINTS.some((endpoint) => request.url.includes(endpoint)) &&
         hasValidLoadTestBypass(request)
       ) {
         return Promise.resolve(undefined);

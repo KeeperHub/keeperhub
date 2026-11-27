@@ -1,6 +1,6 @@
 {
-  "id": "38a43021-cab8-4c9a-939a-f288d4b32d8f",
-  "prevId": "27ba3940-bf23-4019-b280-e763718bae21",
+  "id": "27ba3940-bf23-4019-b280-e763718bae21",
+  "prevId": "34455bb2-650a-43f3-8354-fe7f41aabcbc",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -971,6 +971,12 @@
         "default_private_rpc_url": {
           "name": "default_private_rpc_url",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "builder_rpc_urls": {
+          "name": "builder_rpc_urls",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -9041,28 +9047,6 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_workflow_executions_live_started": {
-          "name": "idx_workflow_executions_live_started",
-          "columns": [
-            {
-              "expression": "workflow_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "started_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"workflow_executions\".\"status\" IN ('phantom', 'pending', 'running')",
           "concurrently": false,
           "method": "btree",
           "with": {}

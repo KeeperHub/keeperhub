@@ -402,27 +402,6 @@
     },
     {
       "method": "POST",
-      "path": "/api/auth/sign-up/email",
-      "route_file": "app/api/auth/[...all]/route.ts",
-      "source": "docs/api/headless-onboarding.md",
-      "line": 36
-    },
-    {
-      "method": "POST",
-      "path": "/api/auth/siwe/nonce",
-      "route_file": "app/api/auth/[...all]/route.ts",
-      "source": "docs/api/headless-onboarding.md",
-      "line": 14
-    },
-    {
-      "method": "POST",
-      "path": "/api/auth/siwe/verify",
-      "route_file": "app/api/auth/[...all]/route.ts",
-      "source": "docs/api/headless-onboarding.md",
-      "line": 14
-    },
-    {
-      "method": "POST",
       "path": "/api/execute/check-and-execute",
       "route_file": "app/api/execute/check-and-execute/route.ts",
       "source": "docs/api/direct-execution.md",

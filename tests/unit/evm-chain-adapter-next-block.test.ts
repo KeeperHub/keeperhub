@@ -74,7 +74,10 @@ function setup(): {
     adapter,
     getGasConfig,
     signer,
-    rpcManager: { executeWithFailover } as unknown as RpcProviderManager,
+    rpcManager: {
+      executeWithFailover,
+      hasPrivateRelayPrimary: () => false,
+    } as unknown as RpcProviderManager,
     executeWithFailover,
   };
 }
@@ -170,6 +173,63 @@ describe("EvmChainAdapter.executeContractCall at the next block", () => {
     expect(executeWithFailover).not.toHaveBeenCalled();
     expect(getGasConfig.mock.calls[0]?.[4]).toBe(BigInt(90_000));
     expect(mockSubmit.mock.calls[0]?.[3]).toBe(sendReport);
+    confirm.mockRestore();
+  });
+
+  it("sends to block builders and reports the broadcast only at the next block", async () => {
+    const { adapter, signer, rpcManager } = setup();
+    const confirm = vi
+      .spyOn(
+        EvmChainAdapter.prototype as unknown as {
+          confirmTransaction: () => Promise<unknown>;
+        },
+        "confirmTransaction"
+      )
+      .mockResolvedValue(RECEIPT);
+    const broadcast = {
+      broadcastAt: "2026-11-25T17:42:05.000Z",
+      via: "primary",
+      builders: [{ name: "titan", accepted: true }],
+    };
+    mockSubmit.mockResolvedValue({ hash: "0xtxhash", response: {}, broadcast });
+    const builderRpcUrls = { titan: "https://titan.example" };
+
+    const receipt = await adapter.executeContractCall(
+      signer,
+      { contractAddress: TARGET, abi: ABI, functionKey: "run", args: [5] },
+      {} as never,
+      { gasOverrides: {}, rpcManager, simulation: {}, builderRpcUrls }
+    );
+
+    expect(mockSubmit.mock.calls[0]?.[4]).toEqual({ builderRpcUrls });
+    expect(receipt).toEqual({ ...RECEIPT, simulation: SIMULATION, broadcast });
+    confirm.mockRestore();
+  });
+
+  it("does not send to block builders without next-block simulation", async () => {
+    const { adapter, signer, rpcManager, executeWithFailover } = setup();
+    executeWithFailover.mockResolvedValue(BigInt(46_000));
+    const confirm = vi
+      .spyOn(
+        EvmChainAdapter.prototype as unknown as {
+          confirmTransaction: () => Promise<unknown>;
+        },
+        "confirmTransaction"
+      )
+      .mockResolvedValue(RECEIPT);
+
+    await adapter.executeContractCall(
+      signer,
+      { contractAddress: TARGET, abi: ABI, functionKey: "run", args: [5] },
+      {} as never,
+      {
+        gasOverrides: {},
+        rpcManager,
+        builderRpcUrls: { titan: "https://titan.example" },
+      }
+    );
+
+    expect(mockSubmit.mock.calls[0]?.[4]).toEqual({});
     confirm.mockRestore();
   });
 

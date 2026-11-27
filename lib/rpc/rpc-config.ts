@@ -561,6 +561,8 @@ export type RpcConfigEntry = {
   broadcastRpcUrls?: string[];
   // Block builders bundles go to; absent means the code default list.
   bundleBuilders?: unknown;
+  // Block builder endpoints keyed by label, e.g. { "titan": "https://..." }.
+  builderRpcUrls?: Record<string, string>;
   isEnabled?: boolean;
   isTestnet?: boolean;
 };
@@ -726,8 +728,13 @@ export function getWssUrl(options: GetWssUrlOptions): string | undefined {
     : chainEntry?.publicWssFallback;
 }
 
-/** A chain's entry in chain-config JSON. */
-type RpcConfigEntryKey = { rpcConfig: RpcConfig; jsonKey: string };
+/**
+ * Options for the chain-config field lookups below
+ */
+export type ChainConfigLookupOptions = {
+  rpcConfig: RpcConfig;
+  jsonKey: string;
+};
 
 /**
  * Get the private mempool RPC URL from chain-config JSON.
@@ -738,7 +745,7 @@ type RpcConfigEntryKey = { rpcConfig: RpcConfig; jsonKey: string };
  * @returns The private RPC URL, or undefined if not configured
  */
 export function getPrivateRpcUrl(
-  options: RpcConfigEntryKey
+  options: ChainConfigLookupOptions
 ): string | undefined {
   return findRpcConfigEntry(options.rpcConfig, options.jsonKey)
     ?.privateMempoolRpcUrl;
@@ -748,7 +755,7 @@ const MAX_BROADCAST_RPC_URLS = 10;
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
 /** The raw broadcastRpcUrls list of a chain-config entry, cleaned. */
-export function readBroadcastRpcUrls(options: RpcConfigEntryKey): string[] {
+export function readBroadcastRpcUrls(options: ChainConfigLookupOptions): string[] {
   return cleanBroadcastRpcUrls(
     findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.broadcastRpcUrls
   );
@@ -859,7 +866,7 @@ export const ETH_MAINNET_BUNDLE_BUILDERS: readonly BundleBuilder[] = [
 
 /** A chain-config entry's bundleBuilders, cleaned; the default list when absent. */
 export function readBundleBuilders(
-  options: RpcConfigEntryKey & { defaults?: readonly BundleBuilder[] }
+  options: ChainConfigLookupOptions & { defaults?: readonly BundleBuilder[] }
 ): BundleBuilder[] {
   const entry = findRpcConfigEntry(options.rpcConfig, options.jsonKey);
   if (entry?.bundleBuilders === undefined) {
@@ -911,10 +918,48 @@ export function cleanBundleBuilders(raw: unknown): BundleBuilder[] {
  *
  * Defaults to false when not set in chain-config JSON.
  */
-export function getUsePrivateMempoolRpc(options: RpcConfigEntryKey): boolean {
+export function getUsePrivateMempoolRpc(
+  options: ChainConfigLookupOptions
+): boolean {
   return (
     findRpcConfigEntry(options.rpcConfig, options.jsonKey)
       ?.isPrivateMempoolRpcEnabled ?? false
+  );
+}
+
+export type BuilderRpcUrls = Record<string, string>;
+
+const BUILDER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+// Keeps lowercase labels mapped to https URLs; undefined when none remain.
+export function normalizeBuilderRpcUrls(
+  value: unknown
+): BuilderRpcUrls | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const result: BuilderRpcUrls = {};
+  for (const [label, url] of Object.entries(value)) {
+    if (!BUILDER_LABEL_PATTERN.test(label) || typeof url !== "string") {
+      continue;
+    }
+    try {
+      if (new URL(url).protocol === "https:") {
+        result[label] = url;
+      }
+    } catch {
+      // Not a URL: skipped.
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+// Block builder endpoints from chain-config JSON, with no env-var fallback.
+export function getBuilderRpcUrls(
+  options: ChainConfigLookupOptions
+): BuilderRpcUrls | undefined {
+  return normalizeBuilderRpcUrls(
+    findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.builderRpcUrls
   );
 }
 

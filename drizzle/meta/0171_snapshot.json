@@ -1,6 +1,6 @@
 {
-  "id": "27ba3940-bf23-4019-b280-e763718bae21",
-  "prevId": "34455bb2-650a-43f3-8354-fe7f41aabcbc",
+  "id": "34455bb2-650a-43f3-8354-fe7f41aabcbc",
+  "prevId": "c0c8cd3d-a851-447d-9818-0e60657c6905",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -971,6 +971,12 @@
         "default_private_rpc_url": {
           "name": "default_private_rpc_url",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "builder_rpc_urls": {
+          "name": "builder_rpc_urls",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -9041,28 +9047,6 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_workflow_executions_skipped_behind": {
-          "name": "idx_workflow_executions_skipped_behind",
-          "columns": [
-            {
-              "expression": "workflow_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "completed_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"workflow_executions\".\"status\" = 'skipped' AND \"workflow_executions\".\"dispatch_key\" LIKE 'skipped-behind:%'",
           "concurrently": false,
           "method": "btree",
           "with": {}

@@ -11,11 +11,13 @@ import {
   CHAIN_CONFIG,
   cleanBroadcastRpcUrls,
   ETH_MAINNET_BUNDLE_BUILDERS,
+  getBuilderRpcUrls,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrl,
   getUsePrivateMempoolRpc,
   getWssUrl,
+  normalizeBuilderRpcUrls,
   PUBLIC_RPCS,
   parseRpcConfig,
   parseRpcConfigWithDetails,
@@ -1391,5 +1393,55 @@ describe("PUBLIC_RPCS contains no KeeperHub-operated endpoint", () => {
     for (const [, url] of entries) {
       expect(() => hostOf(url)).not.toThrow();
     }
+  });
+});
+
+describe("builder RPC URLs", () => {
+  it("reads labelled https builder endpoints for a chain", () => {
+    const rpcConfig: RpcConfig = {
+      "eth-mainnet": {
+        builderRpcUrls: {
+          titan: "https://titan.example",
+          "beaver-build": "https://beaver.example/rpc",
+        },
+      },
+    };
+
+    expect(getBuilderRpcUrls({ rpcConfig, jsonKey: "eth-mainnet" })).toEqual({
+      titan: "https://titan.example",
+      "beaver-build": "https://beaver.example/rpc",
+    });
+  });
+
+  it("is undefined for a chain without builders", () => {
+    const rpcConfig: RpcConfig = { "eth-mainnet": { chainId: 1 } };
+
+    expect(
+      getBuilderRpcUrls({ rpcConfig, jsonKey: "eth-mainnet" })
+    ).toBeUndefined();
+    expect(
+      getBuilderRpcUrls({ rpcConfig, jsonKey: "base-mainnet" })
+    ).toBeUndefined();
+  });
+
+  it("drops entries with a bad label, a non-https URL or a non-string value", () => {
+    expect(
+      normalizeBuilderRpcUrls({
+        titan: "https://titan.example",
+        "Bad Label": "https://bad.example",
+        plain: "http://plain.example",
+        broken: "not a url",
+        numeric: 42,
+      })
+    ).toEqual({ titan: "https://titan.example" });
+  });
+
+  it("is undefined when nothing valid remains or the value is not an object", () => {
+    expect(
+      normalizeBuilderRpcUrls({ plain: "http://plain.example" })
+    ).toBeUndefined();
+    expect(normalizeBuilderRpcUrls(["https://titan.example"])).toBeUndefined();
+    expect(normalizeBuilderRpcUrls(null)).toBeUndefined();
+    expect(normalizeBuilderRpcUrls("https://titan.example")).toBeUndefined();
   });
 });

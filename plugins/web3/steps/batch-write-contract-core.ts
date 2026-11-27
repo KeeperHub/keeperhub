@@ -14,6 +14,7 @@
 import "server-only";
 import { broadcastAttemptedOf } from "@/lib/web3/pre-send";
 import {
+  type BroadcastInfo,
   type SendReport,
   type SendRoute,
   sendReportFields,
@@ -35,6 +36,7 @@ import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
 import { getErrorMessage, resolveFailOnError } from "@/lib/utils";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { getChainBuilderRpcUrls } from "@/lib/rpc/config-service";
 import {
   getOrganizationWalletAddress,
   initializeWalletSigner,
@@ -157,6 +159,8 @@ export type BatchWriteContractResult =
     resultsSimulation?: NextBlockSimulation;
     route?: SendRoute;
     included?: boolean;
+    // How the transaction went out; builder labels only, never URLs.
+    broadcast?: BroadcastInfo;
   }
   | {
     success: false;
@@ -657,7 +661,7 @@ async function batchWriteContractCoreImpl(
   if (!resolved.ok) {
     return { success: false, ...resolved.failure };
   }
-  const { rpcManager, rpcUrl } = resolved.rpc;
+  const { rpcManager, rpcUrl, relayRequested } = resolved.rpc;
 
   if (maxFeeOverride !== undefined) {
     const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
@@ -799,6 +803,12 @@ async function batchWriteContractCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
+  // Looked up before the wallet lock; private mempool sends stay on the relay.
+  const builderRpcUrls =
+    simulation !== undefined && !relayRequested
+      ? await getChainBuilderRpcUrls(chainId)
+      : undefined;
+
   return withNonceSession(txContext, walletAddress, async (session) => {
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
@@ -836,6 +846,7 @@ async function batchWriteContractCoreImpl(
               ? { ...simulation, basedOn: checkedAt }
               : simulation,
           sendReport,
+          builderRpcUrls,
         }
       );
 
@@ -858,6 +869,7 @@ async function batchWriteContractCoreImpl(
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
         ...(checkedAt ? { resultsSimulation: checkedAt } : {}),
         ...sendReportFields(sendReport),
+        ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
       };
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {

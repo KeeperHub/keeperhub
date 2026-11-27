@@ -122,6 +122,7 @@ describe("RPC Preferences API Routes", () => {
     defaultPrivateRpcUrl: null,
     broadcastRpcUrls: [],
     bundleBuilders: [],
+    builderRpcUrls: null,
     isEnabled: true,
     status: "stable",
     createdAt: new Date("2026-01-01"),

@@ -23,7 +23,7 @@ import {
   duplicateErrorMessage,
   type SavedWorkflow,
 } from "@/lib/api-client";
-import { authClient, useSession } from "@/lib/auth-client";
+import { signInAnonymously, useSession } from "@/lib/auth-client";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 
@@ -79,7 +79,7 @@ export function FeaturedOverlay({ overlayId }: FeaturedOverlayProps) {
 
     try {
       if (!session?.user) {
-        await authClient.signIn.anonymous();
+        await signInAnonymously();
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 

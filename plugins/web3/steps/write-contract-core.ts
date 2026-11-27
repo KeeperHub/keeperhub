@@ -41,6 +41,7 @@ import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
 import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
 import { getTransactionUrl } from "@/lib/explorer";
 import { ErrorCategory, logSystemWarn, logUserError } from "@/lib/logging";
+import { getChainBuilderRpcUrls } from "@/lib/rpc/config-service";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import {
   getOrganizationWalletAddress,
@@ -91,6 +92,7 @@ import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { resolveSendMode, SEND_MODE } from "@/lib/web3/send-mode";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
+import type { BroadcastInfo } from "@/lib/web3/submit-signed";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import {
   type TraceExecutedCallOptions,
@@ -234,6 +236,8 @@ export type WriteContractResult =
       // Where the transaction was broadcast, and whether a receipt came back.
       route?: WriteRoute;
       included?: boolean;
+      // How the transaction went out; builder labels only, never URLs.
+      broadcast?: BroadcastInfo;
     } & BundleOutputs)
   | ({
       success: false;
@@ -892,6 +896,14 @@ async function writeContractCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
+  // Looked up before the wallet lock; private mempool sends stay on the relay.
+  const builderRpcUrls =
+    simulation !== undefined &&
+    !usePrivateMempool &&
+    signerMode.kind === SIGNER_MODE.EOA
+      ? await getChainBuilderRpcUrls(chainId)
+      : undefined;
+
   return withNonceSession(txContext, walletAddress, async (session) => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
@@ -984,6 +996,7 @@ async function writeContractCoreImpl(
             rpcManager,
             simulation,
             sendReport,
+            builderRpcUrls,
           }
         );
       }
@@ -1012,6 +1025,7 @@ async function writeContractCoreImpl(
         executedCall,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
         ...sendReportFields(sendReport),
+        ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
       };
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {

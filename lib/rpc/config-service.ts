@@ -13,9 +13,14 @@ import {
   userRpcPreferences,
 } from "@/lib/db/schema";
 import { logWarn } from "@/lib/logging";
+import { getErrorMessage } from "@/lib/utils";
 import { noPrivateRelayMessage } from "@/lib/web3/send-mode";
 import { PrivateRelayUnavailableError } from "./providers/transport-error";
-import { cleanBroadcastRpcUrls } from "./rpc-config";
+import {
+  type BuilderRpcUrls,
+  cleanBroadcastRpcUrls,
+  normalizeBuilderRpcUrls,
+} from "./rpc-config";
 import type { ResolvedRpcConfig } from "./types";
 
 /**
@@ -99,6 +104,26 @@ export async function resolveRpcConfig(
   }
 
   return applyPrivateMempoolSwap(baseConfig, options);
+}
+
+// Builder endpoints are optional, so a failed lookup returns undefined.
+export async function getChainBuilderRpcUrls(
+  chainId: number
+): Promise<BuilderRpcUrls | undefined> {
+  try {
+    const rows = await db
+      .select({ builderRpcUrls: chains.builderRpcUrls })
+      .from(chains)
+      .where(and(eq(chains.chainId, chainId), eq(chains.isEnabled, true)))
+      .limit(1);
+    return normalizeBuilderRpcUrls(rows[0]?.builderRpcUrls);
+  } catch (error) {
+    logWarn(
+      `[RPC Config] Builder endpoint lookup failed: ${getErrorMessage(error)}`,
+      { chain_id: String(chainId) }
+    );
+    return undefined;
+  }
 }
 
 type ChainRow = typeof chains.$inferSelect;

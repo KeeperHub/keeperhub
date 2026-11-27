@@ -1,5 +1,5 @@
 {
-  "id": "34455bb2-650a-43f3-8354-fe7f41aabcbc",
+  "id": "c0c8cd3d-a851-447d-9818-0e60657c6905",
   "prevId": "3b63ee4f-ac77-4a33-bf3a-759f6063ce37",
   "version": "7",
   "dialect": "postgresql",
@@ -974,12 +974,11 @@
           "primaryKey": false,
           "notNull": false
         },
-        "broadcast_rpc_urls": {
-          "name": "broadcast_rpc_urls",
+        "builder_rpc_urls": {
+          "name": "builder_rpc_urls",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
+          "notNull": false
         },
         "is_testnet": {
           "name": "is_testnet",

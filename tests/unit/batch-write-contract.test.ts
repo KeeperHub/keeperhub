@@ -65,6 +65,14 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
 }));
 
+const { mockGetChainBuilderRpcUrls } = vi.hoisted(() => ({
+  mockGetChainBuilderRpcUrls: vi.fn(),
+}));
+vi.mock("@/lib/rpc/config-service", () => ({
+  getChainBuilderRpcUrls: (...args: unknown[]) =>
+    mockGetChainBuilderRpcUrls(...args),
+}));
+
 const mockRpcRelayErrorClass = vi.fn();
 vi.mock("@/lib/rpc/providers", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/rpc/providers")>()),
@@ -287,6 +295,7 @@ beforeEach(() => {
   });
   mockExecuteContractCall.mockResolvedValue(RECEIPT);
   mockPreflightGasBalance.mockResolvedValue({ affordable: true });
+  mockGetChainBuilderRpcUrls.mockResolvedValue(undefined);
 });
 
 describe("batch-write-contract - happy path", () => {
@@ -315,6 +324,8 @@ describe("batch-write-contract - happy path", () => {
     expect(call3Arg.args[0][0].target).toBe(JOB_1);
     expect(call3Arg.args[0][0].allowFailure).toBe(true);
     expect(call3Arg.args[0][1].target).toBe(JOB_2);
+    // Latest-block sends never go to block builders.
+    expect(mockGetChainBuilderRpcUrls).not.toHaveBeenCalled();
   });
 
   it("runs the pre-broadcast simulation from the organization wallet, not the zero-address default", async () => {
@@ -1352,6 +1363,53 @@ describe("batch-write-contract - simulateAt next-block", () => {
       true,
       false,
     ]);
+  });
+
+  it("sends to the chain's block builders and reports the broadcast", async () => {
+    const builderRpcUrls = { titan: "https://titan.example" };
+    const broadcast = {
+      broadcastAt: "2026-01-15T10:30:05.412Z",
+      via: "primary",
+      builders: [{ name: "titan", accepted: true }],
+    };
+    mockGetChainBuilderRpcUrls.mockResolvedValueOnce(builderRpcUrls);
+    mockSimulateAtNextBlock.mockResolvedValueOnce({
+      returnData: aggregate3Return([SUCCESS_RETURN, SUCCESS_RETURN]),
+      simulation: SIMULATION,
+    });
+    mockExecuteContractCall.mockResolvedValueOnce({
+      ...RECEIPT,
+      simulation: SIMULATION,
+      broadcast,
+    });
+
+    const result = await batchWriteContractCore(
+      baseInput({ simulateAt: "next-block" })
+    );
+
+    expect(mockGetChainBuilderRpcUrls).toHaveBeenCalledWith(1);
+    const adapterOptions = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      builderRpcUrls?: unknown;
+    };
+    expect(adapterOptions.builderRpcUrls).toEqual(builderRpcUrls);
+    expect(result).toMatchObject({ success: true, broadcast });
+  });
+
+  it("keeps a private-mempool send off the block builders", async () => {
+    mockSimulateAtNextBlock.mockResolvedValueOnce({
+      returnData: aggregate3Return([SUCCESS_RETURN, SUCCESS_RETURN]),
+      simulation: SIMULATION,
+    });
+
+    await batchWriteContractCore(
+      baseInput({ simulateAt: "next-block", usePrivateMempool: true })
+    );
+
+    expect(mockGetChainBuilderRpcUrls).not.toHaveBeenCalled();
+    const adapterOptions = mockExecuteContractCall.mock.calls[0]?.[3] as {
+      builderRpcUrls?: unknown;
+    };
+    expect(adapterOptions.builderRpcUrls).toBeUndefined();
   });
 
   it("passes a Block-triggered run's trigger block to the check and the send", async () => {

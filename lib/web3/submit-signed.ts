@@ -2,7 +2,12 @@ import "server-only";
 import { ethers, isError } from "ethers";
 import { isConnectionRefusal } from "@/lib/rpc/connection-refusal";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import type { BuilderRpcUrls } from "@/lib/rpc/rpc-config";
 import { sleep } from "@/lib/sleep";
+import {
+  type BuilderBroadcastResult,
+  broadcastToBuilders,
+} from "@/lib/web3/builder-broadcast";
 import { broadcastToExtraRpcs } from "@/lib/web3/extra-broadcast";
 import { isDuplicateMessage } from "@/lib/web3/json-rpc-answer";
 import {
@@ -32,6 +37,20 @@ export function sendReportFields<Route extends string = SendRoute>(report: {
     : {};
 }
 
+/** Where and when the signed transaction went out. Labels only, never URLs. */
+export type BroadcastInfo = {
+  // ISO time the regular RPC accepted the transaction.
+  broadcastAt: string;
+  via: "primary" | "fallback";
+  // Block builders that were also sent the transaction, when any were.
+  builders?: BuilderBroadcastResult[];
+};
+
+type SubmitSignedOptions = {
+  // Also send the signed bytes to these block builders, in parallel.
+  builderRpcUrls?: BuilderRpcUrls;
+};
+
 export type BroadcastResult = {
   hash: string;
   response: ethers.TransactionResponse;
@@ -40,6 +59,8 @@ export type BroadcastResult = {
    * before/during our broadcast attempt. Callers may skip `response.wait()`.
    */
   preExistingReceipt?: ethers.TransactionReceipt;
+  // Absent when the outcome came from reconciliation.
+  broadcast?: BroadcastInfo;
 };
 
 /**
@@ -145,7 +166,8 @@ export async function submitSignedTransactionWithFailover(
   signer: ethers.Signer,
   txRequest: ethers.TransactionRequest,
   rpcManager: RpcProviderManager,
-  report: SendReport = {}
+  report: SendReport = {},
+  options: SubmitSignedOptions = {}
 ): Promise<BroadcastResult> {
   let populated: ethers.TransactionRequest;
   let signedHex: string;
@@ -176,9 +198,18 @@ export async function submitSignedTransactionWithFailover(
       : undefined;
   const attempts: Attempt[] = [];
 
+  // Started before the regular broadcast so neither waits for the other.
+  // Never beside a private relay send, whatever the caller passed.
+  const builderSends =
+    options.builderRpcUrls && !hasRelayPrimary(rpcManager)
+      ? broadcastToBuilders(signedHex, options.builderRpcUrls)
+      : undefined;
+
   try {
+    let via: BroadcastInfo["via"] = "primary";
     const { response, route, provider } = await rpcManager.executeWithFailover(
       async (provider) => {
+        via = isFallbackProvider(rpcManager, provider) ? "fallback" : "primary";
         const attempt: Attempt = {
           route: rpcManager.isPrivateRelayProvider(provider)
             ? "private-relay"
@@ -208,16 +239,21 @@ export async function submitSignedTransactionWithFailover(
       "write-broadcast"
     );
     report.route = route;
+    const broadcastAt = new Date().toISOString();
     // Read after the send and outside its failover: it can never fail a delivered send.
+    const sentAtBlock = currentBlockNumber(provider);
+    const builders = builderSends ? await builderSends : undefined;
     return {
       hash: response.hash,
-      response: await watchForReplacement(
-        response,
-        currentBlockNumber(provider)
-      ),
+      response: await watchForReplacement(response, sentAtBlock),
+      broadcast: { broadcastAt, via, ...(builders ? { builders } : {}) },
     };
   } catch (err) {
-    if (await extras.anyAccepted) {
+    // A builder that took the bytes may include them: never "not sent".
+    const builderTook = builderSends
+      ? (await builderSends).some((builder) => builder.accepted)
+      : false;
+    if (builderTook || (await extras.anyAccepted)) {
       report.route = "public";
       return await confirmExtraAccepted(
         rpcManager,
@@ -261,10 +297,10 @@ const CONFIRM_LOOKUPS = 3;
 const CONFIRM_INTERVAL_MS = 1000;
 
 /**
- * An extra URL took the bytes but the managed endpoint did not. Success only
- * once the managed endpoint sees the transaction (asked a few times, as
- * gossip takes a moment); otherwise unknown with the hash, never a nonce
- * conflict.
+ * An extra URL or a builder took the bytes but the managed endpoint did
+ * not. Success only once the managed endpoint sees the transaction (asked a
+ * few times, as gossip takes a moment); otherwise unknown with the hash,
+ * never a nonce conflict.
  */
 async function confirmExtraAccepted(
   rpcManager: RpcProviderManager,
@@ -358,6 +394,25 @@ async function sendRawTransaction(
       signedHex
     ) as unknown as ethers.TransactionResponseParams,
     ethers.Network.from(chainId)
+  );
+}
+
+// Partial managers (tests) may not expose the relay check.
+function hasRelayPrimary(rpcManager: RpcProviderManager): boolean {
+  return (
+    typeof rpcManager.hasPrivateRelayPrimary === "function" &&
+    rpcManager.hasPrivateRelayPrimary()
+  );
+}
+
+// Partial managers (tests, legacy callers) may not expose the fallback.
+function isFallbackProvider(
+  rpcManager: RpcProviderManager,
+  provider: ethers.JsonRpcProvider
+): boolean {
+  return (
+    typeof rpcManager.getFallbackProvider === "function" &&
+    provider === rpcManager.getFallbackProvider()
   );
 }
 
