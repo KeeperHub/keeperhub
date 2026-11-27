@@ -6,6 +6,7 @@ import {
   type V1EnvVar,
   type V1Job,
 } from "@kubernetes/client-node";
+import { RUN_DEADLINE_AT_ENV } from "../lib/workflow/executor/runner-constants";
 import { CONFIG } from "./config";
 import { getRunnerSystemEnvVars } from "./runner-env";
 import {
@@ -150,9 +151,16 @@ export async function createWorkflowJob(params: {
   // security.content_scanner_hit signals never reached the alert.
   const jobName = `keeperhub-workflow-${executionId.substring(0, 8)}-${Date.now()}`;
 
-  const runEnv: V1EnvVar[] = Object.entries(
-    assignmentToRunnerEnv(assignment, "k8s-job")
-  ).map(([name, value]) => ({ name, value }));
+  const runEnv: V1EnvVar[] = [
+    ...Object.entries(assignmentToRunnerEnv(assignment, "k8s-job")).map(
+      ([name, value]) => ({ name, value })
+    ),
+    // The Job's deadline runs from its start, which is after now: an early estimate.
+    {
+      name: RUN_DEADLINE_AT_ENV,
+      value: String(Date.now() + CONFIG.jobActiveDeadline * 1000),
+    },
+  ];
 
   const labels: Record<string, string> = {
     app: "workflow-runner",

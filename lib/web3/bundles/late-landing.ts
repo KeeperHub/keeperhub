@@ -14,6 +14,7 @@ import {
   recordWorkflowExecutionLateLanded,
 } from "@/lib/metrics/collectors/prometheus";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
+import { NOT_LANDED_PARTLY_REASON } from "@/lib/workflow/executor/run-outcome-keys";
 import {
   loadSuccessLogFacts,
   stepKey,
@@ -132,20 +133,23 @@ export async function settleRun(
     logStaysNotLanded(executionId, "no missed step in its logs");
     return;
   }
+  // Hashes already listed (a partial landing written before) are not read again.
   const { landings, missing } = await missedStepLandings(
     executionId,
     facts.notIncludedSteps,
     readReceipt,
-    { known, all: true }
+    { known, all: false, listed: run.hashes }
   );
-  if (missing) {
-    logStaysNotLanded(executionId, missing);
-    return;
-  }
   const reverted = landings.find((landing) => !landing.mined.succeeded);
   if (reverted) {
-    // Every landing is written with its own receipt, so a step that landed keeps its fee.
+    // A revert ends the run at once; every landing is written with its own fee.
     await resettleToError(executionId, run.hashes, landings, reverted);
+    return;
+  }
+  if (missing) {
+    // A step still missing keeps the run not landed; the ones mined late paid gas.
+    await addToNotLanded(executionId, run.hashes, landings);
+    logStaysNotLanded(executionId, missing);
     return;
   }
   await resettleToSuccess(executionId, run.hashes, landings);
@@ -251,16 +255,67 @@ async function addToLateReverted(
     readReceipt,
     { known, all: false, listed: run.hashes }
   );
-  if (landings.length === 0) {
-    return;
+  if (
+    await appendLandings(
+      fromLateReverted(executionId),
+      landedColumns(run.hashes, landings),
+      landings
+    )
+  ) {
+    logInfo("[Bundle] A late landing was added to a run a late revert ended", {
+      execution_id: executionId,
+      tx_hash: landings.map((landing) => landing.mined.hash).join(","),
+    });
   }
-  // Guarded on none of them being listed yet, so a concurrent settle adds no fee twice.
+}
+
+/**
+ * A run still not landed (a missed step has no landing yet) whose other
+ * steps were mined late: write their hashes and fees, keep the status, and
+ * say in the reason that gas was paid.
+ */
+async function addToNotLanded(
+  executionId: string,
+  existing: readonly TransactionHashEntry[],
+  landings: readonly Landing[]
+): Promise<void> {
+  const columns = landedColumns(existing, landings);
+  if (
+    await appendLandings(
+      fromNotLanded(executionId),
+      { ...columns, error: NOT_LANDED_PARTLY_REASON },
+      landings
+    )
+  ) {
+    logInfo("[Bundle] A late landing was added to a run still not landed", {
+      execution_id: executionId,
+      tx_hash: landings.map((landing) => landing.mined.hash).join(","),
+    });
+  }
+}
+
+/**
+ * Write the landings onto the run `from` matches, guarded on none of them
+ * being listed yet, so a concurrent settle adds no fee twice. False when
+ * there is nothing new or the guard missed.
+ */
+async function appendLandings(
+  from: SQL | undefined,
+  set: { transactionHashes?: SQL; gasUsedWei?: SQL; error?: string },
+  landings: readonly Landing[]
+): Promise<boolean> {
+  if (
+    landings.length === 0 ||
+    (set.transactionHashes === undefined && set.gasUsedWei === undefined)
+  ) {
+    return false;
+  }
   const [updated] = await db
     .update(workflowExecutions)
-    .set(landedColumns(run.hashes, landings))
+    .set(set)
     .where(
       and(
-        fromLateReverted(executionId),
+        from,
         ...landings.map(
           (landing) =>
             sql`not (coalesce(${workflowExecutions.transactionHashes}, '[]'::jsonb) @> ${JSON.stringify([{ hash: landing.mined.hash }])}::jsonb)`
@@ -268,12 +323,7 @@ async function addToLateReverted(
       )
     )
     .returning({ id: workflowExecutions.id });
-  if (updated) {
-    logInfo("[Bundle] A late landing was added to a run a late revert ended", {
-      execution_id: executionId,
-      tx_hash: landings.map((landing) => landing.mined.hash).join(","),
-    });
-  }
+  return updated !== undefined;
 }
 
 function logStaysNotLanded(executionId: string, reason: string): void {

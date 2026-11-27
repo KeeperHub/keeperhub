@@ -311,6 +311,25 @@ describe("createWorkflowJob", () => {
     expect(getEnvVar(envVars, "WORKFLOW_INPUT")).toBe('{"test":true}');
   });
 
+  it("gives the runner its deadline, counted from now as the Job's starts no earlier", async () => {
+    const before = Date.now();
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "manual",
+    });
+    const deadline = Number(
+      getEnvVar(getJobEnvVars(getSubmittedJob()), "KH_RUN_DEADLINE_AT")
+    );
+    expect(deadline).toBeGreaterThanOrEqual(
+      before + CONFIG.jobActiveDeadline * 1000
+    );
+    expect(deadline).toBeLessThanOrEqual(
+      Date.now() + CONFIG.jobActiveDeadline * 1000
+    );
+  });
+
   it("references core credentials as required (non-optional) secret refs", async () => {
     await createWorkflowJob({
       workflowId: "wf-1",

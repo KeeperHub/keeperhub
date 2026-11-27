@@ -1213,11 +1213,26 @@ describe.skipIf(shouldSkip)("Nonce Manager E2E", () => {
 
     it("marks a past nonce replaced when none of its hashes was mined", async () => {
       await seedBundle(7, [hash("1"), hash("2")], 103);
+      // Replaced needs the row's age too (provedReplaced), as in the sweep.
+      await db
+        .update(pendingTransactions)
+        .set({ submittedAt: new Date(Date.now() - 11 * 60_000) })
+        .where(eq(pendingTransactions.walletAddress, TEST_WALLET_NORMALIZED));
       const { manager, session } = await startAgainst({
         transactionCount: 8,
         latestBlock: 104,
       });
       expect((await rowAt(7))?.status).toBe("replaced");
+      await manager.endSession(session);
+    });
+
+    it("marks a fresh past nonce dropped, not replaced, when none of its hashes was mined yet", async () => {
+      await seedBundle(7, [hash("1"), hash("2")], 103);
+      const { manager, session } = await startAgainst({
+        transactionCount: 8,
+        latestBlock: 104,
+      });
+      expect((await rowAt(7))?.status).toBe("dropped");
       await manager.endSession(session);
     });
 

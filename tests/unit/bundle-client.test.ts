@@ -303,12 +303,12 @@ describe("builder answers (HTTP shapes)", () => {
     [
       "a 308 redirect",
       Response.redirect("https://elsewhere.example/", 308),
-      { delivery: "refused", error: "redirect not followed" },
+      { delivery: "unknown", error: "redirect not followed" },
     ],
     [
       "a 302 redirect",
       Response.redirect("https://elsewhere.example/", 302),
-      { delivery: "refused", error: "redirect not followed" },
+      { delivery: "unknown", error: "redirect not followed" },
     ],
   ])("%s", async (_label, response, expected) => {
     expect(await answerTo(response)).toEqual(expected);
@@ -561,7 +561,7 @@ describe("sendBundle over the real transport", () => {
     server = undefined;
   });
 
-  it("does not follow a redirect with the signed body, and reads it as refused", async () => {
+  it("does not follow a redirect with the signed body, and reads it as unknown (may have sent)", async () => {
     const hits: string[] = [];
     server = createServer((req, res) => {
       hits.push(`${req.method} ${req.url}`);
@@ -595,7 +595,7 @@ describe("sendBundle over the real transport", () => {
 
     expect(answer).toEqual({
       builder: "local",
-      delivery: "refused",
+      delivery: "unknown",
       error: "redirect not followed",
     });
     expect(hits).toEqual(["POST /bundle"]);

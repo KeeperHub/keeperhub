@@ -38,7 +38,10 @@ import {
 } from "../lib/db/schema";
 import { buildExecutorInput } from "../lib/workflow/executor/build-executor-input";
 import { executeWorkflow } from "../lib/workflow/executor/executor.workflow";
-import { SHUTDOWN_TIMEOUT_MS } from "../lib/workflow/executor/runner-constants";
+import {
+  RUN_DEADLINE_AT_ENV,
+  SHUTDOWN_TIMEOUT_MS,
+} from "../lib/workflow/executor/runner-constants";
 import type { WorkflowEdge, WorkflowNode } from "../lib/workflow/store";
 import { loadWorkflowForExecution } from "../lib/workflow/load-for-execution";
 import type { ApiExecuteTriggerType } from "./api-execute";
@@ -474,6 +477,8 @@ async function prepareWarmRunner(): Promise<boolean> {
   currentScheduleId = prepared.assignment.scheduleId ?? null;
   const { runDeadlineMs } = prepared;
   if (runDeadlineMs !== undefined) {
+    // Read by steps that must finish before it (a bundle's wallet hold).
+    process.env[RUN_DEADLINE_AT_ENV] = String(Date.now() + runDeadlineMs);
     armRunDeadline(runDeadlineMs, () => {
       console.error(
         `[Runner] Run exceeded its ${runDeadlineMs}ms deadline, terminating`

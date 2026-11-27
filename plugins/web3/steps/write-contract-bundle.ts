@@ -20,7 +20,12 @@ import {
   loadChainBuilders,
   selectBuilders,
 } from "@/lib/web3/bundles/builders";
-import { type MinedHash, minedOf } from "@/lib/web3/bundles/bundle-history";
+import {
+  BUNDLE_RUN_MARGIN_MS,
+  LONGEST_BUNDLE_HOLD_MS,
+  type MinedHash,
+  minedOf,
+} from "@/lib/web3/bundles/bundle-history";
 import { bundleInFlight, type InFlight } from "@/lib/web3/bundles/in-flight";
 import { bundleLoopRefusal } from "@/lib/web3/bundles/loop-rule";
 import { isBundleSendEnabledForOrg } from "@/lib/web3/bundles/rollout";
@@ -31,6 +36,7 @@ import {
   type BundleSendOutcome,
   BundleSigningError,
   type NotIncludedReason,
+  runTimeRefusal,
   sendBundleInSession,
 } from "@/lib/web3/bundles/send-bundle";
 import {
@@ -59,6 +65,7 @@ import {
 } from "@/lib/web3/send-mode";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import type { TraceExecutedCallOptions } from "@/lib/web3/trace-executed-call";
+import { NonceLockWaitEndedError } from "@/lib/web3/nonce-manager";
 import {
   type TransactionContext,
   withNonceSession,
@@ -69,6 +76,7 @@ import {
   BUNDLE_STEP_ACTION_TYPES,
   RUN_OUTCOME_OUTPUT,
 } from "@/lib/workflow/executor/run-outcome-keys";
+import { runDeadlineAt } from "@/lib/workflow/executor/runner-constants";
 import type {
   WriteContractCoreInput,
   WriteContractResult,
@@ -90,6 +98,7 @@ export type BundleRoute = {
   workflowId: string;
   executionId: string;
   node: { id: string; name: string; iterationIndex?: number };
+  valueReservationId?: string;
 };
 
 function userFailure(error: string): { ok: false; failure: Failure } {
@@ -189,6 +198,9 @@ export async function prepareBundleRoute(options: {
           iterationIndex: context.iterationIndex,
         }),
       },
+      ...(context.valueReservationId && {
+        valueReservationId: context.valueReservationId,
+      }),
     },
   };
 }
@@ -561,6 +573,16 @@ type SessionEnd =
   | { replayOf: string }
   | { outcome: BundleSendOutcome };
 
+/** Refused for the run's time left: nothing was signed or sent. */
+function outOfRunTime(error: string): WriteContractResult {
+  return {
+    success: false,
+    error,
+    errorClass: ExecutionErrorType.USER,
+    broadcastAttempted: false,
+  };
+}
+
 /**
  * Send the call as a bundle: skip when this workflow's earlier bundle may
  * still land (checked again under the lock), else check gas and send inside
@@ -603,8 +625,46 @@ export async function writeAsBundle(
     return { success: false, error: gasCheck.message };
   }
 
+  // A run stopped inside the hold leaves the wallet held and nothing written.
+  const runDeadline = runDeadlineAt();
+  const tooLate = runTimeRefusal(runDeadline, LONGEST_BUNDLE_HOLD_MS);
+  if (tooLate) {
+    return outOfRunTime(tooLate);
+  }
+
+  let ended: SessionEnd;
+  try {
+    ended = await sendInSession(write, contractInterface, data, runDeadline);
+  } catch (error) {
+    if (!(error instanceof NonceLockWaitEndedError)) {
+      throw error;
+    }
+    return outOfRunTime(
+      runTimeRefusal(runDeadline, LONGEST_BUNDLE_HOLD_MS) ?? error.message
+    );
+  }
+  if ("done" in ended) {
+    return ended.done;
+  }
+  if ("replayOf" in ended) {
+    return await replayResult(
+      write,
+      { kind: "replay", landedHash: ended.replayOf },
+      contractInterface
+    );
+  }
+  return await resultOf(write, ended.outcome, contractInterface);
+}
+
+/** The wallet's nonce session: the lock wait ends where the run would run out of time. */
+function sendInSession(
+  write: BundleWrite,
+  contractInterface: ethers.Interface,
+  data: string,
+  runDeadline: number | undefined
+): Promise<SessionEnd> {
   const { route } = write;
-  const ended: SessionEnd = await withNonceSession(
+  return withNonceSession(
     write.txContext,
     write.walletAddress,
     async (session): Promise<SessionEnd> => {
@@ -658,6 +718,8 @@ export async function writeAsBundle(
           searcher: route.searcher,
           workflowId: route.workflowId,
           node: route.node,
+          valueReservationId: route.valueReservationId,
+          runDeadline,
           progress,
         });
         return { outcome };
@@ -676,17 +738,12 @@ export async function writeAsBundle(
         }
         return { done: failureOf(error, write, contractInterface) };
       }
-    }
+    },
+    runDeadline === undefined
+      ? {}
+      : {
+          waitUntil:
+            runDeadline - LONGEST_BUNDLE_HOLD_MS - BUNDLE_RUN_MARGIN_MS,
+        }
   );
-  if ("done" in ended) {
-    return ended.done;
-  }
-  if ("replayOf" in ended) {
-    return await replayResult(
-      write,
-      { kind: "replay", landedHash: ended.replayOf },
-      contractInterface
-    );
-  }
-  return await resultOf(write, ended.outcome, contractInterface);
 }

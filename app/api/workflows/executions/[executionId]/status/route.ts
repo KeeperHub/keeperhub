@@ -144,7 +144,7 @@ export async function GET(
 
     const { execution } = viewAccess;
 
-    const keys = stepOutcomeKeysSql(workflowExecutionLogs.output);
+    const keys = stepOutcomeKeysSql(workflowExecutionLogs);
     const logs = await db.query.workflowExecutionLogs.findMany({
       // Per-step detail of one run, so a purge hides it here too.
       where: and(

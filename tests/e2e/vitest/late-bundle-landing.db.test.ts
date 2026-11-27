@@ -149,6 +149,8 @@ async function cleanup(): Promise<void> {
     await client`DELETE FROM workflow_execution_logs WHERE execution_id LIKE ${`${PREFIX}%`}`;
     await client`DELETE FROM workflow_executions WHERE workflow_id LIKE ${`${PREFIX}%`}`;
     await client`DELETE FROM workflows WHERE id LIKE ${`${PREFIX}%`}`;
+    await client`DELETE FROM org_value_reservations WHERE organization_id LIKE ${`${PREFIX}%`}`;
+    await client`DELETE FROM organization_spend_caps WHERE organization_id LIKE ${`${PREFIX}%`}`;
     await client`DELETE FROM organization WHERE id LIKE ${`${PREFIX}%`}`;
     await client`DELETE FROM users WHERE id LIKE ${`${PREFIX}%`}`;
   } finally {
@@ -510,6 +512,7 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
     it("marks a dropped bundle replaced when the nonce's own endpoint finds no hash; the run stays not landed", async () => {
       const bundleRun = await run("not_landed");
       await droppedBundle(bundleRun, 7, [hash("1")]);
+      await setRow(7, { submittedAt: new Date(Date.now() - 11 * 60_000) });
 
       await settleAt({ transactionCount: 8, latestBlock: 600 });
 
@@ -739,6 +742,7 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
       // Nonce 8 first: a session at chain nonce 8 would settle the row at 7.
       await missedStep(bundleRun, 8, [hash("2")], "write-2");
       await missedStep(bundleRun, 7, [hash("1")]);
+      await setRow(8, { submittedAt: new Date(Date.now() - 11 * 60_000) });
 
       // Something else took nonce 8; 7 is the late landing.
       await settleAt({
@@ -749,7 +753,26 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
 
       expect((await rowAt(7))?.status).toBe("confirmed");
       expect((await rowAt(8))?.status).toBe("replaced");
-      expect(await statusOf(bundleRun)).toBe("not_landed");
+      const execution = await executionOf(bundleRun);
+      expect(execution?.status).toBe("not_landed");
+      // The late step's hash and fee are written; the reason no longer says no gas was paid.
+      expect(execution?.transactionHashes).toEqual([
+        expect.objectContaining({
+          hash: hash("1"),
+          nodeId: "write-1",
+          receiptStatus: "success",
+        }),
+      ]);
+      expect(execution?.gasUsedWei).toBe(String(FEE_WEI));
+      expect(execution?.error).toContain("mined later and paid gas");
+      expect(execution?.error).not.toContain("No gas is paid");
+
+      // Settling again adds no hash or fee twice.
+      const { settleRun } = await import("@/lib/web3/bundles/late-landing");
+      await settleRun(bundleRun, async () => null);
+      const again = await executionOf(bundleRun);
+      expect(again?.transactionHashes).toHaveLength(1);
+      expect(again?.gasUsedWei).toBe(String(FEE_WEI));
     });
 
     it("two bundle writes: the run becomes a success once both landed", async () => {
@@ -1057,6 +1080,31 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
       });
       // Before the lock the session nonce is unknown: the check under it decides.
       expect(await check(bundleRun, "write-1")).toEqual({ kind: "none" });
+    });
+
+    it("a crash replay signs nothing when its fresh row's receipt lags: one scan never marks it replaced", async () => {
+      const bundleRun = await run("running");
+      await startedLongAgo(bundleRun);
+      await record(bundleRun, "write-1");
+      // The bundle landed at 7; another session's backend has no receipt for it yet.
+      const other = new nonces.NonceManager();
+      const { session: otherSession } = await other.startSession(
+        WALLET,
+        CHAIN_ID,
+        `${PREFIX}lagging-reconcile`,
+        provider({ transactionCount: 8, latestBlock: 600 }) as never
+      );
+      await other.endSession(otherSession);
+      expect((await rowAt(7))?.status).toBe("dropped");
+
+      const nonce = await replaySession(bundleRun, {
+        transactionCount: 8,
+        latestBlock: 600,
+      });
+      expect((await rowAt(7))?.status).toBe("dropped");
+      expect(await check(bundleRun, "write-1", 0, nonce)).toEqual({
+        kind: "replay",
+      });
     });
 
     it("signs again once another KeeperHub send took the dropped nonce: the row is that send's now", async () => {
@@ -1658,15 +1706,17 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
       const bundleRun = await run("not_landed");
       await missedStep(bundleRun, 8, [hash("2")], "write-2");
       await missedStep(bundleRun, 7, [hash("1")]);
+      // 7 was confirmed by an earlier session whose settle never ran.
+      await setRow(7, { status: "confirmed", confirmedAt: new Date() });
 
-      // Reads: 7's scan, 8's scan, then the settle's read of 7's receipt fails.
+      // Reads: 8's scan, then the settle's read of 7's receipt fails.
       await settleAt(
         {
           transactionCount: 9,
           latestBlock: 600,
           mined: { [hash("1")]: 1, [hash("2")]: 1 },
         },
-        3
+        2
       );
       expect((await rowAt(7))?.status).toBe("confirmed");
       expect((await rowAt(8))?.status).toBe("confirmed");
@@ -1734,17 +1784,33 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
       expect(await statusOf(missed)).toBe("not_landed");
     });
 
-    it("reads no receipt for a run whose missed step has no confirmed row", async () => {
+    it("a run whose other missed step has no confirmed row: the landed one's receipt is read once, its hash and fee written", async () => {
       const bundleRun = await run("not_landed");
       await missedStep(bundleRun, 8, [hash("2")], "write-2");
       await missedStep(bundleRun, 7, [hash("1")]);
       await setRow(7, { status: "confirmed", confirmedAt: new Date() });
+      sweepChain.view = {
+        transactionCount: 0,
+        latestBlock: 600,
+        mined: { [hash("1")]: 1 },
+      };
 
       const result = await sweep();
 
       expect(result.runsChecked).toBe(1);
+      expect(sweepChain.receiptReads).toBe(1);
+      const execution = await executionOf(bundleRun);
+      expect(execution?.status).toBe("not_landed");
+      expect(execution?.transactionHashes).toEqual([
+        expect.objectContaining({ hash: hash("1"), nodeId: "write-1" }),
+      ]);
+      expect(execution?.gasUsedWei).toBe(String(FEE_WEI));
+
+      // Listed now: the next sweep reads no receipt and adds nothing.
+      sweepChain.receiptReads = 0;
+      await sweep();
       expect(sweepChain.receiptReads).toBe(0);
-      expect(await statusOf(bundleRun)).toBe("not_landed");
+      expect((await executionOf(bundleRun))?.gasUsedWei).toBe(String(FEE_WEI));
     });
   });
 
@@ -1829,6 +1895,147 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
 
       expect((await sweep()).replaced).toBe(0);
       expect((await rowAt(7))?.status).toBe("dropped");
+    });
+  });
+
+  describe("value held by a decided miss", () => {
+    const CAP_WEI = "1000";
+    type Ledger = typeof import("@/lib/execute/value-ledger");
+    let ledger: Ledger;
+
+    beforeAll(async () => {
+      ledger = await import("@/lib/execute/value-ledger");
+      await db
+        .insert(ext.organizationSpendCaps)
+        .values({ organizationId: ORG_ID, dailyValueCapWei: CAP_WEI })
+        .onConflictDoUpdate({
+          target: ext.organizationSpendCaps.organizationId,
+          set: { dailyValueCapWei: CAP_WEI },
+        });
+    });
+
+    beforeEach(async () => {
+      await db
+        .delete(ext.orgValueReservations)
+        .where(eq(ext.orgValueReservations.organizationId, ORG_ID));
+    });
+
+    /** A bundle step at the cap whose miss is decided, as Write Contract ends it. */
+    async function missAtCap(executionId: string): Promise<string> {
+      let reservationId: string | undefined;
+      const { bundleReservationEnd } = await import(
+        "@/lib/workflow/executor/run-outcome-keys"
+      );
+      await ledger.withValueCap(
+        { organizationId: ORG_ID, valueWei: CAP_WEI, ref: executionId },
+        async (id) => {
+          reservationId = id;
+          const manager = new nonces.NonceManager();
+          const { session } = await manager.startSession(
+            WALLET,
+            CHAIN_ID,
+            executionId,
+            provider({ transactionCount: 7, latestBlock: 100 }) as never
+          );
+          await manager.recordBundle(session, 7, {
+            hashes: [hash("1")],
+            lastTargetBlock: 102,
+            node: { id: "write-1", name: "Write Contract" },
+            valueReservationId: id,
+          });
+          await manager.markNonceDropped(session, 7, "not-picked");
+          await manager.endSession(session);
+          return { success: true, ...NOT_INCLUDED, included: false };
+        },
+        bundleReservationEnd
+      );
+      if (!reservationId) {
+        throw new Error("no reservation was made");
+      }
+      // Past the in-flight window (kept within today): only the hold keeps it counting.
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+      await db
+        .update(ext.orgValueReservations)
+        .set({
+          createdAt: new Date(
+            Math.max(Date.now() - 16 * 60_000, today.getTime() + 1000)
+          ),
+        })
+        .where(eq(ext.orgValueReservations.id, reservationId));
+      return reservationId;
+    }
+
+    const usedToday = (): Promise<bigint> =>
+      ledger.sumOrgValueTodayWei(db, ORG_ID);
+
+    it("keeps the reservation of a not-picked bundle at the cap, and a second send is refused with the reason", async () => {
+      const bundleRun = await run("not_landed");
+      const id = await missAtCap(bundleRun);
+
+      const [row] = await db
+        .select()
+        .from(ext.orgValueReservations)
+        .where(eq(ext.orgValueReservations.id, id));
+      expect(row?.status).toBe("held");
+      expect(await usedToday()).toBe(BigInt(CAP_WEI));
+
+      const second = await ledger.reserveOrgValue({
+        organizationId: ORG_ID,
+        valueWei: "1",
+      });
+      expect(second.allowed).toBe(false);
+      expect(!second.allowed && second.reason).toContain(
+        "held by Send as Bundle steps that were not included"
+      );
+    });
+
+    it("frees the value once another transaction used the nonce (row replaced)", async () => {
+      const bundleRun = await run("not_landed");
+      await missAtCap(bundleRun);
+      await setRow(7, { submittedAt: new Date(Date.now() - 11 * 60_000) });
+
+      await settleAt({ transactionCount: 8, latestBlock: 600 });
+
+      expect((await rowAt(7))?.status).toBe("replaced");
+      expect(await usedToday()).toBe(BigInt(0));
+      const second = await ledger.reserveOrgValue({
+        organizationId: ORG_ID,
+        valueWei: CAP_WEI,
+      });
+      expect(second.allowed).toBe(true);
+    });
+
+    it("frees the value once another send at the nonce is confirmed", async () => {
+      const bundleRun = await run("not_landed");
+      await missAtCap(bundleRun);
+      // Another send took the dropped nonce (the bundle history is kept), then was mined.
+      await setRow(7, { status: "pending", txHash: hash("9") });
+      expect(await usedToday()).toBe(BigInt(CAP_WEI));
+      await setRow(7, { status: "confirmed" });
+
+      expect(await usedToday()).toBe(BigInt(0));
+    });
+
+    it("counts a late landing once: the hold stays, nothing is charged again", async () => {
+      const bundleRun = await run("not_landed");
+      await missAtCap(bundleRun);
+      await logStep(bundleRun, "write-1", NOT_INCLUDED);
+
+      await settleAt({
+        transactionCount: 8,
+        latestBlock: 600,
+        mined: { [hash("1")]: 1 },
+      });
+
+      expect(await statusOf(bundleRun)).toBe("success");
+      expect((await rowAt(7))?.status).toBe("confirmed");
+      expect(await usedToday()).toBe(BigInt(CAP_WEI));
+      const rows = await db
+        .select()
+        .from(ext.orgValueReservations)
+        .where(eq(ext.orgValueReservations.organizationId, ORG_ID));
+      expect(rows).toHaveLength(1);
     });
   });
 

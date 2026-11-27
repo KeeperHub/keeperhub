@@ -58,6 +58,7 @@ import {
   MAX_BUNDLE_RUNS,
   MAX_BUNDLE_WINDOW_MS,
   type MinedHash,
+  provedReplaced,
   type ReceiptView,
   SESSION_HISTORY_SCAN_MS,
 } from "@/lib/web3/bundles/bundle-history";
@@ -93,6 +94,11 @@ export class NonceLockLostError extends Error {
       `Nonce lock for ${session.walletAddress}:${session.chainId} is no longer held by ${session.executionId}; refusing to allocate a nonce.`
     );
   }
+}
+
+/** The lock was still taken at the caller's wait limit: nothing was sent. */
+export class NonceLockWaitEndedError extends Error {
+  override readonly name = "NonceLockWaitEndedError" as const;
 }
 
 /**
@@ -252,12 +258,19 @@ export class NonceManager {
     walletAddress: string,
     chainId: number,
     executionId: string,
-    rpc: RpcProviderManager | ethers.Provider
+    rpc: RpcProviderManager | ethers.Provider,
+    // Stop waiting for the lock at this epoch ms (NonceLockWaitEndedError).
+    options: { waitUntil?: number } = {}
   ): Promise<{ session: NonceSession; validation: ValidationResult }> {
     const normalizedAddress = walletAddress.toLowerCase();
     const reader = chainReader(rpc);
 
-    await this.acquireLock(normalizedAddress, chainId, executionId);
+    await this.acquireLock(
+      normalizedAddress,
+      chainId,
+      executionId,
+      options.waitUntil
+    );
     const lockedAt = new Date();
 
     const lease: LockLease = {
@@ -391,9 +404,8 @@ export class NonceManager {
         .catch(() => null);
       return minedNonce;
     };
-    // `replaced` needs every read from the nonce endpoint, a finished scan and the mined
-    // count past the nonce. `current` (a pending row's own send, at most one bundle's
-    // hashes) is read outside the budget.
+    // `replaced` by the sweep's rule (provedReplaced). `current` (a pending row's own
+    // send, at most one bundle's hashes) is read outside the budget.
     const historyVerdict = async (
       tx: PendingTransaction,
       current: readonly string[] = []
@@ -409,12 +421,15 @@ export class NonceManager {
       );
       return {
         mined: scanned.mined,
-        replaced:
-          scanned.complete &&
-          first.nonceEndpointOnly &&
-          scanned.nonceEndpointOnly &&
-          minedCount !== null &&
-          minedCount > tx.nonce,
+        replaced: provedReplaced({
+          scanComplete: scanned.complete,
+          nonceEndpointOnly:
+            first.nonceEndpointOnly && scanned.nonceEndpointOnly,
+          minedCount,
+          nonce: tx.nonce,
+          submittedAt: tx.submittedAt,
+          now,
+        }),
       };
     };
     const pending: PendingTransaction[] = [];
@@ -738,6 +753,7 @@ export class NonceManager {
       workflowId?: string;
       gasPrice?: string;
       node?: BundleRun["node"];
+      valueReservationId?: string;
     }
   ): Promise<string[]> {
     const [first] = bundle.hashes;
@@ -755,6 +771,9 @@ export class NonceManager {
           hashes: [...new Set(bundle.hashes)],
           signedAt: Date.now(),
           ...(bundle.node && { node: bundle.node }),
+          ...(bundle.valueReservationId && {
+            valueReservationId: bundle.valueReservationId,
+          }),
         },
       },
     });
@@ -1043,11 +1062,17 @@ export class NonceManager {
   private async acquireLock(
     walletAddress: string,
     chainId: number,
-    executionId: string
+    executionId: string,
+    waitUntil?: number
   ): Promise<void> {
     let retries = this.maxLockRetries;
     const holdWait: HoldWait = { extended: false, preparing: false };
     for (let attempt = 0; attempt < retries; attempt++) {
+      if (attempt > 0 && waitUntil !== undefined && Date.now() >= waitUntil) {
+        throw new NonceLockWaitEndedError(
+          `The wallet ${walletAddress}:${chainId} was still in use at the wait limit`
+        );
+      }
       const now = new Date();
       const expiresAt = new Date(now.getTime() + this.lockTtlMs);
 

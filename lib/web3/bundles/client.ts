@@ -98,8 +98,7 @@ async function postBundle(
         "x-flashbots-signature": signature,
       },
       body,
-      // Never re-send the signed body to wherever a redirect points. "manual", not "error":
-      // a 3xx reads as refused (not forwarded) rather than as an unknown network error.
+      // Never re-send the signed body to wherever a redirect points.
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
       plugin: "bundle-builder",
@@ -125,8 +124,9 @@ function outcomeOfStatus(response: Response): Outcome | undefined {
   if (status >= 500 || status === HTTP_REQUEST_TIMEOUT) {
     return { delivery: "unknown", error: `HTTP ${status}` };
   }
+  // The host read the whole POST, signed bytes included: it may have sent.
   if (response.type === "opaqueredirect" || (status >= 300 && status < 400)) {
-    return { delivery: "refused", error: "redirect not followed" };
+    return { delivery: "unknown", error: "redirect not followed" };
   }
   return;
 }

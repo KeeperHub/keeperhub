@@ -54,7 +54,7 @@ export type ActionConfigFieldBase = {
     | "gas-sponsorship-switch" // "Sponsor gas" toggle on a write action; default-on, skips the sponsored route entirely when off
     | "datetime" // Native date + time picker (stores an ISO 8601 string)
     | "select" // Dropdown select
-    | "multi-select" // A list of names (JSON array of strings): choices from `options`, or an editorRenderer that supplies them
+    | "multi-select" // A list of names (JSON array of strings); its editorRenderer draws it
     | "chain-select" // Dynamic chain selector that fetches from /api/chains
     | "schema-builder" // Schema builder for structured output
     | "abi-function-select" // Dynamic dropdown that parses ABI and shows functions

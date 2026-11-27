@@ -22,7 +22,6 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toChecksumAddress } from "@/lib/address-utils";
-import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import { api, type ExecutionSummary } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";

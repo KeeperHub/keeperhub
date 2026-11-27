@@ -11,6 +11,8 @@ const state = vi.hoisted(() => ({
   }>,
   directSum: [{ totalWei: "0" }] as Array<{ totalWei: string }>,
   ledgerSum: [{ totalWei: "0" }] as Array<{ totalWei: string }>,
+  // The held-bundle sum a refusal reads third.
+  heldSum: [{ totalWei: "0" }] as Array<{ totalWei: string }>,
   directLamportsSum: [{ totalLamports: "0" }] as Array<{
     totalLamports: string;
   }>,
@@ -78,6 +80,8 @@ vi.mock("@/lib/db", () => ({
               state.reserveKind === "solana"
                 ? state.directLamportsSum
                 : state.directSum;
+          } else if (sumCall === 3) {
+            rows = state.heldSum;
           } else {
             rows =
               state.reserveKind === "solana"
@@ -156,6 +160,7 @@ beforeEach(() => {
   state.caps = [];
   state.directSum = [{ totalWei: "0" }];
   state.ledgerSum = [{ totalWei: "0" }];
+  state.heldSum = [{ totalWei: "0" }];
   state.directLamportsSum = [{ totalLamports: "0" }];
   state.ledgerLamportsSum = [{ totalLamports: "0" }];
   state.inserted = [];
@@ -363,12 +368,48 @@ describe("withValueCap", () => {
     await withValueCap(
       { organizationId: "org_1", valueWei: "100" },
       run,
-      (result) => result.moved
+      (result) => (result.moved ? "settle" : "release")
     );
 
     expect(state.updates).toEqual([
       expect.objectContaining({ status: "released" }),
     ]);
+  });
+
+  it("passes the reservation id to the run and holds when the caller says so", async () => {
+    state.caps = [{ dailyValueCapWei: "1000" }];
+    state.returningId = "res_9";
+    const run = vi
+      .fn<(id?: string) => Promise<{ success: boolean }>>()
+      .mockResolvedValue({ success: true });
+
+    await withValueCap(
+      { organizationId: "org_1", valueWei: "100" },
+      run,
+      () => "hold"
+    );
+
+    expect(run).toHaveBeenCalledWith("res_9");
+    expect(state.updates).toEqual([
+      expect.objectContaining({ status: "held" }),
+    ]);
+  });
+
+  it("names the value held by bundles not included in the refusal", async () => {
+    state.caps = [{ dailyValueCapWei: ONE_ETH_WEI }];
+    state.ledgerSum = [{ totalWei: ONE_ETH_WEI }];
+    state.heldSum = [{ totalWei: "500000000000000000" }];
+
+    const result = await reserveOrgValue({
+      organizationId: "org_1",
+      valueWei: "1",
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      reason:
+        "Daily spending cap exceeded: 0.5 in native value of today's total is held by Send as Bundle steps that were not included. Their signed transactions can still be mined, so that value counts until another transaction from the wallet uses their nonce.",
+    });
   });
 
   it("releases and rethrows when the run throws", async () => {

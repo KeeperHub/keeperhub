@@ -16,7 +16,7 @@ import {
   laggedMinedCount,
   MAX_BUNDLE_WINDOW_MS,
   ownerOf,
-  REPLACED_AFTER_MS,
+  provedReplaced,
   type ReceiptView,
   type RowKey,
 } from "./bundle-history";
@@ -146,12 +146,16 @@ export async function sweepLateBundles(
         }
         continue;
       }
-      const sentAt = row.submittedAt?.getTime() ?? now.getTime();
       // The nonce passed long ago and one node holding that block has none of these hashes.
       if (
-        complete &&
-        oneEndpoint &&
-        now.getTime() - sentAt >= REPLACED_AFTER_MS &&
+        provedReplaced({
+          scanComplete: complete,
+          nonceEndpointOnly: oneEndpoint,
+          minedCount: minedNonce.value,
+          nonce: row.nonce,
+          submittedAt: row.submittedAt,
+          now: now.getTime(),
+        }) &&
         (await markReplaced(row))
       ) {
         summary.replaced += 1;

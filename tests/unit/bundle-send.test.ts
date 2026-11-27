@@ -46,6 +46,9 @@ const h = vi.hoisted(() => ({
   markNonceDropped: vi.fn(),
   getGasConfig: vi.fn(),
   priorityFeeLimit: vi.fn(),
+  // Set: the real client posts through safeFetch below.
+  realClient: false,
+  safeFetch: vi.fn(),
 }));
 
 vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => {
@@ -101,21 +104,38 @@ vi.mock("@/lib/web3/nonce-manager", () => ({
     },
   }),
 }));
-vi.mock("@/lib/web3/bundles/client", () => ({
-  sendBundle: async (options: { targetBlock: number }) => {
-    h.events.push(`send:${options.targetBlock}`);
-    chain.sent = true;
-    return await h.sendBundle(options);
-  },
+vi.mock("@/lib/safe-fetch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/safe-fetch")>()),
+  safeFetch: (...args: unknown[]) => h.safeFetch(...args),
 }));
+vi.mock("@/lib/web3/bundles/client", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/web3/bundles/client")>();
+  return {
+    sendBundle: async (
+      options: Parameters<typeof actual.sendBundle>[0]
+    ): Promise<BuilderAnswer[]> => {
+      h.events.push(`send:${options.targetBlock}`);
+      chain.sent = true;
+      return h.realClient
+        ? await actual.sendBundle(options)
+        : await h.sendBundle(options);
+    },
+  };
+});
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { RpcProviderManager } from "@/lib/rpc/providers";
-import { BUNDLE_PRE_RECORD_MS } from "@/lib/web3/bundles/bundle-history";
+import {
+  BUNDLE_PRE_RECORD_MS,
+  BUNDLE_RUN_MARGIN_MS,
+  MAX_BUNDLE_WINDOW_MS,
+} from "@/lib/web3/bundles/bundle-history";
 import type { BuilderAnswer } from "@/lib/web3/bundles/client";
 import {
   BundleRecordError,
   BundleSigningError,
+  runTimeRefusal,
   sendBundleInSession,
 } from "@/lib/web3/bundles/send-bundle";
 import {
@@ -332,6 +352,7 @@ const accept = (options: { targetBlock: number }): BuilderAnswer[] => [
 beforeEach(() => {
   vi.clearAllMocks();
   h.events = [];
+  h.realClient = false;
   h.simulations = new Map();
   h.simOptions = [];
   h.sendBundle.mockImplementation(accept);
@@ -593,6 +614,65 @@ describe("sendBundleInSession", () => {
         accepted: false,
         error: "not in this network's builder list",
       },
+    ]);
+  });
+
+  it("refuses before recording when the run's time left is under the row's window plus the margin", async () => {
+    const progress = { sent: false };
+    const outcome = await sendBundleInSession(
+      input({ progress, runDeadline: Date.now() + MAX_BUNDLE_WINDOW_MS })
+    );
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      errorClass: ExecutionErrorType.USER,
+    });
+    expect(outcome.kind === "refused" && outcome.error).toContain(
+      "before its time limit"
+    );
+    expect(h.events).not.toContain("record");
+    expect(h.events.some((e) => e.startsWith("send:"))).toBe(false);
+    expect(progress.sent).toBe(false);
+  });
+
+  it("sends when the run has room for the window and the margin", async () => {
+    const outcome = await sendBundleInSession(
+      input({
+        runDeadline:
+          Date.now() + MAX_BUNDLE_WINDOW_MS + BUNDLE_RUN_MARGIN_MS + 60_000,
+      })
+    );
+    expect(outcome.kind).not.toBe("refused");
+    expect(h.events).toContain("record");
+  });
+
+  it("every builder answers 3xx: keeps the nonce and watches (the host read the signed bytes)", async () => {
+    h.realClient = true;
+    h.safeFetch.mockImplementation(async () =>
+      Response.redirect("https://elsewhere.example/", 308)
+    );
+    const outcome = await sendBundleInSession(
+      input({
+        builders: [
+          { name: "alpha", url: "https://alpha.example" },
+          { name: "beta", url: "https://beta.example" },
+        ],
+      })
+    );
+    expect(h.safeFetch).toHaveBeenCalled();
+    expect(outcome.kind).not.toBe("no-builder-accepted");
+    expect(outcome).toMatchObject({
+      kind: "not-included",
+      reason: "not-picked",
+    });
+    // Dropped only by the watch's decided miss, never for "no-builder-accepted".
+    expect(h.markNonceDropped).not.toHaveBeenCalledWith(
+      expect.anything(),
+      NONCE,
+      "no-builder-accepted"
+    );
+    expect(outcome.report?.builders).toEqual([
+      { name: "alpha", accepted: null, error: "redirect not followed" },
+      { name: "beta", accepted: null, error: "redirect not followed" },
     ]);
   });
 
@@ -1229,5 +1309,21 @@ describe("sendBundleInSession", () => {
         input({ signer: failing as unknown as ethers.Signer })
       )
     ).rejects.toBeInstanceOf(BundleSigningError);
+  });
+});
+
+describe("runTimeRefusal", () => {
+  it("passes with no known deadline or with room for the hold and the margin", () => {
+    expect(runTimeRefusal(undefined, 1000, 0)).toBeUndefined();
+    expect(
+      runTimeRefusal(1000 + BUNDLE_RUN_MARGIN_MS, 1000, 0)
+    ).toBeUndefined();
+  });
+
+  it("refuses with the seconds left and needed", () => {
+    expect(runTimeRefusal(20_500, 1000, 0)).toBe(
+      `This run has 20 s left before its time limit, and a bundle step may need up to ${Math.ceil((1000 + BUNDLE_RUN_MARGIN_MS) / 1000)} s, so nothing was sent. Put fewer bundle steps (or loop iterations that send bundles) in one run, or set Send as to Normal transaction.`
+    );
+    expect(runTimeRefusal(0, 1000, 5000)).toContain("has 0 s left");
   });
 });

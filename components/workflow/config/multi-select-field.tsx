@@ -38,8 +38,8 @@ type MultiSelectPickerProps = {
 };
 
 /**
- * A multi-select field: all by default (nothing stored), or a list of picked
- * values, at least one. The `multi-select` type's renderer; the bundle box uses it too.
+ * A multi-select picker: all by default (nothing stored), or a list of picked
+ * values, at least one. The bundle box's Builders field.
  */
 export function MultiSelectPicker({
   label,

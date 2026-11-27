@@ -4476,7 +4476,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect((await openIncident(wf))?.failureCount).toBe(3);
     });
 
-    it("a not landed run between two refusals does not break the pair", async () => {
+    it("a not landed run between two refusals breaks the pair: it was accepted", async () => {
       const org = await countingOrg("refusednotlanded");
       const wf = await makeWorkflow(
         org,
@@ -4487,7 +4487,32 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await addRun(org, wf, "not_landed", { at: at(-3), source: "webhook" });
       await unpaid(org, wf, -2);
       await runCycle();
-      expect((await openIncident(wf))?.openedBy).toBe("refused");
+      expect(await openIncident(wf)).toBeUndefined();
+    });
+
+    it("accepted again with every run not landed: the refused incident closes once, and no new one opens and closes in a loop", async () => {
+      const org = await countingOrg("refusedthennotlanded");
+      const wf = await makeWorkflow(org, "Refused then missing", "Webhook");
+      await unpaid(org, wf, -10);
+      await unpaid(org, wf, -9);
+      await runCycle();
+      const first = await openIncident(wf);
+      expect(first?.openedBy).toBe("refused");
+
+      await addRun(org, wf, "not_landed", { at: at(-5), source: "webhook" });
+      await runCycle();
+      await addRun(org, wf, "not_landed", { at: at(-4), source: "webhook" });
+      await runCycle();
+      await runCycle();
+
+      expect(await openIncident(wf)).toBeUndefined();
+      expect((await incidentById(first?.id))?.resolvedReason).toBe("ran");
+      const all = await db
+        .select({ id: workflowFailureIncidents.id })
+        .from(workflowFailureIncidents)
+        .where(eq(workflowFailureIncidents.workflowId, wf));
+      expect(all).toHaveLength(1);
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
     });
 
     it("an accepted run closes it; the recovery waits out the hold and says runs are accepted again", async () => {
@@ -4952,6 +4977,31 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         (d) => d.kind === "recovery"
       );
       expect(recovery?.context).toMatchObject({ bundleLanded: true });
+    });
+
+    it("bundles not landing again inside the hold continues the same incident and withdraws its recovery", async () => {
+      const org = await countingOrg("notlandingflap");
+      const wf = await makeWorkflow(org, "Bundles flapping");
+      await notLanded(org, wf, 3, -20);
+      await runCycle();
+      const first = await openIncident(wf);
+      expect(first?.openedBy).toBe("not_landing");
+
+      await addRun(org, wf, "success", { at: at(-8) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+
+      await notLanded(org, wf, 3, -5);
+      await runCycle();
+      const again = await openIncident(wf);
+      expect(again?.id).toBe(first?.id);
+      expect(again?.openedBy).toBe("not_landing");
+      const recoveries = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "recovery"
+      );
+      expect(recoveries.every((d) => d.state === "skipped")).toBe(true);
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
+      expect(await sentEmails(org, "recovery")).toHaveLength(0);
     });
 
     it("bundles not landing: no extra read and no alert where bundles are off", async () => {

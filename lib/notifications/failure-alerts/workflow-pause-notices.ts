@@ -1,7 +1,17 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, count, desc, eq, gt, isNull, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gt,
+  isNull,
+  ne,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   organization,
@@ -176,7 +186,13 @@ async function latestRunFailed(workflowId: string): Promise<boolean> {
       refused: sql<boolean>`${REFUSED_RUN_SQL}`,
     })
     .from(workflowExecutions)
-    .where(attemptConditions(workflowId, null))
+    .where(
+      and(
+        attemptConditions(workflowId, null),
+        // Neither a failure nor a success: stepped over, as the failure streak does.
+        ne(workflowExecutions.status, "not_landed")
+      )
+    )
     .orderBy(desc(workflowExecutions.startedAt))
     .limit(1);
   return run?.status === "error" || run?.refused === true;

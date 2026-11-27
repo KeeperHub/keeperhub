@@ -27,6 +27,7 @@ import { getNonceManager, type NonceSession } from "@/lib/web3/nonce-manager";
 import type { BuilderEndpoint } from "./builders";
 import {
   BUNDLE_PRE_RECORD_MS,
+  BUNDLE_RUN_MARGIN_MS,
   BUNDLE_WINDOW_MARGIN_BLOCKS,
   findMinedHash,
   MAX_BUNDLE_WINDOW_MS,
@@ -115,6 +116,10 @@ type BundleSendInput = {
   searcher: ethers.Signer;
   workflowId: string;
   node: NonNullable<BundleRun["node"]>;
+  // The step's value reservation, recorded on the row (see heldBundleMayMove).
+  valueReservationId?: string;
+  // When the run is stopped (epoch ms), if known: the hold must end before it.
+  runDeadline?: number;
   // Set once signed bytes may leave the platform, with what was sent.
   progress: { sent: boolean; report?: BundleReport };
   timing?: { pollMs?: number; windowMs?: number };
@@ -149,6 +154,27 @@ const TRIGGER_NOT_REACHED: Extract<BundleSendOutcome, { kind: "refused" }> = {
 };
 
 const POLL_MS = 1000;
+
+/**
+ * The refusal when a hold of `holdMs` from now (plus the run's margin) would
+ * pass the run's deadline: the run would be stopped with the wallet held and
+ * nothing written. Undefined when there is room or no deadline is known.
+ */
+export function runTimeRefusal(
+  runDeadline: number | undefined,
+  holdMs: number,
+  now: number = Date.now()
+): string | undefined {
+  if (runDeadline === undefined) {
+    return;
+  }
+  const needMs = holdMs + BUNDLE_RUN_MARGIN_MS;
+  const leftMs = runDeadline - now;
+  if (leftMs >= needMs) {
+    return;
+  }
+  return `This run has ${Math.max(0, Math.floor(leftMs / 1000))} s left before its time limit, and a bundle step may need up to ${Math.ceil(needMs / 1000)} s, so nothing was sent. Put fewer bundle steps (or loop iterations that send bundles) in one run, or set Send as to Normal transaction.`;
+}
 
 type Simulated = { block: number; gasEstimate: bigint };
 
@@ -593,6 +619,16 @@ async function sendInBudget(
   if (Date.now() >= preRecordEnd) {
     return TOO_SLOW;
   }
+  // And within the run: once recorded, the row holds the nonce for its window.
+  const outOfTime = runTimeRefusal(input.runDeadline, MAX_BUNDLE_WINDOW_MS);
+  if (outOfTime) {
+    return {
+      kind: "refused",
+      error: outOfTime,
+      errorClass: ExecutionErrorType.USER,
+      report: skippedField,
+    };
+  }
   let stepHashes: string[];
   try {
     stepHashes = await nonceManager.recordBundle(input.session, nonce, {
@@ -601,6 +637,9 @@ async function sendInBudget(
       workflowId: input.workflowId,
       gasPrice: maxFee.toString(),
       node: input.node,
+      ...(input.valueReservationId && {
+        valueReservationId: input.valueReservationId,
+      }),
     });
   } catch (error) {
     throw new BundleRecordError(getErrorMessage(error), { cause: error });

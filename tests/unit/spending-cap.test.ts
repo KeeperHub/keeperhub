@@ -76,7 +76,9 @@ vi.mock("@/lib/db", () => ({
             };
           }
           sumCall += 1;
-          const rows = sumCall === 1 ? state.sumRows : state.ledgerRows;
+          // A third sum is the held-bundle part, read only for a refusal.
+          const sums = [state.sumRows, state.ledgerRows];
+          const rows = sums[sumCall - 1] ?? [{ totalWei: "0" }];
           return {
             from: () => ({
               where: () => Promise.resolve(rows),

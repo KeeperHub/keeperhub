@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   BUNDLE_WINDOW_MARGIN_BLOCKS,
-  MAX_BUNDLE_TARGET_BLOCKS,
   MAX_BUNDLE_WINDOW_MS,
   type ReceiptView,
 } from "@/lib/web3/bundles/bundle-history";
@@ -9,7 +8,10 @@ import {
   type InclusionReads,
   watchInclusion,
 } from "@/lib/web3/bundles/inclusion";
-import { readBundleSettings } from "@/lib/web3/bundles/settings";
+import {
+  MAX_BUNDLE_BLOCKS,
+  readBundleSettings,
+} from "@/lib/web3/bundles/settings";
 
 // Blocks the receipt index may lag the nonce before "used elsewhere".
 const RECEIPT_LAG_BLOCKS = 2;
@@ -171,11 +173,13 @@ describe("bundle window", () => {
   const SLOT_MS = 12_000;
 
   it("fits the most targets a step may pick plus the decision margin inside the row's window", () => {
-    const most = readBundleSettings({ bundleBlocks: 5 });
-    expect(readBundleSettings({ bundleBlocks: 6 }).ok).toBe(false);
+    const most = readBundleSettings({ bundleBlocks: MAX_BUNDLE_BLOCKS });
+    expect(readBundleSettings({ bundleBlocks: MAX_BUNDLE_BLOCKS + 1 }).ok).toBe(
+      false
+    );
     const blocks = most.ok ? most.settings.blocks : 0;
-    expect(blocks).toBe(5);
-    expect(blocks).toBeLessThanOrEqual(MAX_BUNDLE_TARGET_BLOCKS);
+    expect(blocks).toBe(MAX_BUNDLE_BLOCKS);
+    // Fails if the settings cap is raised past what the window covers.
     expect((blocks + BUNDLE_WINDOW_MARGIN_BLOCKS + 1) * SLOT_MS).toBeLessThan(
       MAX_BUNDLE_WINDOW_MS
     );

@@ -369,14 +369,24 @@ export function inactiveResolution(
   return null;
 }
 
-/** Reopen the incident a recent success (or, for a refused one, an accepted run) closed, unless its recovery went out. */
+/** Which incidents continue one another inside the recovery hold. */
+type HoldKind = "failure" | "refused" | "not_landing";
+
+const holdKindOf = (openedBy: string): HoldKind =>
+  openedBy === "refused" || openedBy === "not_landing" ? openedBy : "failure";
+
+/**
+ * Reopen the incident of this kind a recent success (or, for a refused one, an
+ * accepted run) closed, unless its recovery went out.
+ */
 async function reopenRecovered(
   workflowId: string,
   failedAt: Date,
   now: Date,
-  closedBy: "success" | "ran" = "success"
+  kind: HoldKind = "failure"
 ): Promise<IncidentRow | null> {
-  const refused = closedBy === "ran";
+  const refused = kind === "refused";
+  const closedBy = refused ? "ran" : "success";
   const [last] = await db
     .select()
     .from(workflowFailureIncidents)
@@ -391,15 +401,14 @@ async function reopenRecovered(
   if (
     !last?.resolvedAt ||
     last.resolvedReason !== closedBy ||
-    (last.openedBy === "refused") !== refused ||
     // Bundles that missed are their own condition: a failure never continues it.
-    last.openedBy === "not_landing" ||
+    holdKindOf(last.openedBy) !== kind ||
     failedAt.getTime() >= last.resolvedAt.getTime() + RECOVERY_HOLD_MS
   ) {
     return null;
   }
-  // Only a refusal after the run that closed it reopens it.
-  if (refused && last.resolvingExecutionId) {
+  // Only a refusal (a miss) after the run that closed it reopens it.
+  if (kind !== "failure" && last.resolvingExecutionId) {
     const [ran] = await db
       .select({ startedAt: workflowExecutions.startedAt })
       .from(workflowExecutions)
@@ -829,7 +838,7 @@ async function openIfRefused(
     workflow.id,
     newest.refusedAt,
     now,
-    "ran"
+    "refused"
   );
   if (reopened) {
     await db
@@ -973,12 +982,8 @@ async function openIfNotLanding(
   opened: OpenedIncident[],
   stats: EvaluationStats
 ): Promise<Date | null> {
-  const streak = summarizeNotLanding(
-    runs,
-    policy.countingSince,
-    policy.threshold
-  );
-  if (!streak) {
+  const missing = summarizeNotLanding(runs, policy.countingSince, 1);
+  if (!missing) {
     return null;
   }
   const orgPause = activePause(policy.orgPausedUntil, now);
@@ -988,6 +993,29 @@ async function openIfNotLanding(
   if (isWorkflowAlertsPaused(policy, now)) {
     return policy.workflowPausedUntil;
   }
+  // Missing again inside the recovery hold: the incident a landing closed continues.
+  const reopened = await reopenRecovered(
+    workflow.id,
+    missing.firstFailedAt,
+    now,
+    "not_landing"
+  );
+  if (reopened) {
+    await db
+      .update(workflowFailureIncidents)
+      .set({
+        failureCount: Math.max(reopened.failureCount, missing.count),
+        lastFailedAt: missing.lastFailedAt,
+        lastFailedExecutionId: missing.lastRunId,
+        lastError: missing.lastError,
+      })
+      .where(eq(workflowFailureIncidents.id, reopened.id));
+    return null;
+  }
+  if (missing.count < policy.threshold) {
+    return null;
+  }
+  const streak = missing;
   const [row] = await db
     .insert(workflowFailureIncidents)
     .values({

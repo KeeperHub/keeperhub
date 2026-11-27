@@ -17,25 +17,30 @@ export const BUNDLE_STEP_ACTION_TYPES: readonly string[] = [
 export const BUNDLE_ROUTE = "bundle" as const;
 
 /**
- * Whether this Write Contract call moved no value and cannot still move it:
- * skipped in flight, or a bundle not included with the miss decided. Every
- * other bundle result keeps its own charge, a replay's included: the crashed
- * attempt's reservation lapses, so the replay's must hold the value.
+ * How a Write Contract result ends its value reservation. Skipped in flight
+ * moved nothing: released. A decided miss is held: its signed transactions
+ * can still be mined until the nonce is used, so it counts while its bundle
+ * row says so. Every other success keeps its own charge, a replay's included:
+ * the crashed attempt's reservation lapses, so the replay's must hold the value.
  */
-export function bundleMovedNoValue(result: {
+export function bundleReservationEnd(result: {
+  success: boolean;
   route?: string;
   included?: boolean;
   notIncludedReason?: string;
-}): boolean {
-  if (result.route === RUN_OUTCOME_OUTPUT.skippedInFlightRoute) {
-    return true;
+}): "settle" | "release" | "hold" {
+  if (!result.success) {
+    return "release";
   }
-  return (
+  if (result.route === RUN_OUTCOME_OUTPUT.skippedInFlightRoute) {
+    return "release";
+  }
+  const decidedMiss =
     result.route === BUNDLE_ROUTE &&
     result.included === false &&
     result.notIncludedReason !== undefined &&
-    result.notIncludedReason !== "not-checked"
-  );
+    result.notIncludedReason !== "not-checked";
+  return decidedMiss ? "hold" : "settle";
 }
 
 /** What the run's steps said, merged over every successful step. */
@@ -183,6 +188,9 @@ export const RUN_OUTCOME_REASON = {
     "Skipped: this workflow's earlier bundle could still land, so the bundle step sent no transaction.",
   not_landed: `Not landed: a bundle in this run was not seen in any of the blocks it was sent for (or could not be checked). No gas is paid unless a bundle lands${NOT_LANDED_STEP_POINTER}`,
 } as const;
+
+/** A not landed run's reason once one of its bundles was mined later (and paid gas). */
+export const NOT_LANDED_PARTLY_REASON = `Not landed: a bundle in this run was not seen in any of the blocks it was sent for (or could not be checked). Another bundle in it was mined later and paid gas; the rest may still land${NOT_LANDED_STEP_POINTER}`;
 
 /** Each notIncludedReason in plain words, for run views and alerts. */
 export const NOT_INCLUDED_REASON_TEXT: Readonly<Record<string, string>> = {

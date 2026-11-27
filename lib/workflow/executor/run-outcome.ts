@@ -95,17 +95,25 @@ export function runOutcomeLogSql(log: LogColumns): SQL {
   return sql`(${skippedInFlight} OR ${notIncluded})`;
 }
 
-/** The output keys a run view's step outcome reads, as SQL text (no step body read). */
-export function stepOutcomeKeysSql(output: AnyColumn): {
+/**
+ * The output keys a run view's step outcome reads, as SQL text (no step body
+ * read). Only Write Contract rows can carry them: the outer CASE keeps every
+ * other row from touching (detoasting) its output.
+ */
+export function stepOutcomeKeysSql(log: {
+  nodeType: AnyColumn;
+  output: AnyColumn;
+}): {
   route: SQL<string | null>;
   notIncludedReason: SQL<string | null>;
 } {
+  const { nodeType, output } = log;
+  const types = sql.join(BUNDLE_STEP_ACTION_TYPES.map(literal), sql`, `);
   // Only a JSON string counts, as in signalsOfStep (->> would turn a number into text).
   const stringAt = (key: string): SQL<string | null> =>
-    sql<
-      string | null
-    >`CASE WHEN jsonb_typeof(${output}->${literal(key)}) = 'string'
-      THEN ${output}->>${literal(key)} END`;
+    sql<string | null>`CASE WHEN ${nodeType} IN (${types})
+      THEN CASE WHEN jsonb_typeof(${output}->${literal(key)}) = 'string'
+        THEN ${output}->>${literal(key)} END END`;
   return {
     route: stringAt(RUN_OUTCOME_OUTPUT.routeKey),
     notIncludedReason: stringAt(RUN_OUTCOME_OUTPUT.notIncludedReasonKey),

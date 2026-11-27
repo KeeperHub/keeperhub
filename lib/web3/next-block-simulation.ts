@@ -14,7 +14,11 @@ import {
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
 import { ErrorCategory, logUserError } from "@/lib/logging";
-import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  lastEndpointErrorOf,
+  type RpcOperationType,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
@@ -797,8 +801,8 @@ export function isTriggerBlockNotReached(error: unknown): boolean {
     if ((current as { name?: unknown }).name === TRIGGER_NOT_REACHED_NAME) {
       return true;
     }
-    const next = current as { cause?: unknown; lastEndpointError?: unknown };
-    current = next.lastEndpointError ?? next.cause;
+    current =
+      lastEndpointErrorOf(current) ?? (current as { cause?: unknown }).cause;
   }
   return false;
 }

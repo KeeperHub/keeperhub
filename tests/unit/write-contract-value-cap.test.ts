@@ -171,19 +171,25 @@ describe("writeContractStep value cap for bundles", () => {
     vi.clearAllMocks();
   });
 
-  // Mirrors withValueCap: run, then settle when `settles` says so, else release.
-  async function capOutcome(core: object): Promise<"settled" | "released"> {
-    let outcome: "settled" | "released" | undefined;
+  const ENDED = { settle: "settled", release: "released", hold: "held" };
+
+  // Mirrors withValueCap: run with the reservation id, then end it as `ends` says.
+  async function capOutcome(
+    core: object
+  ): Promise<"settled" | "released" | "held"> {
+    let outcome: "settled" | "released" | "held" | undefined;
     mockWriteContractCore.mockResolvedValue(core);
     mockWithStepValueCap.mockImplementation(
       async (
         _args: unknown,
-        run: () => Promise<{ success: boolean }>,
-        settles: (result: { success: boolean }) => boolean = (result) =>
-          result.success
+        run: (reservationId?: string) => Promise<{ success: boolean }>,
+        ends: (result: {
+          success: boolean;
+        }) => "settle" | "release" | "hold" = (result) =>
+          result.success ? "settle" : "release"
       ) => {
-        const result = await run();
-        outcome = settles(result) ? "settled" : "released";
+        const result = await run("res-1");
+        outcome = ENDED[ends(result)] as "settled" | "released" | "held";
         return result;
       }
     );
@@ -216,14 +222,14 @@ describe("writeContractStep value cap for bundles", () => {
       "released",
     ],
     [
-      "not picked (decided miss)",
+      "not picked (decided miss, may still land until the nonce is used)",
       {
         success: true,
         ...sent,
         included: false,
         notIncludedReason: "not-picked",
       },
-      "released",
+      "held",
     ],
     [
       "not checked (may still land)",
@@ -262,5 +268,14 @@ describe("writeContractStep value cap for bundles", () => {
     ],
   ])("%s: the reservation is %s", async (_name, core, expected) => {
     expect(await capOutcome(core)).toBe(expected);
+  });
+
+  it("passes the reservation id to the core, for the bundle row", async () => {
+    await capOutcome({ success: true, ...sent, included: true });
+    expect(mockWriteContractCore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _context: expect.objectContaining({ valueReservationId: "res-1" }),
+      })
+    );
   });
 });

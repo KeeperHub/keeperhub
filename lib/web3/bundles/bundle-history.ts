@@ -6,6 +6,7 @@ import {
   pendingTransactions,
 } from "@/lib/db/schema-extensions";
 import { DAY_MS } from "@/lib/utils/duration";
+import { MAX_BUNDLE_BLOCKS } from "./settings";
 
 /** How long a dropped bundle's signed transactions are checked: they stay valid until the nonce is used. */
 export const LATE_BUNDLE_CHECK_MS = DAY_MS;
@@ -13,15 +14,16 @@ export const LATE_BUNDLE_CHECK_MS = DAY_MS;
 /** Most bundles kept per nonce; the oldest go first on reuse. */
 export const MAX_BUNDLE_RUNS = 20;
 
-/** Most blocks one bundle send may target, send-ahead included; the send plan clamps to it. */
-export const MAX_BUNDLE_TARGET_BLOCKS = 6;
-
 // Bundles go to mainnet builders only, whose slots are 12 s.
 const BUNDLE_BLOCK_MS = 12_000;
 
-/** Longest a bundle row may hold its nonce: a wrong latest block can never pin it longer. */
+/**
+ * Longest a bundle row may hold its nonce: a wrong latest block can never pin
+ * it longer. Derived from the most blocks a step may target (settings), plus
+ * one block, since the latest block a send plans from can already be a slot old.
+ */
 export const MAX_BUNDLE_WINDOW_MS =
-  MAX_BUNDLE_TARGET_BLOCKS * BUNDLE_BLOCK_MS + 60_000;
+  (MAX_BUNDLE_BLOCKS + 1) * BUNDLE_BLOCK_MS + 60_000;
 
 /** A node a block or two behind can still report the last target as latest. */
 export const BUNDLE_WINDOW_MARGIN_BLOCKS = 2;
@@ -42,8 +44,36 @@ export const BUNDLE_PRE_RECORD_MS =
 export const LONGEST_BUNDLE_HOLD_MS =
   BUNDLE_PRE_RECORD_MS + MAX_BUNDLE_WINDOW_MS;
 
+/** Room a run keeps after a bundle hold, to settle the step and write the run. */
+export const BUNDLE_RUN_MARGIN_MS = 30_000;
+
 /** A dropped row this old whose nonce passed with none of its hashes mined is closed out. */
-export const REPLACED_AFTER_MS = 10 * 60_000;
+const REPLACED_AFTER_MS = 10 * 60_000;
+
+/**
+ * The one rule for marking a bundle row `replaced` (the session and the sweep):
+ * a finished receipt scan, every read answered by the node the mined count came
+ * from, that count past the nonce, and the row at least REPLACED_AFTER_MS old.
+ * One load-balanced URL can hide a backend whose receipts lag its state; the
+ * age gives a landed bundle's receipt time to show everywhere.
+ */
+export function provedReplaced(check: {
+  scanComplete: boolean;
+  nonceEndpointOnly: boolean;
+  minedCount: number | null;
+  nonce: number;
+  submittedAt: Date | null;
+  now: number;
+}): boolean {
+  const sentAt = check.submittedAt?.getTime() ?? check.now;
+  return (
+    check.scanComplete &&
+    check.nonceEndpointOnly &&
+    check.minedCount !== null &&
+    check.minedCount > check.nonce &&
+    check.now - sentAt >= REPLACED_AFTER_MS
+  );
+}
 
 // A load-balanced URL's nodes can be a block or two apart. Counts blocks, not
 // time: fine for the bundle chains, whose block times are similar.

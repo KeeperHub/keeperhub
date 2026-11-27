@@ -394,7 +394,8 @@ export async function executeContractTransaction(
 export async function withNonceSession<T>(
   context: TransactionContext,
   walletAddress: string,
-  fn: (session: NonceSession) => Promise<T>
+  fn: (session: NonceSession) => Promise<T>,
+  options: { waitUntil?: number } = {}
 ): Promise<T> {
   const nonceManager = getNonceManager();
 
@@ -402,7 +403,8 @@ export async function withNonceSession<T>(
     walletAddress,
     context.chainId,
     context.executionId,
-    context.rpcManager
+    context.rpcManager,
+    options
   );
 
   if (!validation.valid) {

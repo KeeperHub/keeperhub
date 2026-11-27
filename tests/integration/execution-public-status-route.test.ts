@@ -2,6 +2,8 @@
  * Integration tests for public execution status access (FRICTION-09).
  */
 
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -277,6 +279,18 @@ describe("GET /api/workflows/executions/[executionId]/status public access", () 
         iterationIndex: true,
       });
       expect(Object.keys(query.extras)).toEqual(["route", "notIncludedReason"]);
+      // Rows of other step types never touch (detoast) their output.
+      const dialect = new PgDialect();
+      for (const extra of Object.values(query.extras)) {
+        const text = dialect
+          .sqlToQuery((extra as SQL.Aliased).sql)
+          .sql.replace(/\s+/g, " ");
+        const typeCheck = text.indexOf(
+          `CASE WHEN "workflow_execution_logs"."node_type" IN ('web3/write-contract', 'Write Contract') THEN`
+        );
+        expect(typeCheck).toBe(0);
+        expect(text.indexOf('"output"')).toBeGreaterThan(typeCheck);
+      }
     });
 
     it("gives no outcome to a step that is not Write Contract, such as a webhook trigger", async () => {

@@ -9,7 +9,7 @@ import { isBoolLiteral, isToggleValue, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { cutText } from "@/lib/utils/cut-text";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
-import { BUNDLE_SETTING_KEYS, readNameList } from "@/lib/web3/bundles/settings";
+import { BUNDLE_SETTING_KEYS } from "@/lib/web3/bundles/settings";
 import { SEND_MODE_KEY } from "@/lib/web3/send-mode";
 import {
   checkSolidityValue,
@@ -949,18 +949,6 @@ function validateFieldValue(
         isJsonArrayString(value)
         ? { valid: true }
         : { valid: false, expected: "array", received: value };
-    case "multi-select":
-      // The choices themselves are checked where they are known.
-      return readNameList(value, field.max) === null
-        ? {
-            valid: false,
-            expected:
-              field.max === undefined
-                ? "array of names, no templates"
-                : `array of up to ${field.max} names, no templates`,
-            received: value,
-          }
-        : { valid: true };
     case "abi-event-args":
       // Keyed by indexed parameter name, so the step refuses an array.
       return isRecord(value) ||

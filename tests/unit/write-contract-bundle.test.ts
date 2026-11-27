@@ -4,7 +4,7 @@
  * run-outcome signals the finalizer reads.
  */
 import { ethers } from "ethers";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/logging", () => ({
@@ -28,6 +28,9 @@ const h = vi.hoisted(() => ({
   send: vi.fn(),
   affordable: true,
   sessions: 0,
+  // The options the last nonce session was asked for, and an error it throws instead.
+  sessionOptions: undefined as unknown,
+  sessionError: undefined as Error | undefined,
 }));
 
 vi.mock("@/lib/web3/bundles/builders", async (importOriginal) => ({
@@ -51,8 +54,13 @@ vi.mock("@/lib/web3/transaction-manager", () => ({
   withNonceSession: async (
     _context: unknown,
     _wallet: string,
-    fn: (session: unknown) => Promise<unknown>
+    fn: (session: unknown) => Promise<unknown>,
+    options?: unknown
   ) => {
+    h.sessionOptions = options;
+    if (h.sessionError) {
+      throw h.sessionError;
+    }
     h.sessions += 1;
     return await fn({ currentNonce: 1 });
   },
@@ -70,11 +78,17 @@ vi.mock("@/lib/web3/chain-adapter", () => ({
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { logSystemError } from "@/lib/logging";
 import {
+  BUNDLE_RUN_MARGIN_MS,
+  LONGEST_BUNDLE_HOLD_MS,
+} from "@/lib/web3/bundles/bundle-history";
+import {
   BundleRecordError,
   BundleSigningError,
 } from "@/lib/web3/bundles/send-bundle";
+import { NonceLockWaitEndedError } from "@/lib/web3/nonce-manager";
 import { signalsOfStep } from "@/lib/workflow/executor/run-outcome";
-import { bundleMovedNoValue } from "@/lib/workflow/executor/run-outcome-keys";
+import { bundleReservationEnd } from "@/lib/workflow/executor/run-outcome-keys";
+import { RUN_DEADLINE_AT_ENV } from "@/lib/workflow/executor/runner-constants";
 import {
   type BundleRoute,
   bundleSignerRefusal,
@@ -122,6 +136,8 @@ beforeEach(() => {
   h.inFlight.mockResolvedValue({ kind: "none" });
   h.affordable = true;
   h.sessions = 0;
+  h.sessionOptions = undefined;
+  h.sessionError = undefined;
 });
 
 describe("prepareBundleRoute", () => {
@@ -413,7 +429,7 @@ describe("writeAsBundle", () => {
     expect(result).not.toHaveProperty("targetBlocks");
     expect(h.send).not.toHaveBeenCalled();
     expect(h.sessions).toBe(0);
-    expect(bundleMovedNoValue(result)).toBe(false);
+    expect(bundleReservationEnd(result)).toBe("settle");
   });
 
   it("finds a landed replay under the lock too (reconcile confirmed it), and reads its receipt after the lock", async () => {
@@ -434,7 +450,7 @@ describe("writeAsBundle", () => {
     expect(h.sessions).toBe(1);
   });
 
-  it("a replay of a decided miss returns that miss, signs nothing and releases its value", async () => {
+  it("a replay of a decided miss returns that miss, signs nothing and holds its value (on no row, so it counts nothing)", async () => {
     h.inFlight.mockResolvedValue({
       kind: "replay",
       missed: "no-longer-needed",
@@ -448,7 +464,7 @@ describe("writeAsBundle", () => {
     });
     expect(h.send).not.toHaveBeenCalled();
     expect(h.sessions).toBe(0);
-    expect(bundleMovedNoValue(result)).toBe(true);
+    expect(bundleReservationEnd(result)).toBe("hold");
   });
 
   it("a replay of a bundle no builder accepted fails again as it did, signing nothing", async () => {
@@ -669,7 +685,7 @@ describe("writeAsBundle", () => {
       ...REPORT,
     });
     // It was sent: its value stays charged.
-    expect(bundleMovedNoValue(after)).toBe(false);
+    expect(bundleReservationEnd(after)).toBe("settle");
     expect(logSystemError).toHaveBeenCalled();
   });
 
@@ -749,7 +765,7 @@ describe("writeAsBundle", () => {
   });
 });
 
-describe("bundleMovedNoValue (value cap)", () => {
+describe("bundleReservationEnd (value cap)", () => {
   const notIncluded = (reason: string): WriteContractResult => ({
     success: true,
     route: "bundle",
@@ -758,32 +774,95 @@ describe("bundleMovedNoValue (value cap)", () => {
     targetBlocks: [11, 12],
   });
 
-  it("releases a skip and a decided miss", () => {
-    expect(bundleMovedNoValue({ route: "skipped-in-flight" })).toBe(true);
-    expect(bundleMovedNoValue(notIncluded("not-picked"))).toBe(true);
-    expect(bundleMovedNoValue(notIncluded("no-longer-needed"))).toBe(true);
+  it("releases a skip and a failure", () => {
+    expect(
+      bundleReservationEnd({ success: true, route: "skipped-in-flight" })
+    ).toBe("release");
+    expect(
+      bundleReservationEnd({ success: false, route: "bundle", included: false })
+    ).toBe("release");
+  });
+
+  it("holds a decided miss: its signed transactions can still be mined", () => {
+    expect(bundleReservationEnd(notIncluded("not-picked"))).toBe("hold");
+    expect(bundleReservationEnd(notIncluded("no-longer-needed"))).toBe("hold");
   });
 
   it("keeps a replay's own charge: the crashed attempt's reservation lapses", () => {
     expect(
-      bundleMovedNoValue({
+      bundleReservationEnd({
+        success: true,
         route: "bundle",
         included: false,
         notIncludedReason: "not-checked",
       })
-    ).toBe(false);
-    expect(bundleMovedNoValue({ route: "bundle", included: true })).toBe(false);
+    ).toBe("settle");
+    expect(
+      bundleReservationEnd({ success: true, route: "bundle", included: true })
+    ).toBe("settle");
   });
 
-  it("keeps an undecided bundle, a landing and any other write", () => {
-    expect(bundleMovedNoValue(notIncluded("not-checked"))).toBe(false);
+  it("settles an undecided bundle, a landing and any other write", () => {
+    expect(bundleReservationEnd(notIncluded("not-checked"))).toBe("settle");
     const landed: WriteContractResult = {
       success: true,
       route: "bundle",
       included: true,
       targetBlocks: [11],
     };
-    expect(bundleMovedNoValue(landed)).toBe(false);
-    expect(bundleMovedNoValue({ route: "public", included: true })).toBe(false);
+    expect(bundleReservationEnd(landed)).toBe("settle");
+    expect(
+      bundleReservationEnd({ success: true, route: "public", included: true })
+    ).toBe("settle");
+  });
+});
+
+describe("bundle step vs the run's time limit", () => {
+  const NEED_MS = LONGEST_BUNDLE_HOLD_MS + BUNDLE_RUN_MARGIN_MS;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("refuses before taking the wallet's lock when the run has less time left than a hold", async () => {
+    vi.stubEnv(RUN_DEADLINE_AT_ENV, String(Date.now() + NEED_MS - 5000));
+    const result = await write();
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+      broadcastAttempted: false,
+    });
+    expect(!result.success && result.error).toContain("before its time limit");
+    expect(h.sessions).toBe(0);
+    expect(h.sessionOptions).toBeUndefined();
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("bounds the lock wait by the time left, and passes the deadline to the send", async () => {
+    const deadline = Date.now() + NEED_MS + 60_000;
+    vi.stubEnv(RUN_DEADLINE_AT_ENV, String(deadline));
+    h.send.mockResolvedValue(landed("0xab"));
+    await write();
+    expect(h.sessionOptions).toEqual({ waitUntil: deadline - NEED_MS });
+    expect(h.send.mock.calls[0][0]).toMatchObject({ runDeadline: deadline });
+  });
+
+  it("a lock wait that ran into the limit is the same refusal, nothing sent", async () => {
+    vi.stubEnv(RUN_DEADLINE_AT_ENV, String(Date.now() + NEED_MS + 1000));
+    h.sessionError = new NonceLockWaitEndedError("still in use");
+    const result = await write();
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+      broadcastAttempted: false,
+    });
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("waits without a limit when the run's deadline is unknown", async () => {
+    h.send.mockResolvedValue(landed("0xab"));
+    await write();
+    expect(h.sessionOptions).toEqual({});
+    expect(h.send.mock.calls[0][0]).toMatchObject({ runDeadline: undefined });
   });
 });

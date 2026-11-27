@@ -177,6 +177,8 @@ export type WriteContractCoreInput = {
     nodeType?: string;
     iterationIndex?: number;
     loopDepth?: number;
+    // The step's value reservation; a bundle records it on its row.
+    valueReservationId?: string;
   };
 };
 

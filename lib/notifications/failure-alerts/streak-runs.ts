@@ -56,8 +56,9 @@ export function attemptConditions(workflowId: string, since: Date | null) {
     isNotNull(workflowExecutions.completedAt),
     isNull(workflowExecutions.deletedAt),
     AUTOMATED_RUN_SQL,
-    // A not landed run neither counts nor resets, so it never takes a window slot.
-    sql`${workflowExecutions.status} NOT IN ('phantom', 'system_error', 'not_landed')`,
+    // A not landed run is accepted (as acceptedRunSql), so it ends a refusal streak;
+    // the failure streak steps over it (loadStreakRuns).
+    sql`${workflowExecutions.status} NOT IN ('phantom', 'system_error')`,
     sql`(${workflowExecutions.status} <> 'error'
       OR ${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})`,
     // A skip with no category (an expired Pyth signal) was never an attempt.

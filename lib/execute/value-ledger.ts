@@ -1,12 +1,13 @@
 import "server-only";
 
-import { and, eq, gte, ne, sql } from "drizzle-orm";
-import { formatUnits } from "viem";
+import { and, eq, gte, ne, type SQL, sql } from "drizzle-orm";
+import { formatEther, formatUnits } from "viem";
 import { db } from "@/lib/db";
 import {
   directExecutions,
   organizationSpendCaps,
   orgValueReservations,
+  pendingTransactions,
 } from "@/lib/db/schema-extensions";
 import {
   isOrgHalted,
@@ -26,6 +27,29 @@ import { logSecurityEvent } from "@/lib/logging";
 // Unconfirmed rows are exempt: the transaction is on chain and may have moved
 // the funds, so it keeps counting until the reconciler settles it.
 const STALE_INFLIGHT_MINUTES = 15;
+
+/**
+ * A `held` reservation (a bundle step's decided miss) counts while the bundle
+ * it was recorded on can still land or has landed: its row is pending or
+ * dropped, or confirmed with one of its hashes. Once another transaction uses
+ * the nonce (replaced, or confirmed with another hash) it stops counting.
+ * No stale cutoff: a signed bundle stays valid until its nonce is used.
+ */
+function heldBundleMayMove(reservationId: SQL): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${pendingTransactions}, jsonb_array_elements(${pendingTransactions.bundleRuns}) AS entry(run)
+    WHERE ${pendingTransactions.bundleRuns} @> jsonb_build_array(jsonb_build_object('valueReservationId', ${reservationId}))
+      AND entry.run->>'valueReservationId' = ${reservationId}
+      AND (${pendingTransactions.status} IN ('pending', 'dropped')
+        OR (${pendingTransactions.status} = 'confirmed' AND entry.run->'hashes' ? ${pendingTransactions.txHash})))`;
+}
+
+// Settled counts all day, reserved within the stale window, held while its bundle may move.
+const ledgerRowCounts = sql`CASE
+  WHEN ${orgValueReservations.status} = 'settled' THEN true
+  WHEN ${orgValueReservations.status} = 'reserved' THEN ${orgValueReservations.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes'
+  WHEN ${orgValueReservations.status} = 'held' THEN ${heldBundleMayMove(sql`${orgValueReservations.id}`)}
+  ELSE false END`;
 
 // biome-ignore lint/suspicious/noExplicitAny: accept either the app db or a tx
 type Executor = any;
@@ -71,13 +95,53 @@ export async function sumOrgValueTodayWei(
         eq(orgValueReservations.organizationId, organizationId),
         ne(orgValueReservations.status, "released"),
         gte(orgValueReservations.createdAt, todayStart),
-        sql`(${orgValueReservations.status} = 'settled' OR ${orgValueReservations.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes')`
+        ledgerRowCounts
       )
     );
 
   const direct = BigInt(directRows[0]?.totalWei ?? "0");
   const ledger = BigInt(ledgerRows[0]?.totalWei ?? "0");
   return direct + ledger;
+}
+
+/** The part of today's total held by bundle steps' decided misses that may still land. */
+async function sumOrgHeldTodayWei(
+  executor: Executor,
+  organizationId: string
+): Promise<bigint> {
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const rows = await executor
+    .select({
+      totalWei: sql<string>`COALESCE(SUM(CAST(${orgValueReservations.valueWei} AS NUMERIC)), 0)::text`,
+    })
+    .from(orgValueReservations)
+    .where(
+      and(
+        eq(orgValueReservations.organizationId, organizationId),
+        eq(orgValueReservations.status, "held"),
+        gte(orgValueReservations.createdAt, todayStart),
+        heldBundleMayMove(sql`${orgValueReservations.id}`)
+      )
+    );
+  return BigInt(rows[0]?.totalWei ?? "0");
+}
+
+const DAILY_CAP_EXCEEDED = "Daily spending cap exceeded";
+
+/**
+ * The wei cap's refusal. When bundles that were not included but may still
+ * land hold part of the day's total, it says how much and when it is freed.
+ */
+export async function dailyValueCapRefusal(
+  executor: Executor,
+  organizationId: string
+): Promise<string> {
+  const held = await sumOrgHeldTodayWei(executor, organizationId);
+  if (held <= BigInt(0)) {
+    return DAILY_CAP_EXCEEDED;
+  }
+  return `${DAILY_CAP_EXCEEDED}: ${formatEther(held)} in native value of today's total is held by Send as Bundle steps that were not included. Their signed transactions can still be mined, so that value counts until another transaction from the wallet uses their nonce.`;
 }
 
 /**
@@ -383,7 +447,10 @@ export async function reserveOrgValue(
     }
 
     if (exceeded) {
-      return { allowed: false, reason: "Daily spending cap exceeded" } as const;
+      return {
+        allowed: false,
+        reason: await dailyValueCapRefusal(tx, params.organizationId),
+      } as const;
     }
 
     const [row] = await tx
@@ -489,6 +556,20 @@ export async function settleReservation(reservationId: string): Promise<void> {
     .where(eq(orgValueReservations.id, reservationId));
 }
 
+/**
+ * Hold a reservation: a bundle step's decided miss whose signed transactions
+ * can still be mined. It counts while its bundle row says so (heldBundleMayMove).
+ */
+export async function holdReservation(reservationId: string): Promise<void> {
+  if (!reservationId) {
+    return;
+  }
+  await db
+    .update(orgValueReservations)
+    .set({ status: "held", updatedAt: new Date() })
+    .where(eq(orgValueReservations.id, reservationId));
+}
+
 /** Release a reservation (denied or failed); it drops out of the cap SUM. */
 export async function releaseReservation(reservationId: string): Promise<void> {
   if (!reservationId) {
@@ -500,17 +581,24 @@ export async function releaseReservation(reservationId: string): Promise<void> {
     .where(eq(orgValueReservations.id, reservationId));
 }
 
+/** How a result ends its reservation: settled, released, or held (see holdReservation). */
+export type ReservationEnd = "settle" | "release" | "hold";
+
+const endBySuccess = (result: { success: boolean }): ReservationEnd =>
+  result.success ? "settle" : "release";
+
 /**
  * Wrap a value-moving execution so it is charged against the org's daily cap.
- * Reserves `valueWei` before running `run`, then settles on a successful result
- * or releases on a failed result or a thrown error. A zero value skips the cap.
- * `settles` overrides which results keep the reservation (default: success).
- * Returns the run result, or a cap-exceeded failure without running.
+ * Reserves `valueWei` before running `run` (which gets the reservation id),
+ * then settles on a successful result or releases on a failed result or a
+ * thrown error. A zero value skips the cap. `ends` overrides how a result
+ * ends its reservation. Returns the run result, or a cap-exceeded failure
+ * without running.
  */
 export async function withValueCap<T extends { success: boolean }>(
   params: ReserveParams,
-  run: () => Promise<T>,
-  settles: (result: T) => boolean = (result) => result.success
+  run: (reservationId?: string) => Promise<T>,
+  ends: (result: T) => ReservationEnd = endBySuccess
 ): Promise<T | { success: false; error: string }> {
   if (params.valueWei === "0" || BigInt(params.valueWei) <= BigInt(0)) {
     return await run();
@@ -523,14 +611,17 @@ export async function withValueCap<T extends { success: boolean }>(
 
   let result: T;
   try {
-    result = await run();
+    result = await run(reservation.reservationId);
   } catch (error) {
     await releaseReservation(reservation.reservationId);
     throw error;
   }
 
-  if (settles(result)) {
+  const end = ends(result);
+  if (end === "settle") {
     await settleReservation(reservation.reservationId);
+  } else if (end === "hold") {
+    await holdReservation(reservation.reservationId);
   } else {
     await releaseReservation(reservation.reservationId);
   }
@@ -589,8 +680,8 @@ type StepValueCapArgs = {
   valueCapReserved?: boolean;
 };
 
-/** Which EVM results keep their reservation; default: every success. */
-type Settles<T> = (result: T) => boolean;
+/** How an EVM result ends its reservation; default: settled on success. */
+type Ends<T> = (result: T) => ReservationEnd;
 
 /**
  * Charge a workflow/protocol step's native value against the org's daily cap.
@@ -600,8 +691,8 @@ type Settles<T> = (result: T) => boolean;
  */
 export function withStepValueCap<T extends { success: boolean }>(
   args: StepValueCapArgs,
-  run: () => Promise<T>,
-  settles?: Settles<T>
+  run: (reservationId?: string) => Promise<T>,
+  ends?: Ends<T>
 ): Promise<T | { success: false; error: string }> {
   if (args.valueCapReserved || !args.organizationId) {
     return run();
@@ -640,6 +731,6 @@ export function withStepValueCap<T extends { success: boolean }>(
       ref: args.executionId,
     },
     run,
-    settles
+    ends
   );
 }

@@ -553,6 +553,8 @@ export type BundleRun = {
   node?: { id: string; name: string; iterationIndex?: number };
   // Set when the step decided the miss and dropped the row, so a replay returns it.
   missed?: BundleMiss;
+  // The step's value reservation: a held miss counts while this row may still land.
+  valueReservationId?: string;
 };
 
 /** A bundle miss its step decided: no builder picked it, it now reverts, or none accepted it. */
@@ -854,7 +856,8 @@ export type NewOrganizationSpendCap = typeof organizationSpendCaps.$inferInsert;
  * a row before broadcast and settles or releases it afterward.
  *
  * status: `reserved` (in-flight) -> `settled` (broadcast succeeded) | `released`
- * (denied or failed; excluded from the cap SUM). Wei stored as text for BigInt.
+ * (denied or failed; excluded from the cap SUM) | `held` (a bundle not included
+ * that can still land; counts while its bundle row says so). Wei stored as text for BigInt.
  */
 export const orgValueReservations = pgTable(
   "org_value_reservations",
@@ -872,7 +875,7 @@ export const orgValueReservations = pgTable(
     // and predates this) plus the real figure here, so the wei SUM is unaffected
     // by Solana activity and vice versa.
     valueLamports: text("value_lamports"),
-    status: text("status").notNull().default("reserved"), // reserved | settled | released
+    status: text("status").notNull().default("reserved"), // reserved | settled | released | held
     // Origin of the value-moving execution, for audit only.
     source: text("source"), // direct | workflow | protocol
     // Correlation id (executionId when available), for audit only.

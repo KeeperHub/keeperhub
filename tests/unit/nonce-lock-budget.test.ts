@@ -78,7 +78,10 @@ import {
   LONGEST_BUNDLE_HOLD_MS,
   MAX_BUNDLE_WINDOW_MS,
 } from "@/lib/web3/bundles/bundle-history";
-import { NonceManager } from "@/lib/web3/nonce-manager";
+import {
+  NonceLockWaitEndedError,
+  NonceManager,
+} from "@/lib/web3/nonce-manager";
 
 const WALLET = "0x1234567890123456789012345678901234567890";
 
@@ -205,5 +208,25 @@ describe("nonce lock defaults vs bundle holds", () => {
     expect(lock.expiresAt.getTime() - lock.lockedAt.getTime()).toBeGreaterThan(
       MAX_BUNDLE_WINDOW_MS
     );
+  });
+});
+
+describe("a lock wait bounded by the caller", () => {
+  it("stops at the wait limit with its own error, before the plain budget", async () => {
+    h.holders = [{ lockedBy: "exec-bundle", lockedAt: new Date() }];
+    h.bundleFromRead = 1;
+    const provider = { getTransactionCount: async () => 0 };
+    await expect(
+      new NonceManager().startSession(
+        WALLET,
+        1,
+        "exec-waiter",
+        provider as unknown as import("ethers").Provider,
+        { waitUntil: Date.now() }
+      )
+    ).rejects.toBeInstanceOf(NonceLockWaitEndedError);
+    // One try and one sleep: the limit had passed by the second try.
+    expect(h.inserted).toHaveLength(1);
+    expect(h.slept).toBe(200);
   });
 });

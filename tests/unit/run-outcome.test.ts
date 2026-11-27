@@ -184,16 +184,17 @@ describe("runOutcomeReason", () => {
 });
 
 describe("stepOutcomeKeysSql", () => {
-  it("reads each key only when it holds a JSON string, as signalsOfStep does", () => {
-    const keys = stepOutcomeKeysSql(workflowExecutionLogs.output);
+  it("reads each key only on a Write Contract row, and only when it holds a JSON string, as signalsOfStep does", () => {
+    const keys = stepOutcomeKeysSql(workflowExecutionLogs);
     const dialect = new PgDialect();
     for (const [part, key] of [
       [keys.route, "route"],
       [keys.notIncludedReason, "notIncludedReason"],
     ] as const) {
       const text = dialect.sqlToQuery(part).sql.replace(/\s+/g, " ");
-      expect(text).toContain(
-        `CASE WHEN jsonb_typeof("workflow_execution_logs"."output"->'${key}') = 'string' THEN "workflow_execution_logs"."output"->>'${key}' END`
+      // The node type is checked first, so no other row's output is read.
+      expect(text).toBe(
+        `CASE WHEN "workflow_execution_logs"."node_type" IN ('web3/write-contract', 'Write Contract') THEN CASE WHEN jsonb_typeof("workflow_execution_logs"."output"->'${key}') = 'string' THEN "workflow_execution_logs"."output"->>'${key}' END END`
       );
     }
   });
