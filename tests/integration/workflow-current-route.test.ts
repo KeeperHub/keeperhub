@@ -57,6 +57,7 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 import { POST } from "@/app/api/workflows/current/route";
+import { db } from "@/lib/db";
 
 function request(nodes: unknown[]): Request {
   return new Request("http://localhost:3000/api/workflows/current", {
@@ -161,5 +162,121 @@ describe("POST /api/workflows/current action config validation", () => {
 
     expect(response.status).toBe(409);
     expect(mockValidateWorkflowIntegrations).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/workflows/current Web3 Connection", () => {
+  const TARGET = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+  const mockValues = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue({
+      user: { id: "user-123", email: "user@example.com" },
+    });
+    mockGetOrgContext.mockResolvedValue({
+      organization: { id: "org-123" },
+    });
+    mockValidateWorkflowIntegrations.mockResolvedValue({ valid: true });
+    // No current workflow yet, so the route inserts one.
+    mockSelect.mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+    });
+    mockValues.mockImplementation((row: Record<string, unknown>) => ({
+      returning: () => Promise.resolve([{ id: "wf-1", ...row }]),
+    }));
+    vi.mocked(db.insert).mockReturnValue({
+      values: mockValues,
+    } as unknown as ReturnType<typeof db.insert>);
+  });
+
+  function step(config: Record<string, unknown>): Record<string, unknown> {
+    return {
+      id: "node-1",
+      type: "action",
+      data: { type: "action", config },
+    };
+  }
+
+  function storedConfig(): Record<string, unknown> {
+    const { nodes } = mockValues.mock.calls[0][0] as {
+      nodes: { data: { config: Record<string, unknown> } }[];
+    };
+    return nodes[0].data.config;
+  }
+
+  it("keeps one picked on a Write Contract step", async () => {
+    const response = await POST(
+      request([
+        step({
+          actionType: "web3/write-contract",
+          network: "1",
+          contractAddress: TARGET,
+          abi: JSON.stringify([
+            {
+              inputs: [],
+              name: "run",
+              outputs: [],
+              stateMutability: "nonpayable",
+              type: "function",
+            },
+          ]),
+          abiFunction: "run",
+          web3Connection: "safe:safe-1",
+        }),
+      ])
+    );
+    expect(response.status).toBe(200);
+    expect(storedConfig().web3Connection).toBe("safe:safe-1");
+  });
+
+  const AAVE = {
+    actionType: "aave-v3/supply",
+    network: "1",
+    asset: TARGET,
+    amount: "1",
+    onBehalfOf: TARGET,
+  };
+
+  it("drops a new one on an Aave step, which would ignore it", async () => {
+    // Only an editor session reaches this route, so it is stripped, not refused.
+    const response = await POST(
+      request([step({ ...AAVE, web3Connection: "safe:safe-1" })])
+    );
+    expect(response.status).toBe(200);
+    expect(storedConfig()).not.toHaveProperty("web3Connection");
+  });
+
+  it("drops one the stored draft already holds on an Aave step", async () => {
+    const mockSet = vi.fn((row: Record<string, unknown>) => ({
+      where: () => ({
+        returning: () => Promise.resolve([{ id: "wf-1", ...row }]),
+      }),
+    }));
+    mockSelect.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve([
+              {
+                id: "wf-1",
+                nodes: [step({ ...AAVE, web3Connection: "safe:safe-1" })],
+              },
+            ]),
+        }),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValue({
+      set: mockSet,
+    } as unknown as ReturnType<typeof db.update>);
+
+    const response = await POST(
+      request([step({ ...AAVE, web3Connection: "safe:safe-1" })])
+    );
+    expect(response.status).toBe(200);
+    const { nodes } = mockSet.mock.calls[0][0] as {
+      nodes: { data: { config: Record<string, unknown> } }[];
+    };
+    expect(nodes[0].data.config).not.toHaveProperty("web3Connection");
   });
 });

@@ -6,6 +6,8 @@
  * 2. MCP/AI producing inconsistent node formats (wrong type separators, config at wrong level)
  * 3. Missing positions. Applies auto-layout when all nodes are at origin
  * 4. Condition config normalization (missing ids, wrong operator formats, field name aliases)
+ * 5. A Web3 Connection on an action that never reads it is dropped, so a step
+ *    cannot look pinned to a sender it does not use (lib/workflow/web3-connection.ts)
  *
  * Canonical node format expected by the workflow executor:
  *   { id, type: "trigger"|"action", position: {x,y}, data: { label, description, type, config: { actionType, ...params }, status, enabled? } }
@@ -15,6 +17,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { nanoid } from "nanoid";
 import { computeAutoLayout } from "@/lib/workflow/editor/auto-layout";
 import type { ConditionOperator } from "@/lib/workflow/nodes/condition/builder-types";
+import { withoutIgnoredWeb3Connection } from "@/lib/workflow/web3-connection";
 
 /** Map common MCP/AI operator aliases to canonical ConditionOperator values */
 const OPERATOR_ALIASES: Record<string, ConditionOperator> = {
@@ -320,7 +323,10 @@ function extractConfig(
   return config;
 }
 
-function sanitizeNode(raw: Record<string, unknown>): Record<string, unknown> {
+function sanitizeNode(
+  raw: Record<string, unknown>,
+  keepWeb3Connection = false
+): Record<string, unknown> {
   const nodeType = String(raw.type ?? "action");
   const rawData = (raw.data ?? {}) as Record<string, unknown>;
   const isTrigger = isTriggerNode(raw);
@@ -346,7 +352,11 @@ function sanitizeNode(raw: Record<string, unknown>): Record<string, unknown> {
   const rawConfig = extractConfig(rawData, existingConfig);
 
   // Normalize condition config for Condition nodes (fix ids, operators, field names)
-  const config = normalizeConditionConfig(rawConfig);
+  const normalizedConfig = normalizeConditionConfig(rawConfig);
+  const config =
+    isTrigger || keepWeb3Connection
+      ? normalizedConfig
+      : withoutIgnoredWeb3Connection(normalizedConfig);
 
   // Build clean data object
   const data: Record<string, unknown> = {
@@ -428,6 +438,16 @@ function needsAutoLayout(sanitizedNodes: Record<string, unknown>[]): boolean {
 }
 
 /**
+ * The nodes in the sanitized shape but with every Web3 Connection kept, so a
+ * save can tell a value it sends from one already stored.
+ */
+export function sanitizeNodesKeepingWeb3Connection(
+  nodes: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  return nodes.map((node) => sanitizeNode(node, true));
+}
+
+/**
  * Sanitize workflow nodes and edges, stripping React Flow UI state and normalizing
  * inconsistent MCP/AI-generated node formats to the canonical structure.
  */
@@ -438,7 +458,7 @@ export function sanitizeWorkflowData(
   nodes: Record<string, unknown>[];
   edges: Record<string, unknown>[];
 } {
-  const sanitizedNodes = nodes.map(sanitizeNode);
+  const sanitizedNodes = nodes.map((node) => sanitizeNode(node));
   const sanitizedEdges = edges.map(sanitizeEdge);
 
   // Apply auto-layout when no meaningful positions were provided

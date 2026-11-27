@@ -192,7 +192,7 @@ describe("resolveSignerMode", () => {
 const SAFE_ID_EMPTY_RE = /safe id is empty/;
 const INVALID_WEB3_RE = /Invalid web3Connection/;
 const UNKNOWN_SAFE_RE = /unknown Safe/;
-const WRONG_ORG_RE = /does not belong to this organization/;
+const SIGNING_OFF_RE = /Sender toggle off/;
 const WRONG_CHAIN_RE = /is on chain 1/;
 const NOT_DEPLOYED_RE = /not deployed yet/;
 
@@ -333,13 +333,16 @@ describe("resolveSignerForNode", () => {
         isSigningActive: true,
       },
     ]);
-    await expect(
-      resolveSignerForNode({
-        organizationId: ORG_ID,
-        chainId: CHAIN_ID,
-        web3Connection: "safe:safe-1",
-      })
-    ).rejects.toThrow(WRONG_ORG_RE);
+    const error = await resolveSignerForNode({
+      organizationId: ORG_ID,
+      chainId: CHAIN_ID,
+      web3Connection: "safe:safe-1",
+    }).catch((e: Error) => e);
+    // Same message as a missing Safe, so another org's ids stay hidden.
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "web3Connection refers to unknown Safe 'safe-1'"
+    );
   });
 
   it("rejects safe:<id> when the Safe is on a different chain", async () => {
@@ -380,6 +383,26 @@ describe("resolveSignerForNode", () => {
         web3Connection: "safe:safe-1",
       })
     ).rejects.toThrow(NOT_DEPLOYED_RE);
+  });
+
+  it("rejects safe:<id> when the Safe's Sender toggle is off", async () => {
+    selectLimitMock.mockResolvedValueOnce([
+      {
+        id: "safe-1",
+        organizationId: ORG_ID,
+        chainId: CHAIN_ID,
+        safeAddress: SAFE,
+        status: "deployed",
+        isSigningActive: false,
+      },
+    ]);
+    await expect(
+      resolveSignerForNode({
+        organizationId: ORG_ID,
+        chainId: CHAIN_ID,
+        web3Connection: "safe:safe-1",
+      })
+    ).rejects.toThrow(SIGNING_OFF_RE);
   });
 });
 

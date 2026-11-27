@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import {
+  BATCH_EOA_NEEDS_EDITOR_MESSAGE,
+  DUPLICATE_NODE_ID_MESSAGE,
+  EOA_NEEDS_EDITOR_MESSAGE,
   formatActionConfigValidationResponse,
   hasDraftActionNodes,
   isKnownConfigKeyForAction,
@@ -2659,5 +2662,442 @@ describe("validateWorkflowActionConfigs - Batch Read Contract calls from a list"
           '[{"network":"1","contractAddress":"0x0000000000000000000000000000000000000001","abi":"[]","abiFunction":"foo","args":[]}]',
       })
     ).toEqual([]);
+  });
+});
+
+describe("Web3 Connection on save", () => {
+  const TARGET = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+  const WRITE_ABI = JSON.stringify([
+    {
+      inputs: [],
+      name: "run",
+      outputs: [],
+      stateMutability: "nonpayable",
+      type: "function",
+    },
+  ]);
+  const TOKEN = JSON.stringify({ mode: "custom", customToken: TARGET });
+  // A filled-in config for every action that reads the Web3 Connection.
+  const TAKES_IT: Record<string, Record<string, unknown>> = {
+    "web3/write-contract": {
+      network: "1",
+      contractAddress: TARGET,
+      abi: WRITE_ABI,
+      abiFunction: "run",
+    },
+    "web3/batch-write-contract": {
+      network: "1",
+      calls: JSON.stringify([
+        { contractAddress: TARGET, abi: WRITE_ABI, abiFunction: "run" },
+      ]),
+    },
+    "web3/approve-token": {
+      network: "1",
+      tokenConfig: TOKEN,
+      spenderAddress: TARGET,
+      amount: "1",
+    },
+    "web3/transfer-funds": {
+      network: "1",
+      amount: "0.1",
+      recipientAddress: TARGET,
+    },
+    "web3/transfer-token": {
+      network: "1",
+      tokenConfig: TOKEN,
+      amount: "1",
+      recipientAddress: TARGET,
+    },
+    "robinhood/trade-stock-token": {
+      network: "4663",
+      symbol: "AAPL",
+      side: "buy",
+      amountIn: "10",
+      minAmountOut: "0.01",
+      poolFee: "3000",
+      poolTickSpacing: "60",
+    },
+  };
+  const VALUES = ["default", "eoa", "safe:safe-123", ""];
+  const BATCH = "web3/batch-write-contract";
+
+  for (const [actionType, base] of Object.entries(TAKES_IT)) {
+    it(`accepts each value on ${actionType}`, () => {
+      expect(
+        validateWorkflowActionConfigs([actionNode(actionType, base)])
+      ).toEqual({ valid: true, issues: [] });
+      const values =
+        actionType === BATCH
+          ? VALUES.filter((v) => !v.startsWith("safe:"))
+          : VALUES;
+      for (const web3Connection of values) {
+        expect(
+          validateWorkflowActionConfigs([
+            actionNode(actionType, { ...base, web3Connection }),
+          ])
+        ).toEqual({ valid: true, issues: [] });
+      }
+      expect(isKnownConfigKeyForAction(actionType, "web3Connection")).toBe(
+        true
+      );
+    });
+  }
+
+  it.each([
+    "safe:",
+    "safe:  ",
+    "Safe:abc",
+    "wallet",
+    "{{@n1:Trigger.sender}}",
+    "safe:{{@n1:Trigger.safeId}}",
+    "safe:abc{{@n1:Trigger.x}}",
+    "safe: abc",
+    "safe:abc ",
+    "eoa ",
+    7,
+    null,
+  ])("refuses the malformed value %j with a field error", (web3Connection) => {
+    const result = validateWorkflowActionConfigs([
+      actionNode("web3/write-contract", {
+        ...TAKES_IT["web3/write-contract"],
+        web3Connection,
+      }),
+    ]);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_VALUE",
+        field: "web3Connection",
+        path: "nodes[0].data.config.web3Connection",
+      }),
+    ]);
+  });
+
+  it("accepts it on the legacy Write Contract and Transfer Funds ids, which run the same steps", () => {
+    for (const actionType of ["Write Contract", "Transfer Funds"]) {
+      expect(isKnownConfigKeyForAction(actionType, "web3Connection")).toBe(
+        true
+      );
+    }
+    const legacy = actionNode("Write Contract", {
+      ...TAKES_IT["web3/write-contract"],
+      web3Connection: "safe:safe-1",
+    });
+    expect(validateWorkflowActionConfigs([legacy])).toEqual({
+      valid: true,
+      issues: [],
+    });
+  });
+
+  it("refuses a Safe on Batch Write Contract, which sends from the EOA only", () => {
+    const result = validateWorkflowActionConfigs([
+      actionNode(BATCH, {
+        ...TAKES_IT[BATCH],
+        web3Connection: "safe:safe-1",
+      }),
+    ]);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_VALUE",
+        field: "web3Connection",
+        message: expect.stringContaining("sends every call from your EOA"),
+      }),
+    ]);
+  });
+
+  it("checks the value on a draft step too, and the pick alone keeps it a draft", () => {
+    const draft = actionNode("web3/write-contract", {
+      web3Connection: "safe:safe-1",
+    });
+    expect(validateWorkflowActionConfigs([draft])).toEqual({
+      valid: true,
+      issues: [],
+    });
+    expect(hasDraftActionNodes([draft])).toBe(true);
+    expect(
+      validateWorkflowActionConfigs([
+        actionNode("web3/write-contract", { web3Connection: "safe:" }),
+      ]).issues
+    ).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_VALUE",
+        field: "web3Connection",
+      }),
+    ]);
+  });
+
+  it.each([
+    "aave-v3/supply",
+    "lido/wrap",
+    "web3/sign-typed-data",
+    "web3/transfer-spl-token",
+    "web3/read-contract",
+  ])("does not accept it on %s, which never reads it", (actionType) => {
+    expect(isKnownConfigKeyForAction(actionType, "web3Connection")).toBe(false);
+  });
+});
+
+describe("Web3 Connection a request newly sets", () => {
+  const AAVE = "aave-v3/supply";
+  const BATCH = "web3/batch-write-contract";
+  const TRANSFER = "web3/transfer-funds";
+  const TRANSFER_CONFIG = {
+    network: "1",
+    amount: "0.1",
+    recipientAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+  };
+  const WRITE = {
+    network: "1",
+    contractAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+    abi: JSON.stringify([
+      {
+        inputs: [],
+        name: "run",
+        outputs: [],
+        stateMutability: "nonpayable",
+        type: "function",
+      },
+    ]),
+    abiFunction: "run",
+  };
+
+  // The route passes the request's nodes before the sanitizer strips them.
+  function check(
+    incoming: readonly unknown[],
+    stored: readonly unknown[] | undefined,
+    editorSession: boolean
+  ) {
+    return validateWorkflowActionConfigs([], {
+      web3Connections: {
+        incomingNodes: incoming,
+        storedNodes: stored,
+        editorSession,
+      },
+    });
+  }
+
+  it("refuses a new value on an action that ignores it, naming who sends", () => {
+    for (const web3Connection of ["eoa", "safe:s1"]) {
+      const result = check(
+        [actionNode(AAVE, { web3Connection })],
+        undefined,
+        false
+      );
+      expect(result.valid).toBe(false);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0]).toMatchObject({
+        code: "INVALID_FIELD_VALUE",
+        field: "web3Connection",
+        path: "nodes[0].data.config.web3Connection",
+      });
+      expect(result.issues[0].message).toMatch(
+        /: .+ is always sent from your Default Sender \(organization policy\); remove web3Connection\.$/
+      );
+    }
+    expect(
+      check(
+        [actionNode("web3/sign-typed-data", { web3Connection: "eoa" })],
+        undefined,
+        false
+      ).issues[0].message
+    ).toContain("is always signed by your organization's EOA");
+    expect(
+      check(
+        [actionNode("web3/read-contract", { web3Connection: "eoa" })],
+        undefined,
+        false
+      ).issues[0].message
+    ).toContain("does not use a Web3 Connection; remove web3Connection.");
+  });
+
+  it("refuses a new Safe on Transfer Native Token on a Solana network", () => {
+    const solana = actionNode(TRANSFER, {
+      ...TRANSFER_CONFIG,
+      network: "101",
+      web3Connection: "safe:s1",
+    });
+    const result = check([solana], undefined, false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        field: "web3Connection",
+        message: expect.stringContaining(
+          "is always sent from your organization's Solana wallet; remove web3Connection."
+        ),
+      }),
+    ]);
+    expect(check([solana], [solana], false).valid).toBe(true);
+  });
+
+  it("checks nothing for an editor session", () => {
+    const stored = [actionNode(AAVE, {})];
+    for (const incoming of [
+      [actionNode(AAVE, { web3Connection: "safe:s1" })],
+      [actionNode("web3/write-contract", { ...WRITE, web3Connection: "eoa" })],
+      [
+        actionNode("web3/write-contract", { ...WRITE, web3Connection: "eoa" }),
+        actionNode("web3/write-contract", { ...WRITE, web3Connection: "eoa" }),
+      ],
+    ]) {
+      expect(check(incoming, stored, true)).toEqual({
+        valid: true,
+        issues: [],
+      });
+    }
+  });
+
+  it("lets a stored value, empty, default and null through", () => {
+    const stored = [actionNode(AAVE, { web3Connection: "eoa" })];
+    expect(check(stored, stored, false).valid).toBe(true);
+    for (const web3Connection of ["", "default", null]) {
+      expect(
+        check([actionNode(AAVE, { web3Connection })], undefined, false).valid
+      ).toBe(true);
+    }
+  });
+
+  it("compares by node id", () => {
+    const stored = [actionNode(AAVE, { web3Connection: "eoa" }, "other")];
+    expect(
+      check([actionNode(AAVE, { web3Connection: "eoa" })], stored, false).valid
+    ).toBe(false);
+    const changed = [actionNode(AAVE, { web3Connection: "safe:s1" })];
+    expect(
+      check(changed, [actionNode(AAVE, { web3Connection: "eoa" })], false).valid
+    ).toBe(false);
+  });
+
+  it("refuses a new eoa from a caller that is not an editor session", () => {
+    const incoming = [
+      actionNode("web3/write-contract", { ...WRITE, web3Connection: "eoa" }),
+    ];
+    const result = check(incoming, undefined, false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_VALUE",
+        field: "web3Connection",
+        expected: 'empty, "default" or "safe:<safeWalletId>"',
+        message: EOA_NEEDS_EDITOR_MESSAGE,
+      }),
+    ]);
+    expect(check(incoming, undefined, true).valid).toBe(true);
+    expect(check(incoming, incoming, false).valid).toBe(true);
+    for (const web3Connection of ["default", "safe:s1", ""]) {
+      expect(
+        check(
+          [actionNode("web3/write-contract", { ...WRITE, web3Connection })],
+          undefined,
+          false
+        ).valid
+      ).toBe(true);
+    }
+  });
+
+  it("names no Safe when it refuses eoa on Batch Write Contract", () => {
+    const batch = [
+      actionNode(BATCH, { network: "1", calls: "[]", web3Connection: "eoa" }),
+    ];
+    const result = check(batch, undefined, false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        expected: 'empty or "default"',
+        message: BATCH_EOA_NEEDS_EDITOR_MESSAGE,
+      }),
+    ]);
+    expect(result.issues[0].message).not.toMatch(/safe/i);
+    expect(check(batch, batch, false).valid).toBe(true);
+  });
+
+  describe("eoa from an API key or OAuth caller", () => {
+    const eoaWrite = actionNode("web3/write-contract", {
+      ...WRITE,
+      web3Connection: "eoa",
+    });
+
+    it("passes on a stored EOA step sent back unchanged, in any key order", () => {
+      const reordered = actionNode(
+        "web3/write-contract",
+        Object.fromEntries(
+          Object.entries({ ...WRITE, web3Connection: "eoa" }).reverse()
+        )
+      );
+      expect(check([reordered], [eoaWrite], false).valid).toBe(true);
+    });
+
+    it.each([
+      [
+        "the contract",
+        { contractAddress: "0x1111111111111111111111111111111111111111" },
+      ],
+      ["the network", { network: "8453" }],
+      ["the function", { abiFunction: "other" }],
+      ["an argument", { functionArgs: "[1]" }],
+      ["any other key", { gasLimitMultiplier: "2" }],
+    ])("refuses a change to %s", (_name, change) => {
+      const changed = actionNode("web3/write-contract", {
+        ...WRITE,
+        ...change,
+        web3Connection: "eoa",
+      });
+      expect(check([changed], [eoaWrite], false).issues).toEqual([
+        expect.objectContaining({ message: EOA_NEEDS_EDITOR_MESSAGE }),
+      ]);
+    });
+
+    it("refuses a change of action type", () => {
+      const transfer = actionNode(TRANSFER, {
+        ...TRANSFER_CONFIG,
+        web3Connection: "eoa",
+      });
+      const storedTransfer = actionNode(TRANSFER, {
+        ...TRANSFER_CONFIG,
+        web3Connection: "eoa",
+      });
+      expect(check([transfer], [eoaWrite], false).valid).toBe(false);
+      expect(check([transfer], [storedTransfer], false).valid).toBe(true);
+    });
+
+    it("refuses a stored eoa the stored step ignored, now on a step that reads it", () => {
+      const legacyAave = actionNode(AAVE, { web3Connection: "eoa" });
+      expect(check([eoaWrite], [legacyAave], false).valid).toBe(false);
+      const solana = actionNode(TRANSFER, {
+        ...TRANSFER_CONFIG,
+        network: "101",
+        web3Connection: "eoa",
+      });
+      const evm = actionNode(TRANSFER, {
+        ...TRANSFER_CONFIG,
+        web3Connection: "eoa",
+      });
+      expect(check([evm], [solana], false).valid).toBe(false);
+      // Even with the config otherwise equal, the stored step must read it.
+      expect(check([legacyAave], [legacyAave], false).valid).toBe(true);
+    });
+
+    it("matches each stored step once and refuses shared ids", () => {
+      const result = check([eoaWrite, eoaWrite], [eoaWrite], false);
+      expect(result.issues).toHaveLength(2);
+      expect(result.issues[0].message).toBe(DUPLICATE_NODE_ID_MESSAGE);
+      for (const web3Connection of ["safe:s1", "default"]) {
+        const twin = actionNode("web3/write-contract", {
+          ...WRITE,
+          web3Connection,
+        });
+        expect(check([twin, twin], undefined, false).valid).toBe(false);
+      }
+      const plain = actionNode("web3/write-contract", WRITE);
+      expect(check([plain, plain], undefined, false).valid).toBe(true);
+    });
+
+    it("refuses an eoa step with no id", () => {
+      const noId = { ...eoaWrite, id: undefined };
+      expect(check([noId], [eoaWrite], false).valid).toBe(false);
+    });
+  });
+
+  it("checks nothing when the route does not ask", () => {
+    expect(
+      validateWorkflowActionConfigs([
+        actionNode("web3/write-contract", { ...WRITE, web3Connection: "eoa" }),
+      ]).valid
+    ).toBe(true);
   });
 });

@@ -17,6 +17,7 @@ import {
   isPreBroadcastNetworkError,
 } from "@/lib/web3/submit-signed";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { userOrSystemErrorClass } from "@/lib/errors/classify";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
@@ -666,17 +667,19 @@ async function batchWriteContractCoreImpl(
   try {
     signerMode = await resolveSignerForNode({ organizationId, chainId, web3Connection });
   } catch (error) {
+    // A class keeps failOnError=false from softening it; USER or SYSTEM by message.
+    const message = `Failed to resolve Web3 Connection: ${getErrorMessage(error)}`;
     return {
       success: false,
-      error: `Failed to resolve Web3 Connection: ${getErrorMessage(error)}`,
-      errorClass: ExecutionErrorType.SYSTEM,
+      error: message,
+      errorClass: userOrSystemErrorClass(message),
     };
   }
   if (signerMode.kind !== SIGNER_MODE.EOA) {
     return {
       success: false,
       error:
-        "Batch Write Contract only supports the default EOA Web3 Connection. Safe/Role routing would change msg.sender for every batched call, which is not supported here. Use individual Write Contract nodes for Safe execution instead.",
+        "Batch Write Contract sends every call from your EOA, but this step resolves to a Safe. Pick EOA in its Web3 Connection, or use Write Contract steps to send from the Safe.",
       errorClass: ExecutionErrorType.USER,
     };
   }

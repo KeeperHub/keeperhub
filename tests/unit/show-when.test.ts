@@ -314,10 +314,21 @@ describe("evaluateShowWhen", () => {
       ).toBe(true);
       expect(
         evaluateShowWhen(predicate, {
+          actionType: "web3/write-contract",
           network: "1",
           web3Connection: "safe:abc",
         })
       ).toBe(true);
+    });
+
+    it("ignores a stale Safe sender on a step that never reads it", () => {
+      expect(
+        evaluateShowWhen(predicate, {
+          actionType: "aave-v3/supply",
+          network: "1",
+          web3Connection: "safe:abc",
+        })
+      ).toBe(false);
     });
 
     it("shows the field when sponsorship is off for the deployment", () => {

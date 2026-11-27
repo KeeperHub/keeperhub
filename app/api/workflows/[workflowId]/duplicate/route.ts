@@ -16,6 +16,7 @@ import { findActionById, flattenConfigFields } from "@/plugins/registry";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import { clearStrayToggles } from "@/lib/workflow/validation/action-config";
+import { withOnlySafeWeb3Connections } from "@/lib/workflow/web3-connection";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 // Node type for type-safe node manipulation
 type WorkflowNodeLike = {
@@ -191,11 +192,12 @@ export async function POST(
       duplicatedNodes as Record<string, unknown>[],
       duplicatedEdges as Record<string, unknown>[]
     );
-    // A copy into another organization starts with no stray toggle values.
+    // A copy into another organization starts with no stray toggle values and
+    // no EOA pick; a picked Safe stays and fails closed at run there.
     const newNodes =
       sourceWorkflow.organizationId === organizationId
         ? sanitized.nodes
-        : clearStrayToggles(sanitized.nodes);
+        : withOnlySafeWeb3Connections(clearStrayToggles(sanitized.nodes));
     const newEdges = sanitized.edges;
 
     const featureGuard = await enforceWorkflowFeatures(

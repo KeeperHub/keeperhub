@@ -76,14 +76,18 @@ The "compromised EOA" row is intentional: at threshold 1, the role is policy, no
 
 ## Per-node Sender override
 
-Workflow nodes that send transactions (Transfer Native Token, Transfer ERC20, Approve ERC20, Write Contract, and any protocol action that writes on chain) have a **Web3 Connection** picker in their config.
+Write Contract, Batch Write Contract, Approve ERC20 Token, Transfer Native Token (on EVM networks), Transfer ERC20 Token and Robinhood Trade Stock Token nodes have a **Web3 Connection** picker in their config. Batch Write Contract sends from the EOA only: its picker offers no Safe, and it fails if the org's Default Sender is a Safe.
+
+Other actions that send or sign have no picker and show who sends instead. Protocol actions that write on chain (Aave, Lido, Morpho, Uniswap and the rest) always send from the Default Sender under organization policy. Sign Typed Data always signs with the organization's EOA. The Solana writes use the organization's Solana wallet.
 
 | Option | What it does | Stored value | Use when |
 |---|---|---|---|
 | Default Sender (Safe) | Routes through the org's active Safe Sender on this chain. Auto-switches if you change the Sender later. | `default` | Standard production setup once a Safe is the active Sender. |
 | Default Sender (EOA) | No Safe is the active Sender, so this falls back to the Turnkey EOA. Auto-switches if you turn on a Safe Sender later. | `default` | Default state before you turn on a Safe. |
 | EOA | Pins this node to the Turnkey EOA even if a Safe is the active Sender. Bypasses any Zodiac Roles policy. | `eoa` | Diagnostics, or a one-off node that must skip the Safe entirely. The picker shows a yellow warning when you pick this while a Safe is the org default. |
-| Safe `0x…` | Pins this node to a specific Safe by id, regardless of the org default. Only deployed, signing-active Safes on the node's chain appear. | `safe:<safeWalletId>` | You have multiple Safes and want one node to always use a specific one. |
+| Safe `0x…` | Pins this node to a specific Safe by id, regardless of the org default. Only deployed, signing-active Safes on the node's chain appear, and a run fails if the pinned Safe's Sender toggle is later turned off. | `safe:<safeWalletId>` | You have multiple Safes and want one node to always use a specific one. |
+
+A workflow copied into another organization, or imported, keeps a pinned Safe and drops an `eoa` pin. A Safe from another organization fails the run until you pick a sender there.
 
 If the node's network is templated (e.g. `{{trigger.chainId}}`), only Default and EOA are pickable. A specific Safe can't be bound to a chain that isn't known until runtime.
 

@@ -238,7 +238,7 @@ async function estimateBatchWriteContract(
   });
   if (signerMode.kind !== SIGNER_MODE.EOA) {
     return badRequest(
-      "Batch Write Contract only supports the default EOA Web3 Connection. Safe/Role routing would change msg.sender for every batched call, which is not supported here. Use individual Write Contract nodes for Safe execution instead."
+      "Batch Write Contract sends every call from your EOA, but this step resolves to a Safe. Pick EOA in its Web3 Connection, or use Write Contract steps to send from the Safe."
     );
   }
 

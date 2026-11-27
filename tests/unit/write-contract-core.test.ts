@@ -1080,6 +1080,48 @@ describe("writeContractCore RPC resolution failure", () => {
   });
 });
 
+describe("writeContractCore Web3 Connection resolution failure", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+  });
+
+  const input = {
+    contractAddress: "0x1234567890123456789012345678901234567890",
+    network: "ethereum",
+    abi: VALID_ABI,
+    abiFunction: "transfer",
+    web3Connection: "safe:gone",
+    _context: { organizationId: "org-1" },
+  };
+
+  it("hard-fails a picked sender the run cannot use, even with failOnError off", async () => {
+    vi.mocked(resolveSignerForNode).mockRejectedValueOnce(
+      new Error("web3Connection refers to unknown Safe 'gone'")
+    );
+
+    const result = applyFailOnError(await writeContractCore(input), false);
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+  });
+
+  it("hard-fails a resolver fault as SYSTEM, even with failOnError off", async () => {
+    vi.mocked(resolveSignerForNode).mockRejectedValueOnce(
+      new Error("connection terminated")
+    );
+
+    const result = applyFailOnError(await writeContractCore(input), false);
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.SYSTEM,
+    });
+  });
+});
+
 describe("writeContractCore broadcast with an unreadable receipt", () => {
   beforeEach(() => {
     vi.clearAllMocks();

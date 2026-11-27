@@ -347,6 +347,91 @@ describe("POST /api/workflows/import", () => {
     expect(mockIncrementCounter).toHaveBeenCalledWith("workflow.imports.total");
   });
 
+  it("keeps a picked Safe and drops eoa, so no step falls back to another sender", async () => {
+    const target = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+    const writeNode = {
+      id: "action-2",
+      type: "action",
+      position: { x: 400, y: 0 },
+      data: {
+        label: "Write",
+        type: "action",
+        config: {
+          actionType: "web3/write-contract",
+          network: "1",
+          contractAddress: target,
+          abi: JSON.stringify([
+            {
+              inputs: [],
+              name: "run",
+              outputs: [],
+              stateMutability: "nonpayable",
+              type: "function",
+            },
+          ]),
+          abiFunction: "run",
+          web3Connection: "safe:safe-1",
+        },
+        status: "idle",
+      },
+    };
+    const exportPayload = buildWorkflowExportV1({
+      name: "sender import",
+      description: null,
+      nodes: [
+        storedWorkflow.nodes[0],
+        writeNode,
+        {
+          ...writeNode,
+          id: "action-3",
+          data: {
+            ...writeNode.data,
+            config: {
+              actionType: "aave-v3/supply",
+              network: "1",
+              asset: target,
+              amount: "1",
+              onBehalfOf: target,
+              web3Connection: "eoa",
+            },
+          },
+        },
+        {
+          ...writeNode,
+          id: "action-4",
+          data: {
+            ...writeNode.data,
+            config: { ...writeNode.data.config, web3Connection: "eoa" },
+          },
+        },
+      ] as WorkflowNode[],
+      edges: [],
+    });
+    // The export file itself keeps every value; the import drops eoa.
+    expect(exportPayload.nodes[1].data.config).toHaveProperty(
+      "web3Connection",
+      "safe:safe-1"
+    );
+
+    const { POST } = await import("@/app/api/workflows/import/route");
+    const response = await POST(
+      new Request("http://localhost/api/workflows/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(exportPayload),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const nodes = insertedRows[0].nodes as {
+      data: { config: Record<string, unknown> };
+    }[];
+    expect(nodes[1].data.config.web3Connection).toBe("safe:safe-1");
+    expect(nodes[2].data.config).not.toHaveProperty("web3Connection");
+    expect(nodes[3].data.config.actionType).toBe("web3/write-contract");
+    expect(nodes[3].data.config).not.toHaveProperty("web3Connection");
+  });
+
   it("rejects invalid action configs before importing workflow", async () => {
     const exportPayload = buildWorkflowExportV1({
       name: "invalid import",

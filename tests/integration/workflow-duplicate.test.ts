@@ -377,3 +377,102 @@ describe("Workflow duplicate API with a stray toggle value", () => {
     expect(kept).not.toBe(TEMPLATE);
   });
 });
+
+describe("Workflow duplicate API with a picked Web3 Connection", () => {
+  const withSender = (organizationId: string) => ({
+    ...sourceWorkflow,
+    organizationId,
+    nodes: [
+      sourceWorkflow.nodes[0],
+      {
+        id: "write-1",
+        type: "action",
+        position: { x: 0, y: 100 },
+        data: {
+          label: "Write",
+          type: "action",
+          config: {
+            actionType: "web3/write-contract",
+            network: "1",
+            web3Connection: "safe:safe-1",
+          },
+          status: "idle",
+        },
+      },
+      {
+        id: "aave-1",
+        type: "action",
+        position: { x: 0, y: 200 },
+        data: {
+          label: "Supply",
+          type: "action",
+          config: {
+            actionType: "aave-v3/supply",
+            network: "1",
+            web3Connection: "eoa",
+          },
+          status: "idle",
+        },
+      },
+      {
+        id: "write-2",
+        type: "action",
+        position: { x: 0, y: 300 },
+        data: {
+          label: "Write EOA",
+          type: "action",
+          config: {
+            actionType: "web3/write-contract",
+            network: "1",
+            web3Connection: "eoa",
+          },
+          status: "idle",
+        },
+      },
+    ],
+  });
+
+  async function duplicateConfigs(): Promise<Record<string, unknown>[]> {
+    const { POST } = await import(
+      "@/app/api/workflows/[workflowId]/duplicate/route"
+    );
+    const response = await POST(
+      new Request("http://localhost/api/workflows/source-wf-1/duplicate", {
+        method: "POST",
+      }),
+      { params: Promise.resolve({ workflowId: "source-wf-1" }) }
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    return body.nodes
+      .slice(1)
+      .map(
+        (node: { data: { config: Record<string, unknown> } }) =>
+          node.data.config
+      );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbQuery.workflows.findMany.mockResolvedValue([]);
+    mockMemberLimit.mockResolvedValue([{ id: "member-1" }]);
+  });
+
+  it("keeps it on Write Contract and drops it on Aave in a same-org copy", async () => {
+    mockDbQuery.workflows.findFirst.mockResolvedValue(withSender("org-1"));
+    const [write, aave, writeEoa] = await duplicateConfigs();
+    expect(write.web3Connection).toBe("safe:safe-1");
+    expect(aave).not.toHaveProperty("web3Connection");
+    expect(writeEoa.web3Connection).toBe("eoa");
+  });
+
+  it("keeps a Safe and drops eoa in a copy into another organization", async () => {
+    mockDbQuery.workflows.findFirst.mockResolvedValue(withSender("org-other"));
+    const [write, aave, writeEoa] = await duplicateConfigs();
+    // A Safe fails closed at run there instead of falling back to a sender.
+    expect(write.web3Connection).toBe("safe:safe-1");
+    expect(aave).not.toHaveProperty("web3Connection");
+    expect(writeEoa).not.toHaveProperty("web3Connection");
+    expect(writeEoa.actionType).toBe("web3/write-contract");
+  });
+});

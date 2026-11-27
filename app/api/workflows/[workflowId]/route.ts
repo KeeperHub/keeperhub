@@ -37,13 +37,20 @@ import {
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
 import { recordWorkflowSnapshot } from "@/lib/workflow/history";
-import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
+import {
+  sanitizeNodesKeepingWeb3Connection,
+  sanitizeWorkflowData,
+} from "@/lib/workflow/editor/sanitize-nodes";
 import {
   executionLogNotDeleted,
   executionLogSoftDeleteValues,
   softDeleteValues,
 } from "@/lib/workflow/soft-delete";
 import { isReservedSlug } from "@/lib/workflow/reserved-slugs";
+import {
+  validateEoaExposureLock,
+  validateEoaWorkflowLock,
+} from "@/lib/workflow/validation/eoa-workflow-lock";
 import {
   formatActionConfigValidationResponse,
   hasDraftActionNodes,
@@ -79,14 +86,18 @@ function sanitizeNodesForPublicView(
       sanitizedNode.data !== null
     ) {
       const data = { ...(sanitizedNode.data as Record<string, unknown>) };
-      // Remove integrationId from config to not expose which integrations are used
+      // Remove integrationId and the picked sender from config to not expose
+      // which integrations or wallets are used
       if (
         data.config &&
         typeof data.config === "object" &&
         data.config !== null
       ) {
-        const { integrationId: _, ...configWithoutIntegration } =
-          data.config as Record<string, unknown>;
+        const {
+          integrationId: _,
+          web3Connection: _sender,
+          ...configWithoutIntegration
+        } = data.config as Record<string, unknown>;
         data.config = configWithoutIntegration;
       }
       sanitizedNode.data = data;
@@ -620,17 +631,54 @@ export async function PATCH(
       }
 
       // Stray toggle values already stored are let through (keptStrayMatcher),
-      // compared in the same sanitized shape as the incoming nodes.
+      // compared in the same sanitized shape as the incoming nodes. A Web3
+      // Connection is compared before the sanitizer drops an ignored one.
+      const storedNodes = existingWorkflow.nodes ?? [];
       const actionConfigValidation = validateWorkflowActionConfigs(
         updateData.nodes,
         {
-          savedNodes: sanitizeWorkflowData(existingWorkflow.nodes ?? [], [])
-            .nodes,
+          savedNodes: sanitizeWorkflowData(storedNodes, []).nodes,
+          web3Connections: {
+            incomingNodes: sanitizeNodesKeepingWeb3Connection(body.nodes),
+            storedNodes: sanitizeNodesKeepingWeb3Connection(storedNodes),
+            editorSession: authContext.authMethod === "session",
+          },
         }
       );
       if (!actionConfigValidation.valid) {
         return NextResponse.json(
           formatActionConfigValidationResponse(actionConfigValidation),
+          { status: 422 }
+        );
+      }
+    }
+
+    // While a step sends from the EOA, an API key or OAuth caller may only
+    // send the workflow back, remove that pin, or reduce its exposure.
+    if (authContext.authMethod !== "session") {
+      const storedNodes = existingWorkflow.nodes ?? [];
+      const storedEdges = existingWorkflow.edges ?? [];
+      const graphLock =
+        body.nodes !== undefined || body.edges !== undefined
+          ? validateEoaWorkflowLock({
+              // A non-array (null included) never equals the stored graph.
+              incomingNodes:
+                body.nodes === undefined ? storedNodes : body.nodes,
+              incomingEdges:
+                body.edges === undefined ? storedEdges : body.edges,
+              storedNodes,
+              storedEdges,
+            })
+          : { valid: true, issues: [] };
+      const eoaLock = graphLock.valid
+        ? validateEoaExposureLock(
+            { ...existingWorkflow, nodes: storedNodes },
+            body
+          )
+        : graphLock;
+      if (!eoaLock.valid) {
+        return NextResponse.json(
+          formatActionConfigValidationResponse(eoaLock),
           { status: 422 }
         );
       }

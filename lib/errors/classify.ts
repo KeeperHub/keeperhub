@@ -195,6 +195,14 @@ const RULES: readonly Rule[] = [
     errorType: ExecutionErrorType.USER,
     code: null,
   },
+  // The node's Web3 Connection names a sender this run cannot use: a malformed
+  // value, an unknown Safe, a Safe on another chain, undeployed or not Sender.
+  {
+    pattern: /^Failed to resolve Web3 Connection: (Invalid )?web3Connection /,
+    errorCategory: ErrorCategory.CONFIGURATION,
+    errorType: ExecutionErrorType.USER,
+    code: null,
+  },
   {
     pattern: /^Invalid contract address/i,
     errorCategory: ErrorCategory.VALIDATION,
@@ -585,6 +593,16 @@ export function classifyExecutionError(
     errorType: ExecutionErrorType.SYSTEM,
     code: DEFAULT_SYSTEM_ERROR_CODE,
   };
+}
+
+/**
+ * USER when the classifier reads the message as the author's to fix, else
+ * SYSTEM. A step uses it so failOnError=false never softens the failure.
+ */
+export function userOrSystemErrorClass(message: string): ExecutionErrorType {
+  return classifyExecutionError(message).errorType === ExecutionErrorType.USER
+    ? ExecutionErrorType.USER
+    : ExecutionErrorType.SYSTEM;
 }
 
 /**

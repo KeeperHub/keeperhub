@@ -1,10 +1,12 @@
 import { ADDRESS_BOOK_SELECTION_KEY } from "@/lib/address-book-selection";
+import { actionRequiresCredentials } from "@/lib/integration-helpers";
 import { systemActionToggleKeys } from "@/lib/mcp/workflow-schema-constants";
 import {
   isSolidityArrayType,
   normalizeProtocolArrayValue,
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
+import { stableStringify } from "@/lib/stable-json";
 import { isBoolLiteral, isToggleValue, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { cutText } from "@/lib/utils/cut-text";
@@ -34,10 +36,20 @@ import {
 } from "@/lib/workflow/template-ref";
 import { strayValueParts } from "@/lib/workflow/validation/stray-toggle-value";
 import {
+  actionTakesSafeSender,
+  actionTakesWeb3Connection,
+  fixedSenderNote,
+  isUnsetWeb3Connection,
+  stepTakesWeb3Connection,
+  WEB3_CONNECTION_KEY,
+  web3ConnectionProblem,
+} from "@/lib/workflow/web3-connection";
+import {
   type ActionConfigField,
   type ActionConfigFieldBase,
   findActionById,
   getAllActions,
+  getIntegration,
   isDefaultOnToggleField,
   isDisplayOnlyField,
   isToggleField,
@@ -486,6 +498,15 @@ function isMetadataKey(key: string): boolean {
   return METADATA_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
+// A picked Web3 Connection alone does not make a draft step a filled-in one.
+function isNonParamKey(actionType: string, key: string): boolean {
+  return (
+    RESERVED_CONFIG_KEYS.has(key) ||
+    isMetadataKey(key) ||
+    (key === WEB3_CONNECTION_KEY && actionTakesWeb3Connection(actionType))
+  );
+}
+
 // Whether a config key is accepted for the given action. Mirrors the
 // UNKNOWN_FIELD check in validateWorkflowActionConfigs so the editor can prune
 // cross-action leftovers before save with the same allowlist the server uses.
@@ -496,6 +517,9 @@ export function isKnownConfigKeyForAction(
 ): boolean {
   if (RESERVED_CONFIG_KEYS.has(key)) {
     return true;
+  }
+  if (key === WEB3_CONNECTION_KEY) {
+    return actionTakesWeb3Connection(actionType);
   }
   const action = findActionById(actionType);
   if (!action) {
@@ -976,7 +1000,242 @@ export function clearStrayToggles(
 export type ActionConfigValidationOptions = {
   // The workflow's nodes as stored, when an existing workflow is saved.
   savedNodes?: readonly unknown[];
+  // Checks a Web3 Connection from an API key or OAuth caller.
+  web3Connections?: NewWeb3ConnectionCheck;
 };
+
+export type NewWeb3ConnectionCheck = {
+  // The request's nodes in the sanitized shape with every Web3 Connection
+  // kept (sanitizeNodesKeepingWeb3Connection), index for index.
+  incomingNodes: readonly unknown[];
+  // The stored nodes in the same shape.
+  storedNodes?: readonly unknown[];
+  // An editor session is not checked; the sanitizer drops ignored values.
+  editorSession: boolean;
+};
+
+export const EOA_NEEDS_EDITOR_MESSAGE =
+  "Only someone in the editor can set or change a step that sends from the EOA; API and MCP callers can send a stored EOA step back exactly as stored, or use default or a Safe.";
+
+export const BATCH_EOA_NEEDS_EDITOR_MESSAGE =
+  "Only someone in the editor can set or change a step that sends from the EOA; API and MCP callers can send a stored EOA step back exactly as stored, or use default.";
+
+export const DUPLICATE_NODE_ID_MESSAGE =
+  "Another step has the same id; API and MCP callers must give each step its own id when one sets web3Connection.";
+
+function nodeConfig(node: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(node)) {
+    return;
+  }
+  const data = node.data;
+  const config = isRecord(data) ? data.config : undefined;
+  return isRecord(config) ? config : undefined;
+}
+
+type StoredStep = { config: Record<string, unknown>; disabled: boolean };
+
+function isDisabledNode(node: Record<string, unknown>): boolean {
+  return isRecord(node.data) && node.data.enabled === false;
+}
+
+// The first stored step for each node id.
+function storedStepsById(
+  storedNodes: readonly unknown[] | undefined
+): Map<string, StoredStep> {
+  const byId = new Map<string, StoredStep>();
+  for (const node of storedNodes ?? []) {
+    const config = nodeConfig(node);
+    if (
+      config &&
+      isRecord(node) &&
+      typeof node.id === "string" &&
+      !byId.has(node.id)
+    ) {
+      byId.set(node.id, { config, disabled: isDisabledNode(node) });
+    }
+  }
+  return byId;
+}
+
+function duplicateNodeIds(nodes: readonly unknown[]): Set<string> {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const node of nodes) {
+    if (isRecord(node) && typeof node.id === "string") {
+      if (seen.has(node.id)) {
+        duplicates.add(node.id);
+      }
+      seen.add(node.id);
+    }
+  }
+  return duplicates;
+}
+
+function actionDisplayName(actionType: string): string {
+  const action = findActionById(actionType);
+  if (!action) {
+    return `Action "${actionType}"`;
+  }
+  const plugin = getIntegration(action.integration);
+  return plugin ? `${plugin.label}: ${action.label}` : action.label;
+}
+
+// Why an action that never reads the field cannot take it, named for the user.
+function ignoredWeb3ConnectionMessage(
+  actionType: string,
+  network: unknown
+): string {
+  const action = findActionById(actionType);
+  const sends =
+    (action?.credentialIntegrationType ?? action?.integration) === "web3" &&
+    actionRequiresCredentials(actionType);
+  const name = actionDisplayName(actionType);
+  if (!sends) {
+    return `${name} does not use a Web3 Connection; remove web3Connection.`;
+  }
+  const note = fixedSenderNote(actionType, network) ?? "";
+  return `${name} is always ${note.charAt(0).toLowerCase()}${note.slice(1)}; remove web3Connection.`;
+}
+
+type Web3ConnectionRefusal = { expected: string; message: string };
+
+type NewWeb3ConnectionContext = {
+  stored: Map<string, StoredStep>;
+  duplicates: Set<string>;
+  // Stored ids an unchanged EOA step already matched.
+  matched: Set<string>;
+};
+
+// A stored step that sent from the EOA, sent back with its whole config and
+// its enabled flag unchanged.
+function isUnchangedEoaStep(
+  stored: StoredStep | undefined,
+  config: Record<string, unknown>,
+  disabled: boolean
+): boolean {
+  return (
+    stored !== undefined &&
+    stored.disabled === disabled &&
+    stepTakesWeb3Connection(stored.config.actionType, stored.config.network) &&
+    stableStringify(stored.config) === stableStringify(config)
+  );
+}
+
+function eoaRefusal(actionType: string): Web3ConnectionRefusal {
+  return actionTakesSafeSender(actionType)
+    ? {
+        expected: 'empty, "default" or "safe:<safeWalletId>"',
+        message: EOA_NEEDS_EDITOR_MESSAGE,
+      }
+    : {
+        expected: 'empty or "default"',
+        message: BATCH_EOA_NEEDS_EDITOR_MESSAGE,
+      };
+}
+
+type IncomingStep = {
+  config: Record<string, unknown>;
+  actionType: string;
+  id: string | undefined;
+  disabled: boolean;
+};
+
+function web3ConnectionRefusal(
+  { config, actionType, id, disabled }: IncomingStep,
+  context: NewWeb3ConnectionContext
+): Web3ConnectionRefusal | null {
+  const value = config[WEB3_CONNECTION_KEY];
+  if (id !== undefined && context.duplicates.has(id)) {
+    return { expected: "a unique node id", message: DUPLICATE_NODE_ID_MESSAGE };
+  }
+  if (isUnsetWeb3Connection(value)) {
+    return null;
+  }
+  if (stepTakesWeb3Connection(actionType, config.network)) {
+    if (value !== "eoa") {
+      return null;
+    }
+    if (
+      id !== undefined &&
+      !context.matched.has(id) &&
+      isUnchangedEoaStep(context.stored.get(id), config, disabled)
+    ) {
+      context.matched.add(id);
+      return null;
+    }
+    return eoaRefusal(actionType);
+  }
+  // The step ignores it, so only a value its stored node holds goes through.
+  if (
+    id !== undefined &&
+    context.stored.get(id)?.config[WEB3_CONNECTION_KEY] === value
+  ) {
+    return null;
+  }
+  if (!(findActionById(actionType) || isSystemActionType(actionType))) {
+    // An unknown action type is reported on its own.
+    return null;
+  }
+  return {
+    expected: "empty",
+    message: ignoredWeb3ConnectionMessage(actionType, config.network),
+  };
+}
+
+/**
+ * Checks a Web3 Connection from an API key or OAuth caller. A new value on a
+ * step that ignores it is refused, and "eoa" passes only on a stored EOA step
+ * sent back unchanged, enabled flag included. Editor sessions are not checked.
+ */
+function newWeb3ConnectionIssues(
+  check: NewWeb3ConnectionCheck
+): ActionConfigValidationIssue[] {
+  if (check.editorSession) {
+    return [];
+  }
+  const issues: ActionConfigValidationIssue[] = [];
+  const context: NewWeb3ConnectionContext = {
+    stored: storedStepsById(check.storedNodes),
+    duplicates: duplicateNodeIds(check.incomingNodes),
+    matched: new Set(),
+  };
+  for (const [nodeIndex, rawNode] of check.incomingNodes.entries()) {
+    if (!isRecord(rawNode)) {
+      continue;
+    }
+    const node = rawNode as WorkflowNodeForValidation;
+    const config = node.data?.config;
+    if (!(isActionNode(node) && isRecord(config))) {
+      continue;
+    }
+    const actionType = config.actionType;
+    const value = config[WEB3_CONNECTION_KEY];
+    if (typeof actionType !== "string" || value === undefined) {
+      continue;
+    }
+    const id = typeof node.id === "string" ? node.id : undefined;
+    const refusal = web3ConnectionRefusal(
+      { config, actionType, id, disabled: isDisabledNode(rawNode) },
+      context
+    );
+    if (!refusal) {
+      continue;
+    }
+    const identity = nodeIdentity(node, `nodes[${nodeIndex}]`);
+    issues.push({
+      code: "INVALID_FIELD_VALUE",
+      path: `nodes[${nodeIndex}].data.config.${WEB3_CONNECTION_KEY}`,
+      actionType,
+      field: WEB3_CONNECTION_KEY,
+      nodeId: identity.nodeId,
+      nodeLabel: identity.nodeLabel,
+      expected: refusal.expected,
+      received: capReceived(value),
+      message: refusal.message,
+    });
+  }
+  return issues;
+}
 
 export function validateWorkflowActionConfigs(
   nodes: WorkflowNodeForValidation[],
@@ -1063,18 +1322,41 @@ export function validateWorkflowActionConfigs(
       continue;
     }
 
+    const identity = nodeIdentity(node, `nodes[${nodeIndex}]`);
+    // A Solana transfer ignores it, so there it is an unknown field.
+    const takesWeb3Connection = stepTakesWeb3Connection(
+      actionType,
+      config.network
+    );
+    // Checked before the draft skip, so a draft cannot hold a malformed sender.
+    const web3Problem = takesWeb3Connection
+      ? web3ConnectionProblem(actionType, config[WEB3_CONNECTION_KEY])
+      : null;
+    if (web3Problem) {
+      issues.push({
+        code: "INVALID_FIELD_VALUE",
+        path: `nodes[${nodeIndex}].data.config.${WEB3_CONNECTION_KEY}`,
+        actionType,
+        field: WEB3_CONNECTION_KEY,
+        nodeId: identity.nodeId,
+        nodeLabel: identity.nodeLabel,
+        expected: web3Problem.expected,
+        received: capReceived(config[WEB3_CONNECTION_KEY]),
+        message: web3Problem.message,
+      });
+    }
+
     // Draft state: the config contains only actionType, reserved keys, and
     // known metadata keys — no user-supplied parameters yet. Skip all validation
     // for this node: required-field, type, and UNKNOWN_FIELD checks are omitted
     // because companion metadata (e.g. `_tz_<key>`) would otherwise be flagged.
     const hasUserParams = Object.keys(config).some(
-      (k) => !(RESERVED_CONFIG_KEYS.has(k) || isMetadataKey(k))
+      (k) => !isNonParamKey(actionType, k)
     );
     if (!hasUserParams) {
       continue;
     }
 
-    const identity = nodeIdentity(node, `nodes[${nodeIndex}]`);
     const issuesBeforeNode = issues.length;
     const fields = flattenConfigFields(action.configFields);
     const fieldsByKey = new Map(fields.map((field) => [field.key, field]));
@@ -1082,6 +1364,10 @@ export function validateWorkflowActionConfigs(
 
     for (const [key, value] of Object.entries(config)) {
       if (RESERVED_CONFIG_KEYS.has(key)) {
+        continue;
+      }
+      // Checked above; on any other action it is an unknown field.
+      if (key === WEB3_CONNECTION_KEY && takesWeb3Connection) {
         continue;
       }
       // Known companion metadata (e.g. a datetime field's display timezone
@@ -1243,6 +1529,10 @@ export function validateWorkflowActionConfigs(
     });
   }
 
+  if (options.web3Connections) {
+    issues.push(...newWeb3ConnectionIssues(options.web3Connections));
+  }
+
   return { valid: issues.length === 0, issues };
 }
 
@@ -1280,7 +1570,7 @@ export function hasDraftActionNodes(
       continue;
     }
     const hasUserParams = Object.keys(config).some(
-      (k) => !(RESERVED_CONFIG_KEYS.has(k) || isMetadataKey(k))
+      (k) => !isNonParamKey(actionType, k)
     );
     if (!hasUserParams) {
       return true;
