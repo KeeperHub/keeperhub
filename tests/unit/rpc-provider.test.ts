@@ -28,6 +28,8 @@ import {
   RpcRelayTransportError,
 } from "@/lib/rpc/providers";
 
+const providerOptions = vi.hoisted((): unknown[] => []);
+
 // Mock ethers
 vi.mock("ethers", () => {
   const _mockProvider = {
@@ -50,6 +52,9 @@ vi.mock("ethers", () => {
     getBalance = vi.fn();
     getBlock = vi.fn();
     call = vi.fn();
+    constructor(_request: unknown, _network: unknown, options: unknown) {
+      providerOptions.push(options);
+    }
   }
 
   return {
@@ -151,6 +156,24 @@ describe("RpcProviderManager", () => {
       });
 
       expect(manager.getChainName()).toBe("Ethereum");
+    });
+
+    it("polls for new blocks every second so receipts are seen sooner", () => {
+      providerOptions.length = 0;
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://primary.example.com",
+          fallbackRpcUrl: "https://fallback.example.com",
+        },
+      });
+
+      manager.getProvider();
+      manager.getFallbackProvider();
+
+      expect(providerOptions).toHaveLength(2);
+      for (const options of providerOptions) {
+        expect(options).toMatchObject({ pollingInterval: 1000 });
+      }
     });
   });
 

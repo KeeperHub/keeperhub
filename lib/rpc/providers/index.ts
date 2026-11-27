@@ -70,6 +70,9 @@ export type FailoverStateChangeCallback = (
   reason: "failover" | "recovery"
 ) => void;
 
+// Block poll during a receipt wait; ethers' 4s default held the wallet lock longer.
+const RECEIPT_POLL_INTERVAL_MS = 1000;
+
 /**
  * No-op metrics collector for environments without metrics (e.g., frontend)
  */
@@ -283,6 +286,7 @@ export class RpcProviderManager {
         // performance impact -- workflow execution is sequential, and batch-reads
         // use Multicall3 at the contract level.
         batchMaxCount: 1,
+        pollingInterval: RECEIPT_POLL_INTERVAL_MS,
       }
     );
 
