@@ -16,6 +16,7 @@ import type {
   RpcOperationType,
 } from "@/lib/rpc/providers";
 import type { SolanaRpcMetricsCollector } from "@/lib/rpc/providers/solana";
+import { RPC_ENDPOINT, type RpcEndpoint } from "@/lib/rpc/rpc-endpoint";
 import { rpcMetrics } from "./collectors/prometheus";
 
 /**
@@ -59,14 +60,17 @@ const prometheusCollector: RpcMetricsCollector & SolanaRpcMetricsCollector = {
   },
   recordSuccess(
     chain: string,
-    provider: "primary" | "fallback",
+    provider: RpcEndpoint,
     _operation?: RpcOperationType
   ): void {
-    rpcMetrics.healthState.set({ chain }, provider === "primary" ? 0 : 1);
+    rpcMetrics.healthState.set(
+      { chain },
+      provider === RPC_ENDPOINT.PRIMARY ? 0 : 1
+    );
   },
   recordLatency(
     chain: string,
-    provider: "primary" | "fallback",
+    provider: RpcEndpoint,
     durationMs: number,
     operation: RpcOperationType = "read"
   ): void {
@@ -74,7 +78,7 @@ const prometheusCollector: RpcMetricsCollector & SolanaRpcMetricsCollector = {
   },
   recordErrorType(
     chain: string,
-    provider: "primary" | "fallback",
+    provider: RpcEndpoint,
     errorType: RpcErrorType,
     operation: RpcOperationType = "read"
   ): void {

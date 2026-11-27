@@ -304,21 +304,27 @@ vi.mock("@/lib/web3/trace-executed-call", () => ({
 
 // Capture txContext passed to withNonceSession
 let capturedTxContext: Record<string, unknown> | null = null;
+const walletLock = vi.hoisted(() => ({ held: false }));
 vi.mock("@/lib/web3/transaction-manager", () => ({
   withNonceSession: vi.fn(
-    (
+    async (
       txContext: Record<string, unknown>,
       _walletAddress: unknown,
       fn: (session: unknown) => unknown
     ) => {
       capturedTxContext = txContext;
-      return fn({
-        walletAddress: "0xwalletaddress",
-        chainId: 1,
-        executionId: txContext.executionId,
-        currentNonce: 5,
-        startedAt: new Date(),
-      });
+      walletLock.held = true;
+      try {
+        return await fn({
+          walletAddress: "0xwalletaddress",
+          chainId: 1,
+          executionId: txContext.executionId,
+          currentNonce: 5,
+          startedAt: new Date(),
+        });
+      } finally {
+        walletLock.held = false;
+      }
     }
   ),
 }));
@@ -471,6 +477,29 @@ describe("writeContractCore executedCall on direct send", () => {
     if (result.success) {
       expect(result.executedCall).toEqual(MOCK_EXECUTED_CALL);
     }
+  });
+
+  it("runs the call trace after the wallet lock is released", async () => {
+    let lockHeldDuringTrace: boolean | undefined;
+    mockTraceExecutedCall.mockImplementation(() => {
+      lockHeldDuringTrace = walletLock.held;
+      return Promise.resolve(MOCK_EXECUTED_CALL);
+    });
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(lockHeldDuringTrace).toBe(false);
+    expect(result).toMatchObject({
+      success: true,
+      transactionHash: "0xhash",
+      executedCall: MOCK_EXECUTED_CALL,
+    });
   });
 
   it("omits executedCall when trace returns undefined (graceful degradation)", async () => {

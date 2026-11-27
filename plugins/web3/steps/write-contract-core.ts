@@ -92,6 +92,7 @@ import {
   type TransactionContext,
   withNonceSession,
 } from "@/lib/web3/transaction-manager";
+import { isMinedSend, type MinedSend, minedSend } from "@/lib/web3/mined-send";
 
 export type WriteContractCoreInput = {
   contractAddress: string;
@@ -782,7 +783,7 @@ async function writeContractCoreImpl(
       ? await builderRpcUrlsFor(rpcClient.route)
       : undefined;
 
-  return withNonceSession(txContext, walletAddress, async (session) => {
+  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<WriteContractResult | MinedSend<Extract<WriteContractResult, { success: true }>>> => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
@@ -881,13 +882,7 @@ async function writeContractCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      const executedCall = await traceExecutedCallWithFailover(rpcManager, receipt.hash, {
-        target: contractAddress,
-        abi: parsedAbi,
-        functionName: abiFunction,
-      });
-
-      return {
+      return minedSend(receipt.hash, {
         success: true,
         transactionHash: receipt.hash,
         chainId,
@@ -896,10 +891,9 @@ async function writeContractCoreImpl(
         gasUsedUnits,
         effectiveGasPrice,
         result: undefined,
-        executedCall,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
         ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
-      };
+      });
     } catch (error) {
       if (isNextBlockSimulationUnsupported(error)) {
         return { ...unsupportedFailure(error, "write-contract"), broadcastAttempted: false };
@@ -967,6 +961,15 @@ async function writeContractCoreImpl(
       };
     }
   });
+  if (isMinedSend(sent)) {
+    const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.hash, {
+      target: contractAddress,
+      abi: parsedAbi,
+      functionName: abiFunction,
+    });
+    return { ...sent.result, executedCall };
+  }
+  return sent;
 }
 
 /**

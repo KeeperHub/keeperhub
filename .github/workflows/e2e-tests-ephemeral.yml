@@ -819,6 +819,26 @@ jobs:
           done
           echo "anvil mainnet fork ready on localhost:8548"
 
+      - name: Start local anvil for node-level tests
+        # Plain anvil (no fork) for the *-anvil suites, which skip when
+        # localhost:8546 is unreachable.
+        run: |
+          docker compose --profile test up -d --wait test-anvil || \
+            docker compose --profile test up -d test-anvil
+          retries=0
+          until curl -sf -X POST http://localhost:8546 \
+                -H "Content-Type: application/json" \
+                -d '{"jsonrpc":"2.0","method":"eth_chainId","id":1}' | grep -q '"0x7a69"'; do
+            retries=$((retries + 1))
+            if [ "$retries" -ge 30 ]; then
+              echo "local anvil did not become ready in 60s"
+              docker logs keeperhub-test-anvil || true
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "local anvil ready on localhost:8546"
+
       - name: Start code-execution sandbox
         uses: ./.github/actions/start-sandbox
         with:
