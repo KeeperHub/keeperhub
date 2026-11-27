@@ -287,7 +287,7 @@ and the authoritative safe first-write sequence.
 | Tool | Description |
 |------|-------------|
 | `search_templates` | Search pre-built workflow templates. |
-| `deploy_template` | Clone a public template into the organization as a new workflow. |
+| `deploy_template` | Clone a public template into the organization as a new workflow. A step that sent through a Safe your organization does not own has no sender in the clone and does not run until you pick one (your Default Sender, your EOA or one of your Safes); `stepsNeedingSender` in the result lists those steps. |
 | `get_template` | Deprecated. Use `get_workflow` instead. |
 
 ### Marketplace Listings
@@ -437,7 +437,8 @@ signers the transaction is sent from:
 |-------|--------|
 | omitted, `""`, or `"default"` | Organization policy for that chain: the configured Safe with its active role, the configured Safe owner-signed when no role is active, or the organization EOA when no Safe is active there. All three values are the same branch. |
 | `"eoa"` | The Turnkey EOA directly, bypassing the organization's Safe policy. |
-| `"safe:<safeWalletId>"` | A specific Safe belonging to the organization, with its Sender toggle on. |
+| `"safe:<safeWalletId>"` | A specific Safe belonging to the organization, with its Sender toggle on. No MCP tool lists Safe ids: pick a Safe in the editor, or use `"default"`. |
+| `"needs-sender"` | None: set by a copy or import on a step whose Safe the organization does not own. The step does not run until you set one of the values above. |
 
 Any other value is refused at save, and so is a template: the sender must be a
 fixed value. `web3/batch-write-contract`
@@ -492,9 +493,11 @@ the editor, or use `web3/write-contract` steps.
 
 A copy within the same organization keeps every value, `"eoa"` included, the
 same as the original. A workflow copied from another organization, or imported
-from a file, keeps a `"safe:<safeWalletId>"` value on a step that takes a Safe
-and drops the rest. A Safe that belongs to another organization fails the run
-until you pick a sender.
+from a file, drops `"eoa"` and `"default"`, so the new organization's own policy
+applies. It keeps a `"safe:<safeWalletId>"` value only where that organization
+owns the Safe, on a step that takes a Safe. A step on any other Safe is left
+with `"needs-sender"` and does not run until one is set; it never falls back to
+the Default Sender. A step that does not read the field loses it.
 
 Leave it unset unless you intend to override organization policy for that
 node. There is no other per-node signer field: `integrationId` is a database

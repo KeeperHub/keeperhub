@@ -19,6 +19,10 @@ import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
 // need the signer-mode resolution. Static imports here pull defi-kit into
 // every API route that does a workflow write, which trips a recursive
 // mapSdk overflow during Next.js page-data collection.
+import {
+  SENDER_NOT_CHOSEN,
+  SenderNotChosenError,
+} from "@/lib/safe/sender-not-chosen";
 import { orgAutomationRoleKey } from "@/lib/safe/zodiac-contracts";
 import {
   findRolesModifierForSafe,
@@ -353,6 +357,8 @@ export async function resolveWalletAndSignerMode(
  *   - "safe:<safeWalletId>"  : pin a specific Safe row. Resolver validates the
  *                              Safe belongs to the org, is deployed, and lives
  *                              on the same chain as the node.
+ *   - "needs-sender"         : a copy whose Safe the org does not own; refused
+ *                              until a sender is picked (SenderNotChosenError).
  *
  * Two-segment string keeps the field human-inspectable in `workflows.nodes`
  * JSONB and lint-friendly (no nested objects) without sacrificing typing.
@@ -370,6 +376,9 @@ export function parseWeb3Connection(
   }
   if (value === SIGNER_MODE.EOA) {
     return { kind: SIGNER_MODE.EOA };
+  }
+  if (value === SENDER_NOT_CHOSEN) {
+    throw new SenderNotChosenError();
   }
   if (value.startsWith("safe:")) {
     const safeWalletId = value.slice("safe:".length);

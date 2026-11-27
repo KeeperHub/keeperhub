@@ -243,7 +243,8 @@ export function buildWorkflowExportV1(workflow: {
  * Sanitize node payload from an import: strip any `integrationId` that may
  * have leaked in, since they are not portable across instances/orgs. The
  * importing user re-binds integrations in the editor. A Web3 Connection is
- * dropped too, except a Safe, which fails closed at run if it is not theirs.
+ * dropped too, except a Safe or the no-sender mark; the import route then
+ * leaves a step on a Safe the importer does not own with no sender.
  */
 export function stripIntegrationsFromImportNodes(
   nodes: WorkflowExportV1["nodes"]

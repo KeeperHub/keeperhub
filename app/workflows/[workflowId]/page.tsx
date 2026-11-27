@@ -4,6 +4,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { ChevronLeft, ChevronRight, Globe, Plus } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  type CSSProperties,
   use,
   useCallback,
   useEffect,
@@ -17,7 +18,12 @@ import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
 import { useGatedWorkflowWarning } from "@/hooks/use-features";
-import { useIsMobile } from "@/hooks/use-mobile";
+import {
+  BELOW_LG_QUERY,
+  mediaQueryMatches,
+  useIsMobile,
+  useMediaQuery,
+} from "@/hooks/use-mobile";
 import {
   api,
   WORKFLOW_SAVE_ERROR_TOAST,
@@ -37,6 +43,10 @@ import {
 } from "@/lib/integrations-store";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import type { IntegrationType } from "@/lib/types/integration";
+import {
+  readSidePanelCollapsed,
+  sidePanelCookieName,
+} from "@/lib/workflow/editor/side-panel-state";
 import {
   currentExecutionIdAtom,
   currentWorkflowDescriptionAtom,
@@ -150,6 +160,8 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   const searchParams = useSearchParams();
   const router = useRouter();
   const isMobile = useIsMobile();
+  // From md to lg the side panel has a fixed width and opens over the canvas.
+  const isBelowLg = useMediaQuery(BELOW_LG_QUERY);
   const [isGenerating, setIsGenerating] = useAtom(isGeneratingAtom);
   const [_isSaving, setIsSaving] = useAtom(isSavingAtom);
   const [nodes] = useAtom(nodesAtom);
@@ -250,6 +262,8 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   // Panel width (viewport %), shared with the version-history panel so the
   // two right-docked panels stay the same size and resizing keeps them in sync.
   const [panelWidth, setPanelWidth] = useAtom(rightPanelWidthPctAtom);
+  // From lg the dragged width, never narrower than the panel's floor.
+  const desktopPanelWidth = `max(${panelWidth}%, var(--editor-panel-min-width))`;
   // Start visible if sidebar has already been shown (switching between workflows)
   const [panelVisible, setPanelVisible] = useState(hasSidebarBeenShown);
   const [isDraggingResize, setIsDraggingResize] = useState(false);
@@ -273,15 +287,24 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
         setPanelWidth(value);
       }
     }
+  }, [setPanelWidth]);
 
-    // Read collapsed state
-    const collapsedCookie = document.cookie
-      .split("; ")
-      .find((row) => row.startsWith("sidebar-collapsed="));
-    if (collapsedCookie) {
-      setPanelCollapsed(collapsedCookie.split("=")[1] === "true");
-    }
-  }, [setPanelCollapsed, setPanelWidth]);
+  // The open state is kept per layout (from md to lg it starts closed), read
+  // again when the layout changes. The query covers the hook's hydration value.
+  const panelLayoutBelowLg = useRef(false);
+  // A value just read and not yet rendered: the render before it must not
+  // write the old value over the cookie.
+  const pendingCollapsedRead = useRef<boolean | null>(null);
+  const renderedCollapsed = useRef(panelCollapsed);
+  renderedCollapsed.current = panelCollapsed;
+  useEffect(() => {
+    const belowLg = isBelowLg || mediaQueryMatches(BELOW_LG_QUERY);
+    const collapsed = readSidePanelCollapsed(document.cookie, belowLg);
+    panelLayoutBelowLg.current = belowLg;
+    pendingCollapsedRead.current =
+      collapsed === renderedCollapsed.current ? null : collapsed;
+    setPanelCollapsed(collapsed);
+  }, [isBelowLg, setPanelCollapsed]);
 
   // Save sidebar width to cookie when it changes (skip initial render)
   const hasInitialized = useRef(false);
@@ -299,8 +322,16 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     if (!hasReadCookies.current) {
       return;
     }
+    const pending = pendingCollapsedRead.current;
+    if (pending !== null) {
+      if (panelCollapsed === pending) {
+        pendingCollapsedRead.current = null;
+      }
+      return;
+    }
+    const name = sidePanelCookieName(panelLayoutBelowLg.current);
     // biome-ignore lint/suspicious/noDocumentCookie: simple cookie storage for sidebar state
-    document.cookie = `sidebar-collapsed=${panelCollapsed}; path=/; max-age=31536000`; // 1 year
+    document.cookie = `${name}=${panelCollapsed}; path=/; max-age=31536000`; // 1 year
   }, [panelCollapsed]);
 
   // Trigger slide-in animation on mount (only for homepage -> workflow transition)
@@ -352,7 +383,9 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
   // Only set it after the panel is visible (animated in) to coordinate the animation
   useEffect(() => {
     if (!isMobile && panelVisible && !panelCollapsed) {
-      setRightPanelWidth(`${panelWidth}%`);
+      setRightPanelWidth(
+        isBelowLg ? "var(--editor-panel-tablet-width)" : desktopPanelWidth
+      );
     } else {
       // During initial render or when collapsed, set to null so prompt is centered
       setRightPanelWidth(null);
@@ -360,7 +393,14 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     return () => {
       setRightPanelWidth(null);
     };
-  }, [isMobile, setRightPanelWidth, panelWidth, panelVisible, panelCollapsed]);
+  }, [
+    isMobile,
+    isBelowLg,
+    setRightPanelWidth,
+    desktopPanelWidth,
+    panelVisible,
+    panelCollapsed,
+  ]);
 
   // Handle panel resize
   const handleResizeStart = useCallback(
@@ -395,6 +435,70 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     },
     [setPanelWidth]
   );
+
+  const openPanelButtonRef = useRef<HTMLButtonElement>(null);
+  const closePanelButtonRef = useRef<HTMLButtonElement>(null);
+  // Each button unmounts once used, so focus moves to its counterpart.
+  const focusPanelButton = useCallback((open: boolean) => {
+    requestAnimationFrame(() =>
+      (open ? closePanelButtonRef : openPanelButtonRef).current?.focus({
+        preventScroll: true,
+      })
+    );
+  }, []);
+  const setPanelOpen = useCallback(
+    (open: boolean) => {
+      setIsPanelAnimating(true);
+      setPanelCollapsed(!open);
+      setTimeout(() => setIsPanelAnimating(false), 350);
+    },
+    [setIsPanelAnimating, setPanelCollapsed]
+  );
+  // From md to lg the panel covers the canvas: Escape inside it closes it.
+  const sidePanelRef = useRef<HTMLDivElement>(null);
+  const isPanelOpen = panelVisible && !panelCollapsed;
+  useEffect(() => {
+    if (!(isBelowLg && isPanelOpen)) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null;
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        !target ||
+        // Portaled menus are outside it; fields and pickers use Escape themselves.
+        !sidePanelRef.current?.contains(target) ||
+        target.closest(
+          "input, textarea, [contenteditable='true'], [role='combobox']"
+        )
+      ) {
+        return;
+      }
+      setPanelOpen(false);
+      focusPanelButton(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [isBelowLg, isPanelOpen, setPanelOpen, focusPanelButton]);
+
+  // The panel's real width, on the root, so editor toasts can fit inside it.
+  const hasSidePanel = !isMobile && hasTriggerNode;
+  useEffect(() => {
+    const panel = sidePanelRef.current;
+    if (!(hasSidePanel && panel)) {
+      return;
+    }
+    const root = document.documentElement;
+    const observer = new ResizeObserver(() => {
+      root.style.setProperty("--editor-panel-width", `${panel.offsetWidth}px`);
+    });
+    observer.observe(panel);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty("--editor-panel-width");
+    };
+  }, [hasSidePanel]);
 
   // Ref to track polling interval
   const executionPollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -1070,6 +1174,31 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     };
   }, [selectedExecutionId, updateNodeData]);
 
+  // The panel's left edge: its border line and the close button.
+  const panelEdge = (
+    <>
+      <div className="absolute inset-y-0 left-0 w-px bg-border" />
+      {!(isDraggingResize || panelCollapsed) && (
+        <button
+          aria-controls="editor-side-panel"
+          aria-expanded={true}
+          aria-label="Close side panel"
+          className="absolute top-3 left-0 flex size-6 -translate-x-1/2 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground pointer-coarse:size-11"
+          onClick={(e) => {
+            e.stopPropagation();
+            setPanelOpen(false);
+            focusPanelButton(false);
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          ref={closePanelButtonRef}
+          type="button"
+        >
+          <ChevronRight aria-hidden="true" className="size-3.5" />
+        </button>
+      )}
+    </>
+  );
+
   return (
     <div className="flex h-dvh w-full flex-col overflow-hidden">
       {/* Workflow not found overlay */}
@@ -1156,57 +1285,55 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
       {/* Expand button when panel is collapsed - only show if trigger exists */}
       {!isMobile && hasTriggerNode && panelCollapsed && (
         <button
-          className="pointer-events-auto absolute top-[calc(var(--header-height)+var(--app-banner-height,0px)+0.75rem)] right-0 z-20 flex size-6 items-center justify-center rounded-l-full border border-r-0 bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          aria-controls="editor-side-panel"
+          aria-expanded={false}
+          aria-label="Open side panel"
+          className="pointer-events-auto absolute top-[calc(var(--header-height)+var(--app-banner-height,0px)+0.75rem)] right-0 z-20 flex size-6 items-center justify-center rounded-l-full border border-r-0 bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground pointer-coarse:size-11"
           onClick={() => {
-            setIsPanelAnimating(true);
-            setPanelCollapsed(false);
-            setTimeout(() => setIsPanelAnimating(false), 350);
+            setPanelOpen(true);
+            focusPanelButton(true);
           }}
+          ref={openPanelButtonRef}
           type="button"
         >
-          <ChevronLeft className="size-4" />
+          <ChevronLeft aria-hidden="true" className="size-4" />
         </button>
       )}
 
       {/* Right panel overlay (desktop only) - only show if trigger exists */}
-      {!isMobile && hasTriggerNode && (
+      {hasSidePanel && (
         <div
-          className="pointer-events-auto absolute top-[calc(var(--header-height)+var(--app-banner-height,0px))] right-0 bottom-0 z-20 border-l bg-background transition-transform duration-300 ease-out"
-          style={{
-            width: `${panelWidth}%`,
-            transform:
-              panelVisible && !panelCollapsed
-                ? "translateX(0)"
-                : "translateX(100%)",
-          }}
+          className="pointer-events-auto absolute top-[calc(var(--header-height)+var(--app-banner-height,0px))] right-0 bottom-0 z-20 w-(--editor-panel-tablet-width) border-l bg-background transition-transform duration-300 ease-out lg:w-(--right-panel-width)"
+          data-editor-side-panel={isPanelOpen ? "open" : "closed"}
+          id="editor-side-panel"
+          // A closed panel is off screen: out of the tab order and the a11y tree.
+          inert={!isPanelOpen}
+          ref={sidePanelRef}
+          style={
+            {
+              "--right-panel-width": desktopPanelWidth,
+              transform: isPanelOpen ? "translateX(0)" : "translateX(100%)",
+            } as CSSProperties
+          }
         >
-          {/* Resize handle with collapse button */}
-          {/* biome-ignore lint/a11y/useSemanticElements: custom resize handle */}
-          <div
-            aria-orientation="vertical"
-            aria-valuenow={panelWidth}
-            className="group absolute inset-y-0 left-0 z-10 w-3 cursor-col-resize"
-            onMouseDown={handleResizeStart}
-            role="separator"
-            tabIndex={0}
-          >
-            <div className="absolute inset-y-0 left-0 w-px bg-border" />
-            {!(isDraggingResize || panelCollapsed) && (
-              <button
-                className="absolute top-3 left-0 flex size-6 -translate-x-1/2 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsPanelAnimating(true);
-                  setPanelCollapsed(true);
-                  setTimeout(() => setIsPanelAnimating(false), 350);
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-                type="button"
-              >
-                <ChevronRight className="size-3.5" />
-              </button>
-            )}
-          </div>
+          {/* Below lg the width is fixed: the edge is no separator and no tab stop. */}
+          {isBelowLg ? (
+            <div className="absolute inset-y-0 left-0 z-10 w-3">
+              {panelEdge}
+            </div>
+          ) : (
+            // biome-ignore lint/a11y/useSemanticElements: custom resize handle
+            <div
+              aria-orientation="vertical"
+              aria-valuenow={panelWidth}
+              className="group absolute inset-y-0 left-0 z-10 w-3 cursor-col-resize"
+              onMouseDown={handleResizeStart}
+              role="separator"
+              tabIndex={0}
+            >
+              {panelEdge}
+            </div>
+          )}
           <NodeConfigPanel />
         </div>
       )}

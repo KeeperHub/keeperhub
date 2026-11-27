@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { api } from "@/lib/api-client";
+import { toastStepsNeedingSender } from "@/lib/client/needs-sender-toast";
 import {
   type GettingStarted,
   useGettingStarted,
@@ -660,6 +661,7 @@ function useStepActions(
       try {
         const workflow = await api.workflow.duplicate(chip.workflowId);
         id = workflow.id;
+        toastStepsNeedingSender(workflow);
         gs.setStepWorkflowId(key, id);
         // The new clone won't appear in the sidebar list until it refetches.
         refetchSidebar({ workflowCreated: true });

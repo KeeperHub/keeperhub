@@ -68,7 +68,7 @@
       "path": "/api/workflows/{workflowId}/executions",
       "route_file": "app/api/workflows/[workflowId]/executions/route.ts",
       "source": "docs/api/executions.md",
-      "line": 352
+      "line": 356
     },
     {
       "method": "GET",
@@ -160,7 +160,7 @@
       "path": "/api/features",
       "route_file": "app/api/features/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 480
+      "line": 494
     },
     {
       "method": "GET",
@@ -188,7 +188,7 @@
       "path": "/api/mcp/schemas",
       "route_file": "app/api/mcp/schemas/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 401
+      "line": 415
     },
     {
       "method": "GET",
@@ -286,28 +286,28 @@
       "path": "/api/workflows/executions/{executionId}/logs",
       "route_file": "app/api/workflows/executions/[executionId]/logs/route.ts",
       "source": "docs/api/executions.md",
-      "line": 207
+      "line": 211
     },
     {
       "method": "GET",
       "path": "/api/workflows/executions/{executionId}/status",
       "route_file": "app/api/workflows/executions/[executionId]/status/route.ts",
       "source": "docs/api/executions.md",
-      "line": 80
+      "line": 84
     },
     {
       "method": "GET",
       "path": "/api/workflows/executions/{executionId}/wait",
       "route_file": "app/api/workflows/executions/[executionId]/wait/route.ts",
       "source": "docs/api/executions.md",
-      "line": 164
+      "line": 168
     },
     {
       "method": "GET",
       "path": "/api/workflows/public",
       "route_file": "app/api/workflows/public/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 354
+      "line": 368
     },
     {
       "method": "GET",
@@ -321,14 +321,14 @@
       "path": "/api/workflows/{workflowId}/code",
       "route_file": "app/api/workflows/[workflowId]/code/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 319
+      "line": 333
     },
     {
       "method": "GET",
       "path": "/api/workflows/{workflowId}/download",
       "route_file": "app/api/workflows/[workflowId]/download/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 311
+      "line": 325
     },
     {
       "method": "GET",
@@ -440,7 +440,7 @@
       "path": "/api/hub/featured",
       "route_file": "app/api/hub/featured/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 393
+      "line": 407
     },
     {
       "method": "POST",
@@ -552,7 +552,7 @@
       "path": "/api/workflows/{workflowId}/claim",
       "route_file": "app/api/workflows/[workflowId]/claim/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 327
+      "line": 341
     },
     {
       "method": "POST",
@@ -622,7 +622,7 @@
       "path": "/api/workflows/{workflowId}/go-live",
       "route_file": "app/api/workflows/[workflowId]/go-live/route.ts",
       "source": "docs/api/workflows.md",
-      "line": 335
+      "line": 349
     }
   ]
 }

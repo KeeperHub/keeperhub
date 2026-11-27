@@ -40,6 +40,7 @@ import {
   getOrganizationWalletAddress,
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
+import { web3ConnectionFailure } from "@/lib/safe/sender-not-chosen";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { type RpcProviderManager, rpcRelayErrorClass } from "@/lib/rpc/providers";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
@@ -668,12 +669,7 @@ async function batchWriteContractCoreImpl(
     signerMode = await resolveSignerForNode({ organizationId, chainId, web3Connection });
   } catch (error) {
     // A class keeps failOnError=false from softening it; USER or SYSTEM by message.
-    const message = `Failed to resolve Web3 Connection: ${getErrorMessage(error)}`;
-    return {
-      success: false,
-      error: message,
-      errorClass: userOrSystemErrorClass(message),
-    };
+    return web3ConnectionFailure(error, userOrSystemErrorClass);
   }
   if (signerMode.kind !== SIGNER_MODE.EOA) {
     return {

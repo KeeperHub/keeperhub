@@ -14,9 +14,10 @@ import { generateId } from "@/lib/utils/id";
 import { remapNodeReferencesInConfig } from "@/lib/utils/template";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 import { getWorkflowAccess } from "@/lib/workflow/access";
+import { listStepsNeedingSender } from "@/lib/workflow/copy-safe-connections";
+import { releaseUnownedSafes } from "@/lib/workflow/release-unowned-safes";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import { clearStrayToggles } from "@/lib/workflow/validation/action-config";
-import { withOnlySafeWeb3Connections } from "@/lib/workflow/web3-connection";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 // Node type for type-safe node manipulation
 type WorkflowNodeLike = {
@@ -192,12 +193,19 @@ export async function POST(
       duplicatedNodes as Record<string, unknown>[],
       duplicatedEdges as Record<string, unknown>[]
     );
-    // A copy into another organization starts with no stray toggle values and
-    // no EOA pick; a picked Safe stays and fails closed at run there.
-    const newNodes =
+    // A copy into another organization starts with no stray toggle values or
+    // EOA pick, and a step on a Safe it does not own has no sender. A same-org
+    // copy keeps every value, but still names the steps with no sender.
+    const { nodes: newNodes, needingSender: stepsNeedingSender } =
       sourceWorkflow.organizationId === organizationId
-        ? sanitized.nodes
-        : withOnlySafeWeb3Connections(clearStrayToggles(sanitized.nodes));
+        ? {
+            nodes: sanitized.nodes,
+            needingSender: listStepsNeedingSender(sanitized.nodes),
+          }
+        : await releaseUnownedSafes(
+            clearStrayToggles(sanitized.nodes),
+            organizationId
+          );
     const newEdges = sanitized.edges;
 
     const featureGuard = await enforceWorkflowFeatures(
@@ -260,6 +268,7 @@ export async function POST(
       createdAt: newWorkflow.createdAt.toISOString(),
       updatedAt: newWorkflow.updatedAt.toISOString(),
       isOwner: true,
+      stepsNeedingSender,
     });
   } catch (error) {
     logSystemError(

@@ -329,6 +329,11 @@ import {
   executeContractCallAsRole,
   executeContractCallAsSafe,
 } from "@/lib/safe/execute-as-safe";
+import {
+  SENDER_NOT_CHOSEN,
+  SENDER_NOT_CHOSEN_MESSAGE,
+  SenderNotChosenError,
+} from "@/lib/safe/sender-not-chosen";
 import { resolveSignerForNode } from "@/lib/safe/signer-resolver";
 import { NextBlockSimulationUnsupportedError } from "@/lib/web3/next-block-simulation";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
@@ -433,6 +438,45 @@ describe("writeContractCore stablecoin ceiling", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe("writeContractCore step with no sender chosen", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    registry.safeRows = [];
+  });
+
+  it("refuses with a user error before anything is signed", async () => {
+    vi.mocked(resolveSignerForNode).mockRejectedValueOnce(
+      new SenderNotChosenError()
+    );
+
+    const result = await writeContractCore({
+      contractAddress: USDC_CONTRACT,
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      functionArgs: JSON.stringify([
+        "0x1111111111111111111111111111111111111111",
+        "1000",
+      ]),
+      web3Connection: SENDER_NOT_CHOSEN,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: SENDER_NOT_CHOSEN_MESSAGE,
+      errorClass: ExecutionErrorType.USER,
+    });
+    expect(resolveSignerForNode).toHaveBeenCalledWith(
+      expect.objectContaining({ web3Connection: SENDER_NOT_CHOSEN })
+    );
+    expect(initializeWalletSigner).not.toHaveBeenCalled();
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
   });
 });
 

@@ -1623,7 +1623,7 @@ export function registerTools(
 
   server.tool(
     "deploy_template",
-    "Clone a public template workflow into the organization as a new workflow.",
+    'Clone a public template workflow into the organization as a new workflow. A step that sent through a Safe the organization does not own has no sender in the clone (web3Connection "needs-sender") and does not run until one is set; stepsNeedingSender in the result lists those steps. Set each one\'s web3Connection to "default" (the Default Sender), or pick EOA or one of the organization\'s Safes in the editor. A step that cannot send from a Safe (Batch Write Contract, a Solana transfer, a protocol write) loses it instead and is not listed.',
     {
       templateId: z.string().describe("The template workflow ID to clone"),
       name: z

@@ -1410,7 +1410,13 @@ export function ActionConfig({
           <div className="space-y-2">
             <div className="ml-1 flex items-center justify-between">
               <div className="flex items-center gap-1">
-                <Label>{connectionLabel}</Label>
+                <Label
+                  htmlFor={
+                    integrationType === "web3" ? "web3Connection" : undefined
+                  }
+                >
+                  {connectionLabel}
+                </Label>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>

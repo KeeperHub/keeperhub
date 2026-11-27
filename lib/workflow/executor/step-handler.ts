@@ -11,6 +11,7 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { withPluginMetrics } from "@/lib/metrics/instrumentation/plugin";
 import { recordStepMetrics } from "@/lib/metrics/instrumentation/workflow";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
+import { senderNotChosenFailure } from "@/lib/safe/sender-not-chosen";
 import { redactSensitiveData } from "@/lib/utils/redact";
 import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
@@ -31,6 +32,7 @@ import {
   oversizeStepResult,
   storedOutputOverflow,
 } from "@/lib/workflow/executor/stored-output-cap";
+import { stepNeedsSender } from "@/lib/workflow/web3-connection";
 import {
   incrementCompletedSteps,
   logStepCompleteDb,
@@ -128,6 +130,14 @@ function stepActionTypes(
     typeof actionType === "string" ? actionType : undefined,
     context?.nodeType,
   ];
+}
+
+// The executor passes the action as `_actionType` beside the spread config.
+function waitsForSender(loggedInput: unknown): boolean {
+  const input = loggedInput as Record<string, unknown> | null;
+  return stepNeedsSender(
+    input && { ...input, actionType: input._actionType ?? input.actionType }
+  );
 }
 
 /**
@@ -382,12 +392,18 @@ async function withStepLoggingInner<TInput extends StepInput, TOutput>(
   const logInfo = await logStepStart(context, loggedInput);
 
   try {
+    // A step that reads its sender and has none never runs.
+    const senderBlock = waitsForSender(loggedInput)
+      ? senderNotChosenFailure()
+      : null;
     // Plan gate at the layer every dispatched step passes through, so a gated
     // action cannot run for an unpaid org via a route that skipped its guard.
-    const planBlock = await checkActionPlanGate(
-      stepActionTypes(loggedInput, context),
-      context?.organizationId
-    );
+    const planBlock =
+      senderBlock ??
+      (await checkActionPlanGate(
+        stepActionTypes(loggedInput, context),
+        context?.organizationId
+      ));
     const produced: TOutput = planBlock
       ? (planBlock as unknown as TOutput)
       : await stepLogic();

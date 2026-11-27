@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/tooltip";
 import { api, type SavedWorkflow } from "@/lib/api-client";
 import { signInAnonymously, useSession } from "@/lib/auth-client";
+import { toastStepsNeedingSender } from "@/lib/client/needs-sender-toast";
 import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import { WorkflowMiniMap } from "./workflow-mini-map";
@@ -84,6 +85,7 @@ export function FeaturedCarousel({ workflows }: FeaturedCarouselProps) {
       const duplicated = await api.workflow.duplicate(workflowId);
       refetchSidebar({ workflowCreated: true });
       toast.success("Workflow duplicated successfully");
+      toastStepsNeedingSender(duplicated);
       router.push(`/workflows/${duplicated.id}`);
     } catch (error) {
       console.error("Failed to duplicate workflow:", error);

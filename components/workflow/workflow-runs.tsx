@@ -9,7 +9,6 @@ import {
   Clock,
   Copy,
   ExternalLink,
-  GitBranch,
   Loader2,
   Play,
   SkipForward,
@@ -19,7 +18,7 @@ import {
 import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { JSX } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { api, type ExecutionSummary } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
@@ -37,7 +36,6 @@ import {
 } from "@/lib/output-display-configs";
 import { cn } from "@/lib/utils";
 import { startSerialPoll } from "@/lib/utils/serial-poll";
-import { getRelativeTime } from "@/lib/utils/time";
 import {
   appendPage,
   type ExecutionPage,
@@ -60,6 +58,12 @@ import {
 } from "@/lib/workflow/output-limits";
 import { refusalSummary } from "@/lib/workflow/refusal-summary";
 import {
+  exactDuration,
+  parseDurationMs,
+  runLineTitleParts,
+  shortDuration,
+} from "@/lib/workflow/run-line";
+import {
   currentWorkflowIdAtom,
   executionLogsAtom,
   propertiesPanelActiveTabAtom,
@@ -69,6 +73,7 @@ import {
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
+import { RunCardHeader, runCardStepCount } from "./run-card-header";
 
 type ExecutionLog = {
   id: string;
@@ -656,10 +661,11 @@ function IterationHeader({
         <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
       )}
       {durationMs > 0 && (
-        <span className="ml-auto shrink-0 font-mono text-muted-foreground text-xs tabular-nums">
-          {durationMs < 1000
-            ? `${durationMs}ms`
-            : `${(durationMs / 1000).toFixed(2)}s`}
+        <span
+          className="ml-auto shrink-0 text-muted-foreground text-xs tabular-nums"
+          title={exactDuration(durationMs)}
+        >
+          {shortDuration(durationMs)}
         </span>
       )}
     </button>
@@ -849,6 +855,7 @@ function ExecutionLogEntry({
   isLast: boolean;
   middleContent?: React.ReactNode;
 }) {
+  const stepDurationMs = log.duration ? parseDurationMs(log.duration) : null;
   return (
     <div className="relative flex gap-3" key={log.id}>
       {/* Timeline connector */}
@@ -886,7 +893,14 @@ function ExecutionLogEntry({
                 ) : (
                   <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 )}
-                <span className="truncate font-medium text-sm transition-colors group-hover:text-foreground">
+                {/* Opened, the full name shows, touch screens included. */}
+                <span
+                  className={cn(
+                    "min-w-0 break-words font-medium text-sm transition-colors group-hover:text-foreground",
+                    !isExpanded && "line-clamp-2"
+                  )}
+                  title={log.nodeName || log.nodeType}
+                >
                   {log.nodeName || log.nodeType}
                 </span>
                 {isSponsoredOutput(log.output) && (
@@ -897,11 +911,12 @@ function ExecutionLogEntry({
               </div>
             </div>
 
-            {log.duration && (
-              <span className="shrink-0 font-mono text-muted-foreground text-xs tabular-nums">
-                {Number.parseInt(log.duration, 10) < 1000
-                  ? `${log.duration}ms`
-                  : `${(Number.parseInt(log.duration, 10) / 1000).toFixed(2)}s`}
+            {stepDurationMs !== null && (
+              <span
+                className="shrink-0 text-muted-foreground text-xs tabular-nums"
+                title={exactDuration(stepDurationMs)}
+              >
+                {shortDuration(stepDurationMs)}
               </span>
             )}
           </div>
@@ -1453,94 +1468,56 @@ export function WorkflowRuns({
           refused && organizationId ? refusalFixLink(execution.error) : null;
         const refusedLine = refusalSummary(execution);
         const showSkipped = Boolean(skippedReason || refusedLine);
+        const runNumber = total - index;
+        const durationMs = parseDurationMs(execution.duration);
+        // From the runs list, so a closed run has it too.
+        const stepCount = runCardStepCount(
+          execution.stepCount,
+          isExpanded,
+          executionLogs
+        );
+        const runLine = {
+          startedAt: execution.startedAt,
+          durationMs,
+          stepCount,
+        };
 
         return (
           <div
             className="overflow-hidden rounded-lg border bg-card transition-all"
             key={execution.id}
           >
-            <div className="flex w-full items-center gap-3 p-4">
-              <button
-                className="flex size-5 shrink-0 items-center justify-center rounded-full border-0 transition-colors hover:bg-muted"
-                onClick={() => toggleRun(execution.id)}
-                type="button"
-              >
-                <div
-                  className={cn(
-                    "flex size-5 items-center justify-center rounded-full border-0",
-                    getStatusDotClass(execution.status)
-                  )}
-                  title={getStatusLabel(execution.status)}
-                >
-                  {getStatusIcon(execution.status)}
-                </div>
-              </button>
-
-              <button
-                className="min-w-0 flex-1 text-left transition-colors hover:opacity-80"
-                onClick={() => {
-                  selectRun(execution.id);
-                  toggleRun(execution.id);
-                }}
-                type="button"
-              >
-                <div className="mb-1 flex items-center gap-2">
-                  <span className="font-semibold text-sm">
-                    Run #{total - index}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 font-mono text-muted-foreground text-xs">
-                  <span>{getRelativeTime(execution.startedAt)}</span>
-                  {execution.duration && (
-                    <>
-                      <span>•</span>
-                      <span className="tabular-nums">
-                        {Number.parseInt(execution.duration, 10) < 1000
-                          ? `${execution.duration}ms`
-                          : `${(Number.parseInt(execution.duration, 10) / 1000).toFixed(2)}s`}
-                      </span>
-                    </>
-                  )}
-                  {executionLogs.length > 0 && (
-                    <>
-                      <span>•</span>
-                      <span>
-                        {executionLogs.length}{" "}
-                        {executionLogs.length === 1 ? "step" : "steps"}
-                      </span>
-                    </>
-                  )}
-                </div>
-              </button>
-
-              {execution.ranVersion !== null && (
-                <button
-                  className="flex shrink-0 items-center gap-1 rounded-full border border-border px-2 py-0.5 font-medium text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
-                  onClick={() =>
-                    openRanVersion(execution.ranVersion as number)
-                  }
-                  title={`Ran version ${execution.ranVersion} — open in History`}
-                  type="button"
-                >
-                  <GitBranch className="size-3" />v{execution.ranVersion}
-                </button>
-              )}
-
-              <button
-                className="flex shrink-0 items-center justify-center rounded p-1 transition-colors hover:bg-muted"
-                onClick={() => toggleRun(execution.id)}
-                type="button"
-              >
-                {isExpanded ? (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                )}
-              </button>
-            </div>
+            <RunCardHeader
+              durationMs={durationMs}
+              isExpanded={isExpanded}
+              onOpenVersion={openRanVersion}
+              onSelect={() => {
+                selectRun(execution.id);
+                toggleRun(execution.id);
+              }}
+              onToggle={() => toggleRun(execution.id)}
+              ranVersion={execution.ranVersion}
+              runNumber={runNumber}
+              startedAt={execution.startedAt}
+              status={execution.status}
+              statusDotClass={getStatusDotClass(execution.status)}
+              statusIcon={getStatusIcon(execution.status)}
+              statusTitle={getStatusLabel(execution.status)}
+              stepCount={stepCount}
+            />
 
             {isExpanded && (
               <div className="border-t bg-muted/20">
+                {/* The tooltip's exact details, for touch screens; each part
+                    wraps whole. */}
+                <p className="px-4 pt-3 text-muted-foreground text-xs tabular-nums">
+                  {runLineTitleParts(runLine).map((part, partIndex) => (
+                    <Fragment key={part}>
+                      {partIndex > 0 && " · "}
+                      <span className="whitespace-nowrap">{part}</span>
+                    </Fragment>
+                  ))}
+                </p>
                 {showRunError && (
                   <div className={cn("p-4", executionLogs.length > 0 && "pb-0")}>
                     <Alert

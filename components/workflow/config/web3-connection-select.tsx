@@ -15,6 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SENDER_NOT_CHOSEN } from "@/lib/safe/sender-not-chosen";
+import { cn } from "@/lib/utils";
 
 type Web3ConnectionApiOption =
   | { value: "default"; label: string; kind: "default" }
@@ -162,7 +164,11 @@ function appendStaleIfNeeded(
   effectiveValue: string,
   safesAllowed: boolean
 ): RenderOption[] {
-  if (effectiveValue === "default" || effectiveValue === "eoa") {
+  if (
+    effectiveValue === "default" ||
+    effectiveValue === "eoa" ||
+    effectiveValue === SENDER_NOT_CHOSEN
+  ) {
     return rendered;
   }
   if (rendered.some((opt) => opt.value === effectiveValue)) {
@@ -249,6 +255,8 @@ export function Web3ConnectionSelect({
     warning =
       "Selecting EOA bypasses the org Safe Wallet including any policy gating.";
   }
+  // A copied step whose Safe the organization does not own: no sender yet.
+  const needsSender = effectiveValue === SENDER_NOT_CHOSEN;
 
   return (
     <div className="space-y-2">
@@ -260,13 +268,24 @@ export function Web3ConnectionSelect({
           }
         }}
         onValueChange={onChange}
-        value={effectiveValue}
+        value={needsSender ? "" : effectiveValue}
       >
-        <SelectTrigger className="w-full">
+        <SelectTrigger
+          aria-describedby={needsSender ? "web3Connection-error" : undefined}
+          aria-invalid={needsSender || undefined}
+          className={cn("w-full", needsSender && "border-destructive")}
+          id="web3Connection"
+        >
           <SelectValue
-            placeholder={loading ? "Loading..." : "Select connection"}
+            placeholder={
+              loading
+                ? "Loading..."
+                : needsSender
+                  ? "Pick a sender"
+                  : "Select connection"
+            }
           >
-            {selectedOption?.title ?? null}
+            {needsSender ? null : (selectedOption?.title ?? null)}
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
@@ -288,6 +307,12 @@ export function Web3ConnectionSelect({
           ))}
         </SelectContent>
       </Select>
+      {needsSender && (
+        <p className="text-destructive text-xs" id="web3Connection-error">
+          This step used a Safe your organization does not own. It won't run
+          until you pick a sender.
+        </p>
+      )}
       {warning && (
         <div className="flex items-start gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-xs text-yellow-700 dark:text-yellow-300">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />

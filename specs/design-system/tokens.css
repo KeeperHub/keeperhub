@@ -178,6 +178,9 @@
   --ds-sidebar-strip-width: 32px;
   --ds-flyout-width: 280px;
   --ds-drawer-width: 220px;
+  --ds-editor-panel-tablet-width: 360px;
+  --ds-editor-panel-min-width: 320px;
+  --ds-toast-width: 356px;
 }
 
 /* ================================================================
@@ -326,6 +329,9 @@
   --sidebar-strip-width: var(--ds-sidebar-strip-width, 32px);
   --flyout-width: var(--ds-flyout-width, 280px);
   --drawer-width: var(--ds-drawer-width, 220px);
+  --editor-panel-tablet-width: var(--ds-editor-panel-tablet-width, 360px);
+  --editor-panel-min-width: var(--ds-editor-panel-min-width, 320px);
+  --toast-width: var(--ds-toast-width, 356px);
 }
 
 /* ================================================================

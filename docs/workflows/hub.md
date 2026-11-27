@@ -25,7 +25,7 @@ The copy lands in your account with:
 
 - A unique name appended with `(Copy)` (e.g. `Aave V3 Health Factor Guardian (Copy)`).
 - Private visibility, so it's only visible to you until you choose to share it.
-- All node configurations preserved.
+- All node configurations preserved, except the sender when the template comes from another organization: a step pinned to the EOA uses your organization's Default Sender instead, and a step that sent through a Safe your organization does not own has no sender in your copy. A notice names those steps, the editor marks each one **Pick a sender**, and it does not run until you pick a sender in its **Web3 Connection** field.
 - Integration credentials cleared, so you can attach your own [Connections](/workflows/creating#managing-connections) before running.
 
 You can also duplicate any public workflow you're viewing by clicking the **Duplicate** button in the canvas toolbar, without going through the Hub list.

@@ -21,6 +21,7 @@ import {
   WORKFLOW_SAVE_ERROR_TOAST,
   workflowSaveErrorMessage,
 } from "@/lib/api-client";
+import { toastStepsNeedingSender } from "@/lib/client/needs-sender-toast";
 import { cn } from "@/lib/utils";
 import {
   type WorkflowExportV1,
@@ -146,6 +147,7 @@ export function WorkflowIOOverlay({
       const created = await api.workflow.import(parsedFile);
       setSubmitting(false);
       toast.success("Workflow imported");
+      toastStepsNeedingSender(created);
       onOpenChange(false);
       // Reset internal state explicitly here too (handleOpenChange also resets on next open).
       resetImportState();

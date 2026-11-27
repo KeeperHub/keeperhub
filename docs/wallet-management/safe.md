@@ -87,9 +87,9 @@ Other actions that send or sign have no picker and show who sends instead. Proto
 | EOA | Pins this node to the Turnkey EOA even if a Safe is the active Sender. Bypasses any Zodiac Roles policy. | `eoa` | Diagnostics, or a one-off node that must skip the Safe entirely. The picker shows a yellow warning when you pick this while a Safe is the org default. |
 | Safe `0x…` | Pins this node to a specific Safe by id, regardless of the org default. Only deployed, signing-active Safes on the node's chain appear, and a run fails if the pinned Safe's Sender toggle is later turned off. | `safe:<safeWalletId>` | You have multiple Safes and want one node to always use a specific one. |
 
-A workflow copied into another organization, or imported, keeps a pinned Safe and drops an `eoa` pin. A Safe from another organization fails the run until you pick a sender there.
-
 If the node's network is templated (e.g. `{{trigger.chainId}}`), only Default and EOA are pickable. A specific Safe can't be bound to a chain that isn't known until runtime.
+
+A workflow copied into another organization, or imported, drops an `eoa` pin, so the new organization's own policy applies, and keeps a Safe pin only where that organization owns the Safe. A node pinned to any other Safe is left with no sender (stored value `needs-sender`): the editor marks it **Pick a sender**, and it does not run until you pick one of the options above. It never falls back to the Default Sender or the EOA on its own.
 
 ## On-chain policies (Zodiac Roles)
 

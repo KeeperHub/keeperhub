@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { AUTH_SUCCESS_EVENT } from "@/lib/auth-events";
+import { toastStepsNeedingSender } from "@/lib/client/needs-sender-toast";
 import { isAnonymousUser } from "@/lib/is-anonymous";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 
@@ -139,6 +140,7 @@ export function PendingTemplateRunner(): null {
           refetchSidebar({ workflowCreated: true });
           writeSessionFlag(workflowId);
           toast.success("Template ready in your workflows");
+          toastStepsNeedingSender(duplicated);
           router.push(`/workflows/${duplicated.id}`);
         } catch (err) {
           console.error("[PendingTemplate] duplicate failed:", err);

@@ -8,6 +8,7 @@
  */
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { isSolanaChain } from "@/lib/rpc/solana-chains";
+import { SENDER_NOT_CHOSEN } from "@/lib/safe/sender-not-chosen";
 import { LEGACY_ACTION_MAPPINGS } from "@/plugins/legacy-mappings";
 
 export const WEB3_CONNECTION_KEY = "web3Connection";
@@ -54,7 +55,10 @@ export function actionTakesSafeSender(actionType: unknown): boolean {
 // The id shape of `safe_wallets.id`; a template or whitespace never matches.
 const SAFE_CONNECTION = /^safe:[A-Za-z0-9_-]+$/;
 
-/** Empty, default, eoa or safe:<id>. A template anywhere is refused. */
+/**
+ * Empty, default, eoa, safe:<id>, or the needs-sender mark a copy leaves. A
+ * template anywhere is refused.
+ */
 export function isValidWeb3Connection(value: unknown): boolean {
   if (typeof value !== "string") {
     return false;
@@ -63,6 +67,7 @@ export function isValidWeb3Connection(value: unknown): boolean {
     value === "" ||
     value === "default" ||
     value === "eoa" ||
+    value === SENDER_NOT_CHOSEN ||
     SAFE_CONNECTION.test(value)
   );
 }
@@ -100,7 +105,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * For a copy into another organization: drops every Web3 Connection except a
- * valid Safe on a step that takes one, which fails closed at run there.
+ * valid Safe, or the no-sender mark, on a step that takes a Safe.
  */
 export function withOnlySafeWeb3Connections<T>(nodes: T[]): T[] {
   return nodes.map((node) => {
@@ -116,8 +121,8 @@ export function withOnlySafeWeb3Connections<T>(nodes: T[]): T[] {
     }
     const value = data.config[WEB3_CONNECTION_KEY];
     if (
-      isValidWeb3Connection(value) &&
-      isSafeWeb3Connection(value) &&
+      ((isValidWeb3Connection(value) && isSafeWeb3Connection(value)) ||
+        value === SENDER_NOT_CHOSEN) &&
       actionTakesSafeSender(data.config.actionType)
     ) {
       return node;
@@ -224,4 +229,15 @@ export function web3ConnectionProblem(
     };
   }
   return null;
+}
+
+/** Whether a step that reads its Web3 Connection still waits for a sender. */
+export function stepNeedsSender(config: unknown): boolean {
+  if (!isRecord(config)) {
+    return false;
+  }
+  return (
+    config[WEB3_CONNECTION_KEY] === SENDER_NOT_CHOSEN &&
+    stepTakesWeb3Connection(config.actionType, config.network)
+  );
 }

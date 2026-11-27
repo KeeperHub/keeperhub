@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+import { SENDER_NOT_CHOSEN } from "@/lib/safe/sender-not-chosen";
 import { PLUGIN_STEP_IMPORTERS } from "@/lib/step-registry";
 import {
   actionTakesSafeSender,
@@ -11,6 +12,7 @@ import {
   fixedSenderNote,
   isUnsetWeb3Connection,
   isValidWeb3Connection,
+  stepNeedsSender,
   stepTakesWeb3Connection,
   web3ConnectionProblem,
   withOnlySafeWeb3Connections,
@@ -118,6 +120,7 @@ describe("isValidWeb3Connection", () => {
     "safe:abc",
     "safe:0a1b2c3d4e5f6g7h8i9j0",
     "safe:safe-1",
+    SENDER_NOT_CHOSEN,
   ])("accepts %j", (value) => {
     expect(isValidWeb3Connection(value)).toBe(true);
   });
@@ -302,6 +305,58 @@ describe("withOnlySafeWeb3Connections", () => {
   });
 });
 
+describe("stepNeedsSender", () => {
+  it("is true only on an action that reads the mark", () => {
+    expect(
+      stepNeedsSender({
+        actionType: "web3/transfer-funds",
+        web3Connection: SENDER_NOT_CHOSEN,
+      })
+    ).toBe(true);
+    for (const actionType of [
+      "aave-v3/supply",
+      "web3/sign-typed-data",
+      "discord/send-message",
+      undefined,
+    ]) {
+      expect(
+        stepNeedsSender({ actionType, web3Connection: SENDER_NOT_CHOSEN })
+      ).toBe(false);
+    }
+  });
+
+  it("is false on Transfer Native Token on a Solana network", () => {
+    const mark = { web3Connection: SENDER_NOT_CHOSEN };
+    expect(
+      stepNeedsSender({
+        ...mark,
+        actionType: "web3/transfer-funds",
+        network: "101",
+      })
+    ).toBe(false);
+    expect(
+      stepNeedsSender({ ...mark, actionType: "Transfer Funds", network: "101" })
+    ).toBe(false);
+    expect(
+      stepNeedsSender({
+        ...mark,
+        actionType: "web3/transfer-funds",
+        network: "1",
+      })
+    ).toBe(true);
+  });
+
+  it("is false once a sender is picked, or with no config", () => {
+    expect(
+      stepNeedsSender({
+        actionType: "web3/write-contract",
+        web3Connection: "eoa",
+      })
+    ).toBe(false);
+    expect(stepNeedsSender(undefined)).toBe(false);
+  });
+});
+
 describe("withOnlySafeWeb3Connections on a step that takes no Safe", () => {
   it("drops a Safe on Batch, a malformed Safe and one an action ignores", () => {
     const node = (actionType: string, web3Connection: string) => ({
@@ -322,6 +377,24 @@ describe("withOnlySafeWeb3Connections on a step that takes no Safe", () => {
       { actionType: "web3/write-contract" },
       { actionType: "aave-v3/supply" },
       { actionType: "Write Contract", web3Connection: "safe:s1" },
+    ]);
+  });
+
+  it("keeps the no-sender mark only where a Safe is taken", () => {
+    const node = (actionType: string) => ({
+      id: actionType,
+      data: { config: { actionType, web3Connection: SENDER_NOT_CHOSEN } },
+    });
+    expect(
+      withOnlySafeWeb3Connections([
+        node("web3/transfer-token"),
+        node("web3/batch-write-contract"),
+        node("aave-v3/supply"),
+      ]).map((n) => n.data.config)
+    ).toEqual([
+      { actionType: "web3/transfer-token", web3Connection: SENDER_NOT_CHOSEN },
+      { actionType: "web3/batch-write-contract" },
+      { actionType: "aave-v3/supply" },
     ]);
   });
 });

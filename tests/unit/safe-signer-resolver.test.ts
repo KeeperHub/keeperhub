@@ -90,6 +90,9 @@ vi.mock("@/lib/logging", () => ({
 // Import after mocks
 const { resolveSignerMode, resolveSignerForNode, parseWeb3Connection } =
   await import("@/lib/safe/signer-resolver");
+const { SENDER_NOT_CHOSEN, SenderNotChosenError } = await import(
+  "@/lib/safe/sender-not-chosen"
+);
 
 const ORG_ID = "org_test";
 const CHAIN_ID = 8453;
@@ -222,6 +225,12 @@ describe("parseWeb3Connection", () => {
   it("throws on unrecognised prefix", () => {
     expect(() => parseWeb3Connection("garbage")).toThrowError(INVALID_WEB3_RE);
   });
+
+  it("refuses a step with no sender chosen, never falling back to one", () => {
+    expect(() => parseWeb3Connection(SENDER_NOT_CHOSEN)).toThrowError(
+      SenderNotChosenError
+    );
+  });
 });
 
 describe("resolveSignerForNode", () => {
@@ -229,6 +238,18 @@ describe("resolveSignerForNode", () => {
     selectLimitMock.mockReset();
     getOrganizationWalletAddressMock.mockReset();
     getOrganizationWalletAddressMock.mockResolvedValue(OWNER);
+  });
+
+  it("rejects a step with no sender before any lookup", async () => {
+    await expect(
+      resolveSignerForNode({
+        organizationId: ORG_ID,
+        chainId: CHAIN_ID,
+        web3Connection: SENDER_NOT_CHOSEN,
+      })
+    ).rejects.toThrowError(SenderNotChosenError);
+    expect(selectLimitMock).not.toHaveBeenCalled();
+    expect(getOrganizationWalletAddressMock).not.toHaveBeenCalled();
   });
 
   it("default + no Safe -> eoa (delegates to resolveSignerMode)", async () => {

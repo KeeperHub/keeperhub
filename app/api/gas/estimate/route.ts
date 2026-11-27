@@ -9,10 +9,13 @@ import {
 import { apiError } from "@/lib/api-error";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
 import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
+import { userOrSystemErrorClass } from "@/lib/errors/classify";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { web3ConnectionFailure } from "@/lib/safe/sender-not-chosen";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { getChainGasDefaults } from "@/lib/web3/gas-defaults";
 import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
@@ -214,32 +217,16 @@ function estimateWriteContract(
  * contractAddress/abiFunction to estimate against the way write-contract
  * does.
  *
- * Checks the EOA-only gate first, matching batchWriteContractCore's own
- * hard gate. Unlike write-contract (which supports Safe/Safe-Role at
- * broadcast), a batch is EOA-only, so a Safe/Safe-Role org would otherwise
- * get a plausible gas number here for a config guaranteed to fail at
- * execution with a USER error.
+ * The EOA-only gate (batchSignerRefusal) runs before this, outside the RPC
+ * failover loop.
  */
 async function estimateBatchWriteContract(
   config: EstimateConfig,
   provider: ethers.JsonRpcProvider,
-  walletAddress: string,
-  organizationId: string,
-  chainId: number
+  walletAddress: string
 ): Promise<bigint | NextResponse> {
   if (!config.calls) {
     return badRequest("calls is required for batch-write-contract estimation");
-  }
-
-  const signerMode = await resolveSignerForNode({
-    organizationId,
-    chainId,
-    web3Connection: config.web3Connection,
-  });
-  if (signerMode.kind !== SIGNER_MODE.EOA) {
-    return badRequest(
-      "Batch Write Contract sends every call from your EOA, but this step resolves to a Safe. Pick EOA in its Web3 Connection, or use Write Contract steps to send from the Safe."
-    );
   }
 
   const { calls: callsWithMeta, error } = buildCallsWithMeta({
@@ -264,7 +251,42 @@ async function estimateBatchWriteContract(
     provider
   );
 
-  return multicall.aggregate3.estimateGas(call3Array, { from: walletAddress });
+  return await multicall.aggregate3.estimateGas(call3Array, {
+    from: walletAddress,
+  });
+}
+
+/**
+ * Matches batchWriteContractCore's EOA-only gate: a Safe/Safe-Role org would
+ * otherwise get a plausible gas number for a config that fails at execution.
+ * A sender lookup failure the user can fix gets the run's message, as a 400.
+ */
+async function batchSignerRefusal(
+  config: EstimateConfig,
+  organizationId: string,
+  chainId: number
+): Promise<NextResponse | null> {
+  let signerMode: Awaited<ReturnType<typeof resolveSignerForNode>>;
+  try {
+    signerMode = await resolveSignerForNode({
+      organizationId,
+      chainId,
+      web3Connection: config.web3Connection,
+    });
+  } catch (error) {
+    // A sender this step cannot use is a 400; a fault goes to the 500 path.
+    const failure = web3ConnectionFailure(error, userOrSystemErrorClass);
+    if (failure.errorClass !== ExecutionErrorType.USER) {
+      throw error;
+    }
+    return badRequest(failure.error);
+  }
+  if (signerMode.kind !== SIGNER_MODE.EOA) {
+    return badRequest(
+      "Batch Write Contract sends every call from your EOA, but this step resolves to a Safe. Pick EOA in its Web3 Connection, or use Write Contract steps to send from the Safe."
+    );
+  }
+  return null;
 }
 
 /**
@@ -366,6 +388,14 @@ export async function POST(request: Request): Promise<NextResponse> {
       return badRequest("No wallet configured. Create a wallet first.");
     }
 
+    // The signer needs no provider, so it is checked before the failover loop.
+    if (actionSlug === "batch-write-contract") {
+      const refusal = await batchSignerRefusal(config, activeOrgId, chainId);
+      if (refusal) {
+        return refusal;
+      }
+    }
+
     const rpcManager = await getRpcProvider({ chainId });
 
     const result = await rpcManager.executeWithFailover(async (provider) => {
@@ -380,9 +410,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           return await estimateBatchWriteContract(
             config,
             provider,
-            walletAddress,
-            activeOrgId,
-            chainId
+            walletAddress
           );
         default:
           return badRequest(`Unsupported action: ${actionSlug as string}`);

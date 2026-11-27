@@ -43,6 +43,7 @@ import {
   executeContractCallAsRole,
   executeContractCallAsSafe,
 } from "@/lib/safe/execute-as-safe";
+import { web3ConnectionFailure } from "@/lib/safe/sender-not-chosen";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import {
   preflightGasBalance,
@@ -548,12 +549,7 @@ async function writeContractCoreImpl(
     });
   } catch (error) {
     // A class keeps failOnError=false from softening it; USER or SYSTEM by message.
-    const message = `Failed to resolve Web3 Connection: ${getErrorMessage(error)}`;
-    return {
-      success: false,
-      error: message,
-      errorClass: userOrSystemErrorClass(message),
-    };
+    return web3ConnectionFailure(error, userOrSystemErrorClass);
   }
 
   if (payerParam !== undefined) {

@@ -131,15 +131,23 @@ async function open(
   panel?: { width?: number; collapsed?: boolean }
 ): Promise<void> {
   // The page writes these back, so drop the last open()'s panel first.
-  await page.context().clearCookies({ name: /^sidebar-(width|collapsed)$/ });
+  await page.context().clearCookies({
+    name: /^sidebar-(width|collapsed|collapsed-tablet)$/,
+  });
   const url = process.env.BASE_URL || "http://localhost:3000";
+  const collapsed = panel?.collapsed;
   const cookies = [
     ...(panel?.width
       ? [{ name: "sidebar-width", value: String(panel.width), url }]
       : []),
-    ...(panel?.collapsed
-      ? [{ name: "sidebar-collapsed", value: "true", url }]
-      : []),
+    // The panel's open state is kept per layout (below lg it starts closed).
+    ...(collapsed === undefined
+      ? []
+      : ["sidebar-collapsed", "sidebar-collapsed-tablet"].map((name) => ({
+          name,
+          value: String(collapsed),
+          url,
+        }))),
   ];
   if (cookies.length > 0) {
     await page.context().addCookies(cookies);
@@ -387,7 +395,7 @@ test.describe("Use template bar, signed in", () => {
   });
 
   test("from 768px: with the Workflows flyout open", async ({ page }) => {
-    await open(page, WIDE_WIDTHS[0], foreignId);
+    await open(page, WIDE_WIDTHS[0], foreignId, { collapsed: false });
     const flyout = page.getByRole("region", { name: "Workflows" });
     if (!(await flyout.isVisible())) {
       await page.getByTestId("nav-workflows").click();
@@ -565,6 +573,84 @@ test.describe("Use template bar, signed in", () => {
     await page.setViewportSize({ width: 1024, height: HEIGHT });
     await expect(templateButton(page)).toBeVisible();
     await expect(templateButton(page)).not.toBeFocused();
+  });
+
+  // A copy whose steps used the template owner's Safe: the notice names them
+  // and stays until it is closed.
+  test("names the copied steps that need a sender", async ({ page }) => {
+    await page.route("**/api/workflows/*/duplicate", async (route) => {
+      const response = await route.fetch();
+      const copy = (await response.json()) as { id: string };
+      ids.push(copy.id);
+      await route.fulfill({
+        response,
+        json: {
+          ...copy,
+          stepsNeedingSender: [
+            { nodeId: "swap", label: "Swap USDC" },
+            { nodeId: "pay", label: "Pay rent" },
+          ],
+        },
+      });
+    });
+    // Fake timers: the check below jumps past a toast's usual few seconds.
+    await page.clock.install();
+    await open(page, 1280, copyableId);
+    await templateButton(page).click();
+    const toast = page
+      .locator("[data-sonner-toast]")
+      .filter({ hasText: "need a sender" });
+    await expect(toast).toHaveText(
+      '2 steps used a Safe your organization does not own and need a sender: "Swap USDC" and "Pay rent". Pick one under Web3 Connection in each step before running.',
+      { timeout: 15_000 }
+    );
+    // Off the toaster, which pauses its timers while hovered.
+    await page.mouse.move(0, 0);
+    await page.clock.fastForward(15_000);
+    await expect(toast).toBeVisible();
+    // Sonner keeps a dismissed toast in the DOM while it animates out.
+    await expect(toast).toHaveAttribute("data-removed", "false");
+    await toast.getByRole("button", { name: "Close toast" }).click();
+    await expect(toast).toHaveCount(0);
+  });
+
+  test("side panel: closed at 768 by default, kept per layout, focus follows its buttons", async ({
+    page,
+  }) => {
+    await page.context().clearCookies({
+      name: /^sidebar-(width|collapsed|collapsed-tablet)$/,
+    });
+    await visit(page, 768, HEIGHT, ownTriggerId);
+    const panel = page.locator("#editor-side-panel");
+    await expect(panel).toHaveAttribute("data-editor-side-panel", "closed", {
+      timeout: 15_000,
+    });
+    // Off screen and out of the tab order.
+    await expect(panel).toHaveAttribute("inert", "");
+
+    await page.getByRole("button", { name: "Open side panel" }).click();
+    await expect(panel).toHaveAttribute("data-editor-side-panel", "open");
+    await expect(panel).not.toHaveAttribute("inert");
+    await expect(
+      page.getByRole("button", { name: "Close side panel" })
+    ).toBeFocused();
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(panel).toHaveAttribute("data-editor-side-panel", "open", {
+      timeout: 15_000,
+    });
+    await page.getByRole("button", { name: "Close side panel" }).click();
+    await expect(panel).toHaveAttribute("data-editor-side-panel", "closed");
+    await expect(
+      page.getByRole("button", { name: "Open side panel" })
+    ).toBeFocused();
+
+    // The 768 choice is not the desktop's: 1280 starts open.
+    await page.setViewportSize({ width: 1280, height: HEIGHT });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(panel).toHaveAttribute("data-editor-side-panel", "open", {
+      timeout: 15_000,
+    });
   });
 
   test("not shown on your own workflow", async ({ page }) => {

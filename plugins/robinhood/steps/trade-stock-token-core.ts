@@ -3,6 +3,7 @@ import { classifyRevert } from "@/lib/web3/decode-revert-error";
 import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 
 import { ethers } from "ethers";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
@@ -10,6 +11,7 @@ import {
   executeContractCallAsRole,
   executeContractCallAsSafe,
 } from "@/lib/safe/execute-as-safe";
+import { web3ConnectionFailure } from "@/lib/safe/sender-not-chosen";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
@@ -108,6 +110,7 @@ export type TradeStockTokenResult =
       transactionHash?: string;
       chainId?: number;
       broadcastAttempted?: boolean;
+      errorClass?: ExecutionErrorType;
     };
 
 /** Refusals that are the caller's to fix, phrased so they can fix them. */
@@ -321,7 +324,7 @@ async function tradeStockTokenCoreImpl(
       web3Connection: input.web3Connection,
     });
   } catch (error) {
-    return refuse(`Failed to resolve Web3 Connection: ${getErrorMessage(error)}`);
+    return web3ConnectionFailure(error);
   }
 
   const rpcUrl = rpcManager.getProvider()._getConnection().url;

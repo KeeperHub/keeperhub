@@ -13,6 +13,7 @@ import {
   HardDriveUpload,
   ListEnd,
   Repeat,
+  Wallet,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -36,6 +37,7 @@ import {
   selectedExecutionIdAtom,
   type WorkflowNodeData,
 } from "@/lib/workflow/store";
+import { stepNeedsSender } from "@/lib/workflow/web3-connection";
 import { findActionById, getIntegration } from "@/plugins/registry";
 
 // Helper to get display name for AI model
@@ -344,6 +346,8 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
     needsIntegration &&
     !hasValidIntegration &&
     !isPendingIntegrationCheck;
+  // A copy off a Safe the organization does not own waits for a sender.
+  const senderMissing = stepNeedsSender(data.config);
 
   // Get model for AI nodes
   const getAiModel = (): string | null => {
@@ -388,10 +392,19 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
         </div>
       )}
 
-      {/* Integration warning badge in top left (only if not disabled) */}
-      {!isDisabled && integrationMissing && (
-        <div className="absolute top-2 left-2 rounded-full bg-orange-500/50 p-1">
-          <AlertTriangle className="size-3.5 text-white" />
+      {/* Integration or sender warning badge in top left (only if not disabled) */}
+      {!isDisabled && (integrationMissing || senderMissing) && (
+        <div
+          className="absolute top-2 left-2 rounded-full bg-orange-500/50 p-1"
+          data-testid={senderMissing ? "step-needs-sender" : undefined}
+          title={senderMissing ? "Pick a sender" : undefined}
+        >
+          {senderMissing ? (
+            <Wallet aria-hidden="true" className="size-3.5 text-white" />
+          ) : (
+            <AlertTriangle aria-hidden="true" className="size-3.5 text-white" />
+          )}
+          {senderMissing && <span className="sr-only">Pick a sender</span>}
         </div>
       )}
 

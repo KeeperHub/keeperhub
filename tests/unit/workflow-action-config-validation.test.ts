@@ -2718,7 +2718,8 @@ describe("Web3 Connection on save", () => {
       poolTickSpacing: "60",
     },
   };
-  const VALUES = ["default", "eoa", "safe:safe-123", ""];
+  // "needs-sender" is what a copy leaves on a foreign Safe; it must still save.
+  const VALUES = ["default", "eoa", "safe:safe-123", "", "needs-sender"];
   const BATCH = "web3/batch-write-contract";
 
   for (const [actionType, base] of Object.entries(TAKES_IT)) {
