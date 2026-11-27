@@ -86,6 +86,24 @@ async function toEndpoint(
   }
 }
 
+/**
+ * Services share a socket per key, so a route sent with an endpoint left out
+ * gets a key of its own: one key never stands for two sets of URLs.
+ */
+function sentRouteKey(
+  route: RpcRoute,
+  primary: TriggerRouteEndpoint | null,
+  fallback: TriggerRouteEndpoint | null
+): string {
+  if (!primary) {
+    return `${route.key}:fallback-only`;
+  }
+  if (route.fallback && !fallback) {
+    return `${route.key}:primary-only`;
+  }
+  return route.key;
+}
+
 /** Null when none of the route's endpoints can be handed out. */
 async function toTriggerRoute(
   route: RpcRoute,
@@ -100,7 +118,7 @@ async function toTriggerRoute(
     return null;
   }
   return {
-    key: route.key,
+    key: sentRouteKey(route, primary, fallback),
     organizationId,
     chainId: route.chain.chainId,
     transport: route.transport,

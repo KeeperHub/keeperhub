@@ -69,13 +69,24 @@ function endpointFor(route: RpcRoute, url: string): RpcRouteEndpoint | null {
   return null;
 }
 
-/** Pinned to the vetted addresses for an organization endpoint, else none. */
+/**
+ * Pinned to the vetted addresses for an organization endpoint, ordinary DNS
+ * for a KeeperHub one, and no address at all for a URL the route does not
+ * hold, so an unknown URL can never be dialled unchecked.
+ */
 function lookupFor(route: RpcRoute, url: string): LookupFunction | undefined {
   const endpoint = endpointFor(route, url);
-  if (endpoint?.origin !== RpcOrigin.ORG) {
+  if (!endpoint) {
+    return pinnedLookup([]);
+  }
+  if (endpoint.origin !== RpcOrigin.ORG) {
     return undefined;
   }
   return pinnedLookup(endpoint.addresses ?? []);
+}
+
+function sameEndpoints(a: RpcRoute, b: RpcRoute): boolean {
+  return a.primary.url === b.primary.url && a.fallback?.url === b.fallback?.url;
 }
 
 /**
@@ -94,8 +105,11 @@ export class RouteProviderPool {
 
   acquire(route: RpcRoute): RouteLease {
     const entry = this.entries.get(route.key) ?? this.createEntry(route);
-    // The latest vetted addresses are the ones the next connection uses.
-    entry.route = route;
+    // The latest vetted addresses are the ones the next connection uses, but
+    // only for the endpoints the manager was built with.
+    if (sameEndpoints(entry.route, route)) {
+      entry.route = route;
+    }
     entry.refs += 1;
     let released = false;
     return {

@@ -149,6 +149,27 @@ describe("attachTriggerRoutes", () => {
     expect(result).toEqual([]);
   });
 
+  it("gives a route sent without its primary a key of its own", async () => {
+    const fallbackUrl = "wss://org-fallback.example.com/key";
+    engine.route.mockResolvedValue({
+      ...route(endpoint(RpcOrigin.ORG, ORG_WSS)),
+      fallback: endpoint(RpcOrigin.ORG, fallbackUrl),
+    });
+    resolver.resolve.mockImplementation((url: string) =>
+      url === ORG_WSS
+        ? Promise.reject(new Error("blocked: private address"))
+        : Promise.resolve([PUBLIC_ADDRESS])
+    );
+
+    const [result] = await attachTriggerRoutes([
+      workflow("wf_1", { network: String(CHAIN_ID) }),
+    ]);
+
+    expect(result.rpcRoute?.key).not.toBe("route-key");
+    expect(result.rpcRoute?.primary.url).toBe(fallbackUrl);
+    expect(result.rpcRoute?.fallback).toBeUndefined();
+  });
+
   it("drops a trigger the engine refuses to route", async () => {
     engine.route.mockRejectedValue(
       new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, CHAIN_ID)

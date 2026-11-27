@@ -54,12 +54,18 @@ function sameEndpoint(
   );
 }
 
-/** Pinned to the vetted addresses for an organization endpoint, else none. */
+/**
+ * Pinned to the vetted addresses for an organization endpoint, ordinary DNS
+ * for a KeeperHub one, and no address for a URL the route does not hold.
+ */
 function lookupFor(route: RpcRoute, url: string): LookupFunction | undefined {
   const endpoint = [route.primary, route.fallback].find(
     (candidate) => candidate?.url === url,
   );
-  if (endpoint?.origin !== RpcOrigin.ORG) {
+  if (!endpoint) {
+    return pinnedLookup([]);
+  }
+  if (endpoint.origin !== RpcOrigin.ORG) {
     return undefined;
   }
   return pinnedLookup(endpoint.addresses ?? []);
