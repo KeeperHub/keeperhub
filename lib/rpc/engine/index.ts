@@ -31,7 +31,7 @@ export {
   scopeForManyChains,
 } from "./scope";
 export { SecretUrl } from "./secret-url";
-export { getChainBuilderRpcUrls } from "./sources/platform-source";
+export { builderRpcUrlsFor } from "./sources/platform-source";
 export { isPlatformOnlyRoute } from "./telemetry/route-sink";
 export {
   RpcErrorType,

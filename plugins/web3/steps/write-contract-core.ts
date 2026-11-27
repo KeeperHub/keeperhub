@@ -30,7 +30,7 @@ import {
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
   type EvmRpcClient,
-  getChainBuilderRpcUrls,
+  builderRpcUrlsFor,
   RPC_SELECTION_CONFIG_KEY,
   RpcPurpose,
   RpcRouteError,
@@ -779,7 +779,7 @@ async function writeContractCoreImpl(
     simulation !== undefined &&
     !usePrivateMempool &&
     signerMode.kind === SIGNER_MODE.EOA
-      ? await getChainBuilderRpcUrls(chainId)
+      ? await builderRpcUrlsFor(rpcClient.route)
       : undefined;
 
   return withNonceSession(txContext, walletAddress, async (session) => {

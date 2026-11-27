@@ -35,7 +35,7 @@ import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
   type EvmRpcClient,
-  getChainBuilderRpcUrls,
+  builderRpcUrlsFor,
   RPC_SELECTION_CONFIG_KEY,
   RpcPurpose,
   RpcRouteError,
@@ -797,7 +797,7 @@ async function batchWriteContractCoreImpl(
   // Looked up before the wallet lock; private mempool sends stay on the relay.
   const builderRpcUrls =
     simulation !== undefined && !usePrivateMempool
-      ? await getChainBuilderRpcUrls(chainId)
+      ? await builderRpcUrlsFor(rpcClient.route)
       : undefined;
 
   return withNonceSession(txContext, walletAddress, async (session) => {

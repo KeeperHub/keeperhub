@@ -60,6 +60,7 @@ By default, KeeperHub's endpoints are the backup: if your endpoints fail, or can
 - every step and trigger uses your configs, and a config's fallback is only the fallback you set
 - **KeeperHub default** is not available on steps for that network
 - the private mempool option is available only where your config has a private transaction URL
+- a write with **Next block** set is not also sent to the block builder endpoints KeeperHub configures for the network
 
 You can turn it on for a chain once every workflow step and trigger on that chain has a config that can serve it. Event and block triggers also need a WSS endpoint. If something is missing, the settings page lists the workflows and steps that need a config first. While it is on, saving a workflow step on that chain without a config, or removing a config that a workflow depends on, is refused with the affected steps listed.
 

@@ -64,7 +64,7 @@ const mockRpcEvm = vi.fn();
 const mockGetChainBuilderRpcUrls = vi.fn();
 vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
-  getChainBuilderRpcUrls: (...args: unknown[]) =>
+  builderRpcUrlsFor: (...args: unknown[]) =>
     mockGetChainBuilderRpcUrls(...args),
   rpc: {
     evm: (...args: unknown[]) => mockRpcEvm(...args),
@@ -284,6 +284,7 @@ beforeEach(() => {
       resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
       executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
     },
+    route: { chain: { chainId: 1 }, ownRpcOnly: false },
   });
   mockResolveSignerForNode.mockResolvedValue({
     kind: "eoa",
@@ -1291,7 +1292,9 @@ describe("batch-write-contract - simulateAt next-block", () => {
       baseInput({ simulateAt: "next-block" })
     );
 
-    expect(mockGetChainBuilderRpcUrls).toHaveBeenCalledWith(1);
+    expect(mockGetChainBuilderRpcUrls).toHaveBeenCalledWith(
+      expect.objectContaining({ chain: { chainId: 1 } })
+    );
     const adapterOptions = mockExecuteContractCall.mock.calls[0]?.[3] as {
       builderRpcUrls?: unknown;
     };

@@ -5,7 +5,12 @@ import { ErrorCategory, logSystemError, logWarn } from "@/lib/logging";
 import { getErrorMessage } from "@/lib/utils";
 import { type BuilderRpcUrls, normalizeBuilderRpcUrls } from "../../rpc-config";
 import { SecretUrl } from "../secret-url";
-import { type PlatformEndpoints, type RpcChain, RpcChainType } from "../types";
+import {
+  type PlatformEndpoints,
+  type RpcChain,
+  RpcChainType,
+  type RpcRoute,
+} from "../types";
 
 export type PlatformChainRecord = {
   chain: RpcChain;
@@ -120,10 +125,18 @@ export function createDbPlatformRpcSource(
   };
 }
 
-// Builder endpoints are optional, so a failed lookup returns undefined.
-export async function getChainBuilderRpcUrls(
-  chainId: number
+/**
+ * KeeperHub's block builder endpoints for the route's chain. None for an
+ * own-RPC-only route, which never leaves the organization's endpoints.
+ * Builders are optional, so a failed lookup returns undefined.
+ */
+export async function builderRpcUrlsFor(
+  route: RpcRoute
 ): Promise<BuilderRpcUrls | undefined> {
+  if (route.ownRpcOnly) {
+    return undefined;
+  }
+  const { chainId } = route.chain;
   try {
     const rows = await db
       .select({ builderRpcUrls: chains.builderRpcUrls })

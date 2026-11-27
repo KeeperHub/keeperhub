@@ -139,10 +139,13 @@ const { mockRpcManager } = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
-  getChainBuilderRpcUrls: (...args: unknown[]) =>
+  builderRpcUrlsFor: (...args: unknown[]) =>
     mockGetChainBuilderRpcUrls(...args),
   rpc: {
-    evm: vi.fn().mockResolvedValue({ manager: mockRpcManager }),
+    evm: vi.fn().mockResolvedValue({
+      manager: mockRpcManager,
+      route: { chain: { chainId: 1 }, ownRpcOnly: false },
+    }),
     solana: vi.fn(),
     route: vi.fn(),
   },
@@ -873,7 +876,9 @@ describe("writeContractCore simulateAt next-block", () => {
       simulateAt: "next-block",
     });
 
-    expect(mockGetChainBuilderRpcUrls).toHaveBeenCalledWith(1);
+    expect(mockGetChainBuilderRpcUrls).toHaveBeenCalledWith(
+      expect.objectContaining({ chain: { chainId: 1 } })
+    );
     const optionsArg = mockExecuteContractCall.mock.calls[0]?.[3] as {
       builderRpcUrls?: unknown;
     };

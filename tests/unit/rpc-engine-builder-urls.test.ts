@@ -5,7 +5,12 @@ vi.mock("server-only", () => ({}));
 const { mockSelect } = vi.hoisted(() => ({ mockSelect: vi.fn() }));
 vi.mock("@/lib/db", () => ({ db: { select: mockSelect } }));
 
-import { getChainBuilderRpcUrls } from "@/lib/rpc/engine/sources/platform-source";
+import { builderRpcUrlsFor } from "@/lib/rpc/engine/sources/platform-source";
+import type { RpcRoute } from "@/lib/rpc/engine/types";
+
+function route(ownRpcOnly: boolean): RpcRoute {
+  return { chain: { chainId: 1 }, ownRpcOnly } as RpcRoute;
+}
 
 function chainRow(row: Record<string, unknown>): void {
   mockSelect.mockReturnValue({
@@ -13,7 +18,7 @@ function chainRow(row: Record<string, unknown>): void {
   });
 }
 
-describe("getChainBuilderRpcUrls", () => {
+describe("builderRpcUrlsFor", () => {
   beforeEach(() => {
     mockSelect.mockReset();
   });
@@ -26,9 +31,16 @@ describe("getChainBuilderRpcUrls", () => {
       },
     });
 
-    await expect(getChainBuilderRpcUrls(1)).resolves.toEqual({
+    await expect(builderRpcUrlsFor(route(false))).resolves.toEqual({
       titan: "https://titan.example",
     });
+  });
+
+  it("sends an own-RPC-only route to no builder", async () => {
+    chainRow({ builderRpcUrls: { titan: "https://titan.example" } });
+
+    await expect(builderRpcUrlsFor(route(true))).resolves.toBeUndefined();
+    expect(mockSelect).not.toHaveBeenCalled();
   });
 
   it("returns undefined when the lookup fails", async () => {
@@ -36,6 +48,6 @@ describe("getChainBuilderRpcUrls", () => {
       throw new Error("db down");
     });
 
-    await expect(getChainBuilderRpcUrls(1)).resolves.toBeUndefined();
+    await expect(builderRpcUrlsFor(route(false))).resolves.toBeUndefined();
   });
 });
