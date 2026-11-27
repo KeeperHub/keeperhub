@@ -2,7 +2,7 @@ import "server-only";
 
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { isUniqueViolation } from "@/lib/db/errors";
+import { isUniqueViolation, violatedConstraint } from "@/lib/db/errors";
 import { workflows } from "@/lib/db/schema";
 import {
   type OrganizationRpcConfigRow,
@@ -64,6 +64,7 @@ const ERROR_STATUS: Readonly<Record<OrgRpcErrorCode, number>> = {
   [OrgRpcErrorCode.CHAIN_UNAVAILABLE]: 400,
   [OrgRpcErrorCode.NOT_FOUND]: 404,
   [OrgRpcErrorCode.NAME_TAKEN]: 409,
+  [OrgRpcErrorCode.DEFAULT_CHANGED]: 409,
   [OrgRpcErrorCode.VERIFICATION_FAILED]: 422,
   [OrgRpcErrorCode.COVERAGE_GAPS]: 409,
 };
@@ -350,6 +351,28 @@ export type CreateOrgRpcConfigInput = {
   enabled?: boolean;
 };
 
+const DEFAULT_CONFIG_INDEX = "uq_org_rpc_configs_default";
+
+/**
+ * Two saves making a default on one chain at once can each miss the other's
+ * uncommitted row, so the index refuses the later one: that is a conflict to
+ * retry, not a duplicate name.
+ */
+function uniqueViolationFailure(error: unknown): OrgRpcFailure | null {
+  if (!isUniqueViolation(error)) {
+    return null;
+  }
+  return violatedConstraint(error) === DEFAULT_CONFIG_INDEX
+    ? failure(
+        OrgRpcErrorCode.DEFAULT_CHANGED,
+        "This chain's default changed while saving. Reload and try again."
+      )
+    : failure(
+        OrgRpcErrorCode.NAME_TAKEN,
+        "A config with this name already exists for this chain."
+      );
+}
+
 async function hasDefault(
   organizationId: string,
   chainId: number,
@@ -488,11 +511,9 @@ export async function createOrgRpcConfig(
     });
     return { ok: true, config: toView(row) };
   } catch (error) {
-    if (isUniqueViolation(error)) {
-      return failure(
-        OrgRpcErrorCode.NAME_TAKEN,
-        "A config with this name already exists for this chain."
-      );
+    const refused = uniqueViolationFailure(error);
+    if (refused) {
+      return refused;
     }
     throw error;
   }
@@ -656,11 +677,9 @@ export async function updateOrgRpcConfig(
     });
     return { ok: true, config: toView(saved) };
   } catch (error) {
-    if (isUniqueViolation(error)) {
-      return failure(
-        OrgRpcErrorCode.NAME_TAKEN,
-        "A config with this name already exists for this chain."
-      );
+    const refused = uniqueViolationFailure(error);
+    if (refused) {
+      return refused;
     }
     throw error;
   }

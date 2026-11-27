@@ -117,6 +117,27 @@ export function isUniqueViolation(err: unknown): boolean {
   return pgErrorCode(err) === UNIQUE_VIOLATION;
 }
 
+/**
+ * The constraint a unique violation hit, for a table with more than one
+ * unique rule. postgres-js reports it as `constraint_name` on the driver
+ * error, somewhere down the cause chain.
+ */
+export function violatedConstraint(err: unknown): string | undefined {
+  let current: unknown = err;
+  for (
+    let depth = 0;
+    depth < MAX_CAUSE_DEPTH && current && typeof current === "object";
+    depth++
+  ) {
+    const name = (current as { constraint_name?: unknown }).constraint_name;
+    if (typeof name === "string") {
+      return name;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return;
+}
+
 /** Postgres `foreign_key_violation`. */
 const FOREIGN_KEY_VIOLATION = "23503";
 

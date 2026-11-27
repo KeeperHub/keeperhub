@@ -172,6 +172,45 @@ describe.skipIf(SKIP)("organization RPC configs (Postgres)", () => {
     expect(await defaults()).toEqual(["Archive"]);
   });
 
+  it("answers two defaults saved at once as a conflict, not a taken name", async () => {
+    const results = await Promise.all(
+      ["Race A", "Race B"].map((name) =>
+        service.createOrgRpcConfig({
+          organizationId: ORG_ID,
+          userId: USER_ID,
+          chainId: SEPOLIA,
+          name,
+          urls: urls(name.replace(" ", "").toLowerCase()),
+          isDefault: true,
+        })
+      )
+    );
+    const refused = results.filter((result) => !result.ok);
+    for (const result of refused) {
+      expect(result).toMatchObject({
+        code: service.OrgRpcErrorCode.DEFAULT_CHANGED,
+      });
+    }
+    expect((await defaults()).length).toBe(1);
+    for (const result of results) {
+      if (result.ok) {
+        await service.deleteOrgRpcConfig({
+          organizationId: ORG_ID,
+          configId: result.config.id,
+        });
+      }
+    }
+    const [archive] = (await service.listOrgRpcConfigs(ORG_ID)).filter(
+      (config) => config.name === "Archive"
+    );
+    await service.updateOrgRpcConfig({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      configId: archive.id,
+      isDefault: true,
+    });
+  });
+
   it("refuses a second config with the same name on a chain", async () => {
     const result = await service.createOrgRpcConfig({
       organizationId: ORG_ID,
