@@ -133,26 +133,49 @@ async function readOrgRpcState(
     : { policy, configs };
 }
 
+export type SharedOrgRpcSource = OrgRpcSource & {
+  /**
+   * After a write in this process: later loads do not join a read that
+   * started before it and could miss it.
+   */
+  forgetReads(organizationId: string): void;
+};
+
 /**
  * Organization RPC state, read fresh on every call so a change made on any
  * instance applies everywhere at once: a stale copy could keep sending an
  * own-RPC-only chain to KeeperHub, or keep using a deleted config's URLs.
  * Concurrent reads of one organization and chain share a single query.
  */
-export function createDbOrgRpcSource(): OrgRpcSource {
-  const inFlight = new Map<string, Promise<OrgRpcState>>();
+export function createDbOrgRpcSource(): SharedOrgRpcSource {
+  const inFlight = new Map<
+    string,
+    { organizationId: string; state: Promise<OrgRpcState> }
+  >();
   return {
     load(organizationId: string, chainId: number): Promise<OrgRpcState> {
       const key = loadKey(organizationId, chainId);
       const pending = inFlight.get(key);
       if (pending) {
-        return pending;
+        return pending.state;
       }
-      const next = readOrgRpcState(organizationId, chainId).finally(() => {
-        inFlight.delete(key);
-      });
-      inFlight.set(key, next);
-      return next;
+      const read = {
+        organizationId,
+        state: readOrgRpcState(organizationId, chainId).finally(() => {
+          if (inFlight.get(key) === read) {
+            inFlight.delete(key);
+          }
+        }),
+      };
+      inFlight.set(key, read);
+      return read.state;
+    },
+    forgetReads(organizationId: string): void {
+      for (const [key, read] of inFlight) {
+        if (read.organizationId === organizationId) {
+          inFlight.delete(key);
+        }
+      }
     },
   };
 }

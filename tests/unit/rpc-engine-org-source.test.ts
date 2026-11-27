@@ -64,6 +64,16 @@ describe("createDbOrgRpcSource", () => {
     expect(rows.selects).toBe(2);
   });
 
+  it("starts a fresh read after a write instead of joining an older one", async () => {
+    const source = createDbOrgRpcSource();
+    const before = source.load("org_1", 1);
+    source.forgetReads("org_1");
+    const after = source.load("org_1", 1);
+
+    expect(after).not.toBe(before);
+    await Promise.all([before, after]);
+  });
+
   it("reports a config it cannot decrypt once, not on every route", async () => {
     rows.configs = [
       {
