@@ -10,6 +10,7 @@ import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 import { getOrgContext } from "@/lib/middleware/org-context";
 import { isViewerRole } from "@/lib/organization/role-label";
 import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
+import { workflowCoverageResponse } from "@/lib/rpc/engine/org/http";
 import { generateId } from "@/lib/utils/id";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import {
@@ -164,6 +165,19 @@ export async function POST(request: Request) {
       )
       .limit(1);
 
+    const workflowId = existingWorkflow?.id ?? generateId();
+
+    // Same rule as every other save: a step the organization's RPC settings
+    // would leave without a route is refused, not found at run time.
+    const rpcRefusal = await workflowCoverageResponse(
+      organizationId,
+      { id: workflowId, name: CURRENT_WORKFLOW_NAME, nodes },
+      existingWorkflow?.nodes
+    );
+    if (rpcRefusal) {
+      return rpcRefusal;
+    }
+
     if (existingWorkflow) {
       // Update existing current workflow
       const [updatedWorkflow] = await db
@@ -182,8 +196,6 @@ export async function POST(request: Request) {
         edges: updatedWorkflow.edges,
       });
     }
-
-    const workflowId = generateId();
 
     const [savedWorkflow] = await db
       .insert(workflows)

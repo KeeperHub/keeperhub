@@ -5,7 +5,9 @@ const {
   mockGetOrgContext,
   mockValidateWorkflowIntegrations,
   mockSelect,
+  mockCoverageResponse,
 } = vi.hoisted(() => ({
+  mockCoverageResponse: vi.fn(),
   mockGetSession: vi.fn(),
   mockGetOrgContext: vi.fn(),
   mockValidateWorkflowIntegrations: vi.fn(),
@@ -47,6 +49,10 @@ vi.mock("@/lib/features/route-guard", () => ({
     "This workflow uses features that require a paid plan.",
 }));
 
+vi.mock("@/lib/rpc/engine/org/http", () => ({
+  workflowCoverageResponse: mockCoverageResponse,
+}));
+
 vi.mock("@/lib/middleware/org-context", () => ({
   getOrgContext: mockGetOrgContext,
 }));
@@ -56,7 +62,9 @@ vi.mock("@/lib/logging", () => ({
   logSystemError: vi.fn(),
 }));
 
+import { NextResponse } from "next/server";
 import { POST } from "@/app/api/workflows/current/route";
+import { db } from "@/lib/db";
 
 function request(nodes: unknown[]): Request {
   return new Request("http://localhost:3000/api/workflows/current", {
@@ -76,6 +84,32 @@ describe("POST /api/workflows/current action config validation", () => {
       organization: { id: "org-123" },
     });
     mockValidateWorkflowIntegrations.mockResolvedValue({ valid: true });
+    mockCoverageResponse.mockResolvedValue(null);
+  });
+
+  it("refuses an autosave that would leave a step without an RPC route", async () => {
+    const storedNodes = [{ id: "old" }];
+    mockSelect.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve([{ id: "wf-current", nodes: storedNodes }]),
+        }),
+      }),
+    });
+    mockCoverageResponse.mockResolvedValue(
+      NextResponse.json({ error: "not covered" }, { status: 409 })
+    );
+
+    const response = await POST(request([]));
+
+    expect(response.status).toBe(409);
+    expect(mockCoverageResponse).toHaveBeenCalledWith(
+      "org-123",
+      expect.objectContaining({ id: "wf-current", nodes: [] }),
+      storedNodes
+    );
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it("rejects invalid action config before autosaving current workflow", async () => {
