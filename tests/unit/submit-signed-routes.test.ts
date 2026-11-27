@@ -115,14 +115,20 @@ function stubManaged(opts: {
   receipt?: unknown;
 }): { broadcastCalls: string[]; blockReads: ReturnType<typeof vi.fn> } {
   const broadcastCalls: string[] = [];
-  vi.spyOn(
-    ethers.JsonRpcProvider.prototype,
-    "broadcastTransaction"
-  ).mockImplementation(function (this: ethers.JsonRpcProvider) {
-    const url = this._getConnection().url;
-    broadcastCalls.push(url);
-    return opts.broadcast(url) as Promise<ethers.TransactionResponse>;
-  });
+  const send = ethers.JsonRpcProvider.prototype.send;
+  // Only the raw send is answered here; an accepted send answers its hash.
+  vi.spyOn(ethers.JsonRpcProvider.prototype, "send").mockImplementation(
+    function (this: ethers.JsonRpcProvider, method, params) {
+      if (method !== "eth_sendRawTransaction") {
+        return send.call(this, method, params);
+      }
+      const url = this._getConnection().url;
+      broadcastCalls.push(url);
+      return opts
+        .broadcast(url)
+        .then((sent) => (sent as { hash: string }).hash);
+    }
+  );
   vi.spyOn(
     ethers.JsonRpcProvider.prototype,
     "getTransactionReceipt"

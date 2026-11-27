@@ -906,6 +906,58 @@ describe("canvas marker for a step Send as stops", () => {
     );
     expect(sendsPrivately(templated)).toBe(false);
   });
+
+  it("treats a templated Simulate at or strict as unknown: marker, no badge", () => {
+    setEditorSendModeChains([ETHEREUM, BASE]);
+    const old = { actionType: BATCH, network: "1", usePrivateMempool: true };
+    const mode = "{{@x:X.mode}}";
+    const flag = "{{@x:X.strict}}";
+    const note = (fields: string, risks: string): string =>
+      `A template sets this step's ${fields}: when ${risks}, every run fails before sending.`;
+    for (const [config, fields, risks] of [
+      [
+        { ...old, strict: false, simulateAt: mode },
+        "Simulate at",
+        "Simulate at resolves to Next block",
+      ],
+      [
+        { ...old, strict: flag },
+        "strict",
+        "strict resolves to anything but false",
+      ],
+      [
+        { ...old, strict: flag, simulateAt: mode },
+        "strict and Simulate at",
+        "strict resolves to anything but false or Simulate at resolves to Next block",
+      ],
+    ] as const) {
+      const warning = sendModeWarning(config);
+      expect(warning).toMatchObject({ unsupported: true, fails: true });
+      expect(warning?.sendsPrivately).toBeUndefined();
+      expect(warning?.text).toContain(note(fields, risks));
+      expect(warning?.text).toContain("Ethereum's regular RPC");
+      expect(sendsPrivately(config)).toBe(false);
+    }
+    // A known outcome stays known: strict true fails, Next block fails either way.
+    expect(sendModeWarning({ ...old, simulateAt: mode })?.text).toContain(
+      "checks its calls with eth_call first"
+    );
+    expect(
+      sendModeWarning({ ...old, strict: flag, simulateAt: "next-block" })?.text
+    ).toContain("checks its calls as of the next block first");
+    // A templated network too: the note names the template, no badge.
+    const both = {
+      ...old,
+      network: "{{@x:X.chain}}",
+      strict: false,
+      simulateAt: mode,
+    };
+    expect(sendModeWarning(both)).toMatchObject({ fails: true });
+    expect(sendModeWarning(both)?.text).toContain(
+      "A template sets this step's Simulate at: when Simulate at resolves to Next block, it fails there before sending."
+    );
+    expect(sendsPrivately(both)).toBe(false);
+  });
 });
 
 describe("unknown sendMode values", () => {

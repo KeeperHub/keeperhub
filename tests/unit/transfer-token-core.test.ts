@@ -210,6 +210,8 @@ vi.mock("@/lib/contracts/abis/erc20.json", () => ({
   ],
 }));
 
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { RpcUserEndpointError } from "@/lib/rpc/providers";
 import type { TransferTokenCoreInput } from "@/plugins/web3/steps/transfer-token-core";
 import { transferTokenCore } from "@/plugins/web3/steps/transfer-token-core";
 
@@ -384,6 +386,32 @@ describe("transfer-token-core - Send as", () => {
       error: "no relay",
       errorClass: "user",
     });
+  });
+});
+
+describe("transfer-token-core - a redirecting RPC", () => {
+  const USER_REDIRECT =
+    "Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address";
+
+  it("keeps the user's own RPC preference their fault through the metadata read", async () => {
+    mockExecuteWithFailover.mockRejectedValue(
+      new RpcUserEndpointError(USER_REDIRECT)
+    );
+    const result = await transferTokenCore(makeInput());
+    expect(result).toMatchObject({
+      success: false,
+      error: `Failed to read token metadata or balance: ${USER_REDIRECT}`,
+      errorClass: ExecutionErrorType.USER,
+    });
+  });
+
+  it("leaves a platform URL's redirect without a class", async () => {
+    mockExecuteWithFailover.mockRejectedValue(
+      new Error("RPC failed on both endpoints: redirect")
+    );
+    const result = await transferTokenCore(makeInput());
+    expect(result.success).toBe(false);
+    expect((result as { errorClass?: unknown }).errorClass).toBeUndefined();
   });
 });
 

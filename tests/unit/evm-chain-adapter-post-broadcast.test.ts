@@ -371,9 +371,19 @@ describe("EvmChainAdapter send report and fixed gas limit", () => {
   function withManager(h: Harness): TransactionOptionsArg["rpcManager"] {
     const provider = (h.signer as { provider: Record<string, unknown> })
       .provider;
-    provider.broadcastTransaction = vi
-      .fn()
-      .mockResolvedValue({ hash: TX_HASH, provider, wait: h.wait });
+    // The node answers the raw send with the signed bytes' own hash.
+    const send = provider.send as
+      | ((method: string, params: unknown[]) => Promise<unknown>)
+      | undefined;
+    provider.send = (method: string, params: unknown[]) =>
+      method === "eth_sendRawTransaction"
+        ? Promise.resolve(ethers.Transaction.from(SIGNED_HEX).hash)
+        : send?.(method, params);
+    provider._wrapTransactionResponse = () => ({
+      hash: TX_HASH,
+      provider,
+      wait: h.wait,
+    });
     Object.assign(h.signer as object, {
       populateTransaction: (tx: unknown) => Promise.resolve(tx),
       signTransaction: () => Promise.resolve(SIGNED_HEX),

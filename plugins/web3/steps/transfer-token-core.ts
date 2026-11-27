@@ -31,7 +31,7 @@ import {
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { declaredErrorClass, rpcRelayErrorClass } from "@/lib/rpc/providers";
 import { resolveWriteRpc } from "@/lib/rpc/send-provider";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getErrorMessage } from "@/lib/utils";
@@ -603,6 +603,7 @@ async function transferTokenCoreImpl(
         return {
           success: false,
           error: `Failed to read token metadata or balance: ${getErrorMessage(error)}`,
+          ...declaredErrorClass(error),
         };
       }
 

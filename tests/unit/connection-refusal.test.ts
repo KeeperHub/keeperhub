@@ -1,11 +1,25 @@
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { FetchRequest } from "ethers";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+// The SSRF guard would refuse 127.0.0.1; undici's own fetch keeps the redirect handling under test.
+vi.mock("@/lib/safe-fetch", async () => {
+  const { fetch } = await import("undici");
+  return {
+    safeFetch: (url: string, init: RequestInit & { plugin?: string }) => {
+      const { plugin: _plugin, ...rest } = init;
+      return fetch(url, rest as Parameters<typeof fetch>[1]);
+    },
+  };
+});
 
 import {
   isConnectionRefusal,
   neverReached,
 } from "@/lib/rpc/connection-refusal";
+import { safeEthersGetUrl } from "@/lib/rpc/safe-ethers-fetch";
 import { isDefinitelyPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 
 const wrapped = (code: string): Error =>
@@ -60,18 +74,52 @@ describe("isConnectionRefusal", () => {
       "a gateway's 503 body naming a refused upstream",
       gatewayAnswer("delayed connect error: Connection refused"),
     ],
-    [
-      "a redirect the transport refused to follow",
-      Object.assign(
-        new Error(
-          "RPC endpoint answered with a redirect, which is not followed"
-        ),
-        { cause: new TypeError("fetch failed") }
-      ),
-    ],
     ["nothing", undefined],
   ])("does not count %s", (_label, error) => {
     expect(isConnectionRefusal(error)).toBe(false);
+  });
+});
+
+const listen = (server: Server): Promise<string> =>
+  new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () =>
+      resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)
+    );
+  });
+
+describe("a redirect from the real transport", () => {
+  it("is no refusal, even when it points at a refused port", async () => {
+    // Where the redirect points: nothing listens there.
+    const gone = createServer();
+    const goneUrl = await listen(gone);
+    await new Promise((resolve) => gone.close(resolve));
+    const redirect = createServer((_req, res) => {
+      res.statusCode = 307;
+      res.setHeader("location", goneUrl);
+      res.end();
+    });
+    const request = new FetchRequest(await listen(redirect));
+    request.body = new TextEncoder().encode(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_sendRawTransaction",
+      })
+    );
+
+    try {
+      const error = await safeEthersGetUrl(request).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      // The endpoint asked took the bytes: no refusal, and the transport did not follow on.
+      expect(isConnectionRefusal(error)).toBe(false);
+      expect(neverReached(error)).toBeUndefined();
+      expect((error as Error)?.name).toBe("RpcRedirectError");
+    } finally {
+      redirect.closeAllConnections();
+      await new Promise((resolve) => redirect.close(resolve));
+    }
   });
 });
 

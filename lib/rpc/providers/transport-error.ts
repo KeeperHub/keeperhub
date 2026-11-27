@@ -65,3 +65,14 @@ export function rpcRelayErrorClass(
   }
   return;
 }
+
+/**
+ * `{ errorClass }` when the error declares one, for a step that wraps an RPC
+ * error in its own message: the class survives the new text.
+ */
+export function declaredErrorClass(error: unknown): {
+  errorClass?: ExecutionErrorType;
+} {
+  const errorClass = rpcRelayErrorClass(error);
+  return errorClass ? { errorClass } : {};
+}

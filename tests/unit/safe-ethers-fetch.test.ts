@@ -31,10 +31,19 @@ import { classifyExecutionError } from "@/lib/errors/classify";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { isConnectionRefusal } from "@/lib/rpc/connection-refusal";
 import {
+  declaredErrorClass,
   RpcProviderManager,
   RpcUserEndpointError,
   rpcRelayErrorClass,
 } from "@/lib/rpc/providers";
+import {
+  broadcastTransactionHash,
+  isOnChainPendingError,
+} from "@/lib/web3/onchain-revert";
+import {
+  isPreBroadcastNetworkError,
+  submitSignedTransactionWithFailover,
+} from "@/lib/web3/submit-signed";
 
 type Hit = { method?: string; body: string };
 
@@ -112,26 +121,57 @@ describe("the RPC transport does not follow redirects", () => {
       },
     });
 
+    // The send path a write takes: the raw send alone, then the hash lookups.
+    const error = await submitSignedTransactionWithFailover(
+      {
+        populateTransaction: (tx: ethers.TransactionRequest) =>
+          Promise.resolve(tx),
+        signTransaction: () => Promise.resolve(signed),
+      } as unknown as ethers.Signer,
+      {},
+      manager
+    ).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+
+    // The bytes went to the endpoint asked, never to where it pointed.
+    const sends = redirectHits.filter((hit) =>
+      hit.body.includes("eth_sendRawTransaction")
+    );
+    expect(sends.map((hit) => hit.body)).toEqual([
+      expect.stringContaining(signed.slice(2, 40)),
+    ]);
+    expect(targetHits).toEqual([]);
+    // The endpoint took the request: the hash is kept, never "never sent".
+    expect(isPreBroadcastNetworkError(error)).toBe(false);
+    expect(isOnChainPendingError(error)).toBe(true);
+    expect(broadcastTransactionHash(error)).toBe(
+      ethers.Transaction.from(signed).hash
+    );
+  });
+
+  it("does not count the transport's redirect error as a refusal", async () => {
+    const manager = new RpcProviderManager({
+      config: {
+        primaryRpcUrl: urlOf(redirect),
+        maxRetries: 1,
+        chainName: "redirect-test",
+        chainId: 1,
+      },
+    });
     const error = await manager
       .executeWithFailover(
-        // The raw send itself, as broadcastTransaction makes it after its block read.
-        (provider) => provider.send("eth_sendRawTransaction", [signed]),
+        (provider) => provider.send("eth_sendRawTransaction", ["0x00"]),
         "write-broadcast"
       )
       .then(
         () => undefined,
         (e: unknown) => e
       );
-
     expect(String((error as Error)?.message)).toContain(
       "answered with a redirect, which is not followed"
     );
-    // The bytes went to the endpoint asked, never to where it pointed.
-    expect(redirectHits.map((hit) => hit.body)).toEqual([
-      expect.stringContaining(signed.slice(2, 40)),
-    ]);
-    expect(targetHits).toEqual([]);
-    // The endpoint took the request, so this is no refusal.
     expect(isConnectionRefusal(error)).toBe(false);
   });
 
@@ -192,12 +232,10 @@ describe("the RPC transport does not follow redirects", () => {
     expect((error as Error).message).toBe(
       "Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address"
     );
-    // A step that wraps it still reads as a user error, not N-0001.
-    expect(
-      classifyExecutionError(
-        `Failed to check balance: ${(error as Error).message}`
-      ).errorType
-    ).toBe(ExecutionErrorType.USER);
+    // A step that wraps it passes this class along, so it stays a user error, not N-0001.
+    expect(declaredErrorClass(error)).toEqual({
+      errorClass: ExecutionErrorType.USER,
+    });
     expect(isConnectionRefusal(error)).toBe(false);
     expect(logSystemError).not.toHaveBeenCalled();
     expect(logUserError).toHaveBeenCalledTimes(1);

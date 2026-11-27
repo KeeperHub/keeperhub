@@ -60,7 +60,8 @@ beforeAll(async () => {
 // ---------------------------------------------------------------------------
 
 type ScenarioProvider = {
-  broadcastTransaction?: ReturnType<typeof vi.fn>;
+  /** eth_sendRawTransaction: resolves the hash the node answers with. */
+  sendRawTransaction?: ReturnType<typeof vi.fn>;
   getTransactionReceipt?: ReturnType<typeof vi.fn>;
   getTransaction?: ReturnType<typeof vi.fn>;
 };
@@ -89,14 +90,28 @@ const NO_EXTRA_ROUTING = {
   hasPrivateRelayPrimary: () => false,
 };
 
-function makeMockRpcManager(provider: ScenarioProvider) {
+// The provider calls the send makes: the raw send, then the response wrap.
+function asProvider(scenario: ScenarioProvider): ethers.JsonRpcProvider {
+  return {
+    ...scenario,
+    send: (method: string, params: unknown[]) =>
+      method === "eth_sendRawTransaction"
+        ? (scenario.sendRawTransaction as (hex: unknown) => unknown)(params[0])
+        : Promise.reject(new Error(`unexpected ${method}`)),
+    _wrapTransactionResponse: (tx: { hash: string }) =>
+      makeMockTxResponse(tx.hash),
+  } as unknown as ethers.JsonRpcProvider;
+}
+
+function makeMockRpcManager(scenario: ScenarioProvider) {
+  const provider = asProvider(scenario);
   const executeWithFailover = vi
     .fn()
     .mockImplementation(
       async (
         op: (p: ethers.JsonRpcProvider) => Promise<unknown>,
         _opType: RpcOperationType
-      ) => await op(provider as unknown as ethers.JsonRpcProvider)
+      ) => await op(provider)
     );
   return {
     rpcManager: {
@@ -126,11 +141,9 @@ function makeMockReceipt(hash: string): ethers.TransactionReceipt {
 describe("submitSignedTransactionWithFailover", () => {
   it("returns the response from the broadcasting provider on first-try success", async () => {
     const { signer, sign, populate } = makeMockSigner();
-    const broadcastTransaction = vi
-      .fn()
-      .mockResolvedValue(makeMockTxResponse(EXPECTED_HASH));
+    const sendRawTransaction = vi.fn().mockResolvedValue(EXPECTED_HASH);
     const { rpcManager, executeWithFailover } = makeMockRpcManager({
-      broadcastTransaction,
+      sendRawTransaction,
     });
 
     const result = await submitSignedTransactionWithFailover(
@@ -144,8 +157,8 @@ describe("submitSignedTransactionWithFailover", () => {
     expect(result.preExistingReceipt).toBeUndefined();
     expect(populate).toHaveBeenCalledTimes(1);
     expect(sign).toHaveBeenCalledTimes(1);
-    expect(broadcastTransaction).toHaveBeenCalledTimes(1);
-    expect(broadcastTransaction).toHaveBeenCalledWith(SIGNED_HEX);
+    expect(sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(sendRawTransaction).toHaveBeenCalledWith(SIGNED_HEX);
     expect(executeWithFailover).toHaveBeenCalledWith(
       expect.any(Function),
       "write-broadcast"
@@ -154,17 +167,15 @@ describe("submitSignedTransactionWithFailover", () => {
 
   it("signs exactly once even when failover invokes the closure twice", async () => {
     const { signer, sign } = makeMockSigner();
-    const broadcastTransaction = vi
+    const sendRawTransaction = vi
       .fn()
       .mockRejectedValueOnce(new Error("primary down"))
-      .mockResolvedValueOnce(makeMockTxResponse(EXPECTED_HASH));
+      .mockResolvedValueOnce(EXPECTED_HASH);
     const executeWithFailover = vi
       .fn()
       .mockImplementation(
         async (op: (p: ethers.JsonRpcProvider) => Promise<unknown>) => {
-          const provider = {
-            broadcastTransaction,
-          } as unknown as ethers.JsonRpcProvider;
+          const provider = asProvider({ sendRawTransaction });
           try {
             return await op(provider);
           } catch {
@@ -185,9 +196,9 @@ describe("submitSignedTransactionWithFailover", () => {
 
     expect(result.hash).toBe(EXPECTED_HASH);
     expect(sign).toHaveBeenCalledTimes(1);
-    expect(broadcastTransaction).toHaveBeenCalledTimes(2);
-    expect(broadcastTransaction).toHaveBeenNthCalledWith(1, SIGNED_HEX);
-    expect(broadcastTransaction).toHaveBeenNthCalledWith(2, SIGNED_HEX);
+    expect(sendRawTransaction).toHaveBeenCalledTimes(2);
+    expect(sendRawTransaction).toHaveBeenNthCalledWith(1, SIGNED_HEX);
+    expect(sendRawTransaction).toHaveBeenNthCalledWith(2, SIGNED_HEX);
   });
 
   it("returns preExistingReceipt when broadcast fails but tx already mined", async () => {
@@ -195,7 +206,7 @@ describe("submitSignedTransactionWithFailover", () => {
     const receipt = makeMockReceipt(EXPECTED_HASH);
     const minedResponse = makeMockTxResponse(EXPECTED_HASH);
     const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi.fn().mockRejectedValue(
+      sendRawTransaction: vi.fn().mockRejectedValue(
         makeError("nonce has already been used", "NONCE_EXPIRED", {
           transaction: { from: "0x", to: "0x" },
         })
@@ -219,9 +230,7 @@ describe("submitSignedTransactionWithFailover", () => {
     const { signer } = makeMockSigner();
     const pendingResponse = makeMockTxResponse(EXPECTED_HASH);
     const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi
-        .fn()
-        .mockRejectedValue(new Error("already known")),
+      sendRawTransaction: vi.fn().mockRejectedValue(new Error("already known")),
       getTransactionReceipt: vi.fn().mockResolvedValue(null),
       getTransaction: vi.fn().mockResolvedValue(pendingResponse),
     });
@@ -245,7 +254,7 @@ describe("submitSignedTransactionWithFailover", () => {
       { transaction: { from: "0x", to: "0x" } }
     );
     const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
+      sendRawTransaction: vi.fn().mockRejectedValue(originalError),
       getTransactionReceipt: vi.fn().mockResolvedValue(null),
       getTransaction: vi.fn().mockResolvedValue(null),
     });
@@ -271,7 +280,7 @@ describe("submitSignedTransactionWithFailover", () => {
     async (message) => {
       const { signer } = makeMockSigner();
       const { rpcManager } = makeMockRpcManager({
-        broadcastTransaction: vi.fn().mockRejectedValue(new Error(message)),
+        sendRawTransaction: vi.fn().mockRejectedValue(new Error(message)),
         getTransactionReceipt: vi.fn().mockResolvedValue(null),
         getTransaction: vi.fn().mockResolvedValue(null),
       });
@@ -297,7 +306,7 @@ describe("submitSignedTransactionWithFailover", () => {
     const { signer } = makeMockSigner();
     const originalError = new Error("ECONNREFUSED");
     const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
+      sendRawTransaction: vi.fn().mockRejectedValue(originalError),
       getTransactionReceipt: vi.fn().mockResolvedValue(null),
       getTransaction: vi.fn().mockResolvedValue(null),
     });
@@ -325,7 +334,7 @@ describe("submitSignedTransactionWithFailover", () => {
       "RPC failed on both endpoints. Primary: request timed out. Fallback: ECONNREFUSED"
     );
     const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
+      sendRawTransaction: vi.fn().mockRejectedValue(originalError),
       getTransactionReceipt: vi.fn().mockResolvedValue(null),
       getTransaction: vi.fn().mockResolvedValue(null),
     });
@@ -345,7 +354,7 @@ describe("submitSignedTransactionWithFailover", () => {
       "RPC failed on both endpoints. Primary: connection refused. Fallback: ECONNREFUSED"
     );
     const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
+      sendRawTransaction: vi.fn().mockRejectedValue(originalError),
       getTransactionReceipt: vi.fn().mockResolvedValue(null),
       getTransaction: vi.fn().mockResolvedValue(null),
     });
@@ -362,7 +371,7 @@ describe("submitSignedTransactionWithFailover", () => {
   it("preserves the deterministic hash when a send reply is ambiguous", async () => {
     const { signer } = makeMockSigner();
     const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi
+      sendRawTransaction: vi
         .fn()
         .mockRejectedValue(new Error("request timed out")),
       getTransactionReceipt: vi.fn().mockResolvedValue(null),
@@ -429,7 +438,7 @@ describe("submitSignedTransactionWithFailover", () => {
       return Promise.resolve(null);
     });
     const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi.fn().mockRejectedValue(originalError),
+      sendRawTransaction: vi.fn().mockRejectedValue(originalError),
       getTransactionReceipt,
       getTransaction: vi.fn().mockResolvedValue(null),
     });
@@ -445,7 +454,7 @@ describe("submitSignedTransactionWithFailover", () => {
     const receipt = makeMockReceipt(EXPECTED_HASH);
     const minedResponse = makeMockTxResponse(EXPECTED_HASH);
     const { rpcManager } = makeMockRpcManager({
-      broadcastTransaction: vi.fn().mockRejectedValue(new Error("timeout")),
+      sendRawTransaction: vi.fn().mockRejectedValue(new Error("timeout")),
       getTransactionReceipt: vi.fn().mockResolvedValue(receipt),
       getTransaction: vi.fn().mockResolvedValue(minedResponse),
     });

@@ -27,6 +27,7 @@ import {
   editorSendModeOn,
   getEditorBundlesEnabled,
 } from "@/lib/workflow/editor/send-mode-chains";
+import { valueContainsTemplate } from "@/lib/workflow/template-ref";
 import {
   type ActionConfigFieldBase,
   findActionById,
@@ -80,14 +81,39 @@ function actionLabel(config: Record<string, unknown>): string {
 /**
  * How an old flag's eth_call check meets a relay that refuses it: `fails` by
  * default and at Next block; with `strict: false` at Latest it runs on the regular RPC.
+ * `unknown`: a template decides strict or Simulate at only at run time.
  */
-type LegacyCheck = "fails" | "next-block" | "public-check";
+type LegacyCheck = "fails" | "next-block" | "public-check" | "unknown";
 
 function legacyCheckOf(config: Record<string, unknown>): LegacyCheck {
-  if (config.strict !== false) {
+  const strictKnown = !valueContainsTemplate(config.strict);
+  if (strictKnown && config.strict !== false) {
     return "fails";
   }
-  return simulatesNextBlock(config) ? "next-block" : "public-check";
+  if (valueContainsTemplate(config.simulateAt)) {
+    return "unknown";
+  }
+  if (simulatesNextBlock(config)) {
+    return "next-block";
+  }
+  return strictKnown ? "public-check" : "unknown";
+}
+
+/** Which templated setting may make the check fail, and when. */
+function templatedCheckNote(
+  config: Record<string, unknown>,
+  outcome: string
+): string {
+  const parts: [string, string][] = [];
+  if (valueContainsTemplate(config.strict)) {
+    parts.push(["strict", "strict resolves to anything but false"]);
+  }
+  if (valueContainsTemplate(config.simulateAt)) {
+    parts.push(["Simulate at", "Simulate at resolves to Next block"]);
+  }
+  const fields = parts.map(([field]) => field).join(" and ");
+  const risks = parts.map(([, risk]) => risk).join(" or ");
+  return `A template sets this step's ${fields}: when ${risks}, ${outcome}.`;
 }
 
 /** An old flag on an action without the relay option: it runs as before, on the relay where there is one. */
@@ -102,6 +128,9 @@ function legacyUnsupportedNotice(
     "Set Send as to Normal transaction to send publicly, or split the calls into Write Contract steps to keep them private.";
   if (chainName !== undefined) {
     const sent = `${saved} ${chainName}'s private relay.`;
+    if (check === "unknown") {
+      return `${sent} The relay refuses ${label}'s eth_call check. With strict: false at Latest block that check runs on ${chainName}'s regular RPC (your calls are public there) and the transaction still goes through the private relay. ${templatedCheckNote(config, "every run fails before sending")} ${fix}`;
+    }
     if (check === "public-check") {
       return `${sent} The relay refuses ${label}'s eth_call check, so with strict: false that check runs on ${chainName}'s regular RPC (your calls are public there), and the transaction still goes through the private relay.`;
     }
@@ -112,6 +141,9 @@ function legacyUnsupportedNotice(
     return `${sent} ${label} ${why}, so every run fails before sending. ${fix}`;
   }
   const sent = `${saved} the private relay where its network has one, otherwise the public mempool.`;
+  if (check === "unknown") {
+    return `${sent} On a relay that refuses ${label}'s eth_call check (such as Flashbots Protect), strict: false at Latest block runs that check on the network's regular RPC (your calls are public there). ${templatedCheckNote(config, "it fails there before sending")} ${fix}`;
+  }
   if (check === "public-check") {
     return `${sent} On a relay that refuses ${label}'s eth_call check (such as Flashbots Protect), strict: false runs that check on the network's regular RPC (your calls are public there), and the transaction still goes through the relay.`;
   }

@@ -5,6 +5,7 @@ import {
   isDefaultClassification,
 } from "@/lib/errors/classify";
 import { DEFAULT_SYSTEM_ERROR_CODE } from "@/lib/errors/error-codes";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory } from "@/lib/logging";
 
 describe("isDefaultClassification", () => {
@@ -424,13 +425,31 @@ describe("classifyExecutionError", () => {
   });
 
   describe("user: the user's own RPC preference redirected", () => {
-    it.each([
-      "Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address",
-      "Failed to check balance: Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address",
-    ])("%s: configuration + user", (message) => {
-      const r = classifyExecutionError(message);
+    const redirect =
+      "Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address";
+
+    it("the bare error: configuration + user", () => {
+      const r = classifyExecutionError(redirect);
       expect(r.errorCategory).toBe(ErrorCategory.CONFIGURATION);
       expect(r.errorType).toBe("user");
+    });
+
+    // A step that wraps it passes the error's class; the text alone does not decide.
+    it.each([
+      "Failed to check balance:",
+      "Failed to read nonce:",
+      "Failed to read token metadata:",
+      "Failed to read token metadata or balance:",
+    ])("%s with the step's errorClass: configuration + user", (prefix) => {
+      const r = applyErrorClassHint(
+        classifyExecutionError(`${prefix} ${redirect}`),
+        ExecutionErrorType.USER
+      );
+      expect(r).toEqual({
+        errorCategory: ErrorCategory.CONFIGURATION,
+        errorType: "user",
+        code: null,
+      });
     });
 
     it("does not match the phrase quoted inside another error", () => {

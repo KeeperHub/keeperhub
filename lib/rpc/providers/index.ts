@@ -28,6 +28,7 @@ export {
   RPC_CONNECTION_ERROR_PATTERNS,
 } from "./error-classification";
 export {
+  declaredErrorClass,
   InvalidSendModeError,
   PrivateRelayUnavailableError,
   RpcRedirectError,

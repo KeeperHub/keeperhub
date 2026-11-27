@@ -1,9 +1,10 @@
 import "server-only";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { declaredErrorClass, type RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
 import {
@@ -39,7 +40,11 @@ type GetNonceResult =
       address: string;
       error?: string;
     }
-  | (ReadDestinationFailure & { success: false; error: string });
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 type GetNonceCoreInput = ReadFailOnErrorInput & {
   network: string;
@@ -159,6 +164,7 @@ async function stepHandler(input: GetNonceInput): Promise<GetNonceResult> {
     return {
       success: false,
       error: `Failed to read nonce: ${getErrorMessage(error)}`,
+      ...declaredErrorClass(error),
     };
   }
 }

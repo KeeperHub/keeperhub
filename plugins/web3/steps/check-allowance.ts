@@ -1,4 +1,6 @@
 import "server-only";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { declaredErrorClass } from "@/lib/rpc/providers";
 
 import { ethers } from "ethers";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
@@ -37,7 +39,11 @@ type CheckAllowanceResult =
       symbol: string | null;
       error?: string;
     }
-  | (ReadDestinationFailure & { success: false; error: string });
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 async function stepHandler(
   input: CheckAllowanceInput
@@ -165,7 +171,7 @@ async function stepHandler(
       }
     );
     const message = `Failed to check allowance: ${getErrorMessage(error)}`;
-    return { success: false, error: message };
+    return { success: false, error: message, ...declaredErrorClass(error) };
   }
 }
 

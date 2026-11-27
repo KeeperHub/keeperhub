@@ -171,11 +171,13 @@ export async function submitSignedTransactionWithFailover(
   // Only with extras: started before the send, as ethers does, so wait() can
   // spot a replacement on a response we looked up. Without extras, as before.
   const startBlock =
-    extraUrls.length > 0 ? currentBlockNumber(rpcManager) : undefined;
+    extraUrls.length > 0
+      ? currentBlockNumber(rpcManager.getProvider())
+      : undefined;
   const attempts: Attempt[] = [];
 
   try {
-    const { response, route } = await rpcManager.executeWithFailover(
+    const { response, route, provider } = await rpcManager.executeWithFailover(
       async (provider) => {
         const attempt: Attempt = {
           route: rpcManager.isPrivateRelayProvider(provider)
@@ -185,9 +187,14 @@ export async function submitSignedTransactionWithFailover(
         };
         attempts.push(attempt);
         try {
-          const sent = await provider.broadcastTransaction(signedHex);
+          const sent = await sendRawTransaction(
+            provider,
+            signedHex,
+            expectedHash,
+            chainId
+          );
           attempt.delivery = "accepted";
-          return { response: sent, route: attempt.route };
+          return { response: sent, route: attempt.route, provider };
         } catch (error) {
           attempt.delivery = deliveryOfBroadcastError(
             error,
@@ -201,7 +208,14 @@ export async function submitSignedTransactionWithFailover(
       "write-broadcast"
     );
     report.route = route;
-    return { hash: response.hash, response };
+    // Read after the send and outside its failover: it can never fail a delivered send.
+    return {
+      hash: response.hash,
+      response: await watchForReplacement(
+        response,
+        currentBlockNumber(provider)
+      ),
+    };
   } catch (err) {
     if (await extras.anyAccepted) {
       report.route = "public";
@@ -298,12 +312,12 @@ const START_BLOCK_TIMEOUT_MS = 2000;
 
 // Best effort, bounded: undefined when the block number cannot be read.
 async function currentBlockNumber(
-  rpcManager: RpcProviderManager
+  provider: ethers.Provider
 ): Promise<number | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      rpcManager.getProvider().getBlockNumber(),
+      provider.getBlockNumber(),
       new Promise<undefined>((resolve) => {
         timer = setTimeout(() => resolve(undefined), START_BLOCK_TIMEOUT_MS);
         timer.unref?.();
@@ -314,6 +328,37 @@ async function currentBlockNumber(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * The send request alone. ethers' broadcastTransaction also reads the block
+ * number at the same time and fails with whichever request fails first, so a
+ * refused block read would mark a delivered send as never sent.
+ */
+async function sendRawTransaction(
+  provider: ethers.JsonRpcProvider,
+  signedHex: string,
+  expectedHash: string,
+  chainId: number
+): Promise<ethers.TransactionResponse> {
+  const hash: unknown = await provider.send("eth_sendRawTransaction", [
+    signedHex,
+  ]);
+  // As ethers checks it: an answer naming another hash is no clear acceptance.
+  if (
+    typeof hash !== "string" ||
+    hash.toLowerCase() !== expectedHash.toLowerCase()
+  ) {
+    throw new Error(
+      `The send was answered with another transaction hash (${String(hash)})`
+    );
+  }
+  return provider._wrapTransactionResponse(
+    ethers.Transaction.from(
+      signedHex
+    ) as unknown as ethers.TransactionResponseParams,
+    ethers.Network.from(chainId)
+  );
 }
 
 function computeTxHash(signedHex: string): string {
