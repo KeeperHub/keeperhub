@@ -3,6 +3,7 @@ import { ethers, isError } from "ethers";
 import { isConnectionRefusal } from "@/lib/rpc/connection-refusal";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import type { BuilderRpcUrls } from "@/lib/rpc/rpc-config";
+import { RPC_ENDPOINT, type RpcEndpoint } from "@/lib/rpc/rpc-endpoint";
 import { sleep } from "@/lib/sleep";
 import {
   type BuilderBroadcastResult,
@@ -41,7 +42,7 @@ export function sendReportFields<Route extends string = SendRoute>(report: {
 export type BroadcastInfo = {
   // ISO time the regular RPC accepted the transaction; absent when only a builder took it.
   broadcastAt?: string;
-  via?: "primary" | "fallback";
+  via?: RpcEndpoint;
   // Block builders that were also sent the transaction, when any were.
   builders?: BuilderBroadcastResult[];
 };
@@ -209,10 +210,12 @@ export async function submitSignedTransactionWithFailover(
       routeFromEvidence(rpcManager, attempts, extraDeliveries, found);
 
   try {
-    let via: BroadcastInfo["via"] = "primary";
+    let via: RpcEndpoint = RPC_ENDPOINT.PRIMARY;
     const { response, route, sentAtBlock } =
       await rpcManager.executeWithFailover(async (provider) => {
-        via = isFallbackProvider(rpcManager, provider) ? "fallback" : "primary";
+        via = isFallbackProvider(rpcManager, provider)
+          ? RPC_ENDPOINT.FALLBACK
+          : RPC_ENDPOINT.PRIMARY;
         const attempt: Attempt = {
           route: rpcManager.isPrivateRelayProvider(provider)
             ? "private-relay"

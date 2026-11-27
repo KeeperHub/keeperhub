@@ -10,7 +10,7 @@
 -- so the plain statement below is a no-op there. On dev and PR-environment
 -- databases it runs as written.
 -- The plain statement still waits for ShareLock even when the index exists: bound the
--- wait, as 0174 does. Skip the SET lines in db-prep (they only act in a transaction).
+-- wait, as 0175 does. Skip the SET lines in db-prep (they only act in a transaction).
 SET LOCAL lock_timeout = '3s';
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_workflow_executions_live_started" ON "workflow_executions" USING btree ("workflow_id","started_at" DESC NULLS LAST) WHERE "workflow_executions"."status" IN ('phantom', 'pending', 'running');--> statement-breakpoint

@@ -2,6 +2,7 @@ import "server-only";
 
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
 
 /**
  * Build an RpcProviderManager wired with both the chain's primary and
@@ -20,8 +21,8 @@ export async function buildFailoverRpcManager(chainId: number): Promise<{
   rpcManager: Awaited<ReturnType<typeof getRpcProviderFromUrls>>;
   rpcUrl: string;
 }> {
-  const rpcUrl = getRpcUrlByChainId(chainId, "primary");
-  const fallbackRpcUrl = getRpcUrlByChainId(chainId, "fallback");
+  const rpcUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.PRIMARY);
+  const fallbackRpcUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.FALLBACK);
   const rpcManager = await getRpcProviderFromUrls(
     rpcUrl,
     fallbackRpcUrl === rpcUrl ? undefined : fallbackRpcUrl,

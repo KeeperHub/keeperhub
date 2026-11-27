@@ -62,11 +62,15 @@ import {
   type TransactionContext,
   withNonceSession,
 } from "@/lib/web3/transaction-manager";
+import { isMinedSend, type MinedSend, minedSend } from "@/lib/web3/mined-send";
 import {
   convertAmountForWrite,
   resolveForWrite,
 } from "@/lib/web3/ui-multiplier";
 import { parseTokenAddress } from "./transfer-token-core";
+
+// ERC-20 function this step calls, as named in ERC20_ABI.
+const APPROVE_FUNCTION = "approve";
 
 export type ApproveTokenCoreInput = {
   network: string;
@@ -361,7 +365,7 @@ async function approveTokenCoreImpl(
         organizationId,
         chainId,
         contractAddress: tokenAddress,
-        functionName: "approve",
+        functionName: APPROVE_FUNCTION,
         inputTypes: ["address", "uint256"],
         args: [spenderAddress, amountRaw],
         context: "approve-token",
@@ -382,7 +386,7 @@ async function approveTokenCoreImpl(
         walletAddress,
         to: tokenAddress,
         abi: ERC20_ABI,
-        functionName: "approve",
+        functionName: APPROVE_FUNCTION,
         args: [spenderAddress, amountRaw],
       });
 
@@ -397,7 +401,7 @@ async function approveTokenCoreImpl(
         const executedCall = await traceExecutedCallWithFailover(
           readRpc,
           sponsoredResult.transactionHash,
-          { target: tokenAddress, abi: ERC20_ABI, functionName: "approve" }
+          { target: tokenAddress, abi: ERC20_ABI, functionName: APPROVE_FUNCTION }
         );
 
         return {
@@ -469,7 +473,7 @@ async function approveTokenCoreImpl(
     return { success: false, error: gasCheck.message };
   }
 
-  return withNonceSession(txContext, walletAddress, async (session) => {
+  const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<ApproveTokenResult | MinedSend<Extract<ApproveTokenResult, { success: true }>>> => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
@@ -549,7 +553,7 @@ async function approveTokenCoreImpl(
         organizationId,
         chainId,
         contractAddress: tokenAddress,
-        functionName: "approve",
+        functionName: APPROVE_FUNCTION,
         inputTypes: ["address", "uint256"],
         args: [spenderAddress, amountRaw],
         context: "approve-token",
@@ -576,7 +580,7 @@ async function approveTokenCoreImpl(
             roleKey: signerMode.roleKey,
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "approve",
+            functionKey: APPROVE_FUNCTION,
             args: [spenderAddress, amountRaw],
           },
           session,
@@ -595,7 +599,7 @@ async function approveTokenCoreImpl(
             ownerAddress: signerMode.ownerAddress,
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "approve",
+            functionKey: APPROVE_FUNCTION,
             args: [spenderAddress, amountRaw],
           },
           session,
@@ -612,7 +616,7 @@ async function approveTokenCoreImpl(
           {
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "approve",
+            functionKey: APPROVE_FUNCTION,
             args: [spenderAddress, amountRaw],
           },
           session,
@@ -631,13 +635,7 @@ async function approveTokenCoreImpl(
       const gasCostWei = (receipt.gasUsed * receipt.effectiveGasPrice).toString();
       const transactionLink = await adapter.getTransactionUrl(receipt.hash);
 
-      const executedCall = await traceExecutedCallWithFailover(readRpc, receipt.hash, {
-        target: tokenAddress,
-        abi: ERC20_ABI,
-        functionName: "approve",
-      });
-
-      return {
+      return minedSend(receipt.hash, {
         success: true,
         transactionHash: receipt.hash,
         ...sendReportFields(sendReport),
@@ -649,8 +647,7 @@ async function approveTokenCoreImpl(
         approvedAmount: approvedAmountDisplay,
         spender: spenderAddress,
         symbol,
-        executedCall,
-      };
+      });
     } catch (error) {
       logUserError(
         ErrorCategory.TRANSACTION,
@@ -685,6 +682,15 @@ async function approveTokenCoreImpl(
       };
     }
   });
+  if (isMinedSend(sent)) {
+    const executedCall = await traceExecutedCallWithFailover(readRpc, sent.hash, {
+      target: tokenAddress,
+      abi: ERC20_ABI,
+      functionName: APPROVE_FUNCTION,
+    });
+    return { ...sent.result, executedCall };
+  }
+  return sent;
 }
 
 export async function approveTokenCore(

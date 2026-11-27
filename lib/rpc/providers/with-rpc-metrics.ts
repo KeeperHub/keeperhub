@@ -1,3 +1,4 @@
+import { RPC_ENDPOINT, type RpcEndpoint } from "../rpc-endpoint";
 import type {
   RpcMetricsCollector,
   RpcOperationType,
@@ -8,7 +9,7 @@ import { classifyRpcError } from "./index";
 export type RpcMetricsContext = {
   metricsCollector: RpcMetricsCollector;
   chainName: string;
-  providerType: "primary" | "fallback";
+  providerType: RpcEndpoint;
   operationType: RpcOperationType;
 };
 
@@ -39,7 +40,7 @@ export async function withRpcMetrics<T>(
 ): Promise<T> {
   const { metricsCollector, chainName, providerType, operationType } = ctx;
 
-  if (providerType === "primary") {
+  if (providerType === RPC_ENDPOINT.PRIMARY) {
     metricsCollector.recordPrimaryAttempt(chainName, operationType);
   } else {
     metricsCollector.recordFallbackAttempt(chainName, operationType);
@@ -65,7 +66,7 @@ export async function withRpcMetrics<T>(
       durationMs,
       operationType
     );
-    if (providerType === "primary") {
+    if (providerType === RPC_ENDPOINT.PRIMARY) {
       metricsCollector.recordPrimaryFailure(chainName, operationType);
     } else {
       metricsCollector.recordFallbackFailure(chainName, operationType);

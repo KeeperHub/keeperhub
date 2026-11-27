@@ -11,6 +11,7 @@ import {
 } from "@/lib/db/schema";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
 import { getSafeForOrg, validateSafeAdmin } from "@/lib/safe/auth";
 import { TEMPLATE_SPECS } from "@/lib/safe/condition-templates";
 import { formatPeriod, formatTokenAmount } from "@/lib/safe/format-allowance";
@@ -489,7 +490,7 @@ export async function POST(
 
     let maxFeePerGasWei = BigInt(25_000_000_000);
     try {
-      const rpcUrl = getRpcUrlByChainId(safe.chainId, "primary");
+      const rpcUrl = getRpcUrlByChainId(safe.chainId, RPC_ENDPOINT.PRIMARY);
       const manager = await getRpcProviderFromUrls(
         rpcUrl,
         undefined,

@@ -16,6 +16,9 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const HTTP_REQUEST_TIMEOUT = 408;
 
 const MAX_ERROR_LENGTH = 200;
+const JSON_RPC_VERSION = "2.0";
+const SEND_RAW_TRANSACTION = "eth_sendRawTransaction";
+const SAFE_FETCH_LABEL = "builder-broadcast";
 
 export type BuilderBroadcastResult = {
   name: string;
@@ -50,15 +53,15 @@ async function sendToBuilder(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        jsonrpc: "2.0",
+        jsonrpc: JSON_RPC_VERSION,
         id: 1,
-        method: "eth_sendRawTransaction",
+        method: SEND_RAW_TRANSACTION,
         params: [signedHex],
       }),
       signal: AbortSignal.timeout(BUILDER_BROADCAST_TIMEOUT_MS),
       // Never re-send the signed bytes to wherever a redirect points.
       redirect: "manual",
-      plugin: "builder-broadcast",
+      plugin: SAFE_FETCH_LABEL,
     });
   } catch (error) {
     // No redirect is followed, so a host never reached never got the bytes.

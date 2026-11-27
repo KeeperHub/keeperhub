@@ -7,6 +7,7 @@ import {
 } from "@/lib/logging";
 import { sleep } from "@/lib/sleep";
 import { isConnectionRefusal } from "../connection-refusal";
+import { RPC_ENDPOINT, type RpcEndpoint } from "../rpc-endpoint";
 import { safeEthersGetUrl } from "../safe-ethers-fetch";
 import { redactAllUrls, scrubRpcUrls } from "../scrub-rpc-urls";
 import {
@@ -63,18 +64,18 @@ export type RpcMetricsCollector = {
   recordBothFailed(chainName: string): void;
   recordSuccess(
     chainName: string,
-    provider: "primary" | "fallback",
+    provider: RpcEndpoint,
     operation?: RpcOperationType
   ): void;
   recordLatency(
     chainName: string,
-    provider: "primary" | "fallback",
+    provider: RpcEndpoint,
     durationMs: number,
     operation?: RpcOperationType
   ): void;
   recordErrorType(
     chainName: string,
-    provider: "primary" | "fallback",
+    provider: RpcEndpoint,
     errorType: RpcErrorType,
     operation?: RpcOperationType
   ): void;
@@ -88,6 +89,9 @@ export type FailoverStateChangeCallback = (
   isUsingFallback: boolean,
   reason: "failover" | "recovery"
 ) => void;
+
+// Block poll during a receipt wait; ethers' 4s default held the wallet lock longer.
+const RECEIPT_POLL_INTERVAL_MS = 1000;
 
 /**
  * No-op metrics collector for environments without metrics (e.g., frontend)
@@ -116,14 +120,14 @@ export const noopMetricsCollector: RpcMetricsCollector = {
   },
   recordSuccess: (
     _chain: string,
-    _provider: "primary" | "fallback",
+    _provider: RpcEndpoint,
     _operation?: RpcOperationType
   ) => {
     /* noop */
   },
   recordLatency: (
     _chain: string,
-    _provider: "primary" | "fallback",
+    _provider: RpcEndpoint,
     _durationMs: number,
     _operation?: RpcOperationType
   ) => {
@@ -131,7 +135,7 @@ export const noopMetricsCollector: RpcMetricsCollector = {
   },
   recordErrorType: (
     _chain: string,
-    _provider: "primary" | "fallback",
+    _provider: RpcEndpoint,
     _errorType: RpcErrorType,
     _operation?: RpcOperationType
   ) => {
@@ -226,7 +230,7 @@ export type RpcProviderMetrics = {
 };
 
 type EndpointFailure = {
-  endpoint: "primary" | "fallback";
+  endpoint: RpcEndpoint;
   transport?: boolean;
   allAttemptsConnectionRefused?: boolean;
   allAttemptsRedirected?: boolean;
@@ -340,6 +344,7 @@ export class RpcProviderManager {
         // performance impact -- workflow execution is sequential, and batch-reads
         // use Multicall3 at the contract level.
         batchMaxCount: 1,
+        pollingInterval: RECEIPT_POLL_INTERVAL_MS,
       }
     );
 
@@ -445,7 +450,7 @@ export class RpcProviderManager {
         const fallbackResult = await this.tryProvider(
           fallbackProvider,
           operation,
-          "fallback",
+          RPC_ENDPOINT.FALLBACK,
           this.config.maxRetries,
           operationType
         );
@@ -453,7 +458,7 @@ export class RpcProviderManager {
         if (fallbackResult.success) {
           this.metricsCollector.recordSuccess(
             this.config.chainName,
-            "fallback",
+            RPC_ENDPOINT.FALLBACK,
             operationType
           );
           return fallbackResult.result as T;
@@ -475,7 +480,7 @@ export class RpcProviderManager {
         const primaryResult = await this.tryProvider(
           primaryProvider,
           operation,
-          "primary",
+          RPC_ENDPOINT.PRIMARY,
           this.config.maxRetries,
           operationType
         );
@@ -487,8 +492,8 @@ export class RpcProviderManager {
               event: "RPC_FAILOVER_RECOVERY",
               message: `Primary RPC recovered for ${this.config.chainName}, switching back from fallback`,
               chain: this.config.chainName,
-              previousState: "fallback",
-              newState: "primary",
+              previousState: RPC_ENDPOINT.FALLBACK,
+              newState: RPC_ENDPOINT.PRIMARY,
               timestamp: new Date().toISOString(),
             })
           );
@@ -504,8 +509,8 @@ export class RpcProviderManager {
 
         // Both failed -- throw without redundant retry
         const failures = [
-          endpointFailure("fallback", fallbackResult),
-          endpointFailure("primary", primaryResult),
+          endpointFailure(RPC_ENDPOINT.FALLBACK, fallbackResult),
+          endpointFailure(RPC_ENDPOINT.PRIMARY, primaryResult),
         ];
         // A platform fault (error level, system-error metric) unless the user's
         // own URL redirected. The Sentry event only reaches Sentry from the
@@ -529,7 +534,7 @@ export class RpcProviderManager {
     const primaryResult = await this.tryProvider(
       primaryProvider,
       operation,
-      "primary",
+      RPC_ENDPOINT.PRIMARY,
       this.config.maxRetries,
       operationType
     );
@@ -537,7 +542,7 @@ export class RpcProviderManager {
     if (primaryResult.success) {
       this.metricsCollector.recordSuccess(
         this.config.chainName,
-        "primary",
+        RPC_ENDPOINT.PRIMARY,
         operationType
       );
       return primaryResult.result as T;
@@ -551,7 +556,7 @@ export class RpcProviderManager {
       const fallbackResult = await this.tryProvider(
         fallbackProvider,
         operation,
-        "fallback",
+        RPC_ENDPOINT.FALLBACK,
         this.config.maxRetries,
         operationType
       );
@@ -566,8 +571,8 @@ export class RpcProviderManager {
           {
             event: "RPC_FAILOVER_ACTIVATED",
             chain: this.config.chainName,
-            previous_state: "primary",
-            new_state: "fallback",
+            previous_state: RPC_ENDPOINT.PRIMARY,
+            new_state: RPC_ENDPOINT.FALLBACK,
           }
         );
         // A relay manager tries the relay first on every call: one refused
@@ -580,8 +585,8 @@ export class RpcProviderManager {
       }
 
       const failures = [
-        endpointFailure("primary", primaryResult),
-        endpointFailure("fallback", fallbackResult),
+        endpointFailure(RPC_ENDPOINT.PRIMARY, primaryResult),
+        endpointFailure(RPC_ENDPOINT.FALLBACK, fallbackResult),
       ];
       this.reportBothFailed(
         failures,
@@ -595,7 +600,7 @@ export class RpcProviderManager {
 
     throw this.failoverError(
       `RPC failed on primary endpoint: ${primaryResult.error}`,
-      [endpointFailure("primary", primaryResult)]
+      [endpointFailure(RPC_ENDPOINT.PRIMARY, primaryResult)]
     );
   }
 
@@ -607,7 +612,10 @@ export class RpcProviderManager {
         (failure) =>
           failure.allAttemptsRedirected === true &&
           this.config.userRpc &&
-          !(failure.endpoint === "primary" && this.config.primaryIsPrivateRelay)
+          !(
+            failure.endpoint === RPC_ENDPOINT.PRIMARY &&
+            this.config.primaryIsPrivateRelay
+          )
       )
     );
   }
@@ -680,7 +688,7 @@ export class RpcProviderManager {
     const allOnTheRelay = failures.every(
       (failure) =>
         failure.transport &&
-        failure.endpoint === "primary" &&
+        failure.endpoint === RPC_ENDPOINT.PRIMARY &&
         this.config.primaryIsPrivateRelay
     );
     const result = allOnTheRelay
@@ -699,10 +707,10 @@ export class RpcProviderManager {
   }
 
   private recordAttempt(
-    providerType: "primary" | "fallback",
+    providerType: RpcEndpoint,
     operationType: RpcOperationType = "read"
   ): void {
-    if (providerType === "primary") {
+    if (providerType === RPC_ENDPOINT.PRIMARY) {
       this.metrics.primaryAttempts += 1;
       this.metricsCollector.recordPrimaryAttempt(
         this.config.chainName,
@@ -718,10 +726,10 @@ export class RpcProviderManager {
   }
 
   private recordFailure(
-    providerType: "primary" | "fallback",
+    providerType: RpcEndpoint,
     operationType: RpcOperationType = "read"
   ): void {
-    if (providerType === "primary") {
+    if (providerType === RPC_ENDPOINT.PRIMARY) {
       this.metrics.primaryFailures += 1;
       this.metricsCollector.recordPrimaryFailure(
         this.config.chainName,
@@ -794,7 +802,7 @@ export class RpcProviderManager {
   private async tryProvider<T>(
     provider: ethers.JsonRpcProvider,
     operation: (p: ethers.JsonRpcProvider) => Promise<T>,
-    providerType: "primary" | "fallback",
+    providerType: RpcEndpoint,
     maxRetries: number,
     operationType: RpcOperationType = "read"
   ): Promise<{
@@ -902,8 +910,8 @@ export class RpcProviderManager {
     return this.isUsingFallback;
   }
 
-  getCurrentProviderType(): "primary" | "fallback" {
-    return this.isUsingFallback ? "fallback" : "primary";
+  getCurrentProviderType(): RpcEndpoint {
+    return this.isUsingFallback ? RPC_ENDPOINT.FALLBACK : RPC_ENDPOINT.PRIMARY;
   }
 
   /**

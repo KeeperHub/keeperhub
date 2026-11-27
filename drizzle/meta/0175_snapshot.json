@@ -1,6 +1,6 @@
 {
-  "id": "34455bb2-650a-43f3-8354-fe7f41aabcbc",
-  "prevId": "c0c8cd3d-a851-447d-9818-0e60657c6905",
+  "id": "7935f782-fef9-4c39-b803-54b78e8e2ebf",
+  "prevId": "38a43021-cab8-4c9a-939a-f288d4b32d8f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5388,6 +5388,19 @@
           "primaryKey": false,
           "notNull": false,
           "default": "'pending'"
+        },
+        "last_target_block": {
+          "name": "last_target_block",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bundle_runs": {
+          "name": "bundle_runs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         }
       },
       "indexes": {
@@ -9047,6 +9060,50 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_workflow_executions_live_started": {
+          "name": "idx_workflow_executions_live_started",
+          "columns": [
+            {
+              "expression": "workflow_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"workflow_executions\".\"status\" IN ('phantom', 'pending', 'running')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_workflow_executions_skipped_behind": {
+          "name": "idx_workflow_executions_skipped_behind",
+          "columns": [
+            {
+              "expression": "workflow_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "completed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"workflow_executions\".\"status\" = 'skipped' AND \"workflow_executions\".\"dispatch_key\" LIKE 'skipped-behind:%'",
           "concurrently": false,
           "method": "btree",
           "with": {}

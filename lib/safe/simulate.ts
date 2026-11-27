@@ -10,6 +10,7 @@ import {
 } from "zodiac-roles-sdk";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
 import { buildExecTransactionCalldata } from "@/lib/safe/allowance-module";
 import { getSafeContracts } from "@/lib/safe/contracts";
 import { weiToUsd } from "@/lib/safe/price-oracle";
@@ -121,7 +122,7 @@ export async function simulatePolicyChange(options: {
     ownerAddress,
   });
 
-  const rpcUrl = getRpcUrlByChainId(chainId, "primary");
+  const rpcUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.PRIMARY);
   const manager = await getRpcProviderFromUrls(rpcUrl, undefined, chainId);
   const provider = manager.getProvider();
 

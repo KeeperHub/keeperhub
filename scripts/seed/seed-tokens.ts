@@ -24,6 +24,7 @@ import { getDatabaseUrl } from "../../lib/db/connection-utils";
 import { getRpcUrlByChainId } from "../../lib/rpc/rpc-config";
 import { formatSanitizedRpcError } from "../../lib/rpc/sanitize-rpc-error";
 import { TOKEN_CONFIGS } from "./supported-token-configs";
+import { RPC_ENDPOINT } from "../../lib/rpc/rpc-endpoint";
 
 /**
  * Fetch ERC-20 metadata via a single provider.
@@ -53,12 +54,12 @@ async function fetchTokenMetadata(
   chainId: number,
   tokenAddress: string
 ): Promise<{ symbol: string; name: string; decimals: number }> {
-  const primaryUrl = getRpcUrlByChainId(chainId, "primary");
+  const primaryUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.PRIMARY);
 
   try {
     return await fetchWithProvider(primaryUrl, tokenAddress);
   } catch (primaryError) {
-    const fallbackUrl = getRpcUrlByChainId(chainId, "fallback");
+    const fallbackUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.FALLBACK);
     if (fallbackUrl === primaryUrl) {
       throw primaryError;
     }

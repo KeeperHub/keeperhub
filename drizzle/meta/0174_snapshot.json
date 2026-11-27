@@ -1,6 +1,6 @@
 {
-  "id": "7935f782-fef9-4c39-b803-54b78e8e2ebf",
-  "prevId": "38a43021-cab8-4c9a-939a-f288d4b32d8f",
+  "id": "38a43021-cab8-4c9a-939a-f288d4b32d8f",
+  "prevId": "27ba3940-bf23-4019-b280-e763718bae21",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5388,19 +5388,6 @@
           "primaryKey": false,
           "notNull": false,
           "default": "'pending'"
-        },
-        "last_target_block": {
-          "name": "last_target_block",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "bundle_runs": {
-          "name": "bundle_runs",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
         }
       },
       "indexes": {

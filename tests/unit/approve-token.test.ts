@@ -147,12 +147,20 @@ vi.mock("@/lib/web3/nonce-manager", () => ({
   }),
 }));
 
+const walletLock = vi.hoisted(() => ({ held: false }));
 vi.mock("@/lib/web3/transaction-manager", () => ({
-  withNonceSession: (
+  withNonceSession: async (
     _ctx: unknown,
     _wallet: unknown,
     fn: (session: unknown) => unknown
-  ) => fn({ id: "mock-session" }),
+  ) => {
+    walletLock.held = true;
+    try {
+      return await fn({ id: "mock-session" });
+    } finally {
+      walletLock.held = false;
+    }
+  },
   submitContractCallAndConfirm: async (
     contract: Record<
       string,
@@ -562,6 +570,24 @@ describe("approve-token - executedCall on direct send", () => {
     if (result.success) {
       expect(result.executedCall).toEqual(MOCK_EXECUTED_CALL);
     }
+  });
+
+  it("runs the call trace after the wallet lock is released", async () => {
+    setupMocks();
+    let lockHeldDuringTrace: boolean | undefined;
+    mockTraceExecutedCall.mockImplementation(() => {
+      lockHeldDuringTrace = walletLock.held;
+      return Promise.resolve(MOCK_EXECUTED_CALL);
+    });
+
+    const result = await approveTokenCore(makeInput({ amount: "100" }));
+
+    expect(lockHeldDuringTrace).toBe(false);
+    expect(result).toMatchObject({
+      success: true,
+      transactionHash: "0xtxhash",
+      executedCall: MOCK_EXECUTED_CALL,
+    });
   });
 
   it("omits executedCall when trace returns undefined (graceful degradation)", async () => {

@@ -1851,6 +1851,7 @@ async function getWorkflowRunsTotal(
     lt(workflowExecutions.startedAt, rangeEnd),
     // Must match fetchWorkflowRuns: a total that counts rows the listing drops
     // leaves the last page short and the cursor pointing at nothing.
+    // Index-only via idx_workflow_executions_workflow_started_live (0171).
     isNull(workflowExecutions.deletedAt),
   ];
   if (projectId) {
@@ -2018,6 +2019,8 @@ async function computeRunFacets(
               projectId ? eq(workflows.projectId, projectId) : undefined,
               gte(workflowExecutions.startedAt, rangeStart),
               lt(workflowExecutions.startedAt, rangeEnd),
+              // Index-only via idx_workflow_executions_workflow_started_live (0171),
+              // which carries status and error_type for the CASE above.
               isNull(workflowExecutions.deletedAt),
               ...workflowFilterConditions(
                 filters,
