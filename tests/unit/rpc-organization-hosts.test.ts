@@ -1,11 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+
 import { OrgRpcError } from "@/lib/rpc/engine/org-rpc-error";
 import {
-  isOrganizationHost,
   markOrganizationHost,
   redactOrganizationHosts,
-  runCheckingOrganizationUrl,
 } from "@/lib/rpc/engine/organization-hosts";
+import {
+  isOrganizationHost,
+  runCheckingOrganizationUrl,
+} from "@/lib/rpc/engine/organization-url-check";
 
 describe("organization hosts", () => {
   it("covers a saved config's host for the process", () => {

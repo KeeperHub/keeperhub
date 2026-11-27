@@ -12,7 +12,7 @@ import { captureException } from "@sentry/nextjs";
 import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 import { logWarn } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
-import { isOrganizationHost } from "@/lib/rpc/engine/organization-hosts";
+import { isOrganizationHost } from "@/lib/rpc/engine/organization-url-check";
 import {
   SSRF_BLOCKED_HOST_EXACT,
   SSRF_BLOCKED_HOST_SUFFIXES,

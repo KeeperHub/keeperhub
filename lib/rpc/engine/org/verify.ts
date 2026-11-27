@@ -5,7 +5,7 @@ import { SsrfBlockedError, validatingLookup } from "@/lib/safe-fetch";
 import { safeSolanaFetch } from "../../providers/solana";
 import { safeEthersGetUrl } from "../../safe-ethers-fetch";
 import { SOLANA_GENESIS_HASHES } from "../../solana-chains";
-import { runCheckingOrganizationUrl } from "../organization-hosts";
+import { runCheckingOrganizationUrl } from "../organization-url-check";
 import { resolveEndpointAddresses } from "../public-endpoint";
 import { SecretUrl } from "../secret-url";
 import { type RpcChain, RpcChainType, RpcTransport } from "../types";
