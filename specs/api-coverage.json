@@ -5,7 +5,7 @@
       "path": "/api/address-book/{entryId}",
       "route_file": "app/api/address-book/[entryId]/route.ts",
       "source": "docs/api/user.md",
-      "line": 259
+      "line": 188
     },
     {
       "method": "DELETE",
@@ -51,13 +51,6 @@
     },
     {
       "method": "DELETE",
-      "path": "/api/user/rpc-preferences/{chainId}",
-      "route_file": "app/api/user/rpc-preferences/[chainId]/route.ts",
-      "source": "docs/api/user.md",
-      "line": 152
-    },
-    {
-      "method": "DELETE",
       "path": "/api/workflows/{workflowId}",
       "route_file": "app/api/workflows/[workflowId]/route.ts",
       "source": "docs/api/workflows.md",
@@ -75,7 +68,7 @@
       "path": "/api/address-book",
       "route_file": "app/api/address-book/route.ts",
       "source": "docs/api/user.md",
-      "line": 226
+      "line": 155
     },
     {
       "method": "GET",
@@ -96,21 +89,21 @@
       "path": "/api/analytics/runs",
       "route_file": "app/api/analytics/runs/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 227
+      "line": 235
     },
     {
       "method": "GET",
       "path": "/api/analytics/runs/{executionId}/steps",
       "route_file": "app/api/analytics/runs/[id]/steps/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 358
+      "line": 366
     },
     {
       "method": "GET",
       "path": "/api/analytics/spend-cap",
       "route_file": "app/api/analytics/spend-cap/route.ts",
       "source": "docs/api/analytics.md",
-      "line": 413
+      "line": 421
     },
     {
       "method": "GET",
@@ -118,7 +111,7 @@
       "route_file": "app/api/analytics/stream/route.ts",
       "streaming": true,
       "source": "docs/api/analytics.md",
-      "line": 438
+      "line": 446
     },
     {
       "method": "GET",
@@ -255,20 +248,6 @@
     },
     {
       "method": "GET",
-      "path": "/api/user/rpc-preferences",
-      "route_file": "app/api/user/rpc-preferences/route.ts",
-      "source": "docs/api/user.md",
-      "line": 93
-    },
-    {
-      "method": "GET",
-      "path": "/api/user/rpc-preferences/{chainId}",
-      "route_file": "app/api/user/rpc-preferences/[chainId]/route.ts",
-      "source": "docs/api/user.md",
-      "line": 129
-    },
-    {
-      "method": "GET",
       "path": "/api/user/wallet",
       "route_file": "app/api/user/wallet/route.ts",
       "source": "docs/api/user.md",
@@ -363,7 +342,7 @@
       "path": "/api/address-book/{entryId}",
       "route_file": "app/api/address-book/[entryId]/route.ts",
       "source": "docs/api/user.md",
-      "line": 251
+      "line": 180
     },
     {
       "method": "PATCH",
@@ -398,7 +377,7 @@
       "path": "/api/address-book",
       "route_file": "app/api/address-book/route.ts",
       "source": "docs/api/user.md",
-      "line": 234
+      "line": 163
     },
     {
       "method": "POST",
@@ -510,21 +489,21 @@
       "path": "/api/user/delete",
       "route_file": "app/api/user/delete/route.ts",
       "source": "docs/api/user.md",
-      "line": 206
+      "line": 135
     },
     {
       "method": "POST",
       "path": "/api/user/forgot-password",
       "route_file": "app/api/user/forgot-password/route.ts",
       "source": "docs/api/user.md",
-      "line": 177
+      "line": 106
     },
     {
       "method": "POST",
       "path": "/api/user/password",
       "route_file": "app/api/user/password/route.ts",
       "source": "docs/api/user.md",
-      "line": 160
+      "line": 89
     },
     {
       "method": "POST",
@@ -609,13 +588,6 @@
       "route_file": "app/api/organizations/[organizationId]/failure-alerts/pause/route.ts",
       "source": "docs/api/failure-alerts.md",
       "line": 83
-    },
-    {
-      "method": "PUT",
-      "path": "/api/user/rpc-preferences/{chainId}",
-      "route_file": "app/api/user/rpc-preferences/[chainId]/route.ts",
-      "source": "docs/api/user.md",
-      "line": 135
     },
     {
       "method": "PUT",
