@@ -82,6 +82,12 @@ const rpcError = (message: string, code = -32_000): Response =>
   Response.json({ jsonrpc: "2.0", id: 1, error: { code, message } });
 const httpStatus = (status: number): Response =>
   new Response("nope", { status });
+// A JSON-RPC refusal inside an HTTP error: the endpoint's own answer.
+const rpcErrorAt = (status: number, message: string): Response =>
+  Response.json(
+    { jsonrpc: "2.0", id: 1, error: { code: -32_000, message } },
+    { status }
+  );
 const refusedConnection = (): Promise<never> =>
   Promise.reject(
     Object.assign(new TypeError("fetch failed"), {
@@ -660,7 +666,7 @@ describe("broadcast to extra RPCs", () => {
     });
     extras({
       [EXTRA_A]: () => rpcError("nonce too low"),
-      [EXTRA_B]: () => httpStatus(401),
+      [EXTRA_B]: () => rpcErrorAt(401, "unauthorized"),
     });
 
     const out = await send(manager({ extras: [EXTRA_A, EXTRA_B] }));
@@ -669,7 +675,10 @@ describe("broadcast to extra RPCs", () => {
   });
 
   it.each([
-    ["HTTP 401", () => httpStatus(401)],
+    [
+      "a JSON-RPC refusal in an HTTP 401",
+      () => rpcErrorAt(401, "unauthorized"),
+    ],
     ["a JSON-RPC rejection", () => rpcError("rate limited")],
     ["a refused connection", refusedConnection],
     ["a blocked URL", () => Promise.reject(new SsrfBlockedError("blocked"))],
@@ -705,6 +714,12 @@ describe("broadcast to extra RPCs", () => {
   it.each([
     ["timed out", (signal: AbortSignal) => hang(EXTRA_A, signal)],
     ["answered 502", () => httpStatus(502)],
+    // A bare 4xx may come from a CDN or WAF that read the signed bytes.
+    ["answered a bare 401", () => httpStatus(401)],
+    [
+      "answered an HTML 403",
+      () => new Response("<html>forbidden</html>", { status: 403 }),
+    ],
     // It read the signed bytes before answering, so it may have sent them.
     ["answered a redirect (never followed)", () => httpStatus(307)],
     ["said internal error", () => rpcError("internal error", -32_603)],

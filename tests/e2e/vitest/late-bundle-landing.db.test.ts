@@ -2110,11 +2110,11 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
       const reason = second.allowed ? "" : second.reason;
       expect(reason).toMatch(/^Daily spending cap exceeded: /);
       expect(reason).toContain(
-        "held by Send as Bundle steps that were not included"
+        "held by Send as Bundle steps whose signed transactions have not been mined"
       );
       expect(reason).toContain(`from wallet ${WALLET} on `);
       expect(reason).toContain(
-        "(for example a Normal transaction with no value) or the UTC day ends, whichever comes first"
+        "(for example a Normal transaction with no value, sent once the bundle step has finished) or the UTC day ends, whichever comes first"
       );
     });
 

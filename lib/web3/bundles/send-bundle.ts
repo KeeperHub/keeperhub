@@ -942,9 +942,10 @@ async function hashAtNonce(
 
 /**
  * Used elsewhere only on proof: a transaction from the wallet mined at this
- * nonce whose hash this step never signed. This step's receipts are read
- * again first (a lagging index must not fail a landing); without proof the
- * row stays pending for the sweep. Counts alone never decide it.
+ * nonce whose hash this step never signed; the row is confirmed with it. This
+ * step's receipts are read again first (a lagging index must not fail a
+ * landing); without proof the row stays pending for the sweep. Counts alone
+ * never decide it.
  */
 async function recheckUsedElsewhere(
   input: BundleSendInput,
@@ -997,6 +998,21 @@ async function recheckUsedElsewhere(
   if (found.usedBy === undefined || ours.has(found.usedBy)) {
     // Not found, or ours without a receipt yet: the sweep settles it.
     return undecided;
+  }
+  try {
+    // Proof the nonce is used: the held value stops counting (value-ledger).
+    await getNonceManager().confirmNonce(
+      input.session,
+      recorded.nonce,
+      found.usedBy
+    );
+  } catch (error) {
+    // Left pending, the value counts until the next session or the sweep settles it.
+    logAfterSend(
+      "Could not confirm a nonce another transaction used",
+      error,
+      input.chainId
+    );
   }
   return { kind: "used-elsewhere", report: recorded.report };
 }

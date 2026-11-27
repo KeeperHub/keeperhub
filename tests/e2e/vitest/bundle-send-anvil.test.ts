@@ -100,6 +100,8 @@ const CHAIN_ID = 31_337;
 const DATABASE_URL = process.env.DATABASE_URL ?? "";
 const PREFIX = `bse_${Date.now().toString(36)}_`;
 const WORKFLOW_ID = `${PREFIX}wf`;
+// Its own workflow, so its streak counts only its runs.
+const STREAK_WORKFLOW_ID = `${PREFIX}wf-streak`;
 const RICH_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
@@ -188,12 +190,12 @@ async function kicks(): Promise<number> {
   return Number(await rpc<string>("eth_getStorageAt", [gate, "0x1", "latest"]));
 }
 
-async function newRun(): Promise<string> {
+async function newRun(workflowId = WORKFLOW_ID): Promise<string> {
   seq += 1;
   const id = `${PREFIX}run${seq}`;
   await db.insert(schema.workflowExecutions).values({
     id,
-    workflowId: WORKFLOW_ID,
+    workflowId,
     userId: env.userId,
     status: "running",
   });
@@ -202,7 +204,8 @@ async function newRun(): Promise<string> {
 
 async function runStep(
   executionId: string,
-  config: Record<string, unknown> = {}
+  config: Record<string, unknown> = {},
+  workflowId = WORKFLOW_ID
 ): Promise<StepResult> {
   return await step.writeContractStep({
     network: String(CHAIN_ID),
@@ -219,7 +222,7 @@ async function runStep(
       nodeName: "Kick",
       nodeType: "web3/write-contract",
       organizationId: env.orgId,
-      workflowId: WORKFLOW_ID,
+      workflowId,
     },
   } as Parameters<Step["writeContractStep"]>[0]);
 }
@@ -390,14 +393,16 @@ describe.skipIf(SKIP)("Send as Bundle (anvil, fake builders)", () => {
       slug: env.orgId.replaceAll("_", "-"),
       createdAt: new Date(),
     });
-    await db.insert(schema.workflows).values({
-      id: WORKFLOW_ID,
-      name: WORKFLOW_ID,
-      userId: env.userId,
-      organizationId: env.orgId,
-      nodes: [],
-      edges: [],
-    });
+    for (const id of [WORKFLOW_ID, STREAK_WORKFLOW_ID]) {
+      await db.insert(schema.workflows).values({
+        id,
+        name: id,
+        userId: env.userId,
+        organizationId: env.orgId,
+        nodes: [],
+        edges: [],
+      });
+    }
 
     await rpc("anvil_setBalance", [
       wallet.address,
@@ -669,7 +674,13 @@ describe.skipIf(SKIP)("Send as Bundle (anvil, fake builders)", () => {
     const executionId = await newRun();
     const nonce = await minedNonce();
     const result = await runStep(executionId);
-    expect(result).toMatchObject({ success: true, included: false });
+    // Route and reason first, so a skip or another miss names its cause.
+    expect(result).toMatchObject({
+      success: true,
+      route: "bundle",
+      included: false,
+      notIncludedReason: "not-picked",
+    });
     expect((await finalize(executionId))?.status).toBe("not_landed");
 
     // A builder includes the signed transaction after all, past its targets.
@@ -904,13 +915,13 @@ describe.skipIf(SKIP)("Send as Bundle (anvil, fake builders)", () => {
     setModes("decline");
     const ids: string[] = [];
     for (let i = 0; i < 3; i++) {
-      const executionId = await newRun();
-      const result = await runStep(executionId);
+      const executionId = await newRun(STREAK_WORKFLOW_ID);
+      const result = await runStep(executionId, {}, STREAK_WORKFLOW_ID);
       expect(result).toMatchObject({ included: false });
       expect((await finalize(executionId))?.status).toBe("not_landed");
       ids.push(executionId);
     }
-    const runs = await alertRuns.loadStreakRuns(WORKFLOW_ID, 10, {
+    const runs = await alertRuns.loadStreakRuns(STREAK_WORKFLOW_ID, 10, {
       notLanded: true,
     });
     expect(alerts.summarizeNotLanding(runs, null, 3)).toMatchObject({
@@ -918,7 +929,7 @@ describe.skipIf(SKIP)("Send as Bundle (anvil, fake builders)", () => {
       lastRunId: ids[2],
     });
     // The failure streak never sees them.
-    const failures = await alertRuns.loadStreakRuns(WORKFLOW_ID, 10);
+    const failures = await alertRuns.loadStreakRuns(STREAK_WORKFLOW_ID, 10);
     expect(failures.map((run) => run.id)).not.toContain(ids[0]);
   }, 120_000);
 

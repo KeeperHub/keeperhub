@@ -10,6 +10,7 @@ import {
   orgValueReservations,
   pendingTransactions,
 } from "@/lib/db/schema-extensions";
+import { DAILY_CAP_EXCEEDED } from "@/lib/execute/daily-cap-text";
 import {
   isOrgHalted,
   ORG_HALTED_REASON,
@@ -42,6 +43,8 @@ const unlinkedRowCounts = sql`CASE
  * dropped, or confirmed with a hash of the reservation's run. Once another
  * transaction uses the nonce it counts 0. Only one of them can be mined, so
  * the reservations at one nonce count once, as the largest (bundleNonceTotals).
+ * Residuals that count 0: a landing whose entry was pruned from bundle_runs,
+ * and a reorg that changes which transaction holds the nonce (both rare).
  */
 const linkedRowCounts = sql`(${pendingTransactions.status} IS NULL
   OR ${pendingTransactions.status} IN ('pending', 'dropped')
@@ -164,8 +167,6 @@ export async function sumOrgValueTodayWei(
   return direct + ledger + sumWei(bundles);
 }
 
-const DAILY_CAP_EXCEEDED = "Daily spending cap exceeded";
-
 // The wallets a refusal names at most; the rest are counted.
 const MAX_NAMED_HOLDS = 3;
 
@@ -197,7 +198,7 @@ function heldByWallet(totals: readonly BundleNonceTotal[]): {
 }
 
 /**
- * The wei cap's refusal. When bundles that were not included but may still
+ * The wei cap's refusal. When bundles that have not been mined but may still
  * land hold part of the day's total, it says how much, on which wallet and
  * network, and how the hold ends.
  */
@@ -223,7 +224,7 @@ export async function dailyValueCapRefusal(
     holds.length > MAX_NAMED_HOLDS
       ? ` and ${holds.length - MAX_NAMED_HOLDS} more`
       : "";
-  return `${DAILY_CAP_EXCEEDED}: part of today's total is held by Send as Bundle steps that were not included (${named.join("; ")}${more}). Their signed transactions can still be mined, though rarely, so that value counts until another transaction from that wallet on that network uses their nonce (for example a Normal transaction with no value) or the UTC day ends, whichever comes first.`;
+  return `${DAILY_CAP_EXCEEDED}: part of today's total is held by Send as Bundle steps whose signed transactions have not been mined (${named.join("; ")}${more}). They can still be mined, so that value counts until another transaction from the same wallet on the same network uses their nonce (for example a Normal transaction with no value, sent once the bundle step has finished) or the UTC day ends, whichever comes first.`;
 }
 
 /**

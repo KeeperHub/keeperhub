@@ -480,7 +480,7 @@ describe("withValueCap", () => {
     expect(result).toEqual({
       allowed: false,
       reason:
-        "Daily spending cap exceeded: part of today's total is held by Send as Bundle steps that were not included (0.5 ETH from wallet 0xaa on Ethereum). Their signed transactions can still be mined, though rarely, so that value counts until another transaction from that wallet on that network uses their nonce (for example a Normal transaction with no value) or the UTC day ends, whichever comes first.",
+        "Daily spending cap exceeded: part of today's total is held by Send as Bundle steps whose signed transactions have not been mined (0.5 ETH from wallet 0xaa on Ethereum). They can still be mined, so that value counts until another transaction from the same wallet on the same network uses their nonce (for example a Normal transaction with no value, sent once the bundle step has finished) or the UTC day ends, whichever comes first.",
     });
   });
 

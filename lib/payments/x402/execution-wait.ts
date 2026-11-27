@@ -8,6 +8,7 @@ import {
 import { db } from "@/lib/db";
 import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
 import { isErrorStatus, NOT_LANDED_LATER } from "@/lib/errors/execution-status";
+import { withoutDailyCapDetail } from "@/lib/execute/daily-cap-text";
 
 /**
  * Default timeout for waiting on read-workflow completion before falling back
@@ -291,6 +292,7 @@ export async function buildCallCompletionResponse(
   return {
     executionId,
     status: "error",
-    error: result.error ?? "Execution failed",
+    // The caller is outside the owner's org: no wallet or amount detail.
+    error: withoutDailyCapDetail(result.error ?? "Execution failed"),
   };
 }

@@ -893,13 +893,25 @@ describe("sendBundleInSession", () => {
     expect(h.recordBundle.mock.calls[0][2].hashes).toHaveLength(2);
   });
 
-  it("calls the nonce used elsewhere only after the receipt lag in blocks, and leaves the row", async () => {
+  it("calls the nonce used elsewhere only after the receipt lag in blocks, and confirms the row with the transaction that used it", async () => {
     chain.otherAt = LATEST + 1;
     const outcome = await sendBundleInSession(input());
     expect(outcome.kind).toBe("used-elsewhere");
     expect(chain.block).toBeGreaterThanOrEqual(LATEST + 3);
-    expect(h.confirmNonce).not.toHaveBeenCalled();
+    // Confirmed with another hash, the held value counts 0 toward the cap.
+    expect(h.confirmNonce).toHaveBeenCalledWith(
+      expect.anything(),
+      NONCE,
+      OTHER_HASH
+    );
     expect(h.markNonceDropped).not.toHaveBeenCalled();
+  });
+
+  it("still calls the nonce used elsewhere when confirming the row fails", async () => {
+    chain.otherAt = LATEST + 1;
+    h.confirmNonce.mockRejectedValueOnce(new Error("db down"));
+    const outcome = await sendBundleInSession(input());
+    expect(outcome.kind).toBe("used-elsewhere");
   });
 
   it("re-reads the receipts on the fallback before calling the nonce used elsewhere: a lagging index", async () => {

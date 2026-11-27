@@ -271,6 +271,24 @@ describe("buildCallCompletionResponse (KEEP-265)", () => {
     });
   });
 
+  it("keeps the owner's held bundle detail out of a cap refusal", async () => {
+    mockFindFirstExecution.mockResolvedValue({
+      status: "error",
+      output: null,
+      error:
+        "Daily spending cap exceeded: part of today's total is held by Send as Bundle steps whose signed transactions have not been mined (0.5 ETH from wallet 0xaa on Ethereum). They can still be mined.",
+    });
+    const { buildCallCompletionResponse } = await import(
+      "@/lib/payments/x402/execution-wait"
+    );
+    const res = await buildCallCompletionResponse("exec-cap", null, 1000);
+    expect(res).toEqual({
+      executionId: "exec-cap",
+      status: "error",
+      error: "Daily spending cap exceeded",
+    });
+  });
+
   it("maps cancelled status to an error response", async () => {
     mockFindFirstExecution.mockResolvedValue({
       status: "cancelled",

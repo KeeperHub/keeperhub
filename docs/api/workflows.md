@@ -322,7 +322,7 @@ POST /api/workflows/{workflowId}/duplicate
 
 Creates a copy of an existing workflow. Use template in the app and the MCP `deploy_template` tool call this too.
 
-The copy's steps are checked for your organization with the [Send as checks on save](#send-as-checks-on-save), bundle steps as new ones even when unchanged. A Write Contract step sent as a bundle that your organization cannot use (bundles are not turned on for it, the network has no block builders that take bundles or lists none of the step's builders, a Safe connection, or settings out of range) refuses the whole copy: the answer is `422` with `error: "INVALID_ACTION_CONFIG"`, a `message` that starts "This workflow cannot be copied into your organization.", names each refused step and why, and ends "Nothing was copied.", and the steps in `invalidFields`. No workflow is created.
+The copy's steps are checked for your organization with the [Send as checks on save](#send-as-checks-on-save), bundle steps as new ones even when unchanged. A Write Contract step sent as a bundle that your organization cannot use (bundles are not turned on for it, the network has no block builders that take bundles or lists none of the step's builders, a Safe connection, or settings out of range) refuses the whole copy: the answer is `422` with `error: "INVALID_ACTION_CONFIG"`, a `message` that starts "This workflow cannot be copied into your organization.", names each refused step and why, and ends "Nothing was copied.", and the steps in `invalidFields`. No workflow is created. To copy it, set Send as to Normal transaction on that step in the original first (or ask its author to), or ask KeeperHub to turn bundles on for your organization (if that is the reason).
 
 ## Download Workflow
 

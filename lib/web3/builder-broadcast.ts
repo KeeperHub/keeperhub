@@ -108,10 +108,13 @@ async function sendToBuilder(
       error: cleanError(message),
     };
   }
-  // Some 4xx carry no JSON-RPC answer: still a refusal.
-  return status >= 400
-    ? { name, accepted: false, error: `HTTP ${status}` }
-    : { name, accepted: null, error: "unreadable answer" };
+  // A 4xx with no JSON-RPC error may come from a CDN, WAF or moved host that
+  // read the whole POST, signed bytes included: it may have sent.
+  return {
+    name,
+    accepted: null,
+    error: status >= 400 ? `HTTP ${status}` : "unreadable answer",
+  };
 }
 
 // Best-effort parallel send: failures are reported by label, never thrown.

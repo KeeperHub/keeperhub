@@ -104,8 +104,9 @@ async function sendRaw(
   const answer =
     body === undefined ? undefined : readAnswer(body, expectedHash);
   if (response.status >= 400) {
-    // Some nodes answer a JSON-RPC error ("already known") inside a 4xx.
-    return answer ?? { delivery: "refused", kind: "http_4xx" };
+    // A JSON-RPC error ("already known") inside a 4xx is read; a bare 4xx may
+    // come from a CDN or WAF that read the signed bytes: it may have sent.
+    return answer ?? { delivery: "unknown", kind: "http_4xx" };
   }
   return answer ?? { delivery: "unknown", kind: "bad_response" };
 }

@@ -197,7 +197,16 @@ describe("broadcastToBuilders", () => {
     [503, "not json", null, "HTTP 503"],
     [502, JSON.stringify({ error: { message: "nope" } }), null, "HTTP 502"],
     [408, "", null, "HTTP 408"],
-    [400, "bad request", false, "HTTP 400"],
+    // A bare 4xx may come from a CDN or WAF that read the signed bytes.
+    [400, "bad request", null, "HTTP 400"],
+    [403, "<html>forbidden</html>", null, "HTTP 403"],
+    [429, "", null, "HTTP 429"],
+    [
+      400,
+      JSON.stringify({ error: { code: -32_000, message: "invalid sender" } }),
+      false,
+      "invalid sender",
+    ],
     [200, "<html>gateway</html>", null, "unreadable answer"],
   ] as const)(
     "reads HTTP %i with body %j as accepted=%s",

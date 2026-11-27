@@ -10,9 +10,11 @@ vi.mock("@/lib/logging", () => ({
   logWarn: vi.fn(),
 }));
 
-const { mockBroadcastToBuilders } = vi.hoisted(() => ({
+const { mockBroadcastToBuilders, mockSafeFetch } = vi.hoisted(() => ({
   mockBroadcastToBuilders: vi.fn(),
+  mockSafeFetch: vi.fn(),
 }));
+vi.mock("@/lib/safe-fetch", () => ({ safeFetch: mockSafeFetch }));
 vi.mock("@/lib/web3/builder-broadcast", () => ({
   broadcastToBuilders: (...args: unknown[]) => mockBroadcastToBuilders(...args),
 }));
@@ -480,4 +482,59 @@ describe("the outcome when the RPC failed and builders were sent the bytes", () 
       expect(isPreBroadcastNetworkError(withBuilder)).toBe(false);
     }
   );
+});
+
+describe("a bare 4xx from every raw endpoint, with the RPC refused", () => {
+  beforeEach(async () => {
+    mockBroadcastToBuilders.mockReset();
+    mockSafeFetch.mockReset();
+    // An HTML page from a CDN or WAF that read the signed bytes.
+    mockSafeFetch.mockImplementation(
+      async () => new Response("<html>forbidden</html>", { status: 403 })
+    );
+    const actual = await vi.importActual<
+      typeof import("@/lib/web3/builder-broadcast")
+    >("@/lib/web3/builder-broadcast");
+    mockBroadcastToBuilders.mockImplementation(actual.broadcastToBuilders);
+  });
+
+  function refusedProvider() {
+    return asProvider({
+      sendRaw: vi.fn().mockRejectedValue(refused()),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+      getTransactionCount: vi.fn().mockResolvedValue(undefined),
+    });
+  }
+
+  it("a builder's bare 403 is unclear: pending with the hash, not never sent", async () => {
+    const report: SendReport = {};
+    const error = await submitSignedTransactionWithFailover(
+      makeSigner(),
+      TX_REQUEST,
+      makeManager(refusedProvider()),
+      report,
+      { builderRpcUrls: BUILDERS }
+    ).catch((caught: unknown) => caught);
+
+    expect(isPreBroadcastNetworkError(error)).toBe(false);
+    expect(pendingHash(error)).toBe(HASH);
+    expect(report.route).toBeUndefined();
+  });
+
+  it("an extra URL's bare 403 is unclear: pending with the hash, not never sent", async () => {
+    const manager = {
+      ...makeManager(refusedProvider()),
+      getBroadcastRpcUrls: () => ["https://extra.example"],
+    } as unknown as RpcProviderManager;
+    const error = await submitSignedTransactionWithFailover(
+      makeSigner(),
+      TX_REQUEST,
+      manager,
+      {}
+    ).catch((caught: unknown) => caught);
+
+    expect(isPreBroadcastNetworkError(error)).toBe(false);
+    expect(pendingHash(error)).toBe(HASH);
+  });
 });
