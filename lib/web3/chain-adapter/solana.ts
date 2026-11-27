@@ -102,7 +102,8 @@ export class SolanaChainAdapter implements ChainAdapter {
     options: TransactionOptions,
     solanaSigner: NonNullable<TransactionOptions["solanaSigner"]>,
     signerPublicKey: PublicKey,
-    blockhashRefs: SolanaBlockhashRefs
+    blockhashRefs: SolanaBlockhashRefs,
+    manager: SolanaProviderManager
   ): Promise<SolanaSignedAttempt> {
     const normalized = normalizeSolanaTransaction(
       request.data,
@@ -137,7 +138,7 @@ export class SolanaChainAdapter implements ChainAdapter {
       ? VersionedTransaction.deserialize(signedBytes)
       : Transaction.from(signedBytes);
 
-    await this.executeWithSolanaFailover(async (connection) => {
+    await manager.executeWithFailover(async (connection) => {
       const enforceMaxSol = options.maxSolLamports !== undefined;
       // Read before simulating, so a deposit landing between the two reads
       // shrinks the apparent outflow. The gap cannot be closed from here: the
@@ -236,7 +237,8 @@ export class SolanaChainAdapter implements ChainAdapter {
    */
   private async settlePriorAttempt(
     attempt: SolanaSignedAttempt,
-    blockhashRefs: SolanaBlockhashRefs
+    blockhashRefs: SolanaBlockhashRefs,
+    manager: SolanaProviderManager
   ): Promise<string | null> {
     const signature = deriveSolanaSignature(attempt.signedBytes);
     if (!signature) {
@@ -249,7 +251,7 @@ export class SolanaChainAdapter implements ChainAdapter {
     const deadline =
       Date.now() + (this.timings.timeoutMs ?? EXPIRY_PROOF_TIMEOUT_MS);
     while (Date.now() < deadline) {
-      const { status, blockHeight } = await this.executeWithSolanaFailover(
+      const { status, blockHeight } = await manager.executeWithFailover(
         async (connection) => {
           const statuses = await connection.getSignatureStatuses([signature]);
           return {
@@ -297,12 +299,14 @@ export class SolanaChainAdapter implements ChainAdapter {
       (await solanaSigner.getPublicKey()).toBase58()
     );
 
+    // One manager for the whole send: the confirm must not depend on a fresh
+    // route lookup succeeding once the transaction is already on the wire.
     const manager = await this.getManager();
     let signedAttempt: SolanaSignedAttempt | null = null;
     let signature: string | null = null;
 
     for (let attempt = 0; attempt < 2; attempt++) {
-      const blockhashRefs = await this.executeWithSolanaFailover(
+      const blockhashRefs = await manager.executeWithFailover(
         (connection) => connection.getLatestBlockhash("confirmed"),
         "read"
       );
@@ -312,7 +316,8 @@ export class SolanaChainAdapter implements ChainAdapter {
         options,
         solanaSigner,
         signerPublicKey,
-        blockhashRefs
+        blockhashRefs,
+        manager
       );
 
       try {
@@ -336,7 +341,8 @@ export class SolanaChainAdapter implements ChainAdapter {
           // transfer happens twice. Only retry once the first is provably dead.
           const settled = await this.settlePriorAttempt(
             signedAttempt,
-            blockhashRefs
+            blockhashRefs,
+            manager
           );
           if (settled) {
             signature = settled;
@@ -356,7 +362,7 @@ export class SolanaChainAdapter implements ChainAdapter {
 
     const { blockhashRefs, normalized, isVersioned } = signedAttempt;
 
-    const { confirmationErr, txResult } = await this.executeWithSolanaFailover(
+    const { confirmationErr, txResult } = await manager.executeWithFailover(
       async (connection) => {
         const confirmation = await connection.confirmTransaction(
           {
