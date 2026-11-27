@@ -97,8 +97,9 @@ export function ChainSelectField({
   onUpdateConfig,
   allowedChainIds,
   rpcSelection,
-  rpcState = NO_ORG_RPC,
+  rpcState: knownRpcState,
 }: ChainSelectFieldProps) {
+  const rpcState = knownRpcState ?? NO_ORG_RPC;
   const [chains, setChains] = useState<Chain[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -145,6 +146,42 @@ export function ChainSelectField({
 
     fetchChains();
   }, [chainTypeKey, allowedChainIds]);
+
+  // A private entry the node's RPC selection no longer offers would leave the
+  // send private in config while it goes out publicly, so it is switched off.
+  const selectedValue = typeof value === "string" ? value : "";
+  useEffect(() => {
+    if (
+      !(showPrivateVariants && onUpdateConfig && knownRpcState) ||
+      !selectedValue.endsWith(PRIVATE_SUFFIX)
+    ) {
+      return;
+    }
+    const chainId = selectedValue.slice(0, -PRIVATE_SUFFIX.length);
+    const chain = chains.find((candidate) => String(candidate.chainId) === chainId);
+    if (!chain) {
+      return;
+    }
+    const variant = privateMempoolVariant(
+      {
+        chainId: chain.chainId,
+        name: chain.name,
+        hasPlatformRelay: chain.usePrivateMempoolRpc,
+      },
+      rpcSelection,
+      knownRpcState
+    );
+    if (!variant.offered || variant.disabledReason !== null) {
+      onUpdateConfig("usePrivateMempool", false);
+    }
+  }, [
+    chains,
+    knownRpcState,
+    onUpdateConfig,
+    rpcSelection,
+    selectedValue,
+    showPrivateVariants,
+  ]);
 
   if (isLoading) {
     return (
