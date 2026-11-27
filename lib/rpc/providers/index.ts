@@ -28,6 +28,13 @@ export type RpcErrorType =
   | "connection"
   | "rpc_error";
 
+export const RPC_ENDPOINT = {
+  PRIMARY: "primary",
+  FALLBACK: "fallback",
+} as const;
+
+export type RpcEndpoint = (typeof RPC_ENDPOINT)[keyof typeof RPC_ENDPOINT];
+
 export type RpcOperationType =
   | "read"
   | "write"

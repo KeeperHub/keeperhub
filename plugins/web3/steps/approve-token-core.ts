@@ -63,6 +63,9 @@ import {
 } from "@/lib/web3/ui-multiplier";
 import { parseTokenAddress } from "./transfer-token-core";
 
+// ERC-20 function this step calls, as named in ERC20_ABI.
+const APPROVE_FUNCTION = "approve";
+
 export type ApproveTokenCoreInput = {
   network: string;
   tokenConfig: string | Record<string, unknown>;
@@ -369,7 +372,7 @@ async function approveTokenCoreImpl(
         organizationId,
         chainId,
         contractAddress: tokenAddress,
-        functionName: "approve",
+        functionName: APPROVE_FUNCTION,
         inputTypes: ["address", "uint256"],
         args: [spenderAddress, amountRaw],
         context: "approve-token",
@@ -390,7 +393,7 @@ async function approveTokenCoreImpl(
         walletAddress,
         to: tokenAddress,
         abi: ERC20_ABI,
-        functionName: "approve",
+        functionName: APPROVE_FUNCTION,
         args: [spenderAddress, amountRaw],
       });
 
@@ -405,7 +408,7 @@ async function approveTokenCoreImpl(
         const executedCall = await traceExecutedCallWithFailover(
           rpcManager,
           sponsoredResult.transactionHash,
-          { target: tokenAddress, abi: ERC20_ABI, functionName: "approve" }
+          { target: tokenAddress, abi: ERC20_ABI, functionName: APPROVE_FUNCTION }
         );
 
         return {
@@ -552,7 +555,7 @@ async function approveTokenCoreImpl(
         organizationId,
         chainId,
         contractAddress: tokenAddress,
-        functionName: "approve",
+        functionName: APPROVE_FUNCTION,
         inputTypes: ["address", "uint256"],
         args: [spenderAddress, amountRaw],
         context: "approve-token",
@@ -578,7 +581,7 @@ async function approveTokenCoreImpl(
             roleKey: signerMode.roleKey,
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "approve",
+            functionKey: APPROVE_FUNCTION,
             args: [spenderAddress, amountRaw],
           },
           session,
@@ -596,7 +599,7 @@ async function approveTokenCoreImpl(
             ownerAddress: signerMode.ownerAddress,
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "approve",
+            functionKey: APPROVE_FUNCTION,
             args: [spenderAddress, amountRaw],
           },
           session,
@@ -612,7 +615,7 @@ async function approveTokenCoreImpl(
           {
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "approve",
+            functionKey: APPROVE_FUNCTION,
             args: [spenderAddress, amountRaw],
           },
           session,
@@ -684,7 +687,7 @@ async function approveTokenCoreImpl(
     const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.hash, {
       target: tokenAddress,
       abi: ERC20_ABI,
-      functionName: "approve",
+      functionName: APPROVE_FUNCTION,
     });
     return { ...sent.result, executedCall };
   }

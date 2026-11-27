@@ -67,6 +67,9 @@ import {
   resolveForWrite,
 } from "@/lib/web3/ui-multiplier";
 
+// ERC-20 function this step calls, as named in ERC20_ABI.
+const TRANSFER_FUNCTION = "transfer";
+
 export type TransferTokenCoreInput = {
   network: string;
   tokenConfig: string | Record<string, unknown>;
@@ -485,7 +488,7 @@ async function transferTokenCoreImpl(
         walletAddress,
         to: tokenAddress,
         abi: ERC20_ABI,
-        functionName: "transfer",
+        functionName: TRANSFER_FUNCTION,
         args: [recipientAddress, amountRaw],
       });
 
@@ -500,7 +503,7 @@ async function transferTokenCoreImpl(
         const executedCall = await traceExecutedCallWithFailover(
           rpcManager,
           sponsoredResult.transactionHash,
-          { target: tokenAddress, abi: ERC20_ABI, functionName: "transfer" }
+          { target: tokenAddress, abi: ERC20_ABI, functionName: TRANSFER_FUNCTION }
         );
 
         return {
@@ -675,7 +678,7 @@ async function transferTokenCoreImpl(
             roleKey: signerMode.roleKey,
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "transfer",
+            functionKey: TRANSFER_FUNCTION,
             args: [recipientAddress, amountRaw],
           },
           session,
@@ -693,7 +696,7 @@ async function transferTokenCoreImpl(
             ownerAddress: signerMode.ownerAddress,
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "transfer",
+            functionKey: TRANSFER_FUNCTION,
             args: [recipientAddress, amountRaw],
           },
           session,
@@ -709,7 +712,7 @@ async function transferTokenCoreImpl(
           {
             contractAddress: tokenAddress,
             abi: ERC20_ABI,
-            functionKey: "transfer",
+            functionKey: TRANSFER_FUNCTION,
             args: [recipientAddress, amountRaw],
           },
           session,
@@ -781,7 +784,7 @@ async function transferTokenCoreImpl(
     const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.hash, {
       target: tokenAddress,
       abi: ERC20_ABI,
-      functionName: "transfer",
+      functionName: TRANSFER_FUNCTION,
     });
     return { ...sent.result, executedCall };
   }

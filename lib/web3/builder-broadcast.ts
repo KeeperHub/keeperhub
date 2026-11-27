@@ -8,6 +8,9 @@ import { getErrorMessage } from "@/lib/utils";
 const BUILDER_BROADCAST_TIMEOUT_MS = 2000;
 
 const MAX_ERROR_LENGTH = 200;
+const JSON_RPC_VERSION = "2.0";
+const SEND_RAW_TRANSACTION = "eth_sendRawTransaction";
+const SAFE_FETCH_LABEL = "builder-broadcast";
 
 export type BuilderBroadcastResult = {
   name: string;
@@ -41,13 +44,13 @@ async function sendToBuilder(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        jsonrpc: "2.0",
+        jsonrpc: JSON_RPC_VERSION,
         id: 1,
-        method: "eth_sendRawTransaction",
+        method: SEND_RAW_TRANSACTION,
         params: [signedHex],
       }),
       signal: AbortSignal.timeout(BUILDER_BROADCAST_TIMEOUT_MS),
-      plugin: "builder-broadcast",
+      plugin: SAFE_FETCH_LABEL,
     });
     const reply = (await response.json()) as JsonRpcReply;
     if (typeof reply.result === "string") {

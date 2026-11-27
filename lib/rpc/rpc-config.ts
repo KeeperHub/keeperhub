@@ -765,6 +765,7 @@ export function getUsePrivateMempoolRpc(
 export type BuilderRpcUrls = Record<string, string>;
 
 const BUILDER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const HTTPS_PROTOCOL = "https:";
 
 // Keeps lowercase labels mapped to https URLs; undefined when none remain.
 export function normalizeBuilderRpcUrls(
@@ -779,7 +780,7 @@ export function normalizeBuilderRpcUrls(
       continue;
     }
     try {
-      if (new URL(url).protocol === "https:") {
+      if (new URL(url).protocol === HTTPS_PROTOCOL) {
         result[label] = url;
       }
     } catch {
