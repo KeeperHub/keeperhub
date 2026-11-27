@@ -436,6 +436,23 @@ describe("BlockMonitorService organization routes", () => {
     expect(service.getRouteResumeBlocks().get("k1")).toBe(10);
   });
 
+  it("drops handed-over progress for a route that is gone", async () => {
+    const orgRoute = route("k1");
+    serve([{ id: "org-b", rpcRoute: orgRoute }]);
+
+    await service.start(
+      new Map(),
+      new Map([
+        ["k1", 7],
+        ["gone", 5],
+      ]),
+    );
+
+    const progress = service.getRouteResumeBlocks();
+    expect(progress.has("gone")).toBe(false);
+    expect(progress.get("k1")).toBe(7);
+  });
+
   it("reports usage per serving endpoint without urls", async () => {
     const orgRoute = route("k1");
     serve([{ id: "platform-a" }, { id: "org-b", rpcRoute: orgRoute }]);

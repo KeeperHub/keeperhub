@@ -338,9 +338,15 @@ export class BlockMonitorService {
     if (this.isShuttingDown) {
       return;
     }
-    for (const key of [...this.routeMonitors.keys()]) {
+    // Progress for a route that is gone, including progress handed over by
+    // an earlier leader, is dropped so the lease annotation stays bounded.
+    for (const key of [...this.routeResumeBlocks.keys()]) {
       if (!routed.has(key)) {
         this.routeResumeBlocks.delete(key);
+      }
+    }
+    for (const key of [...this.routeMonitors.keys()]) {
+      if (!routed.has(key)) {
         await this.dropRouteMonitor(key);
       }
     }
@@ -401,9 +407,10 @@ export class BlockMonitorService {
       usage: this.usageFor(group.route),
       lookupFor: (url) => lookupFor(group.route, url),
     });
+    // The resume block stays until this monitor processes a newer one, so a
+    // start that fails, or a handover during it, still backfills the gap.
     const entry: RouteMonitor = { monitor, route: group.route, starting: true };
     this.routeMonitors.set(key, entry);
-    this.routeResumeBlocks.delete(key);
     monitor.start().then(
       async () => {
         entry.starting = false;
