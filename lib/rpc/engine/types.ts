@@ -1,3 +1,7 @@
+import {
+  RPC_ENDPOINT,
+  type RpcEndpoint as RpcEndpointPosition,
+} from "../rpc-endpoint";
 import type { SecretUrl } from "./secret-url";
 
 /** How an endpoint is reached. */
@@ -24,12 +28,8 @@ export type RpcEndpointRole =
   (typeof RpcEndpointRole)[keyof typeof RpcEndpointRole];
 
 /** Where an endpoint sits in a resolved route; failover goes primary to fallback. */
-export const RpcRoutePosition = {
-  PRIMARY: "primary",
-  FALLBACK: "fallback",
-} as const;
-export type RpcRoutePosition =
-  (typeof RpcRoutePosition)[keyof typeof RpcRoutePosition];
+export const RpcRoutePosition = RPC_ENDPOINT;
+export type RpcRoutePosition = RpcEndpointPosition;
 
 export const RpcChainType = {
   EVM: "evm",
