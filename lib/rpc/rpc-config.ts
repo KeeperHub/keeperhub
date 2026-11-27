@@ -970,13 +970,23 @@ function overDefault(builder: ChainBuilder, entry: unknown): unknown {
   return { ...fields, methods: [...new Set([...builder.methods, "raw"])] };
 }
 
+// An empty URL removes a builder on purpose.
+function isRemoval(entry: unknown): boolean {
+  const url = isPlainRecord(entry) ? entry.url : entry;
+  return typeof url === "string" && url.trim() === "";
+}
+
 /**
  * The builders to store for a chain: the code defaults in their order, each
  * overridden in place (or removed, by an empty URL) by a chain-config entry
  * of the same label, then the other chain-config entries in config order.
+ * onSkipped names each entry dropped as not valid (an empty URL is not).
  */
 export function readChainBuilders(
-  options: ChainConfigLookupOptions & { defaults?: readonly ChainBuilder[] }
+  options: ChainConfigLookupOptions & {
+    defaults?: readonly ChainBuilder[];
+    onSkipped?: (label: string, removedDefault: boolean) => void;
+  }
 ): ChainBuilder[] {
   const configured = new Map(
     builderEntries(
@@ -997,11 +1007,18 @@ export function readChainBuilders(
     }
   }
   // As an array: an object would reorder integer-like labels.
-  return parseChainBuilders(
+  const builders = parseChainBuilders(
     merged.map(([label, entry]) =>
       isPlainRecord(entry) ? { ...entry, label } : { label, url: entry }
     )
   );
+  const kept = new Set(builders.map((builder) => builder.label));
+  for (const [label, entry] of configured) {
+    if (!(kept.has(label) || isRemoval(entry))) {
+      options.onSkipped?.(label, defaultLabels.has(label));
+    }
+  }
+  return builders;
 }
 
 /**

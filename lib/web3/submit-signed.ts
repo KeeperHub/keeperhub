@@ -59,7 +59,7 @@ export type BroadcastResult = {
    * before/during our broadcast attempt. Callers may skip `response.wait()`.
    */
   preExistingReceipt?: ethers.TransactionReceipt;
-  // Absent when the outcome came from reconciliation.
+  // From reconciliation: only the builders, when any were sent the bytes.
   broadcast?: BroadcastInfo;
 };
 
@@ -273,8 +273,27 @@ export async function submitSignedTransactionWithFailover(
           startBlock
         );
         report.route = routeIf(true);
-        return builderTook ? { ...result, broadcast: { builders } } : result;
+        return builders.length > 0
+          ? { ...result, broadcast: { builders } }
+          : result;
       } catch (confirmError) {
+        // "Nonce too low" and the nonce now mined by another tx: the builder's copy can never land.
+        if (
+          !extraTook &&
+          isNonceExpiredError(err) &&
+          (await nonceMinedElsewhere(
+            rpcManager,
+            signedHex,
+            expectedHash,
+            populated.nonce
+          ))
+        ) {
+          throw new NonceConflictError(
+            expectedHash,
+            typeof populated.nonce === "number" ? populated.nonce : null,
+            err
+          );
+        }
         report.route = routeIf(false);
         throw confirmError;
       }
@@ -289,19 +308,21 @@ export async function submitSignedTransactionWithFailover(
         err,
         // An extra, or an earlier managed attempt without a clear answer (a
         // timeout or a server error, not a refused connection), may hold our
-        // bytes. So may a builder with no clear answer, unless the RPC turned
-        // the transaction down for good (its nonce is taken).
+        // bytes. So may a builder with no clear answer, unless the RPC said
+        // the nonce is already used ("replacement underpriced" is not that).
         extraDeliveries.includes("unknown") ||
           attempts.some((attempt) => attempt.delivery === "unknown") ||
           (builders.some((builder) => builder.accepted === null) &&
-            !isNonceConflictError(err))
+            !isNonceExpiredError(err))
       );
       report.route = routeIf(true);
+      const withBuilders: BroadcastResult =
+        builders.length > 0 ? { ...result, broadcast: { builders } } : result;
       // Mined already, or no start block (no extras or builders): nothing to watch for.
       return result.preExistingReceipt || startBlock === undefined
-        ? result
+        ? withBuilders
         : {
-            ...result,
+            ...withBuilders,
             response: await watchForReplacement(result.response, startBlock),
           };
     } catch (reconcileError) {
@@ -364,18 +385,16 @@ async function watchForReplacement(
     : response.replaceableTransaction(block);
 }
 
-const START_BLOCK_TIMEOUT_MS = 2000;
+const BOUNDED_READ_TIMEOUT_MS = 2000;
 
-// Best effort, bounded: undefined when the block number cannot be read.
-async function currentBlockNumber(
-  provider: ethers.Provider
-): Promise<number | undefined> {
+// Best effort, bounded: undefined when the read fails or is slow.
+async function boundedRead<T>(read: () => Promise<T>): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      provider.getBlockNumber(),
+      read(),
       new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), START_BLOCK_TIMEOUT_MS);
+        timer = setTimeout(() => resolve(undefined), BOUNDED_READ_TIMEOUT_MS);
         timer.unref?.();
       }),
     ]);
@@ -384,6 +403,42 @@ async function currentBlockNumber(
   } finally {
     clearTimeout(timer);
   }
+}
+
+function currentBlockNumber(
+  provider: ethers.Provider
+): Promise<number | undefined> {
+  return boundedRead(() => provider.getBlockNumber());
+}
+
+// True only when the sender's mined nonce count is past ours and, asked
+// again after that, the network still does not know our hash (best effort).
+async function nonceMinedElsewhere(
+  rpcManager: RpcProviderManager,
+  signedHex: string,
+  expectedHash: string,
+  nonce: number | null | undefined
+): Promise<boolean> {
+  const from = ethers.Transaction.from(signedHex).from;
+  if (typeof nonce !== "number" || !from) {
+    return false;
+  }
+  const minedCount = await boundedRead(() =>
+    rpcManager.executeWithFailover(
+      (provider) => provider.getTransactionCount(from, "latest"),
+      "read"
+    )
+  );
+  if (!(typeof minedCount === "number" && minedCount > nonce)) {
+    return false;
+  }
+  const ours = await boundedRead(() =>
+    rpcManager.executeWithFailover(
+      (provider) => provider.getTransaction(expectedHash),
+      "read"
+    )
+  );
+  return ours === null;
 }
 
 /**
@@ -557,6 +612,23 @@ export function isDefinitelyPreBroadcastNetworkError(error: unknown): boolean {
   return isConnectionRefusal(error);
 }
 
+// "Nonce too low": the nonce is used in a mined block (a replacement answer is not that).
+const NONCE_EXPIRED_MESSAGE_PATTERNS: readonly string[] = [
+  "nonce too low",
+  "nonce is too low",
+  "nonce has already been used",
+];
+
+function isNonceExpiredError(err: unknown): boolean {
+  if (isError(err, "NONCE_EXPIRED")) {
+    return true;
+  }
+  const msg = errorMessage(err).toLowerCase();
+  return NONCE_EXPIRED_MESSAGE_PATTERNS.some((pattern) =>
+    msg.includes(pattern)
+  );
+}
+
 /**
  * Recognise nonce-conflict errors across two layers:
  *
@@ -578,9 +650,7 @@ export function isDefinitelyPreBroadcastNetworkError(error: unknown): boolean {
  * they name our own hash, never another transaction's nonce.
  */
 const NONCE_CONFLICT_MESSAGE_PATTERNS: readonly string[] = [
-  "nonce too low",
-  "nonce is too low",
-  "nonce has already been used",
+  ...NONCE_EXPIRED_MESSAGE_PATTERNS,
   "replacement transaction underpriced",
   "replacement underpriced",
   "replacement fee too low",

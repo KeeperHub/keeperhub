@@ -141,7 +141,8 @@ bundle step on a chain with an empty list is refused. The direct node-execution
 API refuses `"bundle"`: bundles only run in a workflow's Write Contract step.
 
 For operators: a chain's builders come from `builderRpcUrls` in its entry of
-the chain configuration, an object keyed by builder name (lowercase letters,
+the chain configuration (the `CHAIN_RPC_CONFIG` environment variable on a
+self-hosted install), an object keyed by builder name (lowercase letters,
 digits and dashes). Each value is either a plain URL, which takes single
 signed transactions only, or `{ "url": "...", "methods": [...] }` with
 `"bundle"`, `"raw"` (single signed transactions) or both. URLs must be https,
@@ -149,8 +150,17 @@ or http to `localhost` or `127.0.0.1` for local testing. Ethereum has default
 builders that take bundles only. An entry under a default builder's name
 overrides it in place: with `methods` it replaces it as written; as a plain
 URL (or without `methods`) it keeps taking bundles, also takes single
-transactions, and the URL is used for both. An empty URL removes a default.
-Other entries follow the defaults, in the order configured.
+transactions, and the URL is used for both. Where a builder takes single
+transactions at another URL than its bundles (Flashbots Protect is not the
+Flashbots bundle relay, for example), add that URL under another name, such
+as `flashbots-protect`, instead. An empty URL removes a default. Other
+entries follow the defaults, in the order configured.
+
+An entry not in this format is skipped, with only a warning in the log of the
+chain seed: an uppercase name, http to a host that is not local, or `methods`
+naming neither `bundle` nor `raw` (empty, or misspelled). Under a default builder's
+name, that also removes the default builder from bundles. Bundles go to at
+most the first 16 builders that take them.
 
 Neither this chain capability nor a saved workflow setting confirms that a
 specific transaction used a private route. Workflow Write Contract and Batch

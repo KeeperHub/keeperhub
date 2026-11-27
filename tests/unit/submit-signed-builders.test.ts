@@ -59,6 +59,8 @@ type FakeProvider = {
   sendRaw: ReturnType<typeof vi.fn>;
   getTransactionReceipt?: ReturnType<typeof vi.fn>;
   getTransaction?: ReturnType<typeof vi.fn>;
+  getTransactionCount?: ReturnType<typeof vi.fn>;
+  getBlockNumber?: ReturnType<typeof vi.fn>;
 };
 
 // The calls a send makes: eth_sendRawTransaction, then the response wrap.
@@ -260,12 +262,14 @@ function refused(): Error {
 async function sendWith(
   sendError: Error,
   builders: { name: string; accepted: boolean | null; error?: string }[],
-  report: SendReport = {}
+  report: SendReport = {},
+  minedNonceCount?: number
 ): Promise<unknown> {
   const fake = {
     sendRaw: vi.fn().mockRejectedValue(sendError),
     getTransactionReceipt: vi.fn().mockResolvedValue(null),
     getTransaction: vi.fn().mockResolvedValue(null),
+    getTransactionCount: vi.fn().mockResolvedValue(minedNonceCount),
   };
   mockBroadcastToBuilders.mockResolvedValue(builders);
   return await submitSignedTransactionWithFailover(
@@ -335,6 +339,127 @@ describe("the outcome when the RPC failed and builders were sent the bytes", () 
     expect(error).not.toBeInstanceOf(NonceConflictError);
     expect(pendingHash(error)).toBe(HASH);
   });
+
+  it("a nonce already used, with a builder that took our hash, stays pending while the nonce is not mined", async () => {
+    const error = await sendWith(
+      new Error("nonce too low"),
+      [{ name: "titan", accepted: true }],
+      {},
+      TX_REQUEST.nonce as number
+    );
+
+    expect(pendingHash(error)).toBe(HASH);
+  });
+
+  it("a nonce mined by another transaction ends the builder's copy as a nonce conflict", async () => {
+    const report: SendReport = {};
+    const error = await sendWith(
+      new Error("nonce too low"),
+      [{ name: "titan", accepted: true }],
+      report,
+      (TX_REQUEST.nonce as number) + 1
+    );
+
+    expect(error).toBeInstanceOf(NonceConflictError);
+    expect((error as NonceConflictError).nonce).toBe(TX_REQUEST.nonce);
+    expect(report.route).toBeUndefined();
+  });
+
+  it("keeps the hash when our transaction shows up after the nonce read", async () => {
+    const fake = {
+      sendRaw: vi.fn().mockRejectedValue(new Error("nonce too low")),
+      getTransaction: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue({ hash: HASH }),
+      getTransactionCount: vi
+        .fn()
+        .mockResolvedValue((TX_REQUEST.nonce as number) + 1),
+    };
+    mockBroadcastToBuilders.mockResolvedValue([
+      { name: "titan", accepted: true },
+    ]);
+
+    const error = await submitSignedTransactionWithFailover(
+      makeSigner(),
+      TX_REQUEST,
+      makeManager(asProvider(fake)),
+      {},
+      { builderRpcUrls: BUILDERS }
+    ).catch((caught: unknown) => caught);
+
+    expect(fake.getTransactionCount).toHaveBeenCalled();
+    expect(error).not.toBeInstanceOf(NonceConflictError);
+    expect(pendingHash(error)).toBe(HASH);
+  });
+
+  it("a replacement answer, with a builder that took our hash, keeps the hash even past the mined nonce", async () => {
+    const error = await sendWith(
+      new Error("replacement transaction underpriced"),
+      [{ name: "titan", accepted: true }],
+      {},
+      (TX_REQUEST.nonce as number) + 1
+    );
+
+    expect(pendingHash(error)).toBe(HASH);
+  });
+
+  it.each(["replacement transaction underpriced", "replacement fee too low"])(
+    "an RPC that answered %j, with a builder that gave no clear answer, keeps the hash (the nonce is not used yet)",
+    async (message) => {
+      const error = await sendWith(new Error(message), [
+        { name: "titan", accepted: null, error: "aborted due to timeout" },
+      ]);
+
+      expect(error).not.toBeInstanceOf(NonceConflictError);
+      expect(pendingHash(error)).toBe(HASH);
+    }
+  );
+
+  it("a replacement answer with builders that refused stays a nonce conflict", async () => {
+    const error = await sendWith(
+      new Error("replacement transaction underpriced"),
+      [{ name: "titan", accepted: false, error: "rejected" }]
+    );
+
+    expect(error).toBeInstanceOf(NonceConflictError);
+  });
+
+  it.each([
+    ["gave no clear answer", null],
+    ["took our hash", true],
+  ] as const)(
+    "with no extras and a builder that %s, a found transaction watches for a replacement from the block read before the send",
+    async (_name, accepted) => {
+      const replaced = { hash: HASH, replaceable: true };
+      const replaceableTransaction = vi.fn().mockReturnValue(replaced);
+      const fake = {
+        sendRaw: vi.fn().mockRejectedValue(new Error("timeout")),
+        getTransactionReceipt: vi.fn().mockResolvedValue(null),
+        getTransaction: vi
+          .fn()
+          .mockResolvedValue({ hash: HASH, replaceableTransaction }),
+        // The first read is the one started before the send.
+        getBlockNumber: vi.fn().mockResolvedValueOnce(16).mockResolvedValue(17),
+      };
+      const builders = [{ name: "titan", accepted }];
+      mockBroadcastToBuilders.mockResolvedValue(builders);
+
+      const result = await submitSignedTransactionWithFailover(
+        makeSigner(),
+        TX_REQUEST,
+        makeManager(asProvider(fake)),
+        {},
+        { builderRpcUrls: BUILDERS }
+      );
+
+      expect(replaceableTransaction).toHaveBeenCalledWith(16);
+      expect(result.response).toBe(replaced);
+      expect(result.broadcast).toEqual({ builders });
+    }
+  );
 
   it.each([
     "insufficient funds for gas * price + value",

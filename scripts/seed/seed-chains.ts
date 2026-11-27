@@ -20,6 +20,7 @@ import {
   type NewChain,
   type NewExplorerConfig,
 } from "../../lib/db/schema";
+import { logWarn } from "../../lib/logging";
 import {
   type ChainBuilder,
   CHAIN_CONFIG,
@@ -1305,6 +1306,10 @@ async function seedChains() {
           rpcConfig,
           jsonKey,
           defaults: DEFAULT_CHAIN_BUILDERS[chain.chainId],
+          onSkipped: (label, removedDefault) =>
+            logWarn(
+              `[seed-chains] Skipped builder "${label}" on ${jsonKey}: not a valid entry${removedDefault ? ", so the default builder is removed" : ""}`
+            ),
         })
       : [];
     const builderRpcUrls = builders.length > 0 ? builders : null;

@@ -1480,6 +1480,40 @@ describe("builder methods, defaults and order", () => {
       zed: "https://zed.example",
     });
   });
+
+  it("names each entry skipped as not valid, and whether it removed a default", () => {
+    const rpcConfig: RpcConfig = {
+      "eth-mainnet": {
+        builderRpcUrls: {
+          flashbots: "http://relay.flashbots.net",
+          // A misspelled method, as a hand-written config could hold.
+          titan: {
+            url: "https://titan.example",
+            methods: ["bundles"],
+          } as never,
+          beaverbuild: "",
+          Zed: "https://zed.example",
+          aaa: { url: "https://aaa.example", methods: [] },
+          ok: "https://ok.example",
+        },
+      },
+    };
+    const onSkipped = vi.fn();
+    const builders = readChainBuilders({
+      rpcConfig,
+      jsonKey: "eth-mainnet",
+      defaults: ETH_MAINNET_BUILDERS,
+      onSkipped,
+    });
+    expect(onSkipped.mock.calls).toEqual([
+      ["flashbots", true],
+      ["titan", true],
+      ["Zed", false],
+      ["aaa", false],
+    ]);
+    expect(builders.map((b) => b.label)).not.toContain("flashbots");
+    expect(builders.map((b) => b.label)).toContain("ok");
+  });
 });
 
 describe("PUBLIC_RPCS contains no KeeperHub-operated endpoint", () => {
