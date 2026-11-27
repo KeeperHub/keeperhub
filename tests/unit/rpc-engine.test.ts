@@ -51,6 +51,7 @@ import {
   clearRpcProviderManagerCache,
   type FailoverStateChangeCallback,
   type RpcMetricsCollector,
+  RpcProviderManager,
 } from "@/lib/rpc/providers";
 import { clearSolanaProviderManagerCache } from "@/lib/rpc/providers/solana";
 
@@ -242,6 +243,27 @@ describe("createRpcEngine", () => {
       usage.drain().map((bucket) => bucket.organizationId)
     );
     expect(organizations).toEqual(new Set(["org_1", "org_2"]));
+  });
+
+  it("counts a shared manager's own internal calls to the calling organization", async () => {
+    orgState = { policy: { ownRpcOnly: false }, configs: [] };
+    vi.spyOn(
+      RpcProviderManager.prototype,
+      "resolveActiveRpcUrl"
+    ).mockImplementation(async function (
+      this: RpcProviderManager
+    ): Promise<string> {
+      await this.executeWithFailover(() => Promise.resolve(1));
+      return "probed";
+    });
+    await engine.evm(orgScope("org_1"), 1);
+    const second = await engine.evm(orgScope("org_2"), 1);
+
+    await second.manager.resolveActiveRpcUrl();
+
+    expect(usage.drain().map((bucket) => bucket.organizationId)).toEqual([
+      "org_2",
+    ]);
   });
 
   it("never hands an organization manager to platform traffic", async () => {

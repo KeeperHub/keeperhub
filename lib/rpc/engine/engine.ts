@@ -217,15 +217,17 @@ function managerFor<TManager extends SharedManager>(
   }
   const view = new Proxy(manager, {
     get(target, property): unknown {
-      if (property === "executeWithFailover") {
-        return (...args: Parameters<TManager["executeWithFailover"]>) =>
-          callTelemetry.run(sink, () => target.executeWithFailover(...args));
-      }
       if (property === "getMetricsCollector" && property in target) {
         return () => collectorFromSink(sink);
       }
       const value: unknown = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
+      if (typeof value !== "function") {
+        return value;
+      }
+      // Every method runs in this client's context, including ones like
+      // resolveActiveRpcUrl that call executeWithFailover on the manager.
+      return (...args: unknown[]): unknown =>
+        callTelemetry.run(sink, () => value.apply(target, args));
     },
   });
   views.set(attribution, view);
