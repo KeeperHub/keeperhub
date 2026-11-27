@@ -27,7 +27,19 @@ export function RpcConfigSelectField({
   onUpdateConfig,
   disabled,
 }: RpcConfigSelectFieldProps): React.ReactNode {
-  const { state, loading } = useOrgRpcState();
+  const { state, loading, failed } = useOrgRpcState();
+
+  if (failed) {
+    return (
+      <p
+        className="text-destructive text-xs"
+        data-testid={`rpc-config-load-failed-${field.key}`}
+      >
+        Could not load your organization's RPC configs. Reopen this step to
+        try again.
+      </p>
+    );
+  }
 
   if (loading) {
     return (

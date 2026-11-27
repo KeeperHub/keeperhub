@@ -284,6 +284,13 @@ export { resolveSelectValue };
 export function OrgAwareChainSelectField(
   props: Omit<ChainSelectFieldProps, "rpcState">
 ): React.ReactNode {
-  const { state } = useOrgRpcState();
-  return <ChainSelectField {...props} rpcState={state} />;
+  const { state, loading, failed } = useOrgRpcState();
+  // Until the real setup is known, private entries follow KeeperHub's relays
+  // only rather than an organization setup that was never read.
+  return (
+    <ChainSelectField
+      {...props}
+      rpcState={loading || failed ? undefined : state}
+    />
+  );
 }
