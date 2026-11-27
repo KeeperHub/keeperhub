@@ -1,8 +1,8 @@
 import "server-only";
-import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { ethers } from "ethers";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { rawToUi, resolveForDisplay } from "@/lib/web3/ui-multiplier";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";

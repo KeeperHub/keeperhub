@@ -55,12 +55,42 @@ vi.mock("@/lib/rpc/provider-factory", async () => {
   };
 });
 
+// Send as Bundle: only the bundle's own pre-send read goes out, on the step's RPC.
+vi.mock("@/lib/web3/bundles/in-flight", () => ({
+  bundleInFlight: () => Promise.resolve({ kind: "none" }),
+}));
+vi.mock("@/lib/web3/gas-preflight", () => ({
+  preflightGasBalance: () => Promise.resolve({ affordable: true }),
+}));
+vi.mock("@/lib/web3/transaction-manager", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/web3/transaction-manager")>()),
+  withNonceSession: (
+    _context: unknown,
+    _wallet: string,
+    fn: (session: unknown) => Promise<unknown>
+  ) => fn({ currentNonce: 1 }),
+}));
+vi.mock("@/lib/web3/wallet-helpers", () => ({
+  initializeWalletSigner: () => Promise.resolve({}),
+}));
+vi.mock("@/lib/web3/bundles/send-bundle", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/web3/bundles/send-bundle")>()),
+  sendBundleInSession: (input: {
+    rpcManager: { executeWithFailover: (op: unknown) => Promise<unknown> };
+  }) =>
+    input.rpcManager.executeWithFailover(
+      (provider: { getTransactionCount: (a: string) => Promise<number> }) =>
+        provider.getTransactionCount(`0x${"aa".repeat(20)}`)
+    ),
+}));
+
 import {
   applyErrorClassHint,
   classifyExecutionError,
 } from "@/lib/errors/classify";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory } from "@/lib/logging";
+import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { batchReadContractStep } from "@/plugins/web3/steps/batch-read-contract";
 import { checkAllowanceStep } from "@/plugins/web3/steps/check-allowance";
 import { checkBalanceStep } from "@/plugins/web3/steps/check-balance";
@@ -68,6 +98,7 @@ import { checkTokenBalanceStep } from "@/plugins/web3/steps/check-token-balance"
 import { getNonceStep } from "@/plugins/web3/steps/get-nonce";
 import { getTransactionStep } from "@/plugins/web3/steps/get-transaction";
 import { queryEventsStep } from "@/plugins/web3/steps/query-events";
+import { writeAsBundle } from "@/plugins/web3/steps/write-contract-bundle";
 
 const ADDRESS = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
 const TOKEN = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
@@ -169,6 +200,33 @@ const STEPS: [string, () => Promise<unknown>][] = [
   ],
 ];
 
+// Write Contract sent as a bundle, failing on a read before sending.
+async function bundleBeforeSending(): Promise<unknown> {
+  return await writeAsBundle({
+    route: {
+      settings: { blocks: 1, tipIncreasePercent: 0 },
+      builders: [],
+      unknownBuilders: [],
+      workflowId: "wf-1",
+      executionId: "exec-1",
+      node: { id: "write-1", name: "Write" },
+    } as never,
+    chainId: 1,
+    organizationId: "org-1",
+    walletAddress: `0x${"aa".repeat(20)}`,
+    rpcUrl: rpc.url,
+    rpcManager: await getRpcProvider({ chainId: 1 } as never),
+    traceExecuted: () => Promise.resolve(undefined),
+    txContext: {} as never,
+    contractAddress: TOKEN,
+    parsedAbi: JSON.parse(BALANCE_ABI) as unknown[],
+    abiFunction: "balanceOf",
+    functionKey: "balanceOf",
+    args: [ADDRESS],
+    gas: {},
+  });
+}
+
 const ANSWERED: Record<string, string> = {
   eth_chainId: "0x1",
   eth_blockNumber: "0x100",
@@ -245,4 +303,30 @@ describe("a redirecting RPC keeps its fault domain through each step's wrapper",
       });
     }
   );
+});
+
+describe("Send as Bundle keeps the class of a read before sending", () => {
+  it("the user's own RPC preference: their fault, with the fix", async () => {
+    rpc.userRpc = true;
+    const result = (await bundleBeforeSending()) as StepResult & {
+      broadcastAttempted?: boolean;
+    };
+
+    expect(result.success).toBe(false);
+    expect(result.broadcastAttempted).toBe(false);
+    expect(result.error).toContain(
+      "Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address"
+    );
+    expect(result.errorClass).toBe(ExecutionErrorType.USER);
+    expect(classified(result).errorType).toBe(ExecutionErrorType.USER);
+  });
+
+  it("a platform URL declares no class", async () => {
+    rpc.userRpc = false;
+    const result = (await bundleBeforeSending()) as StepResult;
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("redirect");
+    expect(result.errorClass).toBeUndefined();
+  });
 });

@@ -1,9 +1,9 @@
 import "server-only";
-import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { db } from "@/lib/db";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";

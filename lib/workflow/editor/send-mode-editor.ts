@@ -68,7 +68,9 @@ function networkChangeNotice(mode: SendMode, chain: EditorChain): string {
     return `${prefix} bundles are not turned on for this organization.`;
   }
   const lacks =
-    mode === SEND_MODE.BUNDLE ? "no block builders" : "no private relay";
+    mode === SEND_MODE.BUNDLE
+      ? "no block builders that take bundles"
+      : "no private relay";
   return `${prefix} ${chain.name ?? "this network"} has ${lacks}.`;
 }
 

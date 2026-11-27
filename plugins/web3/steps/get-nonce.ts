@@ -1,6 +1,6 @@
 import "server-only";
-import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";

@@ -413,7 +413,7 @@ describe("warnings and changes around Bundle", () => {
       sendMode: "transaction",
     });
     expect(change.notice).toBe(
-      "Send as changed to Normal transaction (public mempool): Base has no block builders."
+      "Send as changed to Normal transaction (public mempool): Base has no block builders that take bundles."
     );
   });
 

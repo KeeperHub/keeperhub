@@ -232,7 +232,7 @@ Create, update, import, duplicate (also Use template and the MCP `deploy_templat
 - bundles are not turned on for your organization (`bundleSendEnabled` in [Get Organization Features](#get-organization-features)); a step already saved as a bundle keeps saving;
 - `web3Connection` is a Safe (`"safe:..."`);
 - `bundleBlocks` is not a whole number from 1 to 5, or `bundleTipIncreasePercent` not one from 0 to 100;
-- the network has no block builders, or `bundleBuilders` names one the network does not list (see `bundleBuilders` in the [Chains API](/api/chains));
+- the network has no block builders that take bundles, or `bundleBuilders` names one the network does not list (see `bundleBuilders` in the [Chains API](/api/chains));
 - the step sits inside a For Each that is itself inside another For Each.
 
 A step whose action, network, Send as keys and bundle settings are unchanged since it was saved passes, except for the nested For Each rule, which is checked on every save. The MCP `validate_workflow` tool reports the same problems as `invalid-send-mode` errors; it checks bundle steps even when unchanged since they were saved, as a run checks them (for `bundleBuilders`, only when the network lists none of the step's builders, since a run sends to the ones still listed), while other steps saved before pass as they do on save.
@@ -318,7 +318,7 @@ POST /api/workflows/{workflowId}/duplicate
 
 Creates a copy of an existing workflow. Use template in the app and the MCP `deploy_template` tool call this too.
 
-The copy's steps are checked for your organization with the [Send as checks on save](#send-as-checks-on-save). A Write Contract step sent as a bundle that your organization cannot use (bundles are not turned on for it, or the network has no block builders, or lists none of the step's builders) refuses the whole copy: the answer is `422` with `error: "INVALID_ACTION_CONFIG"`, a `message` that starts "This workflow cannot be copied into your organization.", names each refused step and why, and ends "Nothing was copied.", and the steps in `invalidFields`. No workflow is created.
+The copy's steps are checked for your organization with the [Send as checks on save](#send-as-checks-on-save). A Write Contract step sent as a bundle that your organization cannot use (bundles are not turned on for it, or the network has no block builders that take bundles, or lists none of the step's builders) refuses the whole copy: the answer is `422` with `error: "INVALID_ACTION_CONFIG"`, a `message` that starts "This workflow cannot be copied into your organization.", names each refused step and why, and ends "Nothing was copied.", and the steps in `invalidFields`. No workflow is created.
 
 ## Download Workflow
 

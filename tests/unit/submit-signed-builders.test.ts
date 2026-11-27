@@ -2,6 +2,7 @@ import { ethers } from "ethers";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/sleep", () => ({ sleep: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/logging", () => ({
   ErrorCategory: { NETWORK_RPC: "network_rpc" },
   logSystemError: vi.fn(),
@@ -20,6 +21,8 @@ import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
 import {
   isPreBroadcastNetworkError,
+  NonceConflictError,
+  type SendReport,
   submitSignedTransactionWithFailover,
 } from "@/lib/web3/submit-signed";
 
@@ -82,6 +85,7 @@ function makeManager(
         await op(active)
     ),
     getFallbackProvider: vi.fn().mockReturnValue(options.fallback ?? null),
+    getProvider: () => active,
     getBroadcastRpcUrls: () => [],
     isPrivateRelayProvider: () => options.relay === true,
     hasPrivateRelayPrimary: () => options.relay === true,
@@ -137,7 +141,11 @@ describe("submitSignedTransactionWithFailover broadcast info and builders", () =
       { builderRpcUrls: BUILDERS }
     );
 
-    expect(mockBroadcastToBuilders).toHaveBeenCalledWith(SIGNED_HEX, BUILDERS);
+    expect(mockBroadcastToBuilders).toHaveBeenCalledWith(
+      SIGNED_HEX,
+      HASH,
+      BUILDERS
+    );
     expect(fake.sendRaw).toHaveBeenCalledWith(SIGNED_HEX);
     expect(result.hash).toBe(HASH);
     expect(result.broadcast?.builders).toEqual([
@@ -211,4 +219,140 @@ describe("submitSignedTransactionWithFailover broadcast info and builders", () =
     expect(error).toBeInstanceOf(OnChainPendingError);
     expect((error as OnChainPendingError).transactionHash).toBe(HASH);
   });
+
+  it("keeps the builders in the result when the RPC refused but later sees the transaction", async () => {
+    const fake = {
+      sendRaw: vi.fn().mockRejectedValue(refused()),
+      getTransaction: vi.fn().mockResolvedValue({ hash: HASH }),
+    };
+    mockBroadcastToBuilders.mockResolvedValue([
+      { name: "titan", accepted: true },
+      { name: "beaver", accepted: false, error: "busy" },
+    ]);
+    const report: SendReport = {};
+
+    const result = await submitSignedTransactionWithFailover(
+      makeSigner(),
+      TX_REQUEST,
+      makeManager(asProvider(fake)),
+      report,
+      { builderRpcUrls: BUILDERS }
+    );
+
+    expect(result.hash).toBe(HASH);
+    expect(result.broadcast).toEqual({
+      builders: [
+        { name: "titan", accepted: true },
+        { name: "beaver", accepted: false, error: "busy" },
+      ],
+    });
+    expect(report.route).toBe("public");
+  });
+});
+
+// Every managed endpoint refused the connection: the request never left.
+function refused(): Error {
+  return Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:8545"), {
+    code: "ECONNREFUSED",
+  });
+}
+
+async function sendWith(
+  sendError: Error,
+  builders: { name: string; accepted: boolean | null; error?: string }[],
+  report: SendReport = {}
+): Promise<unknown> {
+  const fake = {
+    sendRaw: vi.fn().mockRejectedValue(sendError),
+    getTransactionReceipt: vi.fn().mockResolvedValue(null),
+    getTransaction: vi.fn().mockResolvedValue(null),
+  };
+  mockBroadcastToBuilders.mockResolvedValue(builders);
+  return await submitSignedTransactionWithFailover(
+    makeSigner(),
+    TX_REQUEST,
+    makeManager(asProvider(fake)),
+    report,
+    { builderRpcUrls: BUILDERS }
+  ).catch((caught: unknown) => caught);
+}
+
+const pendingHash = (error: unknown): string | undefined =>
+  error instanceof OnChainPendingError ? error.transactionHash : undefined;
+
+describe("the outcome when the RPC failed and builders were sent the bytes", () => {
+  beforeEach(() => {
+    mockBroadcastToBuilders.mockReset();
+  });
+
+  it("a builder with no clear answer (timeout after taking the bytes) keeps the hash when the RPC was never reached", async () => {
+    const report: SendReport = {};
+    const error = await sendWith(
+      refused(),
+      [{ name: "titan", accepted: null, error: "aborted due to timeout" }],
+      report
+    );
+
+    expect(isPreBroadcastNetworkError(error)).toBe(false);
+    expect(pendingHash(error)).toBe(HASH);
+    // Nothing public may hold it: no route.
+    expect(report.route).toBeUndefined();
+  });
+
+  it("builders that refused leave a refused RPC as never sent", async () => {
+    const error = await sendWith(refused(), [
+      { name: "titan", accepted: false, error: "rejected" },
+    ]);
+
+    expect(isPreBroadcastNetworkError(error)).toBe(true);
+  });
+
+  it("a builder that took our hash keeps it, with no public route, when the RPC never sees it", async () => {
+    const report: SendReport = {};
+    const error = await sendWith(
+      refused(),
+      [{ name: "titan", accepted: true }],
+      report
+    );
+
+    expect(pendingHash(error)).toBe(HASH);
+    expect(report.route).toBeUndefined();
+  });
+
+  it("a nonce already used, with a builder that gave no clear answer, stays a nonce conflict", async () => {
+    const error = await sendWith(new Error("nonce too low"), [
+      { name: "titan", accepted: null, error: "HTTP 503" },
+    ]);
+
+    expect(error).toBeInstanceOf(NonceConflictError);
+  });
+
+  it("a nonce already used, with a builder that took our hash, keeps the hash", async () => {
+    const error = await sendWith(new Error("nonce too low"), [
+      { name: "titan", accepted: true },
+    ]);
+
+    expect(error).not.toBeInstanceOf(NonceConflictError);
+    expect(pendingHash(error)).toBe(HASH);
+  });
+
+  it.each([
+    "insufficient funds for gas * price + value",
+    "max fee per gas less than block base fee",
+    "invalid transaction",
+  ])(
+    "an RPC that answered %j ends as it does without builders when a builder gave no clear answer",
+    async (message) => {
+      const withBuilder = await sendWith(new Error(message), [
+        { name: "titan", accepted: null, error: "HTTP 503" },
+      ]);
+      const withRefusingBuilder = await sendWith(new Error(message), [
+        { name: "titan", accepted: false, error: "rejected" },
+      ]);
+
+      expect(pendingHash(withBuilder)).toBe(HASH);
+      expect(pendingHash(withRefusingBuilder)).toBe(HASH);
+      expect(isPreBroadcastNetworkError(withBuilder)).toBe(false);
+    }
+  );
 });

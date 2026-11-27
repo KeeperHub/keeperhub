@@ -1,7 +1,7 @@
 import "server-only";
-import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { ethers } from "ethers";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { declaredErrorClass, type RpcProviderManager } from "@/lib/rpc/providers";

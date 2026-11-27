@@ -837,7 +837,7 @@ export function getUsePrivateMempoolRpc(
 export type BuilderRpcUrls = Record<string, string>;
 
 /** `bundle` takes eth_sendBundle, `raw` takes eth_sendRawTransaction. */
-export type BuilderMethod = "bundle" | "raw";
+type BuilderMethod = "bundle" | "raw";
 
 /** One builder, as stored in chains.builder_rpc_urls (an ordered array). */
 export type ChainBuilder = {
@@ -850,7 +850,7 @@ export type ChainBuilder = {
  * A chain-config builderRpcUrls value: { label: url | { url, methods } }, in
  * order. A plain URL is raw only (the original form).
  */
-export type BuilderRpcConfigValue = Record<
+type BuilderRpcConfigValue = Record<
   string,
   string | { url: string; methods?: BuilderMethod[] }
 >;
@@ -859,10 +859,10 @@ const BUILDER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const BUILDER_METHODS: readonly BuilderMethod[] = ["bundle", "raw"];
 
 // Bundles send to at most this many of a chain's builders.
-export const MAX_CHAIN_BUILDERS = 16;
+const MAX_CHAIN_BUILDERS = 16;
 
 // Ethereum mainnet bundle builders (eth_sendBundle only). A chain-config
-// builderRpcUrls entry replaces a label in place; an empty URL removes it.
+// builderRpcUrls entry overrides a label in place; an empty URL removes it.
 export const ETH_MAINNET_BUILDERS: readonly ChainBuilder[] = [
   ["flashbots", "https://relay.flashbots.net"],
   ["buildernet", "https://rpc.buildernet.org"],
@@ -922,7 +922,7 @@ function toChainBuilder(
  * object: valid lowercase label, https URL (or http to a local node), at
  * least one method, first entry per label.
  */
-export function parseChainBuilders(value: unknown): ChainBuilder[] {
+function parseChainBuilders(value: unknown): ChainBuilder[] {
   const seen = new Set<string>();
   const builders: ChainBuilder[] = [];
   for (const [label, entry] of builderEntries(value)) {
@@ -960,10 +960,20 @@ export function normalizeBuilderRpcUrls(
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+// A plain URL (no methods) on a default label keeps the default's methods
+// and adds raw; explicit methods replace them.
+function overDefault(builder: ChainBuilder, entry: unknown): unknown {
+  const fields = typeof entry === "string" ? { url: entry } : entry;
+  if (!isPlainRecord(fields) || fields.methods !== undefined) {
+    return entry;
+  }
+  return { ...fields, methods: [...new Set([...builder.methods, "raw"])] };
+}
+
 /**
  * The builders to store for a chain: the code defaults in their order, each
- * replaced in place (or removed, by an empty URL) by a chain-config entry of
- * the same label, then the other chain-config entries in config order.
+ * overridden in place (or removed, by an empty URL) by a chain-config entry
+ * of the same label, then the other chain-config entries in config order.
  */
 export function readChainBuilders(
   options: ChainConfigLookupOptions & { defaults?: readonly ChainBuilder[] }
@@ -976,7 +986,9 @@ export function readChainBuilders(
   const defaults = options.defaults ?? [];
   const merged: [string, unknown][] = defaults.map((builder) => [
     builder.label,
-    configured.has(builder.label) ? configured.get(builder.label) : builder,
+    configured.has(builder.label)
+      ? overDefault(builder, configured.get(builder.label))
+      : builder,
   ]);
   const defaultLabels = new Set(defaults.map((builder) => builder.label));
   for (const [label, entry] of configured) {
@@ -990,14 +1002,6 @@ export function readChainBuilders(
       isPlainRecord(entry) ? { ...entry, label } : { label, url: entry }
     )
   );
-}
-
-// Raw-capable builder endpoints from chain-config JSON over the code
-// defaults, with no env-var fallback.
-export function getBuilderRpcUrls(
-  options: ChainConfigLookupOptions & { defaults?: readonly ChainBuilder[] }
-): BuilderRpcUrls | undefined {
-  return normalizeBuilderRpcUrls(readChainBuilders(options));
 }
 
 /**

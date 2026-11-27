@@ -12,7 +12,7 @@ import {
   logSystemError,
   logUserError,
 } from "@/lib/logging";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { declaredErrorClass, type RpcProviderManager } from "@/lib/rpc/providers";
 import { SIGNER_MODE, type SignerMode } from "@/lib/safe/signer-resolver";
 import { getErrorMessage } from "@/lib/utils";
 import {
@@ -452,6 +452,8 @@ function failureOf(
       ? `The target blocks' times could not be predicted on this network (the RPC may be lagging), so nothing was sent. Run it again, or set Send as to Normal transaction (sendMode: "${SEND_MODE.TRANSACTION}").`
       : `${message}${simulation ? ` (simulated as of target block ${simulation.assumedBlockNumber}, timestamp ${simulation.assumedTimestamp})` : ""}`,
     ...(simulation && { simulation }),
+    // A redirecting RPC preference of the user's stays their fault behind this text.
+    ...declaredErrorClass(error),
     broadcastAttempted: false,
     ...(rejection.kind === "unknown" ? {} : { rejection }),
   };

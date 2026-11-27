@@ -1,11 +1,11 @@
 import "server-only";
-import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import type { VersionedTransactionResponse } from "@solana/web3.js";
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { db } from "@/lib/db";
 import { explorerConfigs } from "@/lib/db/schema";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getAddressUrl, getTransactionUrl } from "@/lib/explorer";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {

@@ -3,9 +3,11 @@ import { broadcastTransactionHash } from "@/lib/web3/onchain-revert";
 
 import { ethers } from "ethers";
 import type { Hex } from "viem";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { declaredErrorClass } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import {
@@ -56,6 +58,7 @@ export type TransferWithMemoResult =
       transactionHash?: string;
       chainId?: number;
       broadcastAttempted?: boolean;
+      errorClass?: ExecutionErrorType;
     };
 
 async function stepHandlerImpl(input: TransferWithMemoInput): Promise<TransferWithMemoResult> {
@@ -165,6 +168,7 @@ async function stepHandlerImpl(input: TransferWithMemoInput): Promise<TransferWi
     return {
       success: false,
       error: getErrorMessage(error),
+      ...declaredErrorClass(error),
       broadcastAttempted: transactionHash ? true : false,
       ...(transactionHash ? { transactionHash, chainId } : {}),
     };

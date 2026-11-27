@@ -1,13 +1,13 @@
 import "server-only";
-import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import { declaredErrorClass } from "@/lib/rpc/providers";
 
 import { ethers } from "ethers";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { rawToUi, resolveForDisplay } from "@/lib/web3/ui-multiplier";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { declaredErrorClass } from "@/lib/rpc/providers";
 import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";

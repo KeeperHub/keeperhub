@@ -1,6 +1,6 @@
 import "server-only";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
 import { bundleCapableBuilders } from "@/lib/rpc/rpc-config";
@@ -8,14 +8,14 @@ import { bundleCapableBuilders } from "@/lib/rpc/rpc-config";
 /** A builder a bundle goes to; the URL never leaves the server. */
 export type BuilderEndpoint = { name: string; url: string };
 
-/** The network's bundle-capable builders (chains.builder_rpc_urls), in order. */
+/** An enabled network's bundle-capable builders (chains.builder_rpc_urls), in order. */
 export async function loadChainBuilders(
   chainId: number
 ): Promise<BuilderEndpoint[]> {
   const [row] = await db
     .select({ builderRpcUrls: chains.builderRpcUrls })
     .from(chains)
-    .where(eq(chains.chainId, chainId))
+    .where(and(eq(chains.chainId, chainId), eq(chains.isEnabled, true)))
     .limit(1);
   return bundleCapableBuilders(row?.builderRpcUrls).map(({ label, url }) => ({
     name: label,

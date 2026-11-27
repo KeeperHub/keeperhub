@@ -9,7 +9,7 @@ import {
   broadcastToBuilders,
 } from "@/lib/web3/builder-broadcast";
 import { broadcastToExtraRpcs } from "@/lib/web3/extra-broadcast";
-import { isDuplicateMessage } from "@/lib/web3/json-rpc-answer";
+import { type Delivery, isDuplicateMessage } from "@/lib/web3/json-rpc-answer";
 import {
   isOnChainPendingError,
   OnChainPendingError,
@@ -39,9 +39,9 @@ export function sendReportFields<Route extends string = SendRoute>(report: {
 
 /** Where and when the signed transaction went out. Labels only, never URLs. */
 export type BroadcastInfo = {
-  // ISO time the regular RPC accepted the transaction.
-  broadcastAt: string;
-  via: "primary" | "fallback";
+  // ISO time the regular RPC accepted the transaction; absent when only a builder took it.
+  broadcastAt?: string;
+  via?: "primary" | "fallback";
   // Block builders that were also sent the transaction, when any were.
   builders?: BuilderBroadcastResult[];
 };
@@ -190,25 +190,28 @@ export async function submitSignedTransactionWithFailover(
     expectedHash,
     chainId
   );
-  // Only with extras: started before the send, as ethers does, so wait() can
-  // spot a replacement on a response we looked up. Without extras, as before.
-  const startBlock =
-    extraUrls.length > 0
-      ? currentBlockNumber(rpcManager.getProvider())
-      : undefined;
-  const attempts: Attempt[] = [];
-
   // Started before the regular broadcast so neither waits for the other.
   // Never beside a private relay send, whatever the caller passed.
   const builderSends =
     options.builderRpcUrls && !hasRelayPrimary(rpcManager)
-      ? broadcastToBuilders(signedHex, options.builderRpcUrls)
+      ? broadcastToBuilders(signedHex, expectedHash, options.builderRpcUrls)
       : undefined;
+  // Only when another endpoint may take the bytes: started before the send so
+  // wait() can spot a replacement on a response we looked up.
+  const startBlock =
+    extraUrls.length > 0 || builderSends
+      ? currentBlockNumber(rpcManager.getProvider())
+      : undefined;
+  const attempts: Attempt[] = [];
+  const routeOf =
+    (extraDeliveries: readonly Delivery[]) =>
+    (found: boolean): SendRoute | undefined =>
+      routeFromEvidence(rpcManager, attempts, extraDeliveries, found);
 
   try {
     let via: BroadcastInfo["via"] = "primary";
-    const { response, route, provider } = await rpcManager.executeWithFailover(
-      async (provider) => {
+    const { response, route, sentAtBlock } =
+      await rpcManager.executeWithFailover(async (provider) => {
         via = isFallbackProvider(rpcManager, provider) ? "fallback" : "primary";
         const attempt: Attempt = {
           route: rpcManager.isPrivateRelayProvider(provider)
@@ -217,6 +220,9 @@ export async function submitSignedTransactionWithFailover(
           delivery: "unknown",
         };
         attempts.push(attempt);
+        // Started with the send on the same provider; caught and bounded, so
+        // it can never fail the send.
+        const blockRead = currentBlockNumber(provider);
         try {
           const sent = await sendRawTransaction(
             provider,
@@ -225,7 +231,11 @@ export async function submitSignedTransactionWithFailover(
             chainId
           );
           attempt.delivery = "accepted";
-          return { response: sent, route: attempt.route, provider };
+          return {
+            response: sent,
+            route: attempt.route,
+            sentAtBlock: blockRead,
+          };
         } catch (error) {
           attempt.delivery = deliveryOfBroadcastError(
             error,
@@ -235,13 +245,9 @@ export async function submitSignedTransactionWithFailover(
           );
           throw error;
         }
-      },
-      "write-broadcast"
-    );
+      }, "write-broadcast");
     report.route = route;
     const broadcastAt = new Date().toISOString();
-    // Read after the send and outside its failover: it can never fail a delivered send.
-    const sentAtBlock = currentBlockNumber(provider);
     const builders = builderSends ? await builderSends : undefined;
     return {
       hash: response.hash,
@@ -249,22 +255,32 @@ export async function submitSignedTransactionWithFailover(
       broadcast: { broadcastAt, via, ...(builders ? { builders } : {}) },
     };
   } catch (err) {
-    // A builder that took the bytes may include them: never "not sent".
-    const builderTook = builderSends
-      ? (await builderSends).some((builder) => builder.accepted)
-      : false;
-    if (builderTook || (await extras.anyAccepted)) {
-      report.route = "public";
-      return await confirmExtraAccepted(
-        rpcManager,
-        expectedHash,
-        err,
-        startBlock
-      );
+    const builders = builderSends ? await builderSends : [];
+    const extraTook = await extras.anyAccepted;
+    // A builder that answered with our hash holds the bytes in its pool,
+    // whatever the RPC said: pending with the hash, never "not sent".
+    const builderTook = builders.some((builder) => builder.accepted === true);
+    if (extraTook || builderTook) {
+      // An extra is public; a builder alone only once a public endpoint may hold it.
+      const routeIf = extraTook
+        ? (): SendRoute => "public"
+        : routeOf(await extras.deliveries);
+      try {
+        const result = await confirmExtraAccepted(
+          rpcManager,
+          expectedHash,
+          err,
+          startBlock
+        );
+        report.route = routeIf(true);
+        return builderTook ? { ...result, broadcast: { builders } } : result;
+      } catch (confirmError) {
+        report.route = routeIf(false);
+        throw confirmError;
+      }
     }
     const extraDeliveries = await extras.deliveries;
-    const routeIf = (found: boolean): SendRoute | undefined =>
-      routeFromEvidence(rpcManager, attempts, extraDeliveries, found);
+    const routeIf = routeOf(extraDeliveries);
     try {
       const result = await reconcile(
         rpcManager,
@@ -272,12 +288,16 @@ export async function submitSignedTransactionWithFailover(
         populated.nonce,
         err,
         // An extra, or an earlier managed attempt without a clear answer (a
-        // timeout or a server error, not a refused connection), may hold our bytes.
+        // timeout or a server error, not a refused connection), may hold our
+        // bytes. So may a builder with no clear answer, unless the RPC turned
+        // the transaction down for good (its nonce is taken).
         extraDeliveries.includes("unknown") ||
-          attempts.some((attempt) => attempt.delivery === "unknown")
+          attempts.some((attempt) => attempt.delivery === "unknown") ||
+          (builders.some((builder) => builder.accepted === null) &&
+            !isNonceConflictError(err))
       );
       report.route = routeIf(true);
-      // Mined already, or no start block (no extras): nothing to watch for.
+      // Mined already, or no start block (no extras or builders): nothing to watch for.
       return result.preExistingReceipt || startBlock === undefined
         ? result
         : {

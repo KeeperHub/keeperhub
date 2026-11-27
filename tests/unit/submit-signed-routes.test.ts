@@ -466,7 +466,7 @@ describe("broadcast to extra RPCs", () => {
     ).toHaveBeenCalledTimes(3);
   });
 
-  it("leaves a failed send without extras as before: no block read, no wrap", async () => {
+  it("leaves a failed send without extras as before: no wrap", async () => {
     const seen = seenTx();
     const { blockReads } = stubManaged({
       broadcast: () => Promise.reject(new Error("reply lost")),
@@ -476,7 +476,8 @@ describe("broadcast to extra RPCs", () => {
     const out = await send(manager({}));
 
     expect(out.result).toMatchObject({ hash: HASH, response: seen });
-    expect(blockReads).not.toHaveBeenCalled();
+    // Only the read started with the send; it never decides the outcome.
+    expect(blockReads).toHaveBeenCalledTimes(1);
     expect(seen.replaceableTransaction).not.toHaveBeenCalled();
   });
 

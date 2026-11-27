@@ -78,7 +78,10 @@ const urlOf = (server: Server): string =>
   `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
 /** A backend that takes the send and has not seen the transaction yet. */
-async function healthyBackend(sends: string[]): Promise<string> {
+async function healthyBackend(
+  sends: string[],
+  answerHash: (signedHex: string) => string = ethers.keccak256
+): Promise<string> {
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => {
@@ -93,7 +96,7 @@ async function healthyBackend(sends: string[]): Promise<string> {
       let result: unknown = null;
       if (method === "eth_sendRawTransaction") {
         sends.push(params[0]);
-        result = ethers.keccak256(params[0]);
+        result = answerHash(params[0]);
       } else if (method === "eth_blockNumber") {
         result = "0x10";
       } else if (method === "eth_chainId") {
@@ -184,10 +187,14 @@ describe("submitSignedTransactionWithFailover over the real transport", () => {
     expect(report.route).toBeUndefined();
   });
 
-  it("returns a response wait() can use, with the block read after the send", async () => {
+  it("returns a response wait() can use, watching for a replacement from the block read with the send", async () => {
     const sends: string[] = [];
     const healthy = await healthyBackend(sends);
     balancer.pick = () => healthy;
+    const replaceable = vi.spyOn(
+      ethers.TransactionResponse.prototype,
+      "replaceableTransaction"
+    );
 
     const out = await send();
 
@@ -196,5 +203,26 @@ describe("submitSignedTransactionWithFailover over the real transport", () => {
     expect(response?.hash).toBe(HASH);
     expect(response?.nonce).toBe(7);
     expect(sends).toEqual([SIGNED_HEX]);
+    // The backend's block 0x10, read beside the send on the provider that took it.
+    expect(replaceable).toHaveBeenCalledWith(16);
+    replaceable.mockRestore();
+  });
+
+  it("keeps the hash when the send is answered with another transaction hash", async () => {
+    const sends: string[] = [];
+    const healthy = await healthyBackend(sends, () => `0x${"cd".repeat(32)}`);
+    balancer.pick = () => healthy;
+    const report: SendReport = {};
+
+    const out = await send(report);
+
+    // Not a clear acceptance, and not a refusal: the bytes may be out.
+    expect(isPreBroadcastNetworkError(out.error)).toBe(false);
+    expect(isOnChainPendingError(out.error)).toBe(true);
+    expect((out.error as { transactionHash?: string }).transactionHash).toBe(
+      HASH
+    );
+    expect(sends.length).toBeGreaterThan(0);
+    expect(report.route).toBe("public");
   });
 });

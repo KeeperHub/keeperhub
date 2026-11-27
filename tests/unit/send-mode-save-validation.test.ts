@@ -810,7 +810,7 @@ describe("Send as Bundle at save", () => {
     enable();
     const result = await check([bundle({ network: "8453" })]);
     expect(result.issues[0].message).toBe(
-      'Send as: Bundle (sendMode "bundle") is not available on chain 8453: it has no block builders. Set Send as to Normal transaction (sendMode: "transaction").'
+      'Send as: Bundle (sendMode "bundle") is not available on chain 8453: it has no block builders that take bundles. Set Send as to Normal transaction (sendMode: "transaction").'
     );
   });
 
@@ -826,7 +826,7 @@ describe("Send as Bundle at save", () => {
     ];
     const result = await check([bundle({ network: "8453" })]);
     expect(result.issues[0].message).toContain(
-      "is not available on Base: it has no block builders."
+      "is not available on Base: it has no block builders that take bundles."
     );
   });
 
@@ -895,7 +895,7 @@ describe("Send as Bundle at save", () => {
     ]);
     enable();
     expect(await copy([bundle({ network: "8453" })])).toEqual([
-      'Send as: Bundle (sendMode "bundle") cannot run on chain 8453: it has no block builders.',
+      'Send as: Bundle (sendMode "bundle") cannot run on chain 8453: it has no block builders that take bundles.',
     ]);
     expect(await copy([bundle({ bundleBuilders: ["gone"] })])).toEqual([
       'Send as: Bundle (sendMode "bundle") cannot run: chain 1 lists none of its builders ("gone").',

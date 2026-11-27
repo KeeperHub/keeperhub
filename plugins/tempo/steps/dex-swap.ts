@@ -2,9 +2,11 @@ import "server-only";
 import { broadcastTransactionHash } from "@/lib/web3/onchain-revert";
 
 import { ethers } from "ethers";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { declaredErrorClass } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import {
@@ -56,6 +58,7 @@ export type DexSwapResult =
       transactionHash?: string;
       chainId?: number;
       broadcastAttempted?: boolean;
+      errorClass?: ExecutionErrorType;
     };
 
 function parseSlippageBps(raw: string | number | undefined): number | null {
@@ -189,6 +192,7 @@ async function stepHandlerImpl(input: DexSwapInput): Promise<DexSwapResult> {
     return {
       success: false,
       error: getErrorMessage(error),
+      ...declaredErrorClass(error),
       broadcastAttempted: transactionHash ? true : false,
       ...(transactionHash ? { transactionHash, chainId } : {}),
     };

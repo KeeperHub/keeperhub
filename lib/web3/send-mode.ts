@@ -107,7 +107,7 @@ export const SEND_MODE_OPTIONS: readonly SendModeOption[] = [
     unavailableNotice: (chainName, _fallsBack, chain) =>
       chain?.bundlesEnabled === false
         ? "Bundles are not turned on for this organization, so this step fails before sending."
-        : `${chainName} has no block builders, so this step fails before sending.`,
+        : `${chainName} has no block builders that take bundles, so this step fails before sending.`,
   },
 ];
 

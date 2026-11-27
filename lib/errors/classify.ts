@@ -334,9 +334,11 @@ const RULES: readonly Rule[] = [
   })),
 
   // User-config: the user's own RPC preference redirected (never followed).
-  // The bare error only; a step that wraps it passes its errorClass instead.
+  // Steps pass its errorClass; this is for paths that classify by text alone.
+  // Anchored to the error or a known step wrapper, so quoted text cannot match.
   {
-    pattern: /^Your RPC preference for .+ answered with a redirect/i,
+    pattern:
+      /^(?:(?:Failed to check (?:balance|token balance|allowance)|Failed to fetch transaction|Failed to read nonce|Failed to read token metadata(?: or balance)?|Event query failed|Multicall batch \d+\/\d+ failed):\s*)?Your RPC preference for .+ answered with a redirect/i,
     errorCategory: ErrorCategory.CONFIGURATION,
     errorType: ExecutionErrorType.USER,
     code: null,

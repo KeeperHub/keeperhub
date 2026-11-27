@@ -328,8 +328,8 @@ function bundleCandidateIssue(
       node,
       mode,
       candidate.copy
-        ? `${SET_TO_BUNDLE} cannot run on ${networkName(chainId, row)}: it has no block builders.`
-        : `${SET_TO_BUNDLE} is not available on ${networkName(chainId, row)}: it has no block builders. ${USE_NORMAL_HINT}`
+        ? `${SET_TO_BUNDLE} cannot run on ${networkName(chainId, row)}: it has no block builders that take bundles.`
+        : `${SET_TO_BUNDLE} is not available on ${networkName(chainId, row)}: it has no block builders that take bundles. ${USE_NORMAL_HINT}`
     );
   }
   const listed = row?.bundleBuilders ?? [];

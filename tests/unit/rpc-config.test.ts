@@ -13,7 +13,6 @@ import {
   CHAIN_CONFIG,
   cleanBroadcastRpcUrls,
   ETH_MAINNET_BUILDERS,
-  getBuilderRpcUrls,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrl,
@@ -21,7 +20,6 @@ import {
   getWssUrl,
   normalizeBuilderRpcUrls,
   PUBLIC_RPCS,
-  parseChainBuilders,
   parseRpcConfig,
   parseRpcConfigWithDetails,
   RPC_CONFIG_GZIP_PREFIX,
@@ -1290,6 +1288,23 @@ describe("readBroadcastRpcUrls / cleanBroadcastRpcUrls", () => {
   });
 });
 
+// The builders a chain-config builderRpcUrls value gives a chain without defaults.
+function parseChainBuilders(value: unknown) {
+  return readChainBuilders({
+    rpcConfig: {
+      x: { builderRpcUrls: value as RpcConfig[string]["builderRpcUrls"] },
+    },
+    jsonKey: "x",
+  });
+}
+
+// Raw-capable builder URLs for a chain, over the given defaults.
+function getBuilderRpcUrls(
+  options: Parameters<typeof readChainBuilders>[0]
+): ReturnType<typeof normalizeBuilderRpcUrls> {
+  return normalizeBuilderRpcUrls(readChainBuilders(options));
+}
+
 describe("builder methods, defaults and order", () => {
   const MAINNET_LABELS = [
     "flashbots",
@@ -1386,6 +1401,40 @@ describe("builder methods, defaults and order", () => {
         defaults: ETH_MAINNET_BUILDERS,
       })
     ).toBeUndefined();
+  });
+
+  it("a plain URL on a default label keeps it for bundles and adds raw; explicit methods replace it", () => {
+    const rpcConfig: RpcConfig = {
+      "eth-mainnet": {
+        builderRpcUrls: {
+          titan: "https://titan-raw.example",
+          quasar: { url: "https://quasar-raw.example" },
+          btcs: { url: "https://btcs-raw.example", methods: ["raw"] },
+        },
+      },
+    };
+    const builders = readChainBuilders({
+      rpcConfig,
+      jsonKey: "eth-mainnet",
+      defaults: ETH_MAINNET_BUILDERS,
+    });
+    const byLabel = new Map(builders.map((b) => [b.label, b]));
+    expect(byLabel.get("titan")).toEqual({
+      label: "titan",
+      url: "https://titan-raw.example",
+      methods: ["bundle", "raw"],
+    });
+    expect(byLabel.get("quasar")?.methods).toEqual(["bundle", "raw"]);
+    expect(byLabel.get("btcs")?.methods).toEqual(["raw"]);
+    // Order unchanged; btcs leaves bundles only because its methods say so.
+    expect(builderLabels(builders)).toEqual(
+      MAINNET_LABELS.filter((label) => label !== "btcs")
+    );
+    expect(normalizeBuilderRpcUrls(builders)).toEqual({
+      titan: "https://titan-raw.example",
+      quasar: "https://quasar-raw.example",
+      btcs: "https://btcs-raw.example",
+    });
   });
 
   it("replaces a default in place, removes one with an empty URL, appends the rest in config order", () => {

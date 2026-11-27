@@ -252,7 +252,7 @@ export function simulationOutput(): OutputField {
 export function broadcastOutput(): OutputField {
   return {
     description:
-      "When and how the transaction was sent: { broadcastAt (ISO time the RPC accepted it), via (primary or fallback RPC), builders? }. builders is present only with Next block on a network with block builder endpoints configured: [{ name, accepted, error? }] per builder that was also sent the transaction. Absent on a failed step, on gas-sponsored or Safe sends, and on Send as Bundle (see builders).",
+      "When and how the transaction was sent: { broadcastAt (ISO time the RPC accepted it), via (primary or fallback RPC), builders? }. builders is present only with Next block on a network with block builders that take single signed transactions (none by default): [{ name, accepted, error? }] per builder that was also sent the transaction, accepted true when it answered with the transaction hash, false when it refused, null when its answer was unclear. When the RPC failed but a builder took the transaction, only builders is set. Absent on a failed step, on gas-sponsored or Safe sends, and on Send as Bundle (see builders).",
     field: "broadcast",
   };
 }

@@ -607,7 +607,9 @@ describe("/api/workflows/[workflowId]/validate", () => {
       expect(body.result.errors).toContainEqual(
         expect.objectContaining({
           code: "invalid-send-mode",
-          message: expect.stringContaining("it has no block builders"),
+          message: expect.stringContaining(
+            "it has no block builders that take bundles"
+          ),
         })
       );
     });

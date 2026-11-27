@@ -452,12 +452,39 @@ describe("classifyExecutionError", () => {
       });
     });
 
+    // Paths that classify by text alone (no errorClass) still read the step wrappers.
+    it.each([
+      "Failed to check balance:",
+      "Failed to check token balance:",
+      "Failed to check allowance:",
+      "Failed to fetch transaction:",
+      "Failed to read nonce:",
+      "Failed to read token metadata:",
+      "Failed to read token metadata or balance:",
+      "Event query failed:",
+      "Multicall batch 2/3 failed:",
+    ])("%s without a class: configuration + user", (prefix) => {
+      expect(classifyExecutionError(`${prefix} ${redirect}`)).toEqual({
+        errorCategory: ErrorCategory.CONFIGURATION,
+        errorType: "user",
+        code: null,
+      });
+    });
+
     it("does not match the phrase quoted inside another error", () => {
       const r = classifyExecutionError(
         "RPC failed on both endpoints. Primary: execution reverted: Your RPC preference for X answered with a redirect"
       );
       expect(r.errorType).toBe("system");
       expect(r.code).toBe("N-0001");
+    });
+
+    it.each([
+      "Failed to read nonce: execution reverted: Your RPC preference for X answered with a redirect",
+      "Contract failed: Event query failed: Your RPC preference for X answered with a redirect",
+      "Some step failed to check balance: Your RPC preference for X answered with a redirect",
+    ])("does not match it quoted behind a wrapper: %s", (message) => {
+      expect(classifyExecutionError(message).errorType).not.toBe("user");
     });
   });
 
