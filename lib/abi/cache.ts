@@ -16,6 +16,7 @@ import {
   RpcScopeKind,
 } from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { BoundedCache } from "@/lib/rpc/providers/bounded-cache";
 import { DAY_MS } from "@/lib/utils/duration";
 
 type AbiCacheEntry = {
@@ -67,7 +68,9 @@ type ResolveAbiResult = {
   source: "definition" | "cache" | "explorer";
 };
 
-const abiCache = new Map<string, AbiCacheEntry>();
+// Bounded: own-RPC-only organizations keep their own entries per contract.
+const ABI_CACHE_LIMIT = 5000;
+const abiCache = new BoundedCache<AbiCacheEntry>(ABI_CACHE_LIMIT);
 const CACHE_TTL_MS = DAY_MS;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY ?? "";
 
