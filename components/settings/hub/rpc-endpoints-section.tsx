@@ -21,6 +21,7 @@ import {
   AutoFallbackChange,
   AutoFallbackConfirm,
   type AutoFallbackPrompt,
+  autoFallbackConsequence,
 } from "./rpc/auto-fallback-confirm";
 import { RpcHowItWorks } from "./rpc/how-it-works";
 import {
@@ -89,6 +90,18 @@ export function RpcEndpointsSection(): React.ReactElement {
       `Chain ${chainId}`,
     [chains]
   );
+
+  const deleteDescription = [
+    "This cannot be undone. If a workflow would be left without an endpoint, the delete is refused and the affected nodes are listed.",
+    deleting?.isDefault
+      ? autoFallbackConsequence({
+          chainName: chainName(deleting.chainId),
+          ownRpcOnly: ownRpcOnlyOn(deleting.chainId),
+        })
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const report = useCallback((error: unknown, fallback: string): void => {
     if (isCoverageRefusal(error)) {
@@ -315,7 +328,7 @@ export function RpcEndpointsSection(): React.ReactElement {
           />
           <ConfirmDeleteDialog
             confirmLabel="Delete"
-            description="This cannot be undone. If a workflow would be left without an endpoint, the delete is refused and the affected nodes are listed."
+            description={deleteDescription}
             onConfirm={async () => {
               if (!deleting) {
                 return;

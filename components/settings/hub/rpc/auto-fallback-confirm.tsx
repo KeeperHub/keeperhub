@@ -41,7 +41,10 @@ const CONFIRM_LABEL: Readonly<Record<AutoFallbackChange, string>> = {
   [AutoFallbackChange.DISABLE_DEFAULT]: "Disable",
 };
 
-function consequence(prompt: AutoFallbackPrompt): string {
+/** What Auto steps on the chain do once it has no default endpoint. */
+export function autoFallbackConsequence(
+  prompt: Pick<AutoFallbackPrompt, "chainName" | "ownRpcOnly">
+): string {
   if (prompt.ownRpcOnly) {
     return `${prompt.chainName} uses your endpoints only, so steps and triggers on it set to Auto will have no endpoint and will not run. If a workflow depends on them, the change is refused and the affected steps are listed.`;
   }
@@ -72,7 +75,7 @@ export function AutoFallbackConfirm({
                 {TITLE[prompt.change](prompt)}
               </AlertDialogTitle>
               <AlertDialogDescription>
-                {consequence(prompt)}
+                {autoFallbackConsequence(prompt)}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
