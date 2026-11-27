@@ -9,18 +9,6 @@ import { orgRpcConfigFromRow } from "../org/codec";
 import type { OrgRpcConfig, OrgRpcPolicy, OrgRpcState } from "../types";
 import { EMPTY_ORG_RPC_STATE, type OrgRpcSource } from "./org-source";
 
-const DEFAULT_TTL_MS = 30_000;
-
-export type DbOrgRpcSourceOptions = {
-  ttlMs?: number;
-  now?: () => number;
-};
-
-export type CachedOrgRpcSource = OrgRpcSource & {
-  /** Drop cached state for one organization after a write in this process. */
-  invalidate(organizationId: string): void;
-};
-
 /** The organization's policy on one chain; no row means the defaults. */
 export async function loadOrgRpcPolicy(
   organizationId: string,
@@ -91,45 +79,43 @@ export async function loadOrgRpcConfigs(
   return configs;
 }
 
-function cacheKey(organizationId: string, chainId: number): string {
+function loadKey(organizationId: string, chainId: number): string {
   return `${organizationId}:${chainId}`;
 }
 
-/** Organization RPC state from the database, cached briefly per chain. */
-export function createDbOrgRpcSource(
-  options: DbOrgRpcSourceOptions = {}
-): CachedOrgRpcSource {
-  const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
-  const now = options.now ?? Date.now;
-  const cache = new Map<
-    string,
-    { at: number; organizationId: string; state: OrgRpcState }
-  >();
+async function readOrgRpcState(
+  organizationId: string,
+  chainId: number
+): Promise<OrgRpcState> {
+  const [policy, configs] = await Promise.all([
+    loadOrgRpcPolicy(organizationId, chainId),
+    loadOrgRpcConfigs(organizationId, chainId),
+  ]);
+  return configs.length === 0 && !policy.ownRpcOnly
+    ? EMPTY_ORG_RPC_STATE
+    : { policy, configs };
+}
 
+/**
+ * Organization RPC state, read fresh on every call so a change made on any
+ * instance applies everywhere at once: a stale copy could keep sending an
+ * own-RPC-only chain to KeeperHub, or keep using a deleted config's URLs.
+ * Concurrent reads of one organization and chain share a single query.
+ */
+export function createDbOrgRpcSource(): OrgRpcSource {
+  const inFlight = new Map<string, Promise<OrgRpcState>>();
   return {
-    async load(organizationId: string, chainId: number): Promise<OrgRpcState> {
-      const key = cacheKey(organizationId, chainId);
-      const hit = cache.get(key);
-      if (hit && now() - hit.at < ttlMs) {
-        return hit.state;
+    load(organizationId: string, chainId: number): Promise<OrgRpcState> {
+      const key = loadKey(organizationId, chainId);
+      const pending = inFlight.get(key);
+      if (pending) {
+        return pending;
       }
-      const [policy, configs] = await Promise.all([
-        loadOrgRpcPolicy(organizationId, chainId),
-        loadOrgRpcConfigs(organizationId, chainId),
-      ]);
-      const state: OrgRpcState =
-        configs.length === 0 && !policy.ownRpcOnly
-          ? EMPTY_ORG_RPC_STATE
-          : { policy, configs };
-      cache.set(key, { at: now(), organizationId, state });
-      return state;
-    },
-    invalidate(organizationId: string): void {
-      for (const [key, entry] of cache) {
-        if (entry.organizationId === organizationId) {
-          cache.delete(key);
-        }
-      }
+      const next = readOrgRpcState(organizationId, chainId).finally(() => {
+        inFlight.delete(key);
+      });
+      inFlight.set(key, next);
+      return next;
     },
   };
 }

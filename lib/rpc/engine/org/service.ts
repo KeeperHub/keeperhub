@@ -13,7 +13,7 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { actionUsesRpc } from "@/lib/workflow/rpc-selection-field";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import { findActionById } from "@/plugins/registry";
-import { orgRpcSource, platformRpcSource } from "../runtime";
+import { platformRpcSource } from "../runtime";
 import {
   loadOrgRpcConfigs,
   loadOwnRpcOnlyChains,
@@ -482,7 +482,6 @@ export async function createOrgRpcConfig(
         .returning();
       return promoted;
     });
-    orgRpcSource.invalidate(input.organizationId);
     return { ok: true, config: toView(row) };
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -642,7 +641,6 @@ export async function updateOrgRpcConfig(
         .returning();
       return updated;
     });
-    orgRpcSource.invalidate(input.organizationId);
     return { ok: true, config: toView(saved) };
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -674,7 +672,6 @@ export async function deleteOrgRpcConfig(input: {
   await db
     .delete(organizationRpcConfigs)
     .where(eq(organizationRpcConfigs.id, row.id));
-  orgRpcSource.invalidate(input.organizationId);
   return { ok: true, config: toView(row) };
 }
 
@@ -834,7 +831,6 @@ export async function setOrgRpcPolicy(input: {
         changedAt: now,
       },
     });
-  orgRpcSource.invalidate(input.organizationId);
   return {
     ok: true,
     policy: { chainId: input.chainId, ownRpcOnly: input.ownRpcOnly },

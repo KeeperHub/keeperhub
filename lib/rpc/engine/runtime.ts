@@ -17,7 +17,7 @@ export const platformRpcSource = processSingleton(
   createDbPlatformRpcSource
 );
 
-/** Organization configs and policy, shared so a write can invalidate them. */
+/** Organization configs and policy, shared by the engine and the org checks. */
 export const orgRpcSource = processSingleton(
   "orgRpcSource",
   createDbOrgRpcSource

@@ -15,7 +15,6 @@ vi.mock("@/lib/rpc/engine/sources/db-org-source", () => ({
 }));
 vi.mock("@/lib/rpc/engine/runtime", () => ({
   platformRpcSource: { load: sources.loadPlatform },
-  orgRpcSource: { invalidate: vi.fn() },
 }));
 
 import { OrgRpcErrorCode } from "@/lib/rpc/engine/org/codes";
