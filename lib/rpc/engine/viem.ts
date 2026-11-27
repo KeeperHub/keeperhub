@@ -12,6 +12,7 @@ import { classifyRpcError } from "../providers";
 import { redactAllUrls } from "../scrub-rpc-urls";
 import type { EvmRpcClient } from "./engine";
 import { markOrgRpcError } from "./org-rpc-error";
+import { redactOrganizationHosts } from "./organization-hosts";
 import { RpcErrorType, RpcOperationType } from "./telemetry/sink";
 import { type RpcEndpoint, RpcOrigin, RpcRoutePosition } from "./types";
 
@@ -39,6 +40,10 @@ function safeViemFetch(
  * viem writes the request URL into its errors' text, API key included. Strip
  * every URL from the error and its causes before it leaves the transport.
  */
+function redacted(text: string): string {
+  return redactOrganizationHosts(redactAllUrls(text));
+}
+
 function redactViemError(error: unknown, depth = 0): void {
   if (depth >= MAX_CAUSE_DEPTH || typeof error !== "object" || error === null) {
     return;
@@ -47,16 +52,16 @@ function redactViemError(error: unknown, depth = 0): void {
   for (const field of TEXT_FIELDS) {
     const value = fields[field];
     if (typeof value === "string") {
-      fields[field] = redactAllUrls(value);
+      fields[field] = redacted(value);
     }
   }
   if (Array.isArray(fields.metaMessages)) {
     fields.metaMessages = fields.metaMessages.map((line: unknown) =>
-      typeof line === "string" ? redactAllUrls(line) : line
+      typeof line === "string" ? redacted(line) : line
     );
   }
   if (typeof fields.url === "string") {
-    fields.url = redactAllUrls(fields.url);
+    fields.url = redacted(fields.url);
   }
   redactViemError(fields.cause, depth + 1);
 }

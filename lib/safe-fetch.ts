@@ -382,6 +382,9 @@ function recordBlock(ctx: BlockContext, shadow: boolean): void {
 }
 
 function blockedMessage(ctx: BlockContext): string {
+  if (isOrganizationHost(ctx.hostname)) {
+    return `Outbound request to an organization RPC endpoint blocked by SSRF policy (${ctx.reason}).`;
+  }
   const ipPart = ctx.resolvedIp ? ` (resolved to ${ctx.resolvedIp})` : "";
   return `Outbound request to ${ctx.hostname}${ipPart} blocked by SSRF policy (${ctx.reason}).`;
 }
@@ -735,7 +738,11 @@ export async function resolvePublicAddresses(
   try {
     addresses = await dnsPromises.lookup(hostname, { all: true });
   } catch {
-    throw new Error(`Cannot resolve host: ${hostname}`);
+    throw new Error(
+      isOrganizationHost(hostname)
+        ? "Cannot resolve the organization RPC endpoint's host"
+        : `Cannot resolve host: ${hostname}`
+    );
   }
 
   for (const addr of addresses) {

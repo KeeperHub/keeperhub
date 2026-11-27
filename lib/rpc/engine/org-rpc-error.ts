@@ -1,5 +1,6 @@
 import { findInErrorChain } from "@/lib/errors/cause-chain";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { redactOrganizationHosts } from "./organization-hosts";
 
 /**
  * Leads every OrgRpcError message, so a failure that only survives as text
@@ -22,7 +23,8 @@ export class OrgRpcError extends Error {
   readonly errorClass = ExecutionErrorType.EXTERNAL;
 
   constructor(message: string) {
-    super(`${ORG_RPC_FAILURE_PREFIX} ${message}`);
+    // URLs are already gone; a bare hostname, as DNS errors give, goes too.
+    super(`${ORG_RPC_FAILURE_PREFIX} ${redactOrganizationHosts(message)}`);
     this.name = OrgRpcError.name;
   }
 }

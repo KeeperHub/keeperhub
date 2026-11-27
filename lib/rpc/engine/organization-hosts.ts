@@ -31,3 +31,16 @@ export function isOrganizationHost(hostname: string): boolean {
     checkingUrl.getStore() === true || savedHosts.has(normalized(hostname))
   );
 }
+
+const HOSTNAME_RE = /\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b/gi;
+export const ORGANIZATION_HOST_PLACEHOLDER = "[organization host]";
+
+/** Replace every saved organization host named in `text`. */
+export function redactOrganizationHosts(text: string): string {
+  if (savedHosts.size === 0 || !text) {
+    return text;
+  }
+  return text.replace(HOSTNAME_RE, (host) =>
+    savedHosts.has(normalized(host)) ? ORGANIZATION_HOST_PLACEHOLDER : host
+  );
+}
