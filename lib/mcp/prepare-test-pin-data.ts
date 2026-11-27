@@ -29,10 +29,12 @@ export type PinDataJsonSchema = {
 };
 
 type PinDataPropertySchema = {
-  type: "string" | "number" | "boolean";
+  type: "string" | "number" | "boolean" | "array";
   description?: string;
   enum?: string[];
   default?: unknown;
+  items?: { type: "string" };
+  maxItems?: number;
 };
 
 /**
@@ -163,6 +165,16 @@ function buildPropertyForField(
   const jsonType = fieldJsonType(field.type);
   if (jsonType === "number") {
     return { type: "number", description };
+  }
+
+  if (jsonType === "array") {
+    return {
+      type: "array",
+      description,
+      // Duplicates are accepted and dropped, so no uniqueItems.
+      items: { type: "string" },
+      ...(field.max === undefined ? {} : { maxItems: field.max }),
+    };
   }
 
   if (jsonType === "boolean") {

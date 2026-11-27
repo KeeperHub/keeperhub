@@ -241,7 +241,10 @@ export async function POST(request: Request) {
       return featureGuard.response;
     }
 
-    const actionConfigValidation = await validateWorkflowNodesForSave(nodes);
+    const actionConfigValidation = await validateWorkflowNodesForSave(nodes, {
+      organizationId,
+      edges,
+    });
     if (!actionConfigValidation.valid) {
       return NextResponse.json(
         formatActionConfigValidationResponse(actionConfigValidation),

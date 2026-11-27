@@ -20,7 +20,11 @@ import {
   type ReceiptView,
   type RowKey,
 } from "./bundle-history";
-import { settleLateLanding, settleRun } from "./late-landing";
+import {
+  LATE_REVERT_ERROR,
+  settleLateLanding,
+  settleRun,
+} from "./late-landing";
 
 const SWEEP_ROWS = 200;
 
@@ -42,8 +46,9 @@ type Read = <T>(
  * nothing more. Pending bundle rows whose window closed (a not-checked step,
  * a crashed send) are dropped first, as reconcile would, so they are read
  * too. Runs still not landed with a confirmed bundle row (confirmed while the
- * run was going, or a settle that threw) are settled again first. The
- * deadline is checked between rows and between reads.
+ * run was going, or a settle that threw), or ended by a late revert without
+ * that row's hash, are settled again first. The deadline is checked between
+ * rows and between reads.
  */
 export async function sweepLateBundles(
   now: Date,
@@ -161,7 +166,7 @@ export async function sweepLateBundles(
   return summary;
 }
 
-/** Settle again each not landed run that owns a recently confirmed bundle row. */
+/** Settle again each run that owns a recently confirmed bundle row it may still take. */
 async function settleConfirmedRuns(
   cutoff: Date,
   deadline: number,
@@ -179,10 +184,14 @@ async function settleConfirmedRuns(
         eq(pendingTransactions.status, "confirmed"),
         ne(pendingTransactions.bundleRuns, sql`'[]'::jsonb`),
         gt(pendingTransactions.confirmedAt, cutoff),
-        // The row's owner (the oldest entry holding its hash, as ownerOf) is not landed.
+        // The row's owner (the oldest entry holding its hash, as ownerOf) is not
+        // landed, or a late revert ended it without this row's hash.
         sql`EXISTS (SELECT 1 FROM jsonb_array_elements(${pendingTransactions.bundleRuns}) WITH ORDINALITY AS entry(run, ord)
           JOIN ${workflowExecutions} ON ${workflowExecutions.id} = entry.run->>'executionId'
-          WHERE ${workflowExecutions.status} = 'not_landed'
+          WHERE (${workflowExecutions.status} = 'not_landed'
+              OR (${workflowExecutions.status} = 'error'
+                AND ${workflowExecutions.error} LIKE ${`${LATE_REVERT_ERROR}%`}
+                AND NOT coalesce(${workflowExecutions.transactionHashes}, '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('hash', ${pendingTransactions.txHash}))))
             AND entry.run->'hashes' ? ${pendingTransactions.txHash}
             AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(${pendingTransactions.bundleRuns}) WITH ORDINALITY AS earlier(run, ord)
               WHERE earlier.ord < entry.ord AND earlier.run->'hashes' ? ${pendingTransactions.txHash}))`

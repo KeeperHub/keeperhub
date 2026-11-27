@@ -111,7 +111,7 @@ describe("resolveSendMode", () => {
     expect(
       sendModeConflict({ sendMode: "private-relay", usePrivateMempool: false })
     ).toBe(
-      'sendMode "private-relay" and usePrivateMempool false disagree. Send sendMode alone, or pair usePrivateMempool: true with "private-relay" and usePrivateMempool: false with "transaction".'
+      'sendMode "private-relay" and usePrivateMempool false disagree. Send sendMode alone, or pair usePrivateMempool: true with "private-relay" and usePrivateMempool: false with "transaction" or "bundle".'
     );
   });
 
@@ -921,7 +921,7 @@ describe("unknown sendMode values", () => {
     1,
   ])("refuses %j", (value) => {
     expect(unknownSendModeIssue(value)).toBe(
-      `sendMode must be "transaction" (Normal transaction) or "private-relay" (Private relay), not ${JSON.stringify(value)}.`
+      `sendMode must be "transaction" (Normal transaction), "private-relay" (Private relay) or "bundle" (Bundle), not ${JSON.stringify(value)}.`
     );
   });
 

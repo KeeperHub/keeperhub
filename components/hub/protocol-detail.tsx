@@ -16,7 +16,12 @@ import { toast } from "sonner";
 import { ViewOnlyTooltip } from "@/components/organization/view-only-tooltip";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api, type SavedWorkflow } from "@/lib/api-client";
+import {
+  api,
+  DUPLICATE_ERROR_TOAST,
+  duplicateErrorMessage,
+  type SavedWorkflow,
+} from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
 import { getChainName, getExplorerUrl } from "@/lib/chain-utils";
 import { useOrgAccess } from "@/lib/hooks/use-org-access";
@@ -263,7 +268,8 @@ export function ProtocolDetail({
       router.push(`/workflows/${duplicated.id}`);
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to duplicate workflow"
+        duplicateErrorMessage(error, "Failed to duplicate workflow"),
+        DUPLICATE_ERROR_TOAST
       );
     } finally {
       setDuplicatingIds((prev) => {

@@ -109,6 +109,10 @@ The per-node entries in `logs.logs` are ordered by `timestamp` descending — th
 
 `status.errorContext` is populated only when `status.status` is `"error"` or `"system_error"`. Every other status gets `null` — not omitted, `null`. That currently means `pending`, `running`, `unconfirmed`, `success`, `cancelled`, `skipped`, `not_landed`, and `phantom`, but treat the rule ("null unless the status is one of the two error statuses") as the contract rather than that list: as [Status Values](/api/executions#status-values) notes, the status set is a lower bound and a client that switches on a closed set will mishandle statuses added after it shipped.
 
+### `not_landed` can still change
+
+A run that ends `not_landed` (a Send as Bundle step whose bundle was not seen in its target blocks) is reported with `pollIntervalHint` `0`, but if that bundle was `not-checked` and lands later, within about a day, the run changes to `success`, or to `error` if the call reverted. Call `get_execution` again later when a late landing matters. Such a step's `status.nodeStatuses` entry stays `success` and carries `outcome: "not-included"`, and `outcome: "landed-late"` once the run re-settles after a late landing (`"landed-late-reverted"` when that transaction reverted; see [Get Execution Status](/api/executions#get-execution-status)).
+
 ### `transactionHashes` is an array of receipt objects, not hash strings
 
 Both `status.transactionHashes` and `logs.execution.transactionHashes` are arrays of receipt objects (`hash`, `nodeId`, `nodeName`, `verified`, `receiptStatus`, ...), not plain strings. See [Transaction Hashes](/api/executions#transaction-hashes) for the full field table. On the cross-organization path most of those fields are stripped; see below.

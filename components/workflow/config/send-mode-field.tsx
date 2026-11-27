@@ -19,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { BundleSettingsBox } from "@/components/workflow/config/bundle-settings-box";
 import { SponsorGasField } from "@/components/workflow/config/sponsor-gas-field";
 import { useSendModeChains } from "@/lib/hooks/use-send-mode-chains";
 import { cn } from "@/lib/utils";
@@ -514,7 +515,12 @@ export function SendModeField({
               onClick: () => chains.retry(networkField),
             }}
             testId="send-mode-chains-error"
-            text="The network list did not load, so Private relay is not offered."
+            text={`The network list did not load, so ${
+              chains.bundlesEnabled === true &&
+              !unsupportedSendMode(config.actionType, SEND_MODE.BUNDLE)
+                ? "Private relay and Bundle are"
+                : "Private relay is"
+            } not offered.`}
             tone="warning"
           />
         )}
@@ -550,6 +556,16 @@ export function SendModeField({
         )}
         {announcement && <span className="sr-only">{announcement}</span>}
       </div>
+      {mode === SEND_MODE.BUNDLE &&
+        !unsupportedSendMode(config.actionType, SEND_MODE.BUNDLE) && (
+          <BundleSettingsBox
+            builders={chain?.bundleBuilders ?? undefined}
+            config={config}
+            tipLimitGwei={chain?.tipLimitGwei ?? undefined}
+            disabled={disabled}
+            onUpdateConfig={onUpdateConfig}
+          />
+        )}
     </div>
   );
 }

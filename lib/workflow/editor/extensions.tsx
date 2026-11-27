@@ -29,6 +29,7 @@ import { ChainSelectField } from "@/components/workflow/config/chain-select-fiel
 import { CodeEditorField } from "@/components/workflow/config/code-editor-field";
 import { EventListField } from "@/components/workflow/config/event-list-field";
 import { GasLimitMultiplierField } from "@/components/workflow/config/gas-limit-multiplier-field";
+import { MultiSelectPicker } from "@/components/workflow/config/multi-select-field";
 import { PagerDutyPreviewField } from "@/components/workflow/config/pagerduty-preview-field";
 import {
   PagerDutyBackupConnectionField,
@@ -728,6 +729,30 @@ registerFieldRenderer(
       field={field}
       key={field.key}
       onUpdateConfig={onUpdateConfig}
+    />
+  )
+);
+
+// Bundle settings: drawn by Send as in one box under it, so nothing here.
+registerFieldRenderer("bundle-setting", () => null);
+
+// A list of values from the field's options: all by default, or some, at least one.
+registerFieldRenderer(
+  "multi-select",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <MultiSelectPicker
+      allHint="Includes options added later."
+      allLabel="All"
+      choices={field.options?.map(({ label, value }) => ({ label, value }))}
+      disabled={disabled}
+      label={field.label}
+      max={field.max}
+      missingNote={(names) => `No longer an option: ${names.join(", ")}.`}
+      missingSuffix="no longer an option"
+      noun="options"
+      onChange={(next) => onUpdateConfig(field.key, next)}
+      unknownNote="The options are checked when the step runs."
+      value={config[field.key]}
     />
   )
 );

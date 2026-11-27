@@ -3,7 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  DUPLICATE_ERROR_TOAST,
+  duplicateErrorMessage,
+} from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { AUTH_SUCCESS_EVENT } from "@/lib/auth-events";
 import { isAnonymousUser } from "@/lib/is-anonymous";
@@ -142,9 +146,8 @@ export function PendingTemplateRunner(): null {
           router.push(`/workflows/${duplicated.id}`);
         } catch (err) {
           console.error("[PendingTemplate] duplicate failed:", err);
-          const message =
-            err instanceof Error ? err.message : "Failed to use template";
-          toast.error(message);
+          const message = duplicateErrorMessage(err, "Failed to use template");
+          toast.error(message, DUPLICATE_ERROR_TOAST);
         }
       } finally {
         inFlight.current = false;

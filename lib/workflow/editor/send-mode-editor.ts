@@ -2,6 +2,8 @@ import { isToggleValue } from "@/lib/utils";
 import { simulatesNextBlock } from "@/lib/web3/next-block-limits";
 import {
   availableSendModes,
+  BUNDLE_SAFE_REFUSAL,
+  chainHasBuilders,
   isLegacyPrivateRelayConfig,
   LEGACY_PRIVATE_MEMPOOL_KEY,
   resolveSendMode,
@@ -23,6 +25,7 @@ import {
   type EditorChain,
   editorChainOf,
   editorSendModeOn,
+  getEditorBundlesEnabled,
 } from "@/lib/workflow/editor/send-mode-chains";
 import {
   type ActionConfigFieldBase,
@@ -58,8 +61,14 @@ export function sponsorOffHint(mode: SendMode): string {
 const LEGACY_UNRESOLVED_NOTICE =
   "This step uses the private relay where its network has one, otherwise the public mempool.";
 
-function networkChangeNotice(chainName = "this network"): string {
-  return `Send as changed to Normal transaction (public mempool): ${chainName} has no private relay.`;
+function networkChangeNotice(mode: SendMode, chain: EditorChain): string {
+  const prefix = "Send as changed to Normal transaction (public mempool):";
+  if (mode === SEND_MODE.BUNDLE && chainHasBuilders(chain)) {
+    return `${prefix} bundles are not turned on for this organization.`;
+  }
+  const lacks =
+    mode === SEND_MODE.BUNDLE ? "no block builders" : "no private relay";
+  return `${prefix} ${chain.name ?? "this network"} has ${lacks}.`;
 }
 
 function actionLabel(config: Record<string, unknown>): string {
@@ -287,15 +296,18 @@ export function chooseNetwork(
     return none;
   }
   const shown = editorSendMode(config);
+  // The picker's row has no rollout flag; a rollout not known yet keeps Bundle.
+  const target = { ...chain, bundlesEnabled: getEditorBundlesEnabled() };
   const kept =
     shown === SEND_MODE.TRANSACTION ||
-    availableSendModes(chain).some((option) => option.value === shown);
+    availableSendModes(target).some((option) => option.value === shown) ||
+    bundleRolloutUnknown(shown, target);
   // The old flag alone uses a relay only where there is one: it stays as saved.
   if (kept || isLegacyPrivateRelayConfig(config)) {
     return none;
   }
   const writes = toNormalWrites(config);
-  const change = changeOf(config, writes, networkChangeNotice(chain.name));
+  const change = changeOf(config, writes, networkChangeNotice(shown, target));
   return {
     ...change,
     // Undo puts the network back too; the notice goes once it changes again.
@@ -365,6 +377,32 @@ function keysIssue(config: Record<string, unknown>): string | undefined {
   );
 }
 
+/** The chain has builders but the organization's rollout is not known yet. */
+function bundleRolloutUnknown(mode: SendMode, chain: EditorChain): boolean {
+  return (
+    mode === SEND_MODE.BUNDLE &&
+    chain.bundlesEnabled === undefined &&
+    chainHasBuilders(chain)
+  );
+}
+
+/** A bundle step that signs through a Safe, which cannot bundle yet. */
+function bundleWarning(
+  config: Record<string, unknown>
+): SendModeWarning | undefined {
+  if (unsupportedSendMode(config.actionType, SEND_MODE.BUNDLE)) {
+    return;
+  }
+  if (String(config.web3Connection ?? "").startsWith("safe:")) {
+    return {
+      text: BUNDLE_SAFE_REFUSAL,
+      unsupported: true,
+      fails: true,
+    };
+  }
+  return;
+}
+
 /**
  * Why the node will not send as its Send as says (the step or chain lacks it),
  * or why its keys need fixing. A step that sends publicly instead does not fail.
@@ -387,7 +425,15 @@ export function sendModeWarning(
   const mode = editorSendMode(config);
   const chain = sendModeChainOf(config);
   const option = sendModeOption(mode);
-  const noRelay = chain !== undefined && !option.availableOn(chain);
+  const bundleIssue =
+    mode === SEND_MODE.BUNDLE ? bundleWarning(config) : undefined;
+  if (bundleIssue) {
+    return bundleIssue;
+  }
+  const noRelay =
+    chain !== undefined &&
+    !option.availableOn(chain) &&
+    !bundleRolloutUnknown(mode, chain);
   // The old flag alone uses a relay only where there is one: elsewhere it sends
   // publicly, on any action, as it always did.
   const legacy = isLegacyPrivateRelayConfig(config);
@@ -418,10 +464,13 @@ export function sendModeWarning(
       ? { text: LEGACY_UNRESOLVED_NOTICE, unsupported: false, fails: false }
       : undefined;
   }
-  const fallsBack = config.strict === false || legacy;
+  // Only the private relay can fall back to a public send.
+  const fallsBack =
+    mode === SEND_MODE.PRIVATE_RELAY && (config.strict === false || legacy);
   const text = option.unavailableNotice?.(
     chain?.name ?? "This network",
-    fallsBack
+    fallsBack,
+    chain
   );
   return text ? { text, unsupported: false, fails: !fallsBack } : undefined;
 }
@@ -532,7 +581,10 @@ export function actionSwitchNotice(
   const chain = sendModeChainOf(before);
   const legacy = isLegacyPrivateRelayConfig(before);
   let notice = `Send as changed to Normal transaction (public mempool): ${label} can't send through the private relay yet.`;
-  if (legacy && chain === undefined) {
+  if (was === SEND_MODE.BUNDLE) {
+    notice =
+      "Send as changed to Normal transaction (public mempool): only Write Contract can send as a bundle.";
+  } else if (legacy && chain === undefined) {
     // Network not known yet: the old flag may have sent publicly already.
     notice = `Send as changed to Normal transaction: this step now sends to the public mempool on every network (${label} has no private relay option yet).`;
   } else if (legacy && chain && !sendModeOption(was).availableOn(chain)) {

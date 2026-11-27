@@ -54,6 +54,7 @@ export type ActionConfigFieldBase = {
     | "gas-sponsorship-switch" // "Sponsor gas" toggle on a write action; default-on, skips the sponsored route entirely when off
     | "datetime" // Native date + time picker (stores an ISO 8601 string)
     | "select" // Dropdown select
+    | "multi-select" // A list of names (JSON array of strings): choices from `options`, or an editorRenderer that supplies them
     | "chain-select" // Dynamic chain selector that fetches from /api/chains
     | "schema-builder" // Schema builder for structured output
     | "abi-function-select" // Dynamic dropdown that parses ABI and shows functions
@@ -99,7 +100,7 @@ export type ActionConfigFieldBase = {
 
   // Draw the field with this registered editor renderer instead of its
   // type's own; the type still decides validation and schemas.
-  editorRenderer?: "send-mode";
+  editorRenderer?: "send-mode" | "bundle-setting";
 
   // Example value for AI prompt generation
   example?: string;
@@ -719,9 +720,12 @@ export function isToggleField(type: string | undefined): boolean {
 /** A field's JSON type; the action schema and the pin schema both use it. */
 export function fieldJsonType(
   type: string | undefined
-): "string" | "number" | "boolean" {
+): "string" | "number" | "boolean" | "array" {
   if (type === "number") {
     return "number";
+  }
+  if (type === "multi-select") {
+    return "array";
   }
   if (isToggleField(type) || type === "protocol-bool") {
     return "boolean";

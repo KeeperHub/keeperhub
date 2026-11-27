@@ -12,6 +12,7 @@ import { Handle, Position } from "@xyflow/react";
 import type { ComponentProps } from "react";
 import { AnimatedBorder } from "@/components/ui/animated-border";
 import { AddStepButton } from "@/components/workflow/add-step-button";
+import type { NodeRunStatus } from "@/lib/workflow/store";
 
 export type SourceHandleConfig = {
   id: string;
@@ -25,7 +26,7 @@ export type NodeProps = ComponentProps<typeof Card> & {
     source: boolean;
     sourceHandles?: SourceHandleConfig[];
   };
-  status?: "idle" | "running" | "success" | "error";
+  status?: NodeRunStatus;
   nodeId?: string;
 };
 
@@ -34,7 +35,12 @@ export const Node = ({ handles, className, status, nodeId, ...props }: NodeProps
     className={cn(
       "node-container relative size-full h-auto w-sm gap-0 rounded-md bg-card p-0 transition-all duration-200",
       status === "success" && "border-green-500 border-2",
-      status === "error" && "border-red-500 border-2",
+      (status === "error" || status === "landed-late-reverted") &&
+        "border-red-500 border-2",
+      status === "landed-late" && "border-green-500 border-2",
+      // Ran, but its bundle did not land or it sent nothing: neutral, never green.
+      (status === "not-included" || status === "skipped") &&
+        "border-2 border-muted-foreground border-dashed",
       className
     )}
     {...props}

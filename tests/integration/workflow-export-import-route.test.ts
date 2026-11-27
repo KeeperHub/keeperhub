@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// The nested-loop check loads the executor's loop reader, which is server-only.
+vi.mock("server-only", () => ({}));
+
 import {
   buildWorkflowExportV1,
   WORKFLOW_EXPORT_VERSION,
 } from "@/lib/workflow/export-schema";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
+import {
+  bundleStep,
+  NESTED_LOOP,
+  NOT_TURNED_ON,
+  nestedBundleWorkflow,
+} from "@/tests/utils/bundle-save-fixtures";
 
 const UNSUPPORTED_VERSION_REGEX = /Unsupported workflow export version/;
 const SIGN_IN_TO_IMPORT_REGEX = /Sign in to import/;
@@ -538,5 +547,72 @@ describe("POST /api/workflows/import", () => {
 
     expect(response.status).toBe(401);
     expect(insertedRows).toHaveLength(0);
+  });
+});
+
+describe("import: Send as Bundle checks and run states", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    insertedRows.length = 0;
+    mockMemberLimit.mockResolvedValue([{ id: "member-1" }]);
+  });
+
+  async function importPayload(payload: unknown): Promise<Response> {
+    const { POST } = await import("@/app/api/workflows/import/route");
+    return POST(
+      new Request("http://localhost/api/workflows/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+    );
+  }
+
+  const exportOf = (
+    nodes: Record<string, unknown>[],
+    edges: Record<string, unknown>[] = []
+  ) =>
+    buildWorkflowExportV1({
+      name: "bundle wf",
+      description: null,
+      nodes: nodes as unknown as WorkflowNode[],
+      edges: edges as unknown as WorkflowEdge[],
+    });
+
+  it("checks the rollout for the importing organization, and the edges", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", `orgs:${orgId}`);
+    expect((await importPayload(exportOf([bundleStep()]))).status).toBe(200);
+
+    const { nodes, edges } = nestedBundleWorkflow();
+    const nested = await importPayload(exportOf(nodes, edges));
+    expect(nested.status).toBe(422);
+    expect(JSON.stringify(await nested.json())).toContain(NESTED_LOOP);
+
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:someone-else");
+    const outside = await importPayload(exportOf([bundleStep()]));
+    expect(outside.status).toBe(422);
+    expect(JSON.stringify(await outside.json())).toContain(NOT_TURNED_ON);
+  });
+
+  it("exports no run state, and imports a file that still carries one", async () => {
+    const shown = {
+      ...validImportActionNode,
+      data: { ...validImportActionNode.data, status: "not-included" },
+    };
+    const exported = exportOf([shown]);
+    expect("status" in exported.nodes[0].data).toBe(false);
+    expect((await importPayload(exported)).status).toBe(200);
+
+    // A file exported before run states were stripped.
+    const older = {
+      ...exported,
+      nodes: [{ ...exported.nodes[0], data: shown.data }],
+    };
+    expect((await importPayload(older)).status).toBe(200);
+    const saved = insertedRows.at(-1)?.nodes as {
+      data: { status?: string };
+    }[];
+    expect(saved[0].data.status).toBe("idle");
   });
 });

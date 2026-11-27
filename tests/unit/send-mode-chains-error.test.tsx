@@ -18,6 +18,7 @@ import { ActionConfigRenderer } from "@/components/workflow/config/action-config
 import { configTransformFor } from "@/lib/workflow/editor/action-type-transition";
 import { applyConfigUpdate } from "@/lib/workflow/editor/config-update";
 import {
+  setEditorBundlesEnabled,
   setEditorSendModeChains,
   setEditorSendModeChainsFailed,
 } from "@/lib/workflow/editor/send-mode-chains";
@@ -137,9 +138,15 @@ describe("Send as when the chain list does not load", () => {
     const error = container.querySelector(
       '[data-testid="send-mode-chains-error"]'
     );
+    // Bundle is named only where the organization may send bundles.
     expect(error?.textContent).toContain(
       "The network list did not load, so Private relay is not offered."
     );
+    act(() => setEditorBundlesEnabled(true));
+    expect(error?.textContent).toContain(
+      "The network list did not load, so Private relay and Bundle are not offered."
+    );
+    act(() => setEditorBundlesEnabled(undefined));
     expect(
       container.querySelector('[data-testid="send-mode-field"]')
     ).not.toBeNull();
@@ -303,11 +310,13 @@ describe("an old (Flashbots) flag where the network does not resolve", () => {
     let fail: (value: unknown) => void = () => undefined;
     vi.stubGlobal(
       "fetch",
-      vi.fn(
-        () =>
-          new Promise((resolve) => {
-            fail = resolve;
-          })
+      vi.fn((url: string) =>
+        // The bundle rollout flag loads too; only the chain list is held.
+        url === "/api/features"
+          ? Promise.resolve({ ok: false, status: 500 })
+          : new Promise((resolve) => {
+              fail = resolve;
+            })
       )
     );
     const config = {

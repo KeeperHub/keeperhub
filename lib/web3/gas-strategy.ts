@@ -450,6 +450,20 @@ export class AdaptiveGasStrategy {
     };
   }
 
+  /** The highest tip the strategy picks on this chain (a Priority Fee override may exceed it). */
+  async priorityFeeLimit(chainId: number): Promise<bigint> {
+    const chainConfig = await this.getChainConfig(chainId);
+    return parseGwei(chainConfig.maxPriorityFeeGwei);
+  }
+
+  /** `priorityFeeLimit` for a chain row already read, in gwei; null when not a number. */
+  tipLimitGwei(chainId: number, gasConfig: unknown): number | null {
+    const limit = Number(
+      mergeChainGasConfig(this.config, chainId, gasConfig).maxPriorityFeeGwei
+    );
+    return Number.isFinite(limit) ? limit : null;
+  }
+
   // Caller-supplied maxFeePerGas ceiling. The tip is lowered with it so the
   // EIP-1559 invariant maxFeePerGas >= maxPriorityFeePerGas still holds.
   private applyMaxFeeCap(
@@ -641,13 +655,7 @@ export class AdaptiveGasStrategy {
         .limit(1);
 
       if (chain.length > 0 && chain[0].gasConfig) {
-        const dbConfig = chain[0].gasConfig as Partial<ChainGasConfig>;
-        // Merge: default config < hardcoded overrides < database config
-        return {
-          ...this.config,
-          ...this.getHardcodedOverrides(chainId),
-          ...dbConfig,
-        } as ChainGasConfig;
+        return mergeChainGasConfig(this.config, chainId, chain[0].gasConfig);
       }
     } catch (error) {
       // Database unavailable, fall back to hardcoded
@@ -678,6 +686,19 @@ export class AdaptiveGasStrategy {
 // Singleton & Exports
 // ============================================================================
 
+// Merge: base config < hardcoded overrides < the chain row's gas config.
+function mergeChainGasConfig(
+  base: GasStrategyConfig,
+  chainId: number,
+  dbConfig: unknown
+): ChainGasConfig {
+  return {
+    ...base,
+    ...(HARDCODED_CHAIN_OVERRIDES[chainId] ?? {}),
+    ...(dbConfig as Partial<ChainGasConfig> | null | undefined),
+  } as ChainGasConfig;
+}
+
 // Singleton instance
 let instance: AdaptiveGasStrategy | null = null;
 
@@ -688,6 +709,14 @@ export function getGasStrategy(
     instance = new AdaptiveGasStrategy(config);
   }
   return instance;
+}
+
+/** The tip limit run time reads for a chain row, from the shared strategy's config. */
+export function chainTipLimitGwei(
+  chainId: number,
+  gasConfig: unknown
+): number | null {
+  return getGasStrategy().tipLimitGwei(chainId, gasConfig);
 }
 
 // Reset singleton (for testing)

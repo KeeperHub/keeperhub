@@ -24,18 +24,72 @@ function ceilDiv(a: bigint, b: bigint): bigint {
 
 /**
  * The tip for the k-th target (1 = the next block): the first tip raised by
- * `increasePercent` per block, compounded and rounded up, never above Max Fee.
+ * `increasePercent` per block, compounded and rounded up, held to the tip limit and the fee cap.
  */
 function tipForTarget(
   firstTip: bigint,
   maxFee: bigint,
   increasePercent: number,
+  k: number,
+  tipLimit: bigint | undefined
+): bigint {
+  const tip = plannedTip(firstTip, increasePercent, k, tipLimit);
+  return tip < maxFee ? tip : maxFee;
+}
+
+function raisedTip(
+  firstTip: bigint,
+  increasePercent: number,
   k: number
 ): bigint {
   const steps = BigInt(k - 1);
   const factor = BigInt(100 + increasePercent);
-  const tip = ceilDiv(firstTip * factor ** steps, HUNDRED ** steps);
-  return tip < maxFee ? tip : maxFee;
+  return ceilDiv(firstTip * factor ** steps, HUNDRED ** steps);
+}
+
+// A raised tip stops at the chain's tip limit, never below the first tip.
+function plannedTip(
+  firstTip: bigint,
+  increasePercent: number,
+  k: number,
+  tipLimit: bigint | undefined
+): bigint {
+  const tip = raisedTip(firstTip, increasePercent, k);
+  if (tipLimit === undefined) {
+    return tip;
+  }
+  const limit = tipLimit > firstTip ? tipLimit : firstTip;
+  return tip < limit ? tip : limit;
+}
+
+/**
+ * The fee cap the planned tips need: room for the base fee (the estimate's, or
+ * the last target's projected base fee if higher) plus the highest tip planned.
+ * The caller holds it to Max Fee or MAX_FEE_GWEI.
+ */
+export function maxFeeForTips(options: {
+  estimatedMaxFee: bigint;
+  firstTip: bigint;
+  increasePercent: number;
+  latest: number;
+  blocks: readonly number[];
+  tipLimit?: bigint;
+  // The latest block; its base fee bounds the targets' (planTips skips by the same bound).
+  parent?: ParentBlock | null;
+}): bigint {
+  const { estimatedMaxFee, firstTip } = options;
+  const lastK =
+    Math.max(options.latest + 1, ...options.blocks) - options.latest;
+  // The estimate's Max Fee counts the tip once (base-fee room + tip).
+  const headroom =
+    estimatedMaxFee > firstTip ? estimatedMaxFee - firstTip : BigInt(0);
+  const projected = options.parent
+    ? projectedBaseFee(nextBaseFee(options.parent), lastK - 1)
+    : BigInt(0);
+  return (
+    (projected > headroom ? projected : headroom) +
+    plannedTip(firstTip, options.increasePercent, lastK, options.tipLimit)
+  );
 }
 
 /** The highest base fee `blocksAhead` blocks after one with `baseFee`. */
@@ -85,6 +139,8 @@ export function planTips(options: {
   maxFee: bigint;
   increasePercent: number;
   blocks: readonly number[];
+  // The chain's tip limit; later tips stop there (the first tip is kept).
+  tipLimit?: bigint;
 }): {
   targets: PlannedTarget[];
   skipped: SkippedTarget[];
@@ -114,7 +170,8 @@ export function planTips(options: {
         options.firstTip,
         options.maxFee,
         options.increasePercent,
-        k
+        k,
+        options.tipLimit
       ),
     });
   }

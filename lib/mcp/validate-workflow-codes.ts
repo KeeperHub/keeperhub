@@ -29,6 +29,8 @@ export const VALIDATION_ERROR_CODES = {
   TRIGGER_ABI_EVENT_MISSING_INPUTS: "trigger-abi-event-missing-inputs",
   TRIGGER_EVENT_NOT_IN_ABI: "trigger-event-not-in-abi",
   TRIGGER_EVENT_NAME_AMBIGUOUS: "trigger-event-name-ambiguous",
+  // A Send as setting a save would refuse (sendMode, bundle settings).
+  INVALID_SEND_MODE: "invalid-send-mode",
 } as const;
 
 export const VALIDATION_WARNING_CODES = {

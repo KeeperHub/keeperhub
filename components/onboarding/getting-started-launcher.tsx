@@ -21,7 +21,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { api } from "@/lib/api-client";
+import {
+  api,
+  DUPLICATE_ERROR_TOAST,
+  duplicateErrorMessage,
+} from "@/lib/api-client";
 import {
   type GettingStarted,
   useGettingStarted,
@@ -669,9 +673,8 @@ function useStepActions(
           error
         );
         toast.error(
-          error instanceof Error
-            ? error.message
-            : "Could not add that workflow."
+          duplicateErrorMessage(error, "Could not add that workflow."),
+          DUPLICATE_ERROR_TOAST
         );
         return;
       }

@@ -44,8 +44,9 @@ describe("readBundleSettings", () => {
       const read = readBundleSettings({ bundleBlocks });
       expect(read).toEqual({
         ok: false,
+        field: "bundleBlocks",
         error: expect.stringContaining(
-          "bundleBlocks must be a whole number from 1 to 5"
+          "Target blocks (bundleBlocks) must be a whole number from 1 to 5"
         ),
       });
     }

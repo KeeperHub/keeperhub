@@ -5,6 +5,7 @@ import { useAtomValue } from "jotai";
 import {
   AlertTriangle,
   Check,
+  CircleOff,
   Code,
   Database,
   EyeOff,
@@ -13,6 +14,7 @@ import {
   HardDriveUpload,
   ListEnd,
   Repeat,
+  SkipForward,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -29,11 +31,18 @@ import {
 import { cn } from "@/lib/utils";
 import { hasSendModeField } from "@/lib/workflow/editor/send-mode-editor";
 import {
+  notIncludedReasonText,
+  STEP_OUTCOME_TEXT,
+  type StepOutcome,
+  stepOutcomeTitle,
+} from "@/lib/workflow/executor/run-outcome-keys";
+import {
   CONDITION_SOURCE_HANDLES,
   FOR_EACH_SOURCE_HANDLES,
 } from "@/lib/workflow/source-handles";
 import {
   executionLogsAtom,
+  type NodeRunStatus,
   pendingIntegrationNodesAtom,
   selectedExecutionIdAtom,
   type WorkflowNodeData,
@@ -180,15 +189,74 @@ const getProviderLogo = (actionType: string) => {
   return <Zap className="size-12 text-amber-300" strokeWidth={1.5} />;
 };
 
+// A bundle step's own run states: a pill with the shared outcome words as its tooltip.
+const OUTCOME_BADGES: Partial<
+  Record<
+    NodeRunStatus,
+    { outcome: StepOutcome; testId: string; Icon: typeof Check }
+  >
+> = {
+  "not-included": {
+    outcome: "not-included",
+    testId: "node-not-included",
+    Icon: CircleOff,
+  },
+  skipped: {
+    outcome: "skipped-in-flight",
+    testId: "node-skipped",
+    Icon: SkipForward,
+  },
+  "landed-late": {
+    outcome: "landed-late",
+    testId: "node-landed-late",
+    Icon: Check,
+  },
+  "landed-late-reverted": {
+    outcome: "landed-late-reverted",
+    testId: "node-landed-late-reverted",
+    Icon: XCircle,
+  },
+};
+
 // Status badge component
 const StatusBadge = ({
   status,
+  reason,
 }: {
-  status?: "idle" | "running" | "success" | "error";
+  status?: NodeRunStatus;
+  reason?: string;
 }) => {
   // Don't show badge for idle or running (running has BorderBeam animation)
   if (!status || status === "idle" || status === "running") {
     return null;
+  }
+  const badge = OUTCOME_BADGES[status];
+  if (badge) {
+    const { Icon } = badge;
+    return (
+      <div
+        className={cn(
+          "absolute top-2 right-2 flex items-center gap-1 rounded-full border px-2 py-0.5 font-medium text-xs",
+          badge.outcome === "landed-late-reverted"
+            ? "border-destructive/60 bg-destructive/10 text-foreground"
+            : "border-muted-foreground/50 bg-muted text-foreground"
+        )}
+        data-testid={badge.testId}
+        title={stepOutcomeTitle(
+          badge.outcome,
+          badge.outcome === "not-included" ? reason : undefined
+        )}
+      >
+        <Icon
+          aria-hidden="true"
+          className={cn(
+            "size-3",
+            badge.outcome === "landed-late-reverted" && "text-destructive"
+          )}
+        />
+        {STEP_OUTCOME_TEXT[badge.outcome].label}
+      </div>
+    );
   }
 
   return (
@@ -398,7 +466,14 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
       )}
 
       {/* Status indicator badge in top right */}
-      <StatusBadge status={status} />
+      <StatusBadge
+        reason={
+          selectedExecutionId
+            ? notIncludedReasonText(nodeLog?.output)
+            : undefined
+        }
+        status={status}
+      />
 
       <div className="flex w-full min-w-0 flex-col items-center justify-center gap-3 p-6">
         {hasGeneratedImage ? (

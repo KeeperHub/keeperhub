@@ -17,7 +17,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { WorkflowMiniMap } from "@/components/hub/workflow-mini-map";
-import { api, type SavedWorkflow } from "@/lib/api-client";
+import {
+  api,
+  DUPLICATE_ERROR_TOAST,
+  duplicateErrorMessage,
+  type SavedWorkflow,
+} from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -86,7 +91,8 @@ export function FeaturedOverlay({ overlayId }: FeaturedOverlayProps) {
     } catch (error) {
       console.error("Failed to duplicate workflow:", error);
       toast.error(
-        error instanceof Error ? error.message : "Failed to apply template"
+        duplicateErrorMessage(error, "Failed to apply template"),
+        DUPLICATE_ERROR_TOAST
       );
     } finally {
       setDuplicatingIds((prev) => {

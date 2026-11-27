@@ -2,14 +2,20 @@
 
 import { useEffect, useSyncExternalStore } from "react";
 import {
+  fetchSnapshot,
+  subscribeFeatureInvalidation,
+} from "@/hooks/use-features";
+import {
   readCachedResource,
   writeCachedResource,
 } from "@/lib/hooks/use-cached-resource";
 import { sleep } from "@/lib/sleep";
 import {
   type EditorChain,
+  getEditorBundlesEnabled,
   getEditorSendModeChains,
   getEditorSendModeChainsFailed,
+  setEditorBundlesEnabled,
   setEditorSendModeChains,
   setEditorSendModeChainsFailed,
   subscribeEditorSendModeChains,
@@ -82,6 +88,47 @@ function requestChains(): void {
     });
 }
 
+let bundleFlagRequest: Promise<void> | undefined;
+// Bumped when the organization changes, so an older read is dropped.
+let bundleFlagGeneration = 0;
+let watchingOrg = false;
+
+/** Whether the organization may send bundles, from its feature snapshot; a failed read stays unknown. */
+function requestBundleFlag(): void {
+  if (getEditorBundlesEnabled() !== undefined || bundleFlagRequest) {
+    return;
+  }
+  const generation = bundleFlagGeneration;
+  bundleFlagRequest = fetchSnapshot()
+    .then((snapshot) => {
+      if (generation === bundleFlagGeneration) {
+        setEditorBundlesEnabled(snapshot.bundleSendEnabled === true);
+      }
+    })
+    .catch((error: unknown) => {
+      console.error("[SendModeChains] Failed to load features", error);
+    })
+    .finally(() => {
+      if (generation === bundleFlagGeneration) {
+        bundleFlagRequest = undefined;
+      }
+    });
+}
+
+/** On an org or session switch the flag is unknown again (the safe state) until read anew. */
+function watchOrgSwitch(): void {
+  if (watchingOrg) {
+    return;
+  }
+  watchingOrg = true;
+  subscribeFeatureInvalidation(() => {
+    bundleFlagGeneration += 1;
+    bundleFlagRequest = undefined;
+    setEditorBundlesEnabled(undefined);
+    requestBundleFlag();
+  });
+}
+
 /** Loads the list again; `focusId` names the field that keeps focus meanwhile. */
 function retryChains(focusId: string): void {
   retryFocusId = focusId;
@@ -97,8 +144,14 @@ function serverFailed(): boolean {
   return false;
 }
 
+function serverBundlesEnabled(): undefined {
+  return;
+}
+
 type SendModeChainsState = {
   chains: readonly EditorChain[] | undefined;
+  /** The organization may send bundles; undefined until known. */
+  bundlesEnabled: boolean | undefined;
   /** Every retry failed; `retry` loads again. */
   failed: boolean;
   retry: (focusId: string) => void;
@@ -116,7 +169,17 @@ export function useSendModeChains(): SendModeChainsState {
     getEditorSendModeChainsFailed,
     serverFailed
   );
+  // Part of the snapshot, so the flag arriving after the chains re-renders.
+  const bundlesEnabled = useSyncExternalStore(
+    subscribeEditorSendModeChains,
+    getEditorBundlesEnabled,
+    serverBundlesEnabled
+  );
   // A later mount tries again if an earlier one gave up.
-  useEffect(requestChains, []);
-  return { chains, failed, retry: retryChains };
+  useEffect(() => {
+    requestChains();
+    watchOrgSwitch();
+    requestBundleFlag();
+  }, []);
+  return { chains, bundlesEnabled, failed, retry: retryChains };
 }

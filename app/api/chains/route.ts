@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { chains, explorerConfigs } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { cleanBundleBuilders } from "@/lib/rpc/rpc-config";
+import { chainTipLimitGwei } from "@/lib/web3/gas-strategy";
 import { chainHasPrivateRelay } from "@/lib/web3/send-mode";
 
 export type ChainResponse = {
@@ -22,6 +23,8 @@ export type ChainResponse = {
   usePrivateMempoolRpc: boolean;
   // Names of the block builders bundles can go to (never their URLs).
   bundleBuilders: string[];
+  // The highest tip the gas estimate picks here (gwei); bundle tips stop there too.
+  tipLimitGwei: number | null;
 };
 
 export type GetChainsResponse = ChainResponse[];
@@ -71,6 +74,7 @@ export async function GET(request: Request) {
       bundleBuilders: cleanBundleBuilders(chain.bundleBuilders).map(
         (builder) => builder.name
       ),
+      tipLimitGwei: chainTipLimitGwei(chain.chainId, chain.gasConfig),
     }));
 
     return NextResponse.json(response);

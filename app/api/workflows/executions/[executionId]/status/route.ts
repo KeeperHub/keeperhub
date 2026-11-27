@@ -20,10 +20,17 @@ import {
 } from "@/lib/workflow/execution-access";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { checkExecutionStatusRateLimit } from "@/lib/workflow/execution-status-rate-limit";
+import { stepOutcomeKeysSql } from "@/lib/workflow/executor/run-outcome";
+import {
+  RUN_OUTCOME_OUTPUT,
+  type StepOutcome,
+  stepOutcomeOf,
+} from "@/lib/workflow/executor/run-outcome-keys";
 
 type NodeStatus = {
   nodeId: string;
   status: NodeExecutionStatus;
+  outcome?: StepOutcome;
 };
 
 // Statuses after which there is nothing left to poll for. Mirrors the set the
@@ -137,20 +144,43 @@ export async function GET(
 
     const { execution } = viewAccess;
 
+    const keys = stepOutcomeKeysSql(workflowExecutionLogs.output);
     const logs = await db.query.workflowExecutionLogs.findMany({
       // Per-step detail of one run, so a purge hides it here too.
       where: and(
         eq(workflowExecutionLogs.executionId, executionId),
         executionLogNotDeleted()
       ),
-      // Only the two fields the payload reads; the step bodies can be large.
-      columns: { nodeId: true, status: true },
+      // Only the fields the payload reads; the step bodies can be large.
+      columns: {
+        nodeId: true,
+        nodeType: true,
+        status: true,
+        iterationIndex: true,
+      },
+      extras: {
+        route: keys.route.as("route"),
+        notIncludedReason: keys.notIncludedReason.as("not_included_reason"),
+      },
     });
 
-    const nodeStatuses: NodeStatus[] = logs.map((log) => ({
-      nodeId: log.nodeId,
-      status: log.status,
-    }));
+    const nodeStatuses: NodeStatus[] = logs.map((log) => {
+      const outcome = stepOutcomeOf(
+        {
+          ...log,
+          output: {
+            [RUN_OUTCOME_OUTPUT.routeKey]: log.route,
+            [RUN_OUTCOME_OUTPUT.notIncludedReasonKey]: log.notIncludedReason,
+          },
+        },
+        execution
+      );
+      return {
+        nodeId: log.nodeId,
+        status: log.status,
+        ...(outcome && { outcome }),
+      };
+    });
 
     let payload = buildStatusPayload(execution, nodeStatuses);
     if (viewAccess.mode === "publicReadOnly") {

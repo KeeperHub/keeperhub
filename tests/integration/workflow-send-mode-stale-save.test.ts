@@ -8,6 +8,7 @@ vi.mock("server-only", () => ({}));
 
 const store = vi.hoisted(() => ({
   nodes: [] as unknown[],
+  edges: [] as unknown[],
   writes: 0,
   relayOn: true,
 }));
@@ -37,7 +38,7 @@ function storedRow(): Record<string, unknown> {
     name: "wf",
     description: "",
     nodes: structuredClone(store.nodes),
-    edges: [],
+    edges: structuredClone(store.edges),
     visibility: "private",
     isAnonymous: false,
     enabled: false,
@@ -155,6 +156,12 @@ vi.mock("next/cache", () => ({ revalidateTag: vi.fn() }));
 
 import { PATCH } from "@/app/api/workflows/[workflowId]/route";
 import { POST as saveDraft } from "@/app/api/workflows/current/route";
+import {
+  bundleStep,
+  NESTED_LOOP,
+  NOT_TURNED_ON,
+  nestedBundleWorkflow,
+} from "@/tests/utils/bundle-save-fixtures";
 
 function writeNode(
   keys: Record<string, unknown>,
@@ -295,5 +302,81 @@ describe.each(routes)("%s with Send as keys", (_name, save) => {
       sendMode: "private-relay",
       usePrivateMempool: true,
     });
+  });
+});
+
+function patch(body: Record<string, unknown>): Promise<Response> {
+  return PATCH(
+    new Request("http://localhost:3000/api/workflows/wf-1", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    { params: Promise.resolve({ workflowId: "wf-1" }) }
+  );
+}
+
+function draft(body: Record<string, unknown>): Promise<Response> {
+  return saveDraft(
+    new Request("http://localhost:3000/api/workflows/current", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+describe("Send as Bundle checks get the organization and the edges", () => {
+  beforeEach(() => {
+    store.nodes = [];
+    store.edges = [];
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ["PATCH", patch],
+    ["autosave (current)", draft],
+  ])(
+    "%s checks the rollout for the workflow's organization",
+    async (_name, save) => {
+      vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org-1");
+      const inRollout = await save({ nodes: [bundleStep()], edges: [] });
+      expect(inRollout.status).toBe(200);
+
+      store.nodes = [];
+      vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:someone-else");
+      const outside = await save({ nodes: [bundleStep()], edges: [] });
+      expect(outside.status).toBe(422);
+      expect(JSON.stringify(await outside.json())).toContain(NOT_TURNED_ON);
+    }
+  );
+
+  it.each([
+    ["PATCH", patch],
+    ["autosave (current)", draft],
+  ])(
+    "%s refuses a bundle step wired into a nested For Each",
+    async (_name, save) => {
+      vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org-1");
+      const response = await save(nestedBundleWorkflow());
+      expect(response.status).toBe(422);
+      expect(JSON.stringify(await response.json())).toContain(NESTED_LOOP);
+    }
+  );
+
+  it("PATCH with edges alone (as MCP update_workflow sends) runs the loop rule on the saved nodes", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org-1");
+    const { nodes, edges } = nestedBundleWorkflow();
+    store.nodes = nodes;
+    const nested = await patch({ edges });
+    expect(nested.status).toBe(422);
+    expect(JSON.stringify(await nested.json())).toContain(NESTED_LOOP);
+
+    const single = await patch({
+      edges: [
+        { id: "e1", source: "outer", target: "write-1", sourceHandle: "loop" },
+      ],
+    });
+    expect(single.status).toBe(200);
   });
 });

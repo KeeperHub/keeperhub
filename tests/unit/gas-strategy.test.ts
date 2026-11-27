@@ -50,6 +50,7 @@ import {
 } from "@/lib/web3/gas-defaults";
 import {
   AdaptiveGasStrategy,
+  chainTipLimitGwei,
   getGasStrategy,
   HARDCODED_CHAIN_OVERRIDES,
   resetGasStrategy,
@@ -798,6 +799,21 @@ describe("AdaptiveGasStrategy", () => {
       const strategy2 = getGasStrategy();
 
       expect(strategy1).not.toBe(strategy2);
+    });
+
+    it("lists the tip limit from the shared strategy's config, as run time reads it", async () => {
+      resetGasStrategy();
+      const strategy = getGasStrategy({ maxPriorityFeeGwei: 7 });
+      try {
+        expect(chainTipLimitGwei(999_999, null)).toBe(7);
+        expect(chainTipLimitGwei(999_999, { maxPriorityFeeGwei: 42 })).toBe(42);
+        expect(chainTipLimitGwei(999_999, { maxPriorityFeeGwei: "x" })).toBe(
+          null
+        );
+        expect(strategy.tipLimitGwei(999_999, null)).toBe(7);
+      } finally {
+        resetGasStrategy();
+      }
     });
 
     it("should ignore config after first initialization", () => {

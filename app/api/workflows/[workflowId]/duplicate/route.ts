@@ -15,7 +15,12 @@ import { remapNodeReferencesInConfig } from "@/lib/utils/template";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
-import { clearStrayToggles } from "@/lib/workflow/validation/action-config";
+import {
+  clearStrayToggles,
+  formatActionConfigValidationResponse,
+  type WorkflowNodeForValidation,
+} from "@/lib/workflow/validation/action-config";
+import { validateSendModeForSave } from "@/lib/workflow/validation/send-mode";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 // Node type for type-safe node manipulation
 type WorkflowNodeLike = {
@@ -204,6 +209,28 @@ export async function POST(
     );
     if (featureGuard.blocked) {
       return featureGuard.response;
+    }
+
+    // A copied bundle step is checked for the copy's organization, so a copy
+    // it cannot run is refused whole; other steps pass as saved.
+    const sendModes = await validateSendModeForSave(
+      newNodes as WorkflowNodeForValidation[],
+      {
+        savedNodes: newNodes as WorkflowNodeForValidation[],
+        recheckBundles: true,
+        copy: true,
+        organizationId,
+        edges: newEdges,
+      }
+    );
+    if (!sendModes.valid) {
+      return NextResponse.json(
+        formatActionConfigValidationResponse(sendModes, {
+          lead: "This workflow cannot be copied into your organization.",
+          end: "Nothing was copied.",
+        }),
+        { status: 422 }
+      );
     }
 
     // Count workflows in the owning org to generate a unique name.

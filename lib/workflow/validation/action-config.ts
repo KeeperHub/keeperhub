@@ -9,6 +9,7 @@ import { isBoolLiteral, isToggleValue, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { cutText } from "@/lib/utils/cut-text";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
+import { BUNDLE_SETTING_KEYS, readNameList } from "@/lib/web3/bundles/settings";
 import { SEND_MODE_KEY } from "@/lib/web3/send-mode";
 import {
   checkSolidityValue,
@@ -295,6 +296,10 @@ function suggestActionType(input: string): string | undefined {
   }
   return undefined;
 }
+
+const BUNDLE_SETTING_KEY_SET: ReadonlySet<string> = new Set(
+  Object.values(BUNDLE_SETTING_KEYS)
+);
 
 function isMissingRequiredValue(value: unknown): boolean {
   return value === undefined || value === null || value === "";
@@ -944,6 +949,18 @@ function validateFieldValue(
         isJsonArrayString(value)
         ? { valid: true }
         : { valid: false, expected: "array", received: value };
+    case "multi-select":
+      // The choices themselves are checked where they are known.
+      return readNameList(value, field.max) === null
+        ? {
+            valid: false,
+            expected:
+              field.max === undefined
+                ? "array of names, no templates"
+                : `array of up to ${field.max} names, no templates`,
+            received: value,
+          }
+        : { valid: true };
     case "abi-event-args":
       // Keyed by indexed parameter name, so the step refuses an array.
       return isRecord(value) ||
@@ -1222,9 +1239,9 @@ export function validateWorkflowActionConfigs(
         });
       }
 
-      // Send as is checked by validateSendModeForSave, with one issue per node.
+      // Send as and the bundle settings are checked by validateSendModeForSave, with one issue per node.
       const fieldCheck: FieldCheckResult =
-        field.key === SEND_MODE_KEY
+        field.key === SEND_MODE_KEY || BUNDLE_SETTING_KEY_SET.has(field.key)
           ? { valid: true }
           : validateFieldValue(field, value);
       if (!fieldCheck.valid) {
@@ -1372,7 +1389,12 @@ function formatNodeFields(fields: string[], count: number): string {
 }
 
 export function formatActionConfigValidationResponse(
-  validation: ActionConfigValidationResult
+  validation: ActionConfigValidationResult,
+  // A caller that does not save (a copy) says what happened instead.
+  wording: { lead: string; end: string } = {
+    lead: "Workflow contains invalid action configuration.",
+    end: "Fix the listed fields and save again.",
+  }
 ) {
   const summary =
     validation.issues.length > 0
@@ -1460,7 +1482,7 @@ export function formatActionConfigValidationResponse(
       : "";
   return {
     error: "INVALID_ACTION_CONFIG",
-    message: `Workflow contains invalid action configuration. ${summary}Fix the listed fields and save again.`,
+    message: `${wording.lead} ${summary}${wording.end}`,
     invalidFields: validation.issues,
   };
 }

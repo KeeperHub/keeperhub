@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isSavedNodeStatus } from "@/lib/workflow/saved-node-status";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 
@@ -21,7 +22,13 @@ const nodeDataSchema = z
     // CRITICAL: data.config keeps z.record(z.string(), z.unknown()) — plugin-specific keys must remain free.
     // .strict() lives ONLY on the outer envelope, not on config.
     config: z.record(z.string(), z.unknown()).optional(),
-    status: z.enum(["idle", "running", "success", "error"]).optional(),
+    // Run state only: a known one is kept as before, any other (a run view's
+    // own, such as "not-included") is dropped so older exports still import.
+    status: z
+      .string()
+      .max(32)
+      .optional()
+      .transform((status) => (isSavedNodeStatus(status) ? status : undefined)),
     enabled: z.boolean().optional(),
   })
   .strict();
@@ -206,10 +213,12 @@ export function buildWorkflowExportV1(workflow: {
       });
     }
 
+    // A node's run state belongs to a run on screen, not to the workflow.
+    const { status: _status, ...data } = node.data;
     return {
       ...node,
       data: {
-        ...node.data,
+        ...data,
         ...(config === undefined ? {} : { config }),
       },
     };

@@ -75,7 +75,10 @@ export async function writeContractStep(
             // or it could rewrite an argument after the stablecoin ceiling read it.
             const { payerParam: _ignoredPayerParam, ...coreInput } =
               input as typeof input & { payerParam?: unknown };
-            coreResult = await writeContractCore(coreInput);
+            coreResult = await writeContractCore({
+              ...coreInput,
+              allowBundle: true,
+            });
             return coreResult;
           },
           // A bundle that moved nothing and cannot still land frees its value.

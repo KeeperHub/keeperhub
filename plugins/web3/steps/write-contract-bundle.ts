@@ -22,6 +22,7 @@ import {
 } from "@/lib/web3/bundles/builders";
 import { type MinedHash, minedOf } from "@/lib/web3/bundles/bundle-history";
 import { bundleInFlight, type InFlight } from "@/lib/web3/bundles/in-flight";
+import { bundleLoopRefusal } from "@/lib/web3/bundles/loop-rule";
 import { isBundleSendEnabledForOrg } from "@/lib/web3/bundles/rollout";
 import { getSearcherWallet } from "@/lib/web3/bundles/searcher-key";
 import {
@@ -50,7 +51,11 @@ import {
   isNextBlockSimulationUnsupported,
 } from "@/lib/web3/next-block-simulation";
 import { minedRevertError } from "@/lib/web3/onchain-revert";
-import { SEND_MODE, USE_NORMAL_HINT } from "@/lib/web3/send-mode";
+import {
+  BUNDLE_SAFE_REFUSAL,
+  SEND_MODE,
+  USE_NORMAL_HINT,
+} from "@/lib/web3/send-mode";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
 import type { TraceExecutedCallOptions } from "@/lib/web3/trace-executed-call";
 import {
@@ -60,7 +65,7 @@ import {
 import { initializeWalletSigner } from "@/lib/web3/wallet-helpers";
 import {
   BUNDLE_ROUTE,
-  RUN_OUTCOME_ACTION_TYPES,
+  BUNDLE_STEP_ACTION_TYPES,
   RUN_OUTCOME_OUTPUT,
 } from "@/lib/workflow/executor/run-outcome-keys";
 import type {
@@ -117,7 +122,7 @@ export async function prepareBundleRoute(options: {
       context.workflowId &&
       context.nodeId &&
       context.nodeType &&
-      RUN_OUTCOME_ACTION_TYPES.includes(context.nodeType)
+      BUNDLE_STEP_ACTION_TYPES.includes(context.nodeType)
     )
   ) {
     return userFailure(
@@ -125,10 +130,9 @@ export async function prepareBundleRoute(options: {
     );
   }
   // A nested body's iteration index repeats under every outer iteration, so a replay could not be told apart.
-  if ((context.loopDepth ?? 1) > 1) {
-    return userFailure(
-      `${SET_TO_BUNDLE} bundles cannot run inside a For Each that is inside another For Each yet. Move this step into a single For Each. ${USE_NORMAL_HINT}`
-    );
+  const loopRefusal = bundleLoopRefusal(context.loopDepth ?? 0);
+  if (loopRefusal) {
+    return userFailure(loopRefusal);
   }
   const read = readBundleSettings(options.config);
   if (!read.ok) {
@@ -197,7 +201,7 @@ export function bundleSignerRefusal(
   }
   return {
     success: false,
-    error: `${SET_TO_BUNDLE} bundles cannot send through a Safe or Roles connection yet. Use your wallet (EOA) connection, or set Send as to Normal transaction (sendMode: "${SEND_MODE.TRANSACTION}").`,
+    error: BUNDLE_SAFE_REFUSAL,
     errorClass: ExecutionErrorType.USER,
   };
 }

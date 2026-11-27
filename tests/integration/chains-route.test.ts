@@ -220,6 +220,29 @@ describe("/api/chains route", () => {
       expect(chain).toHaveProperty("explorerApiType", "etherscan");
       expect(chain).toHaveProperty("isTestnet", false);
       expect(chain).toHaveProperty("isEnabled", true);
+      // No gas config on the row: the default tip limit.
+      expect(chain).toHaveProperty("tipLimitGwei", 500);
+    });
+
+    it("reports the tip limit as the gas strategy reads it: default, chain override, row config", async () => {
+      const withGas = (chainId: number, gasConfig: unknown) => ({
+        ...mockChains.ethereumWithExplorer,
+        chain: { ...mockChains.ethereumWithExplorer.chain, chainId, gasConfig },
+      });
+      mockQueryResult = [
+        withGas(1, null),
+        withGas(8453, {}),
+        withGas(1, { maxPriorityFeeGwei: 42 }),
+        withGas(1, { maxPriorityFeeGwei: "x" }),
+      ];
+      const response = await GET(createRequest("/api/chains"));
+      const data = (await response.json()) as { tipLimitGwei: unknown }[];
+      expect(data.map((chain) => chain.tipLimitGwei)).toEqual([
+        500,
+        5,
+        42,
+        null,
+      ]);
     });
 
     it("reports a private relay only with the flag on and a relay URL set, never the URL", async () => {

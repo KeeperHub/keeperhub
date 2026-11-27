@@ -1486,14 +1486,18 @@ describe("bundles not landing", () => {
       "Keeper: bundles have not landed in the last 3 runs"
     );
     for (const cause of [
-      "tip is too low",
-      "another keeper already made the call",
-      "builders",
+      "No builder included it",
+      "A higher tip (Priority Fee or the tip increase) or more builders can help.",
+      "a tip is paid only up to what Max Fee leaves above the base fee",
+      "most likely because someone else made it first",
       "could not be checked; these may still land",
+      "It could not be checked yet, and it may still land within about a day.",
       "No gas is paid unless a bundle lands",
     ]) {
       expect(message.text).toContain(cause);
     }
+    // Plain words only: no output key names in the alert.
+    expect(message.text).not.toContain("notIncludedReason");
     expect(message.text).not.toContain("same wallet");
     expect(message.text).toContain("Not landing since 2026-10-28 11:00 UTC");
     expect(message.text).not.toContain("Last error");

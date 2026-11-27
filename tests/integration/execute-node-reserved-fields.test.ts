@@ -1231,3 +1231,30 @@ describe("POST /api/execute/node broadcast hash on a failed step", () => {
     );
   });
 });
+
+describe("POST /api/execute/node Send as Bundle", () => {
+  it("refuses a bundle before anything runs, even for an organization in the rollout", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org_a");
+    try {
+      const response = await nodePOST(
+        postRequest({
+          actionType: "web3/write-contract",
+          config: {
+            network: "{{@t:Trigger.chainId}}",
+            sendMode: "bundle",
+            contractAddress: "0x000000000000000000000000000000000000dEaD",
+            abiFunction: "run",
+          },
+        })
+      );
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain(
+        "only runs in a Write Contract step of a workflow, not through direct execution"
+      );
+      expect(mocks.stepFn).not.toHaveBeenCalled();
+      expect(mocks.checkAndReserveExecution).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

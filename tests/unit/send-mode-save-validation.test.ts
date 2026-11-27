@@ -7,6 +7,8 @@ const rows = vi.hoisted(() => ({
     chainId: number;
     usePrivateMempoolRpc: boolean | null;
     defaultPrivateRpcUrl?: string | null;
+    bundleBuilders?: unknown;
+    name?: string;
   }[],
   queries: 0,
 }));
@@ -48,10 +50,15 @@ beforeEach(() => {
       chainId: 1,
       usePrivateMempoolRpc: true,
       defaultPrivateRpcUrl: "https://relay.example",
+      bundleBuilders: [
+        { name: "flashbots", url: "https://relay.flashbots.example" },
+        { name: "titan", url: "https://rpc.titan.example" },
+      ],
     },
-    { chainId: 8453, usePrivateMempoolRpc: false },
+    { chainId: 8453, usePrivateMempoolRpc: false, bundleBuilders: [] },
   ];
   rows.queries = 0;
+  vi.unstubAllEnvs();
 });
 
 // The old two-argument shape: nodes, then the saved nodes.
@@ -428,29 +435,11 @@ describe("sendMode must be a known value", () => {
     expect(direct.issues).toHaveLength(1);
     expect(direct.issues[0]).toMatchObject({ field: "sendMode" });
     expect(direct.issues[0].message).toContain(
-      'sendMode must be "transaction" (Normal transaction) or "private-relay" (Private relay)'
+      'sendMode must be "transaction" (Normal transaction), "private-relay" (Private relay) or "bundle" (Bundle)'
     );
     for (const options of [{ keepLegacy: true }, { savedNodes: [] }, {}]) {
       const all = await validateWorkflowNodesForSave(
         [write("a", { network: "1", sendMode })],
-        options
-      );
-      expect(
-        all.issues.filter((issue) => issue.field === "sendMode")
-      ).toHaveLength(1);
-    }
-  });
-
-  it("refuses a new bundle step on every save path until the editor offers it", async () => {
-    const node = write("a", { network: "1", sendMode: "bundle" });
-    const direct = await validateSendModeForSave([node]);
-    expect(direct.issues).toHaveLength(1);
-    expect(direct.issues[0].message).toBe(
-      'Send as: Bundle is not available yet. Set Send as to Normal transaction (sendMode: "transaction").'
-    );
-    for (const options of [{ keepLegacy: true }, { savedNodes: [] }, {}]) {
-      const all = await validateWorkflowNodesForSave(
-        [write("a", { network: "1", sendMode: "bundle" })],
         options
       );
       expect(
@@ -665,5 +654,270 @@ describe("the legacy key beside sendMode, and drafts", () => {
       });
       expect(fresh.valid).toBe(false);
     }
+  });
+});
+
+describe("Send as Bundle at save", () => {
+  const ORG = "org-in";
+  const enable = (): void => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", `orgs:${ORG}`);
+  };
+  const bundle = (config: Record<string, unknown> = {}, action?: string) =>
+    write("a", { network: "1", sendMode: "bundle", ...config }, action);
+  const check = (
+    nodes: Parameters<typeof validateSendModeForSave>[0],
+    options: Parameters<typeof validateSendModeForSave>[1] = {}
+  ) => validateSendModeForSave(nodes, { organizationId: ORG, ...options });
+
+  it("accepts a Write Contract bundle step for an organization in the rollout", async () => {
+    enable();
+    const result = await check([
+      bundle({
+        bundleBlocks: "3",
+        bundleTipIncreasePercent: 20,
+        bundleBuilders: ["titan"],
+      }),
+    ]);
+    expect(result.issues).toEqual([]);
+  });
+
+  it("refuses an organization outside the rollout, naming the label and the value", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:someone-else");
+    const result = await check([bundle()]);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({ field: "sendMode" });
+    expect(result.issues[0].message).toBe(
+      'Send as: Bundle (sendMode "bundle") is not turned on for this organization yet. Set Send as to Normal transaction (sendMode: "transaction").'
+    );
+  });
+
+  it("refuses without an organization, and with the rollout off", async () => {
+    enable();
+    const none = await validateSendModeForSave([bundle()]);
+    expect(none.issues[0].message).toContain("not turned on");
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
+    expect((await check([bundle()])).issues).toHaveLength(1);
+  });
+
+  it("keeps a step saved as a bundle saving after the rollout is turned off", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
+    const saved = bundle({ bundleBlocks: "3" });
+    const edited = bundle({ bundleBlocks: "2", abiFunction: "run" });
+    expect((await check([edited], { savedNodes: [saved] })).issues).toEqual([]);
+    // Its settings are still checked.
+    const broken = await check([bundle({ bundleBlocks: "9" })], {
+      savedNodes: [saved],
+    });
+    expect(broken.issues[0]).toMatchObject({ field: "bundleBlocks" });
+  });
+
+  it.each([
+    ["web3/transfer-funds"],
+    ["web3/batch-write-contract"],
+    ["web3/approve-token"],
+  ])("refuses %s, which cannot bundle", async (action) => {
+    enable();
+    const result = await check([bundle({}, action)]);
+    expect(result.issues).toHaveLength(1);
+    // Said once: the mode, where it works, and the fix.
+    expect(result.issues[0].message).toBe(
+      'Bundle (sendMode: "bundle") is only available on Write Contract steps. Set Send as to Normal transaction (sendMode: "transaction").'
+    );
+  });
+
+  it("refuses direct execution even in the rollout", async () => {
+    enable();
+    const result = await check([bundle()], { direct: true });
+    expect(result.issues[0].message).toContain(
+      "only runs in a Write Contract step of a workflow, not through direct execution"
+    );
+  });
+
+  it("refuses a Safe connection on the web3Connection field", async () => {
+    enable();
+    const result = await check([bundle({ web3Connection: "safe:abc" })]);
+    expect(result.issues[0]).toMatchObject({ field: "web3Connection" });
+    expect(result.issues[0].message).toBe(
+      'web3Connection "safe:...": Send as Bundle cannot send through a Safe or Roles connection yet. Use your wallet (EOA) connection, or set Send as to Normal transaction (sendMode: "transaction").'
+    );
+  });
+
+  it.each([
+    [{ bundleBlocks: 0 }, "bundleBlocks", "Target blocks (bundleBlocks)"],
+    [{ bundleBlocks: "6" }, "bundleBlocks", "Target blocks (bundleBlocks)"],
+    [
+      { bundleBlocks: "{{@n:N.x}}" },
+      "bundleBlocks",
+      "Target blocks (bundleBlocks)",
+    ],
+    [
+      { bundleTipIncreasePercent: 101 },
+      "bundleTipIncreasePercent",
+      "Tip increase per block (%) (bundleTipIncreasePercent)",
+    ],
+    [
+      { bundleBuilders: "titan" },
+      "bundleBuilders",
+      "Builders (bundleBuilders)",
+    ],
+  ])("refuses %j on its own field", async (config, field, label) => {
+    enable();
+    const result = await check([bundle(config)]);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({ field });
+    expect(result.issues[0].message).toContain(label);
+  });
+
+  it("refuses a chain without builders", async () => {
+    enable();
+    const result = await check([bundle({ network: "8453" })]);
+    expect(result.issues[0].message).toBe(
+      'Send as: Bundle (sendMode "bundle") is not available on chain 8453: it has no block builders. Set Send as to Normal transaction (sendMode: "transaction").'
+    );
+  });
+
+  it("names the network by its name when the chain row has one", async () => {
+    enable();
+    rows.value = [
+      {
+        chainId: 8453,
+        name: "Base",
+        usePrivateMempoolRpc: false,
+        bundleBuilders: [],
+      },
+    ];
+    const result = await check([bundle({ network: "8453" })]);
+    expect(result.issues[0].message).toContain(
+      "is not available on Base: it has no block builders."
+    );
+  });
+
+  it("validate_workflow (recheckBundles) re-checks saved bundle steps only", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
+    const nodes = [
+      bundle(),
+      // Saved before, and run as stored: a key conflict and an old non-boolean flag.
+      write("conflict", {
+        network: "1",
+        sendMode: "transaction",
+        usePrivateMempool: true,
+      }),
+      write("legacy", { network: "1", usePrivateMempool: "true" }),
+    ];
+    const result = await check(nodes, {
+      savedNodes: nodes,
+      recheckBundles: true,
+    });
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({ nodeId: "a", field: "sendMode" });
+    expect(result.issues[0].message).toContain("not turned on");
+  });
+
+  it("refuses builder names the chain does not list, and lists the ones it does", async () => {
+    enable();
+    const result = await check([bundle({ bundleBuilders: ["titan", "gone"] })]);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({ field: "bundleBuilders" });
+    expect(result.issues[0].message).toContain(
+      'does not list: "gone". Pick from: flashbots, titan'
+    );
+  });
+
+  it("cuts a long unknown builder name short in the message", async () => {
+    enable();
+    const long = "x".repeat(500);
+    const result = await check([bundle({ bundleBuilders: [long] })]);
+    expect(result.issues[0].message).not.toContain(long);
+    expect(result.issues[0].message).toContain(`"${"x".repeat(39)}...`);
+    // `received` echoes only the unknown names, cut short too.
+    expect(result.issues[0].received).toEqual([`${"x".repeat(40)}...`]);
+  });
+
+  it("a copy says why the step cannot run, without advice the copier cannot act on", async () => {
+    const copy = async (nodes: ReturnType<typeof bundle>[]) =>
+      (
+        await check(nodes, {
+          savedNodes: nodes,
+          recheckBundles: true,
+          copy: true,
+        })
+      ).issues.map((issue) => issue.message);
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
+    expect(await copy([bundle()])).toEqual([
+      'Send as: Bundle (sendMode "bundle") cannot run in your organization: bundles are not turned on for it yet.',
+    ]);
+    enable();
+    expect(await copy([bundle({ network: "8453" })])).toEqual([
+      'Send as: Bundle (sendMode "bundle") cannot run on chain 8453: it has no block builders.',
+    ]);
+    expect(await copy([bundle({ bundleBuilders: ["gone"] })])).toEqual([
+      'Send as: Bundle (sendMode "bundle") cannot run: chain 1 lists none of its builders ("gone").',
+    ]);
+    for (const message of [
+      ...(await copy([bundle({ network: "8453" })])),
+      ...(await copy([bundle({ bundleBuilders: ["gone"] })])),
+    ]) {
+      expect(message).not.toContain("Normal transaction");
+    }
+  });
+
+  it("recheck holds a stored step to the run-time builder rule: refused only when none is listed", async () => {
+    enable();
+    const partly = [bundle({ bundleBuilders: ["titan", "gone"] })];
+    expect(
+      (await check(partly, { savedNodes: partly, recheckBundles: true })).issues
+    ).toEqual([]);
+    const none = [bundle({ bundleBuilders: ["gone"] })];
+    const result = await check(none, {
+      savedNodes: none,
+      recheckBundles: true,
+    });
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({ field: "bundleBuilders" });
+    // A step changed since it was saved stays strict.
+    const changed = await check(partly, {
+      savedNodes: [bundle({ bundleBuilders: ["titan"] })],
+      recheckBundles: true,
+    });
+    expect(changed.issues).toHaveLength(1);
+  });
+
+  it("checks a templated network's builders at run time only", async () => {
+    enable();
+    const result = await check([
+      bundle({ network: "{{@t:T.chain}}", bundleBuilders: ["anything"] }),
+    ]);
+    expect(result.issues).toEqual([]);
+  });
+
+  it("refuses a bundle step in a For Each nested in another, but not in one", async () => {
+    enable();
+    const forEach = (id: string) => ({
+      id,
+      type: "action",
+      data: {
+        type: "action",
+        label: id,
+        config: { actionType: "For Each", arraySource: "[]" },
+      },
+    });
+    const nodes = [forEach("outer"), forEach("inner"), bundle()];
+    const nested = [
+      { id: "e1", source: "outer", target: "inner", sourceHandle: "loop" },
+      { id: "e2", source: "inner", target: "a", sourceHandle: "loop" },
+    ];
+    const refused = await check(nodes, { edges: nested });
+    expect(refused.issues).toHaveLength(1);
+    expect(refused.issues[0].message).toContain(
+      "cannot run inside a For Each that is inside another For Each"
+    );
+    // Refused on an unchanged saved step too: the rule is not new.
+    const kept = await check(nodes, { edges: nested, savedNodes: nodes });
+    expect(kept.issues).toHaveLength(1);
+
+    const single = [
+      { id: "e1", source: "outer", target: "a", sourceHandle: "loop" },
+    ];
+    expect((await check(nodes, { edges: single })).issues).toEqual([]);
   });
 });

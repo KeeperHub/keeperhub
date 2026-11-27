@@ -15,6 +15,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { nanoid } from "nanoid";
 import { computeAutoLayout } from "@/lib/workflow/editor/auto-layout";
 import type { ConditionOperator } from "@/lib/workflow/nodes/condition/builder-types";
+import { isSavedNodeStatus } from "@/lib/workflow/saved-node-status";
 
 /** Map common MCP/AI operator aliases to canonical ConditionOperator values */
 const OPERATOR_ALIASES: Record<string, ConditionOperator> = {
@@ -353,7 +354,8 @@ function sanitizeNode(raw: Record<string, unknown>): Record<string, unknown> {
     label: rawData.label ?? "",
     type: canonicalType,
     config,
-    status: rawData.status ?? "idle",
+    // A run view's own states (such as "not-included") are never stored.
+    status: isSavedNodeStatus(rawData.status) ? rawData.status : "idle",
   };
 
   if (rawData.description !== undefined) {

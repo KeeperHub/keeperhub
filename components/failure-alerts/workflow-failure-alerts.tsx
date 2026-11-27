@@ -1,6 +1,6 @@
 "use client";
 
-import { useAtomValue, useSetAtom } from "jotai";
+import { atom, useAtomValue, useSetAtom } from "jotai";
 import { BellOff, Check, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -56,12 +56,14 @@ import {
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { HOUR_MS } from "@/lib/utils/duration";
+import { resolveSendMode, SEND_MODE } from "@/lib/web3/send-mode";
 import {
   extraUnsavedAtom,
   registerExtraSave,
 } from "@/lib/workflow/extra-saves";
 import {
   isWorkflowEnabled,
+  nodesAtom,
   propertiesPanelActiveTabAtom,
   workflowEnableToggleAtom,
 } from "@/lib/workflow/store";
@@ -94,6 +96,15 @@ import {
   SaveError,
   type SaveRefusal,
 } from "./save-state";
+
+// Whether the workflow has a step sent as a bundle; re-renders only when that flips.
+const hasBundleStepAtom = atom((get) =>
+  get(nodesAtom).some(
+    (node) =>
+      node.data?.config !== undefined &&
+      resolveSendMode(node.data.config) === SEND_MODE.BUNDLE
+  )
+);
 
 type Loaded = WorkflowAlertView & { canManage: boolean };
 type Panel = null | "pause";
@@ -194,7 +205,10 @@ function RulesView({
   notifyRecovery,
   emails,
   channels,
+  hasBundleStep,
 }: {
+  // The workflow has a step sent as a bundle, so Not landed runs can happen.
+  hasBundleStep: boolean;
   threshold: number;
   timeLimitMinutes: number | null;
   disableWorkflow: boolean;
@@ -254,6 +268,15 @@ function RulesView({
           Alert after <span className="font-semibold">{threshold}</span> failed
           run{threshold === 1 ? "" : "s"} in a row
         </p>
+        {hasBundleStep && (
+          <p
+            className="text-muted-foreground text-xs"
+            data-testid="failure-alerts-not-landed-rule"
+          >
+            or warn after {threshold} Not landed run
+            {threshold === 1 ? "" : "s"} in a row (bundles not included)
+          </p>
+        )}
         <p>
           {timeLimitMinutes ? (
             <>
@@ -387,6 +410,7 @@ export function WorkflowFailureAlerts({
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
   const enableToggle = useAtomValue(workflowEnableToggleAtom);
   const enabled = useAtomValue(isWorkflowEnabled);
+  const hasBundleStep = useAtomValue(hasBundleStepAtom);
 
   const [threshold, setThreshold] = useState("");
   const [timeLimit, setTimeLimit] = useState("org");
@@ -1444,6 +1468,7 @@ export function WorkflowFailureAlerts({
                 channels={view.org.channels}
                 disableWorkflow={false}
                 emails={orgEmails(view)}
+                hasBundleStep={hasBundleStep}
                 notifyRecovery={view.org.notifyRecovery}
                 remindDaily={view.org.remindDaily}
                 threshold={view.org.threshold}
@@ -1682,6 +1707,7 @@ export function WorkflowFailureAlerts({
                   }
                   disableWorkflow={custom && view.override.disableWorkflow}
                   emails={custom ? view.effective.emails : orgEmails(view)}
+                  hasBundleStep={hasBundleStep}
                   notifyRecovery={view.org.notifyRecovery}
                   remindDaily={view.org.remindDaily}
                   threshold={

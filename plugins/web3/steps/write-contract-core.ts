@@ -138,6 +138,8 @@ export type WriteContractCoreInput = {
   // false: a relay failure other than a revert is retried on the public RPC, and
   // sendMode "private-relay" on a chain without a relay sends publicly.
   strict?: boolean;
+  // Set only by the Write Contract step: every other caller refuses a bundle.
+  allowBundle?: boolean;
   // Per-node Web3 Connection field. See ParsedWeb3Connection / parseWeb3Connection
   // in lib/safe/signer-resolver.ts. Missing -> "default" -> org-policy resolver.
   web3Connection?: string;
@@ -509,7 +511,7 @@ async function writeContractCoreImpl(
   const resolved = await resolveWriteRpc(input, {
     chainId,
     userId,
-    allowBundle: true,
+    allowBundle: input.allowBundle === true,
     log: { tag: "[Write Contract]", action: "write-contract" },
     fallbackClass: ExecutionErrorType.SYSTEM,
   });

@@ -1,7 +1,16 @@
 import { type AnyColumn, type SQL, sql } from "drizzle-orm";
 import {
-  RUN_OUTCOME_ACTION_TYPES,
+  BUNDLE_STEP_ACTION_TYPES,
   RUN_OUTCOME_OUTPUT,
+  RUN_OUTCOME_REASON,
+  type RunOutcomeSignals,
+} from "./run-outcome-keys";
+
+// The step reader lives with the keys, so run views share it without SQL.
+export {
+  NO_RUN_OUTCOME_SIGNALS,
+  type RunOutcomeSignals,
+  signalsOfStep,
 } from "./run-outcome-keys";
 
 /**
@@ -10,55 +19,6 @@ import {
  * bundle was still in flight (`skipped`, even when other steps sent).
  */
 export type RunOutcome = "skipped" | "not_landed";
-
-/** What the run's steps said, merged over every successful step. */
-export type RunOutcomeSignals = {
-  skippedInFlight: boolean;
-  notIncluded: boolean;
-};
-
-export const NO_RUN_OUTCOME_SIGNALS: RunOutcomeSignals = {
-  skippedInFlight: false,
-  notIncluded: false,
-};
-
-/** The signals one successful step's output carries; none unless it is Write Contract. */
-export function signalsOfStep(
-  nodeType: string,
-  output: unknown
-): RunOutcomeSignals {
-  if (
-    !RUN_OUTCOME_ACTION_TYPES.includes(nodeType) ||
-    output === null ||
-    typeof output !== "object" ||
-    Array.isArray(output)
-  ) {
-    return NO_RUN_OUTCOME_SIGNALS;
-  }
-  const fields = output as Record<string, unknown>;
-  const reason = fields[RUN_OUTCOME_OUTPUT.notIncludedReasonKey];
-  return {
-    skippedInFlight:
-      fields[RUN_OUTCOME_OUTPUT.routeKey] ===
-      RUN_OUTCOME_OUTPUT.skippedInFlightRoute,
-    notIncluded: typeof reason === "string" && hasVisibleText(reason),
-  };
-}
-
-// Zero-width characters JS whitespace misses; a reason of only these is blank.
-const ZERO_WIDTH = new Set([0x20_0b, 0x20_0c, 0x20_0d, 0xfe_ff]);
-const WHITESPACE_RE = /\s/u;
-
-function hasVisibleText(text: string): boolean {
-  for (const char of text) {
-    if (
-      !(WHITESPACE_RE.test(char) || ZERO_WIDTH.has(char.codePointAt(0) ?? 0))
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
 
 export function mergeSignals(
   a: RunOutcomeSignals,
@@ -95,10 +55,7 @@ export function runOutcomeOf(
  * runs list says why. A late landing that settles the run clears it.
  */
 export function runOutcomeReason(outcome: RunOutcome): string {
-  if (outcome === "skipped") {
-    return "Skipped: this workflow's earlier bundle could still land, so the bundle step sent no transaction. Any other steps still ran.";
-  }
-  return "Not landed: a bundle in this run was not seen in any of the blocks it was sent for (or could not be checked). No gas is paid unless a bundle lands; see the Write Contract step's notIncludedReason.";
+  return RUN_OUTCOME_REASON[outcome];
 }
 
 // Characters the SQL filter strips: a subset of what hasVisibleText skips,
@@ -119,7 +76,7 @@ type LogColumns = { nodeType: AnyColumn; outputRaw: AnyColumn };
 export function runOutcomeSignalSql(
   log: LogColumns
 ): Record<keyof RunOutcomeSignals, SQL> {
-  const types = sql.join(RUN_OUTCOME_ACTION_TYPES.map(literal), sql`, `);
+  const types = sql.join(BUNDLE_STEP_ACTION_TYPES.map(literal), sql`, `);
   const route = literal(RUN_OUTCOME_OUTPUT.routeKey);
   const reason = literal(RUN_OUTCOME_OUTPUT.notIncludedReasonKey);
   const writeContract = sql`${log.nodeType} IN (${types})`;
@@ -136,4 +93,21 @@ export function runOutcomeSignalSql(
 export function runOutcomeLogSql(log: LogColumns): SQL {
   const { skippedInFlight, notIncluded } = runOutcomeSignalSql(log);
   return sql`(${skippedInFlight} OR ${notIncluded})`;
+}
+
+/** The output keys a run view's step outcome reads, as SQL text (no step body read). */
+export function stepOutcomeKeysSql(output: AnyColumn): {
+  route: SQL<string | null>;
+  notIncludedReason: SQL<string | null>;
+} {
+  // Only a JSON string counts, as in signalsOfStep (->> would turn a number into text).
+  const stringAt = (key: string): SQL<string | null> =>
+    sql<
+      string | null
+    >`CASE WHEN jsonb_typeof(${output}->${literal(key)}) = 'string'
+      THEN ${output}->>${literal(key)} END`;
+  return {
+    route: stringAt(RUN_OUTCOME_OUTPUT.routeKey),
+    notIncludedReason: stringAt(RUN_OUTCOME_OUTPUT.notIncludedReasonKey),
+  };
 }

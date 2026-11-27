@@ -37,6 +37,14 @@ import {
   shownRefusal,
 } from "@/lib/notifications/failure-alerts/view-types";
 import {
+  NOT_LANDED_STEP_POINTER,
+  notIncludedReasonText,
+  STEP_OUTCOME_TEXT,
+  type StepOutcome,
+  stepOutcomeOf,
+  stepOutcomeTitle,
+} from "@/lib/workflow/executor/run-outcome-keys";
+import {
   OUTPUT_DISPLAY_CONFIGS,
   type OutputDisplayConfig,
 } from "@/lib/output-display-configs";
@@ -64,6 +72,7 @@ import {
   MAX_STORED_OUTPUT_BYTES,
 } from "@/lib/workflow/output-limits";
 import { refusalSummary } from "@/lib/workflow/refusal-summary";
+import { runLogsDue } from "@/lib/workflow/run-polling";
 import {
   currentWorkflowIdAtom,
   executionLogsAtom,
@@ -89,6 +98,10 @@ type ExecutionLog = {
   error: string | null;
   iterationIndex: number | null;
   forEachNodeId: string | null;
+  // A bundle step's shown outcome, from its output and its run.
+  outcome?: StepOutcome;
+  // Another step of the run started after this one.
+  laterStepRan?: boolean;
 };
 
 type WorkflowExecution = ExecutionSummary;
@@ -836,6 +849,80 @@ function getStatusLabel(status: string): string {
   }
 }
 
+// A successful bundle step that did not land, or sent nothing: shown neutral.
+const STEP_NOT_INCLUDED = "not_included";
+const STEP_SKIPPED_IN_FLIGHT = "skipped_in_flight";
+
+type StepDisplay = {
+  status: string;
+  title: string;
+  chip?: { label: string; testId: string; error: boolean };
+};
+
+// The Runs panel's dot status and chip test id for each step outcome.
+const OUTCOME_STEP_STYLE: Record<
+  StepOutcome,
+  { status: string; testId: string }
+> = {
+  "not-included": {
+    status: STEP_NOT_INCLUDED,
+    testId: "step-not-included",
+  },
+  "skipped-in-flight": {
+    status: STEP_SKIPPED_IN_FLIGHT,
+    testId: "step-skipped-in-flight",
+  },
+  "landed-late": { status: "success", testId: "step-landed-late" },
+  "landed-late-reverted": {
+    status: "error",
+    testId: "step-landed-late-reverted",
+  },
+};
+
+/** How the Runs panel shows a step: its own status, or its bundle outcome in plain words. */
+function stepDisplay(log: ExecutionLog): StepDisplay {
+  if (!log.outcome) {
+    return { status: log.status, title: getStatusLabel(log.status) };
+  }
+  const style = OUTCOME_STEP_STYLE[log.outcome];
+  // Only a step that sent nothing that landed has later steps worth naming.
+  const sentNothing =
+    log.outcome === "not-included" || log.outcome === "skipped-in-flight";
+  return {
+    status: style.status,
+    title: stepOutcomeTitle(
+      log.outcome,
+      log.outcome === "not-included"
+        ? notIncludedReasonText(log.output)
+        : undefined,
+      sentNothing && log.laterStepRan ? "Later steps still ran." : undefined
+    ),
+    chip: {
+      label: STEP_OUTCOME_TEXT[log.outcome].label,
+      testId: style.testId,
+      error: log.outcome === "landed-late-reverted",
+    },
+  };
+}
+
+/** The plain reasons a not landed run's steps give, each once. */
+function notLandedReasons(logs: readonly ExecutionLog[]): string[] {
+  const reasons = logs
+    .filter((log) => log.outcome === "not-included")
+    .map((log) => notIncludedReasonText(log.output))
+    .filter((text): text is string => text !== undefined);
+  return [...new Set(reasons)];
+}
+
+// A bundle skip's run note names later steps only when one of them ran.
+function skippedStepNote(logs: readonly ExecutionLog[]): string {
+  return logs.some(
+    (log) => log.outcome === "skipped-in-flight" && log.laterStepRan
+  )
+    ? " Later steps still ran."
+    : "";
+}
+
 // The run row's status already says Not landed; the reason follows it.
 const NOT_LANDED_PREFIX = /^Not landed:\s*/;
 
@@ -859,6 +946,7 @@ function ExecutionLogEntry({
   isLast: boolean;
   middleContent?: React.ReactNode;
 }) {
+  const shown = stepDisplay(log);
   return (
     <div className="relative flex gap-3" key={log.id}>
       {/* Timeline connector */}
@@ -869,11 +957,11 @@ function ExecutionLogEntry({
         <div
           className={cn(
             "z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-0",
-            getStatusDotClass(log.status)
+            getStatusDotClass(shown.status)
           )}
-          title={getStatusLabel(log.status)}
+          title={shown.title}
         >
-          {getStatusIcon(log.status)}
+          {getStatusIcon(shown.status)}
         </div>
         {!isLast && (
           <div className="absolute top-[calc(0.5rem+1.25rem)] bottom-0 w-px bg-border" />
@@ -890,15 +978,32 @@ function ExecutionLogEntry({
           <div className="flex items-center gap-3">
             {/* Step content */}
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                {isExpanded ? (
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                )}
-                <span className="truncate font-medium text-sm transition-colors group-hover:text-foreground">
-                  {log.nodeName || log.nodeType}
+              {/* Chips wrap under the name in a narrow panel instead of cutting it short. */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="flex min-w-0 items-center gap-2">
+                  {isExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0 truncate font-medium text-sm transition-colors group-hover:text-foreground">
+                    {log.nodeName || log.nodeType}
+                  </span>
                 </span>
+                {shown.chip && (
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-full border px-2 py-0.5 font-medium text-xs",
+                      shown.chip.error
+                        ? "border-destructive/60 bg-destructive/10 text-foreground"
+                        : "border-muted-foreground/50 bg-muted text-foreground"
+                    )}
+                    data-testid={shown.chip.testId}
+                    title={shown.title}
+                  >
+                    {shown.chip.label}
+                  </span>
+                )}
                 {isSponsoredOutput(log.output) && (
                   <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 font-medium text-primary text-xs">
                     Gas sponsored
@@ -1048,9 +1153,13 @@ export function WorkflowRuns({
 
   // Track which execution we've already auto-expanded to prevent loops
   const autoExpandedExecutionRef = useRef<string | null>(null);
+  // The run selected now: logs that load after a click must reach the canvas.
+  const selectedExecutionIdRef = useRef(selectedExecutionId);
+  selectedExecutionIdRef.current = selectedExecutionId;
 
   // Track terminal executions that have had their final log refresh
-  const finalizedExecutionsRef = useRef<Set<string>>(new Set());
+  // The end status each open run's steps were last loaded at.
+  const finalizedExecutionsRef = useRef<Map<string, string>>(new Map());
 
   const loadExecutions = useCallback(
     async (showLoading = true) => {
@@ -1162,25 +1271,36 @@ export function WorkflowRuns({
         iterationIndex?: number | null;
         forEachNodeId?: string | null;
       }>,
-      _workflow?: {
-        nodes: unknown;
-      }
+      run: Parameters<typeof stepOutcomeOf>[1]
     ): ExecutionLog[] =>
-      logEntries.map((log) => ({
-        id: log.id,
-        nodeId: log.nodeId,
-        nodeName: log.nodeName,
-        nodeType: log.nodeType,
-        status: log.status,
-        startedAt: new Date(log.startedAt),
-        completedAt: log.completedAt ? new Date(log.completedAt) : null,
-        duration: log.duration,
-        input: log.input,
-        output: log.output,
-        error: log.error,
-        iterationIndex: log.iterationIndex ?? null,
-        forEachNodeId: log.forEachNodeId ?? null,
-      })),
+      logEntries.map((log) => {
+        const outcome = stepOutcomeOf(log, run);
+        const started = new Date(log.startedAt).getTime();
+        return {
+          outcome,
+          // Another step, not a later iteration of this one.
+          laterStepRan:
+            outcome !== undefined &&
+            logEntries.some(
+              (other) =>
+                other.nodeId !== log.nodeId &&
+                new Date(other.startedAt).getTime() > started
+            ),
+          id: log.id,
+          nodeId: log.nodeId,
+          nodeName: log.nodeName,
+          nodeType: log.nodeType,
+          status: log.status,
+          startedAt: new Date(log.startedAt),
+          completedAt: log.completedAt ? new Date(log.completedAt) : null,
+          duration: log.duration,
+          input: log.input,
+          output: log.output,
+          error: log.error,
+          iterationIndex: log.iterationIndex ?? null,
+          forEachNodeId: log.forEachNodeId ?? null,
+        };
+      }),
     []
   );
 
@@ -1188,14 +1308,14 @@ export function WorkflowRuns({
     async (executionId: string) => {
       try {
         const data = await api.workflow.getExecutionLogs(executionId);
-        const mappedLogs = mapNodeLabels(data.logs, data.execution.workflow);
+        const mappedLogs = mapNodeLabels(data.logs, data.execution);
         setLogs((prev) => ({
           ...prev,
           [executionId]: mappedLogs,
         }));
 
         // Update global execution logs atom if this is the selected execution
-        if (executionId === selectedExecutionId) {
+        if (executionId === selectedExecutionIdRef.current) {
           setExecutionLogs(createExecutionLogsMap(mappedLogs));
         }
       } catch (error) {
@@ -1203,7 +1323,7 @@ export function WorkflowRuns({
         setLogs((prev) => ({ ...prev, [executionId]: [] }));
       }
     },
-    [mapNodeLabels, selectedExecutionId, setExecutionLogs]
+    [mapNodeLabels, setExecutionLogs]
   );
 
   // Notify parent when a new execution starts and auto-expand it
@@ -1247,24 +1367,21 @@ export function WorkflowRuns({
     async (executionId: string) => {
       try {
         const logsData = await api.workflow.getExecutionLogs(executionId);
-        const mappedLogs = mapNodeLabels(
-          logsData.logs,
-          logsData.execution.workflow
-        );
+        const mappedLogs = mapNodeLabels(logsData.logs, logsData.execution);
         setLogs((prev) => ({
           ...prev,
           [executionId]: mappedLogs,
         }));
 
         // Update global execution logs atom if this is the selected execution
-        if (executionId === selectedExecutionId) {
+        if (executionId === selectedExecutionIdRef.current) {
           setExecutionLogs(createExecutionLogsMap(mappedLogs));
         }
       } catch (error) {
         console.error(`Failed to refresh logs for ${executionId}:`, error);
       }
     },
-    [mapNodeLabels, selectedExecutionId, setExecutionLogs]
+    [mapNodeLabels, setExecutionLogs]
   );
 
   // Poll for new executions when tab is active. Only the first page is
@@ -1307,15 +1424,18 @@ export function WorkflowRuns({
             continue;
           }
           const isTerminal = terminalStatuses.has(execution.status);
-          const alreadyFinalized =
-            finalizedExecutionsRef.current.has(executionId);
-
-          if (!isTerminal) {
+          if (
+            runLogsDue(
+              execution.status,
+              isTerminal,
+              finalizedExecutionsRef.current.get(executionId)
+            )
+          ) {
+            // While running, and once per end status (cancel cleanup, a late landing).
             await refreshExecutionLogs(executionId);
-          } else if (!alreadyFinalized) {
-            // One final refresh to pick up cancel cleanup, then stop
-            await refreshExecutionLogs(executionId);
-            finalizedExecutionsRef.current.add(executionId);
+            if (isTerminal) {
+              finalizedExecutionsRef.current.set(executionId, execution.status);
+            }
           }
         }
       } catch (error) {
@@ -1382,7 +1502,10 @@ export function WorkflowRuns({
       case "skipped":
         return <SkipForward className="h-3 w-3 text-white" />;
       case "not_landed":
+      case STEP_NOT_INCLUDED:
         return <CircleOff className="h-3 w-3 text-white" />;
+      case STEP_SKIPPED_IN_FLIGHT:
+        return <SkipForward className="h-3 w-3 text-white" />;
       default:
         return <Clock className="h-3 w-3 text-white" />;
     }
@@ -1400,8 +1523,10 @@ export function WorkflowRuns({
         return "bg-blue-600";
       case "cancelled":
         return "bg-orange-500";
-      // Neutral: sent nothing (refused or skipped), not a failure.
+      // Neutral: sent nothing (refused or skipped) or not included, not a failure.
       case "skipped":
+      case STEP_NOT_INCLUDED:
+      case STEP_SKIPPED_IN_FLIGHT:
         return "bg-muted-foreground";
       // One shade darker than the swatch, like the other dots: the white icon needs 3:1.
       case "not_landed":
@@ -1455,10 +1580,18 @@ export function WorkflowRuns({
         const showRunError = Boolean(runErrorMessage) && !hasFailedStep;
         // Skipped or not landed: say why, and how often a refused row counted it.
         let shownReason: string | null = null;
+        const stepReasons =
+          execution.status === "not_landed"
+            ? notLandedReasons(executionLogs)
+            : [];
         if (execution.status === "skipped" && execution.error) {
-          shownReason = shownRefusal(execution.error);
+          shownReason = `${shownRefusal(execution.error)}${skippedStepNote(executionLogs)}`;
         } else if (execution.status === "not_landed" && execution.error) {
           shownReason = execution.error.replace(NOT_LANDED_PREFIX, "");
+          // The reasons follow below, so the pointer to the step is not needed.
+          if (stepReasons.length > 0) {
+            shownReason = shownReason.replace(NOT_LANDED_STEP_POINTER, ".");
+          }
         }
         const skippedReason = shownReason
           ? `${shownReason.charAt(0).toUpperCase()}${shownReason.slice(1)}`
@@ -1567,7 +1700,10 @@ export function WorkflowRuns({
                     >
                       <TriangleAlert />
                       <AlertDescription className="flex flex-col items-start gap-1.5">
-                        <span>{runErrorMessage}</span>
+                        {/* A transaction hash has no break points of its own. */}
+                        <span className="min-w-0 max-w-full wrap-anywhere">
+                          {runErrorMessage}
+                        </span>
                         {fix && organizationId && (
                           <RefusalFixAnchor
                             link={fix}
@@ -1592,6 +1728,14 @@ export function WorkflowRuns({
                             {skippedReason}
                           </span>
                         )}
+                        {stepReasons.map((reason) => (
+                            <span
+                              data-testid="run-outcome-step-reason"
+                              key={reason}
+                            >
+                              {reason}
+                            </span>
+                          ))}
                         {refusedLine && (
                           <span data-testid="run-refusal-count">
                             {refusedLine}.

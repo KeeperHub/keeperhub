@@ -224,6 +224,19 @@ PATCH /api/workflows/{workflowId}
 
 The `tagId` field assigns the workflow to an organization tag for categorization.
 
+### Send as checks on save
+
+Create, update, import, duplicate (also Use template and the MCP `deploy_template` tool) and the editor's autosave run the same Send as checks. A refused save answers `422` with `error: "INVALID_ACTION_CONFIG"`; each entry of `invalidFields` names the node, the `field` and a `message` that gives both the editor label and the API value. For a Write Contract step with `sendMode: "bundle"` (see [Send as Bundle](/plugins/web3#send-as-bundle)) the save is refused when:
+
+- the step is not Write Contract (`Bundle (sendMode: "bundle") is only available on Write Contract steps`);
+- bundles are not turned on for your organization (`bundleSendEnabled` in [Get Organization Features](#get-organization-features)); a step already saved as a bundle keeps saving;
+- `web3Connection` is a Safe (`"safe:..."`);
+- `bundleBlocks` is not a whole number from 1 to 5, or `bundleTipIncreasePercent` not one from 0 to 100;
+- the network has no block builders, or `bundleBuilders` names one the network does not list (see `bundleBuilders` in the [Chains API](/api/chains));
+- the step sits inside a For Each that is itself inside another For Each.
+
+A step whose action, network, Send as keys and bundle settings are unchanged since it was saved passes, except for the nested For Each rule, which is checked on every save. The MCP `validate_workflow` tool reports the same problems as `invalid-send-mode` errors; it checks bundle steps even when unchanged since they were saved, as a run checks them (for `bundleBuilders`, only when the network lists none of the step's builders, since a run sends to the ones still listed), while other steps saved before pass as they do on save.
+
 ## Delete Workflow
 
 ```http
@@ -303,7 +316,9 @@ Trigger a workflow via webhook. Requires API key authentication.
 POST /api/workflows/{workflowId}/duplicate
 ```
 
-Creates a copy of an existing workflow.
+Creates a copy of an existing workflow. Use template in the app and the MCP `deploy_template` tool call this too.
+
+The copy's steps are checked for your organization with the [Send as checks on save](#send-as-checks-on-save). A Write Contract step sent as a bundle that your organization cannot use (bundles are not turned on for it, or the network has no block builders, or lists none of the step's builders) refuses the whole copy: the answer is `422` with `error: "INVALID_ACTION_CONFIG"`, a `message` that starts "This workflow cannot be copied into your organization.", names each refused step and why, and ends "Nothing was copied.", and the steps in `invalidFields`. No workflow is created.
 
 ## Download Workflow
 
@@ -499,8 +514,11 @@ Returns the calling organization's feature snapshot so a client can render per-p
       "actionTypes": ["Database Query"]
     }
   ],
-  "billingEnabled": true
+  "billingEnabled": true,
+  "bundleSendEnabled": false
 }
 ```
 
 `billingEnabled` is `false` on self-hosted installs where billing is disabled, in which case `plan` is `"enterprise"` and every feature is enabled.
+
+`bundleSendEnabled` is `true` when your organization may save and run Write Contract steps with Send as Bundle (`sendMode: "bundle"`). Bundles are being turned on for organizations gradually; while it is `false`, saving a new or changed bundle step is refused.

@@ -1623,7 +1623,7 @@ export function registerTools(
 
   server.tool(
     "deploy_template",
-    "Clone a public template workflow into the organization as a new workflow.",
+    "Clone a public template workflow into the organization as a new workflow. Refused with nothing copied (422, the error names each step and why) when a Write Contract step sent as a bundle cannot be used by your organization.",
     {
       templateId: z.string().describe("The template workflow ID to clone"),
       name: z
@@ -2810,8 +2810,9 @@ export function registerMetaTools(
     "validate_workflow",
     [
       "Validate a workflow's structural and Web3-specific correctness before calling create_workflow or executing it.",
-      "Fast tier (default): structural checks (empty nodes, edge references, trigger config, bare-@ literals), listing-eligibility checks (inputSchema present for listed workflows, outputMapping references real nodes), write-action consistency, plus Web3 cheap checks (chain ID in chains table, contract address format via ethers.isAddress). Zero network calls; <300ms p95.",
+      "Fast tier (default): structural checks (empty nodes, edge references, trigger config, bare-@ literals), listing-eligibility checks (inputSchema present for listed workflows, outputMapping references real nodes), write-action consistency, plus Web3 cheap checks (chain ID in chains table, contract address format via ethers.isAddress). No RPC calls (it reads the chains table); <300ms p95.",
       "Fast tier also covers Event-trigger registration: the conditions under which the event tracker silently never registers the workflow, so it reports Enabled and never runs. Codes are prefixed `trigger-` and cover a missing network, a chain with no WebSocket endpoint configured, a missing contractAddress, eventName or contractABI, an ABI that is not JSON or not an array or carries no event fragments, an event fragment with no inputs array, an eventName the ABI does not declare, and a bare eventName that matches more than one overload.",
+      'Fast tier also runs the Send as checks a save runs (code `invalid-send-mode`): an unknown sendMode, a mode the step or network does not offer, and for Send as Bundle (sendMode "bundle") a step other than Write Contract, an organization where bundles are not turned on, a Safe connection, bundleBlocks or bundleTipIncreasePercent out of range, bundleBuilders names the network does not list, or a bundle step inside a For Each nested in another For Each. Unlike a save, bundle steps are checked even when unchanged since they were saved, as a run checks them (bundleBuilders only when the network lists none of its builders, since a run sends to the ones still listed); other steps saved before pass as a save lets them.',
       "Deep tier (deepCheck=true): in addition, runs best-effort ABI bytecode match via resolveAbi against every contract reference. Mismatches on abi-with-auto-fetch fields are emitted as WARNINGS, never errors, so proxy contracts (Aave V3, Uniswap V3, WETH) never produce false positives. Capped at 3s aggregate + 2s per-call + 5 concurrent RPC calls.",
       "Return shape: { ok: true, result: { valid: boolean, nodeCount: number, errors?: Array<{ code, message, parameterPath }>, warnings?: Array<{ code, message, parameterPath }> } }. The errors and warnings keys are OMITTED when empty (not present as []). Error codes are kebab-case stable identifiers; parameterPath is a dot-path like 'nodes[2].config.contractAddress'.",
     ].join(" "),

@@ -12,7 +12,7 @@ import { ErrorCategory, logInfo, logSystemError, logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import type { GasOverrides } from "@/lib/web3/chain-adapter/types";
-import { fixedGasLimit } from "@/lib/web3/gas-defaults";
+import { fixedGasLimit, MAX_FEE_GWEI } from "@/lib/web3/gas-defaults";
 import { getGasStrategy } from "@/lib/web3/gas-strategy";
 import {
   isNextBlockSimulationUnsupported,
@@ -38,11 +38,15 @@ import {
   watchInclusion,
 } from "./inclusion";
 import {
+  maxFeeForTips,
   type PlannedTarget,
   planTips,
   type SkippedTarget,
   toGwei,
 } from "./plan";
+
+// The most a user may set as Max Fee; a raised cap never goes above it.
+const MAX_FEE_WEI = BigInt(MAX_FEE_GWEI) * BigInt(1_000_000_000);
 
 /**
  * Why a sent bundle was not included: no builder picked it or the call would
@@ -452,33 +456,55 @@ async function sendInBudget(
   }
 
   const estimates = simulated.passed.map((target) => target.gasEstimate);
-  const gasConfig = await inBudget(
-    getGasStrategy().getGasConfig(
-      provider,
-      estimates.reduce((max, gas) => (gas > max ? gas : max)),
-      input.chainId,
-      input.gas.multiplierOverride,
-      input.gas.gasLimitOverride,
-      input.rpcManager,
-      input.gas.priorityFeeOverride,
-      input.gas.maxFeeOverride
-    )
+  const strategy = getGasStrategy();
+  const [gasConfig, tipLimit] = await inBudget(
+    Promise.all([
+      strategy.getGasConfig(
+        provider,
+        estimates.reduce((max, gas) => (gas > max ? gas : max)),
+        input.chainId,
+        input.gas.multiplierOverride,
+        input.gas.gasLimitOverride,
+        input.rpcManager,
+        input.gas.priorityFeeOverride,
+        input.gas.maxFeeOverride
+      ),
+      strategy.priorityFeeLimit(input.chainId),
+    ])
   );
+  const passedBlocks = simulated.passed.map((target) => target.block);
+  const parent =
+    latestBlock.baseFeePerGas === null ||
+    latestBlock.baseFeePerGas === undefined
+      ? null
+      : {
+          baseFee: latestBlock.baseFeePerGas,
+          gasUsed: latestBlock.gasUsed,
+          gasLimit: latestBlock.gasLimit,
+        };
+  // Raise the cap so later tips are paid as planned, held to Max Fee (or the most it may be).
+  const raisedMaxFee = maxFeeForTips({
+    estimatedMaxFee: gasConfig.maxFeePerGas,
+    firstTip: gasConfig.maxPriorityFeePerGas,
+    increasePercent: input.tipIncreasePercent,
+    latest,
+    blocks: passedBlocks,
+    tipLimit,
+    parent,
+  });
+  const feeCeiling = input.gas.maxFeeOverride ?? MAX_FEE_WEI;
+  const maxFee = raisedMaxFee < feeCeiling ? raisedMaxFee : feeCeiling;
+  const userMaxFeeBinds =
+    input.gas.maxFeeOverride !== undefined &&
+    raisedMaxFee >= input.gas.maxFeeOverride;
   const plan = planTips({
     latest,
-    parent:
-      latestBlock.baseFeePerGas === null ||
-      latestBlock.baseFeePerGas === undefined
-        ? null
-        : {
-            baseFee: latestBlock.baseFeePerGas,
-            gasUsed: latestBlock.gasUsed,
-            gasLimit: latestBlock.gasLimit,
-          },
+    parent,
     firstTip: gasConfig.maxPriorityFeePerGas,
-    maxFee: gasConfig.maxFeePerGas,
+    maxFee,
     increasePercent: input.tipIncreasePercent,
-    blocks: simulated.passed.map((target) => target.block),
+    blocks: passedBlocks,
+    tipLimit,
   });
   const skipped = [...simulated.skipped, ...plan.skipped];
   if (plan.targets.length === 0) {
@@ -488,12 +514,11 @@ async function sendInBudget(
     }
     return {
       kind: "refused",
-      error: maxFeeRefusal(gasConfig.maxFeePerGas, plan.lowestSkippedBaseFee),
-      // The user's own Max Fee caused it; otherwise the network's fees did.
-      errorClass:
-        input.gas.maxFeeOverride === undefined
-          ? ExecutionErrorType.EXTERNAL
-          : ExecutionErrorType.USER,
+      error: maxFeeRefusal(maxFee, plan.lowestSkippedBaseFee, userMaxFeeBinds),
+      // The user's own Max Fee caused it when it set the cap; otherwise the network's fees did.
+      errorClass: userMaxFeeBinds
+        ? ExecutionErrorType.USER
+        : ExecutionErrorType.EXTERNAL,
       report: { bundleTargetsSkipped: sortedSkips(skipped) },
     };
   }
@@ -505,7 +530,7 @@ async function sendInBudget(
       input,
       {
         gasLimit: gasConfig.gasLimit,
-        maxFee: gasConfig.maxFeePerGas,
+        maxFee,
         firstTip: gasConfig.maxPriorityFeePerGas,
       },
       nonce
@@ -521,7 +546,7 @@ async function sendInBudget(
     signTargets(input, plan.targets, {
       nonce,
       gasLimit: gasConfig.gasLimit,
-      maxFee: gasConfig.maxFeePerGas,
+      maxFee,
     })
   );
   const live = await inBudget(
@@ -552,7 +577,7 @@ async function sendInBudget(
       hashes,
       lastTargetBlock: lastTarget,
       workflowId: input.workflowId,
-      gasPrice: gasConfig.maxFeePerGas.toString(),
+      gasPrice: maxFee.toString(),
       node: input.node,
     });
   } catch (error) {
@@ -621,12 +646,28 @@ async function waitPastTargets(
   }
 }
 
-function maxFeeRefusal(maxFee: bigint, projected: bigint | undefined): string {
+// Advice only when the user's own Max Fee set the cap. Otherwise the cap was
+// held at MAX_FEE_GWEI: with a base fee known, the estimate cannot leave a target out.
+function maxFeeRefusal(
+  maxFee: bigint,
+  projected: bigint | undefined,
+  userMaxFeeBinds: boolean
+): string {
   const reach =
     projected === undefined
       ? "the base fee the target blocks may reach"
-      : `the base fee the target blocks may reach (${toGwei(projected)} gwei)`;
-  return `Max fee ${toGwei(maxFee)} gwei is below ${reach}, so nothing was sent. Raise the max fee or leave it empty.`;
+      : `the base fee the target blocks may reach (${groupedGwei(projected)} gwei)`;
+  if (userMaxFeeBinds) {
+    return `Max fee ${groupedGwei(maxFee)} gwei is below ${reach}, so nothing was sent. Raise the max fee or leave it empty.`;
+  }
+  return `The fee cap of ${groupedGwei(maxFee)} gwei, the most a bundle step signs, is below ${reach}, so nothing was sent. Run it again later.`;
+}
+
+// Gwei with thousands separators ("10,000", "1,234.5").
+function groupedGwei(wei: bigint): string {
+  const [whole, fraction] = toGwei(wei).split(".");
+  const grouped = BigInt(whole).toLocaleString("en-US");
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`;
 }
 
 function sortedSkips(skipped: SkippedTarget[]): SkippedTarget[] {

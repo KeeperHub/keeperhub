@@ -9,6 +9,29 @@ import {
   resolveOrganizationId,
 } from "@/lib/middleware/auth-helpers";
 import { isPythPriceTriggerEnabled } from "@/lib/pyth/feature-flag";
+import { isRolloutActive } from "@/lib/rollout";
+import { isBundleSendEnabledForOrg } from "@/lib/web3/bundles/rollout";
+
+/** Whether the calling org may send bundles (BUNDLE_SEND_ROLLOUT); never the setting itself. */
+async function bundleSendEnabled(
+  request: Request,
+  organizationId?: string
+): Promise<boolean> {
+  if (!isRolloutActive(process.env.BUNDLE_SEND_ROLLOUT)) {
+    return false;
+  }
+  let orgId = organizationId;
+  if (!orgId) {
+    try {
+      const resolved = await resolveOrganizationId(request);
+      orgId = "error" in resolved ? undefined : resolved.organizationId;
+    } catch {
+      // No org to check: the editor does not offer bundles.
+      return false;
+    }
+  }
+  return orgId !== undefined && isBundleSendEnabledForOrg(orgId);
+}
 
 // Returns the feature snapshot for the calling org so the UI can render
 // per-plan lock states without re-implementing the registry client-side.
@@ -21,6 +44,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       features: getAllFeatures(),
       billingEnabled: false,
       pythPriceTriggerEnabled: isPythPriceTriggerEnabled(),
+      bundleSendEnabled: await bundleSendEnabled(request),
     });
   }
 
@@ -41,6 +65,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       ...buildFeatureSnapshot(plan),
       billingEnabled: true,
       pythPriceTriggerEnabled: isPythPriceTriggerEnabled(),
+      bundleSendEnabled: await bundleSendEnabled(request, organizationId),
     });
   } catch (error) {
     logSystemError(

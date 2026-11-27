@@ -287,7 +287,7 @@ and the authoritative safe first-write sequence.
 | Tool | Description |
 |------|-------------|
 | `search_templates` | Search pre-built workflow templates. |
-| `deploy_template` | Clone a public template into the organization as a new workflow. |
+| `deploy_template` | Clone a public template into the organization as a new workflow. Refused with nothing copied when a Send as Bundle step cannot be used by your organization (see [Duplicate Workflow](/api/workflows#duplicate-workflow)). |
 | `get_template` | Deprecated. Use `get_workflow` instead. |
 
 ### Marketplace Listings

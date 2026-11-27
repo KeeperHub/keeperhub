@@ -10,6 +10,14 @@
  */
 import { NOT_LANDED_LATER } from "@/lib/errors/execution-status";
 import {
+  BUNDLE_SETTING_KEYS,
+  BUNDLE_SETTING_LABELS,
+  DEFAULT_BUNDLE_BLOCKS,
+  MAX_BUNDLE_BLOCKS,
+  MAX_SELECTED_BUILDERS,
+  MAX_TIP_INCREASE_PERCENT,
+} from "@/lib/web3/bundles/settings";
+import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
 } from "@/lib/web3/next-block-limits";
@@ -54,11 +62,14 @@ export function evmNetworkField(): ActionConfigField {
  */
 export function sendModeField(actionType?: string): ActionConfigFieldBase {
   const noRelay = unsupportedSendMode(actionType, "private-relay");
+  const bundle = unsupportedSendMode(actionType, "bundle")
+    ? ""
+    : ` "bundle" sends it only to the network's block builders for the next 1 to ${MAX_BUNDLE_BLOCKS} blocks (bundleBlocks), never gas-sponsored and never included if it would revert; only on networks with builders, for organizations where bundles are turned on, with your wallet (EOA) connection, and not inside a For Each nested in another For Each.`;
   return {
     editorRenderer: "send-mode",
     helpTip: noRelay
       ? `How the transaction goes out. "transaction" (the default) sends it to the public mempool. "private-relay" is refused at save, and so is usePrivateMempool: true on a network with a private relay. ${noRelay}`
-      : 'How the transaction goes out. "transaction" (the default) sends it to the public mempool. "private-relay" sends it through the network\'s private relay (Flashbots Protect on Ethereum), only on networks that have one, and is never gas-sponsored. A config with usePrivateMempool: true and no sendMode uses the private relay where the network has one and the public mempool elsewhere, never sponsored.',
+      : `How the transaction goes out. "transaction" (the default) sends it to the public mempool. "private-relay" sends it through the network's private relay (Flashbots Protect on Ethereum), only on networks that have one, and is never gas-sponsored.${bundle} A config with usePrivateMempool: true and no sendMode uses the private relay where the network has one and the public mempool elsewhere, never sponsored.`,
     key: SEND_MODE_KEY,
     label: "Send as",
     networkField: "network",
@@ -71,6 +82,53 @@ export function sendModeField(actionType?: string): ActionConfigFieldBase {
     })),
     type: "select",
   };
+}
+
+const SHOW_FOR_BUNDLE = { field: SEND_MODE_KEY, equals: "bundle" } as const;
+
+/**
+ * Write Contract's bundle settings, drawn by Send as in one box under it; see
+ * readBundleSettings in lib/web3/bundles/settings.ts for how a step reads them.
+ */
+export function bundleSettingsFields(): ActionConfigFieldBase[] {
+  return [
+    {
+      editorRenderer: "bundle-setting",
+      helpText: "Each block keeps the wallet busy for about 12 seconds more.",
+      helpTip: `Bundle only: how many blocks to try, starting with the next one, one signed transaction each. A whole number from 1 to ${MAX_BUNDLE_BLOCKS}; empty means ${DEFAULT_BUNDLE_BLOCKS}. Each block adds about 12 seconds while the wallet waits for the result.`,
+      key: BUNDLE_SETTING_KEYS.blocks,
+      label: BUNDLE_SETTING_LABELS.blocks,
+      max: MAX_BUNDLE_BLOCKS,
+      min: 1,
+      placeholder: String(DEFAULT_BUNDLE_BLOCKS),
+      showWhen: SHOW_FOR_BUNDLE,
+      step: 1,
+      type: "number",
+    },
+    {
+      editorRenderer: "bundle-setting",
+      helpTip: `Bundle only: how much higher the tip is for each later block, compounded, starting from Priority Fee. Later tips stop at the network's tip limit, and the step raises its fee cap to pay them, up to Max Fee (10,000 gwei when empty). A whole number from 0 to ${MAX_TIP_INCREASE_PERCENT}; empty means 0.`,
+      key: BUNDLE_SETTING_KEYS.tipIncreasePercent,
+      label: BUNDLE_SETTING_LABELS.tipIncreasePercent,
+      max: MAX_TIP_INCREASE_PERCENT,
+      min: 0,
+      placeholder: "0",
+      showWhen: SHOW_FOR_BUNDLE,
+      step: 1,
+      type: "number",
+    },
+    {
+      editorRenderer: "bundle-setting",
+      helpText:
+        "Includes builders the network adds later. Untick it to pick some, at least one; new builders are then not added.",
+      helpTip: `Bundle only: the names of the network's block builders to send to (GET /api/chains lists them as bundleBuilders), up to ${MAX_SELECTED_BUILDERS}. Leave it out, or send [], to send to all of them, including builders added later.`,
+      key: BUNDLE_SETTING_KEYS.builders,
+      label: BUNDLE_SETTING_LABELS.builders,
+      max: MAX_SELECTED_BUILDERS,
+      showWhen: SHOW_FOR_BUNDLE,
+      type: "multi-select",
+    },
+  ];
 }
 
 export function tokenConfigField(): ActionConfigField {
@@ -145,6 +203,8 @@ export function sponsorGasField(): ActionConfigFieldBase {
   };
 }
 
+const NOT_BUNDLE = { field: SEND_MODE_KEY, notEquals: "bundle" } as const;
+
 /**
  * "Simulate at" on Read Contract, Write Contract and Batch Write Contract.
  * See parseSimulationSettings in lib/web3/next-block-limits.ts.
@@ -160,6 +220,8 @@ export function simulateAtField(): ActionConfigFieldBase {
       { label: "Latest block", value: "latest" },
       { label: "Next block", value: "next-block" },
     ],
+    // A bundle simulates each of its own target blocks instead.
+    showWhen: NOT_BUNDLE,
     type: "select",
   };
 }
@@ -173,7 +235,7 @@ export function simulateTimestampOffsetField(): ActionConfigFieldBase {
     min: MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
     placeholder: "Auto (network block time)",
     // Read as the step reads it, so "Next-Block" saved via the API shows too.
-    showWhen: { computed: "simulatesNextBlock" },
+    showWhen: { all: [{ computed: "simulatesNextBlock" }, NOT_BUNDLE] },
     step: 1,
     type: "number",
   };
@@ -252,7 +314,7 @@ export function bundleOutputFields(): OutputField[] {
     {
       field: "targetTipsGwei",
       description:
-        "Bundle only: the maximum priority fee (tip) in gwei of the transaction sent for each target block, in the order of targetBlocks. The tip paid can be lower when the base fee leaves less room under Max Fee.",
+        "Bundle only: the maximum priority fee (tip) in gwei of the transaction sent for each target block, in the order of targetBlocks. The tip paid can be lower when the base fee leaves less room under the fee cap.",
     },
     {
       field: "builders",

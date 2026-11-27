@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, type SQL, sql } from "drizzle-orm";
+import { and, eq, like, type SQL, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { type TransactionHashEntry, workflowExecutions } from "@/lib/db/schema";
 import {
@@ -44,6 +44,17 @@ const fromNotLanded = (executionId: string): SQL | undefined =>
     eq(workflowExecutions.status, "not_landed")
   );
 
+/** How the error of a run a late revert ended starts; later landings still add to it. */
+export const LATE_REVERT_ERROR =
+  "Transaction reverted: a transaction in this run was mined later and reverted";
+
+const fromLateReverted = (executionId: string): SQL | undefined =>
+  and(
+    eq(workflowExecutions.id, executionId),
+    eq(workflowExecutions.status, "error"),
+    like(workflowExecutions.error, `${LATE_REVERT_ERROR}%`)
+  );
+
 /**
  * A bundle a run gave up on was mined later: re-settle the run that owns the
  * hash. A revert ends it `error` at once; a success goes through settleRun.
@@ -67,13 +78,27 @@ export async function settleLateLanding(
     .select({ hashes: workflowExecutions.transactionHashes })
     .from(workflowExecutions)
     .where(fromNotLanded(owner.executionId));
-  if (run) {
-    await resettleToError(owner.executionId, run.hashes, {
-      chainId,
-      mined,
-      node: owner.node,
-    });
+  if (!run) {
+    await addToLateReverted(owner.executionId, readReceipt, { chainId, mined });
+    return;
   }
+  const reverted = { chainId, mined, node: owner.node };
+  // Other steps of the run that already landed late are written too, with their fees.
+  const found = await missedStepLandings(
+    owner.executionId,
+    (await loadSuccessLogFacts(owner.executionId, false)).notIncludedSteps,
+    readReceipt,
+    { known: { chainId, mined }, all: false }
+  );
+  const others = found.landings.filter(
+    (landing) => landing.mined.hash !== mined.hash
+  );
+  await resettleToError(
+    owner.executionId,
+    run.hashes,
+    [reverted, ...others],
+    reverted
+  );
 }
 
 /**
@@ -81,6 +106,7 @@ export async function settleLateLanding(
  * once every not-included step (node and iteration) has a confirmed row it
  * owns with a succeeded receipt, and no step skipped behind a bundle in
  * flight; `error` when one of those reverted. Otherwise it stays not landed.
+ * A run a late revert already ended only gets the landings it does not list.
  */
 export async function settleRun(
   executionId: string,
@@ -92,6 +118,7 @@ export async function settleRun(
     .from(workflowExecutions)
     .where(fromNotLanded(executionId));
   if (!run) {
+    await addToLateReverted(executionId, readReceipt, known);
     return;
   }
   const facts = await loadSuccessLogFacts(executionId, false);
@@ -104,6 +131,43 @@ export async function settleRun(
     logStaysNotLanded(executionId, "no missed step in its logs");
     return;
   }
+  const { landings, missing } = await missedStepLandings(
+    executionId,
+    facts.notIncludedSteps,
+    readReceipt,
+    { known, all: true }
+  );
+  if (missing) {
+    logStaysNotLanded(executionId, missing);
+    return;
+  }
+  const reverted = landings.find((landing) => !landing.mined.succeeded);
+  if (reverted) {
+    // Every landing is written with its own receipt, so a step that landed keeps its fee.
+    await resettleToError(executionId, run.hashes, landings, reverted);
+    return;
+  }
+  await resettleToSuccess(executionId, run.hashes, landings);
+}
+
+/**
+ * The late landings of a run's missed steps (node and iteration), from its
+ * confirmed bundle rows. `missing` says why a step has none; with `all` the
+ * search stops there (no receipt is read), else that step is left out, as is
+ * a hash in `listed`.
+ */
+async function missedStepLandings(
+  executionId: string,
+  steps: readonly string[],
+  readReceipt: ChainReceiptReader,
+  options: {
+    known?: { chainId: number; mined: MinedHash };
+    all: boolean;
+    listed?: readonly TransactionHashEntry[];
+  }
+): Promise<{ landings: Landing[]; missing?: string }> {
+  const { known, all } = options;
+  const listed = new Set(options.listed?.map((entry) => entry.hash));
   const rows = await db
     .select({
       chainId: pendingTransactions.chainId,
@@ -117,8 +181,9 @@ export async function settleRun(
     );
 
   // Rows that landed on time name steps that were never missed, so they match no key.
+  let missing: string | undefined;
   const landed = new Map<string, Omit<Landing, "mined"> & { hash: string }>();
-  for (const key of facts.notIncludedSteps) {
+  for (const key of steps) {
     const row = rows.find((candidate) => {
       const owner = ownerOf(candidate.bundleRuns, candidate.txHash);
       return (
@@ -129,8 +194,11 @@ export async function settleRun(
       );
     });
     if (!row) {
-      logStaysNotLanded(executionId, "another send in it has not landed");
-      return;
+      missing ??= "another send in it has not landed";
+      if (all) {
+        return { landings: [], missing };
+      }
+      continue;
     }
     landed.set(`${row.chainId}:${row.txHash}`, {
       chainId: row.chainId,
@@ -141,22 +209,70 @@ export async function settleRun(
 
   const landings: Landing[] = [];
   for (const { hash, ...send } of landed.values()) {
+    if (listed.has(hash)) {
+      continue;
+    }
     const isKnown =
       known?.chainId === send.chainId && known.mined.hash === hash;
     const receipt = isKnown ? null : await readReceipt(send.chainId, hash);
     const mined = isKnown ? known.mined : receipt && minedOf(hash, receipt);
     if (!mined) {
-      logStaysNotLanded(executionId, "a receipt could not be read");
-      return;
+      missing ??= "a receipt could not be read";
+      if (all) {
+        return { landings: [], missing };
+      }
+      continue;
     }
     landings.push({ ...send, mined });
   }
-  const reverted = landings.find((landing) => !landing.mined.succeeded);
-  if (reverted) {
-    await resettleToError(executionId, run.hashes, reverted);
+  return { landings, ...(missing !== undefined && { missing }) };
+}
+
+/**
+ * A run a late revert already ended `error`: write the landings of its missed
+ * steps it does not list yet, with their fees. The status and error stay.
+ */
+async function addToLateReverted(
+  executionId: string,
+  readReceipt: ChainReceiptReader,
+  known?: { chainId: number; mined: MinedHash }
+): Promise<void> {
+  const [run] = await db
+    .select({ hashes: workflowExecutions.transactionHashes })
+    .from(workflowExecutions)
+    .where(fromLateReverted(executionId));
+  if (!run) {
     return;
   }
-  await resettleToSuccess(executionId, run.hashes, landings);
+  const { landings } = await missedStepLandings(
+    executionId,
+    (await loadSuccessLogFacts(executionId, false)).notIncludedSteps,
+    readReceipt,
+    { known, all: false, listed: run.hashes }
+  );
+  if (landings.length === 0) {
+    return;
+  }
+  // Guarded on none of them being listed yet, so a concurrent settle adds no fee twice.
+  const [updated] = await db
+    .update(workflowExecutions)
+    .set(landedColumns(run.hashes, landings))
+    .where(
+      and(
+        fromLateReverted(executionId),
+        ...landings.map(
+          (landing) =>
+            sql`not (coalesce(${workflowExecutions.transactionHashes}, '[]'::jsonb) @> ${JSON.stringify([{ hash: landing.mined.hash }])}::jsonb)`
+        )
+      )
+    )
+    .returning({ id: workflowExecutions.id });
+  if (updated) {
+    logInfo("[Bundle] A late landing was added to a run a late revert ended", {
+      execution_id: executionId,
+      tx_hash: landings.map((landing) => landing.mined.hash).join(","),
+    });
+  }
 }
 
 function logStaysNotLanded(executionId: string, reason: string): void {
@@ -168,10 +284,11 @@ function logStaysNotLanded(executionId: string, reason: string): void {
 async function resettleToError(
   executionId: string,
   existing: readonly TransactionHashEntry[],
-  landing: Landing
+  landings: readonly Landing[],
+  reverted: Landing
 ): Promise<void> {
-  const { mined } = landing;
-  const message = `Transaction reverted: a transaction in this run was mined later and reverted (block ${mined.blockNumber ?? "unknown"}, ${mined.hash})`;
+  const { mined } = reverted;
+  const message = `${LATE_REVERT_ERROR} (block ${mined.blockNumber ?? "unknown"}, ${mined.hash})`;
   const { errorType, errorCategory } = classifyExecutionError(message);
   const [updated] = await db
     .update(workflowExecutions)
@@ -180,7 +297,7 @@ async function resettleToError(
       error: message,
       errorType,
       errorCategory,
-      ...landedColumns(existing, [landing], "reverted"),
+      ...landedColumns(existing, landings),
     })
     .where(fromNotLanded(executionId))
     .returning({ workflowId: workflowExecutions.workflowId });
@@ -214,7 +331,7 @@ async function resettleToSuccess(
     .set({
       status: "success",
       error: null,
-      ...landedColumns(existing, landings, "success"),
+      ...landedColumns(existing, landings),
     })
     .where(fromNotLanded(executionId))
     .returning({ workflowId: workflowExecutions.workflowId });
@@ -241,13 +358,15 @@ async function resettleToSuccess(
  */
 function landedColumns(
   existing: readonly TransactionHashEntry[],
-  landings: readonly Landing[],
-  receiptStatus: "success" | "reverted"
+  landings: readonly Landing[]
 ): { transactionHashes?: SQL; gasUsedWei?: SQL } {
   const listed = new Set(existing.map((entry) => entry.hash));
   const fresh = landings.filter((landing) => !listed.has(landing.mined.hash));
   const entries = fresh.flatMap((landing) => {
-    const entry = hashEntry(landing, receiptStatus);
+    const entry = hashEntry(
+      landing,
+      landing.mined.succeeded ? "success" : "reverted"
+    );
     return entry ? [entry] : [];
   });
   // The fee was paid even when no entry can name its step.

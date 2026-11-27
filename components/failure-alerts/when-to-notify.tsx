@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useFeatures } from "@/hooks/use-features";
 import {
   DEFAULT_TIME_LIMIT_MINUTES,
   MAX_REMINDERS,
@@ -101,6 +102,8 @@ export function WhenToNotify({
   onChange: (next: RulesDraft) => void;
 }): React.ReactElement {
   const disabled = !canManage;
+  // Bundles (and their Not landed runs) only exist where they are turned on.
+  const bundlesOn = useFeatures().snapshot?.bundleSendEnabled === true;
   const invalid = !isValidThreshold(draft.threshold);
   const runs = invalid ? saved.threshold : Number(draft.threshold);
 
@@ -184,6 +187,16 @@ export function WhenToNotify({
             the alert goes out after this many failures in a row. A workflow
             that runs every 4 hours takes {4 * runs} hours to reach {runs}.
           </li>
+          {bundlesOn && (
+            <li data-testid="failure-alerts-not-landed-help">
+              <span className="font-medium text-foreground">
+                Not landed runs in a row:
+              </span>{" "}
+              {runs} run{runs === 1 ? "" : "s"} in a row whose bundles were not
+              included send a warning. They are not failures: they never turn
+              the workflow off and do not add to the failures above.
+            </li>
+          )}
           <li>
             <span className="font-medium text-foreground">Time limit:</span> for
             slow schedules, the alert goes out once it has been failing this

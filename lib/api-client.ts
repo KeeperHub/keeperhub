@@ -14,6 +14,7 @@ import { refetchSidebarIfTriggerChanged } from "@/lib/refetch-sidebar";
 import type { ActorCredential } from "@/lib/security/credential-label";
 import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
+import type { StepOutcome } from "@/lib/workflow/executor/run-outcome-keys";
 import type { WorkflowExportV1 } from "@/lib/workflow/export-schema";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import type { IntegrationConfig, IntegrationType } from "./types/integration";
@@ -186,6 +187,22 @@ export function workflowSaveErrorMessage(
     error.detail
     ? error.detail
     : fallback;
+}
+
+// Every copy failure toast: held as long as a save failure's, to read the steps and reasons.
+export const DUPLICATE_ERROR_TOAST = {
+  duration: WORKFLOW_SAVE_ERROR_TOAST.duration,
+} as const;
+
+// A refused copy names the step and why; any other failure keeps its own text.
+export function duplicateErrorMessage(
+  error: unknown,
+  fallback: string
+): string {
+  return workflowSaveErrorMessage(
+    error,
+    error instanceof Error ? error.message : fallback
+  );
 }
 
 // Helper function to make API calls
@@ -918,6 +935,11 @@ export const workflowApi = {
         startedAt: Date;
         completedAt: Date | null;
         duration: string | null;
+        // Hashes a late landing adds name the step they landed for.
+        transactionHashes?: Array<{
+          nodeId?: string;
+          iterationIndex?: number;
+        }> | null;
         workflow: {
           id: string;
           name: string;
@@ -956,6 +978,8 @@ export const workflowApi = {
       nodeStatuses: Array<{
         nodeId: string;
         status: NodeExecutionStatus;
+        // A successful bundle step that missed, sent nothing, or landed late.
+        outcome?: StepOutcome;
       }>;
       progress?: {
         totalSteps: number;

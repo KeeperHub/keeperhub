@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { describe, expect, it } from "vitest";
-import { planTips, toGwei } from "@/lib/web3/bundles/plan";
+import { maxFeeForTips, planTips, toGwei } from "@/lib/web3/bundles/plan";
 
 const gwei = (value: string): bigint => ethers.parseUnits(value, "gwei");
 const HIGH_MAX_FEE = gwei("1000");
@@ -50,6 +50,185 @@ describe("tips per target", () => {
   it("never goes above Max Fee", () => {
     expect(tipForTarget(gwei("1"), gwei("1.5"), 100, 3)).toBe(gwei("1.5"));
     expect(tipForTarget(gwei("2"), gwei("1"), 0, 1)).toBe(gwei("1"));
+  });
+});
+
+describe("maxFeeForTips", () => {
+  // Base fee 0.4 gwei, Priority Fee 1, +50% per block over 5 blocks.
+  const base = gwei("0.4");
+  const estimatedMaxFee = base * BigInt(2) + gwei("1");
+  const blocks = [101, 102, 103, 104, 105];
+
+  it("keeps the base-fee room and grows the tip part to the highest tip", () => {
+    const maxFee = maxFeeForTips({
+      estimatedMaxFee,
+      firstTip: gwei("1"),
+      increasePercent: 50,
+      latest: 100,
+      blocks,
+    });
+    expect(maxFee).toBe(gwei("0.8") + gwei("5.0625"));
+  });
+
+  it("pays every planned tip in full, as the editor lists them", () => {
+    const maxFee = maxFeeForTips({
+      estimatedMaxFee,
+      firstTip: gwei("1"),
+      increasePercent: 50,
+      latest: 100,
+      blocks,
+    });
+    const plan = planTips({
+      latest: 100,
+      parent: { baseFee: base, gasUsed: BigInt(15), gasLimit: BigInt(30) },
+      firstTip: gwei("1"),
+      maxFee,
+      increasePercent: 50,
+      blocks,
+    });
+    expect(plan.targets.map((target) => toGwei(target.tip))).toEqual([
+      "1",
+      "1.5",
+      "2.25",
+      "3.375",
+      "5.0625",
+    ]);
+    // What a block at this base fee really pays: min(tip, maxFee - base fee).
+    const paid = plan.targets.map((target) =>
+      target.tip < maxFee - base ? target.tip : maxFee - base
+    );
+    expect(paid).toEqual(plan.targets.map((target) => target.tip));
+  });
+
+  it("is the estimate itself when the tip does not rise", () => {
+    expect(
+      maxFeeForTips({
+        estimatedMaxFee,
+        firstTip: gwei("1"),
+        increasePercent: 0,
+        latest: 100,
+        blocks,
+      })
+    ).toBe(estimatedMaxFee);
+  });
+
+  it("with a Max Fee set, planTips still caps every tip at it", () => {
+    const plan = planTips({
+      latest: 100,
+      parent: null,
+      firstTip: gwei("1"),
+      maxFee: gwei("1.8"),
+      increasePercent: 50,
+      blocks,
+    });
+    expect(plan.targets.map((target) => toGwei(target.tip))).toEqual([
+      "1",
+      "1.5",
+      "1.8",
+      "1.8",
+      "1.8",
+    ]);
+  });
+});
+
+describe("the fee cap held to Max Fee", () => {
+  // Base fee 0.4 gwei, Priority Fee 5, Max Fee 60, +20% over 3 blocks.
+  const base = gwei("0.4");
+  const blocks = [101, 102, 103];
+  const userMaxFee = gwei("60");
+  const capped = (raised: bigint, ceiling: bigint): bigint =>
+    raised < ceiling ? raised : ceiling;
+
+  it("with an estimate below Max Fee, raises the cap and pays 5, 6 and 7.2", () => {
+    const raised = maxFeeForTips({
+      estimatedMaxFee: base * BigInt(2) + gwei("5"),
+      firstTip: gwei("5"),
+      increasePercent: 20,
+      latest: 100,
+      blocks,
+    });
+    const maxFee = capped(raised, userMaxFee);
+    expect(toGwei(maxFee)).toBe("8");
+    const plan = planTips({
+      latest: 100,
+      parent: { baseFee: base, gasUsed: BigInt(15), gasLimit: BigInt(30) },
+      firstTip: gwei("5"),
+      maxFee,
+      increasePercent: 20,
+      blocks,
+    });
+    const paid = plan.targets.map((target) =>
+      target.tip < maxFee - base ? target.tip : maxFee - base
+    );
+    expect(paid.map(toGwei)).toEqual(["5", "6", "7.2"]);
+  });
+
+  it("stops at Max Fee when the raised cap would pass it", () => {
+    const raised = maxFeeForTips({
+      estimatedMaxFee: base * BigInt(2) + gwei("5"),
+      firstTip: gwei("5"),
+      increasePercent: 100,
+      latest: 100,
+      blocks,
+    });
+    expect(toGwei(raised)).toBe("20.8");
+    expect(toGwei(capped(raised, gwei("12")))).toBe("12");
+  });
+
+  it("with the base fee rising past the estimate, raises the room so Max Fee still covers every target", () => {
+    // A full block at 30 gwei; the estimate (21) came from a lower sampled base fee.
+    const parent = {
+      baseFee: gwei("30"),
+      gasUsed: BigInt(30),
+      gasLimit: BigInt(30),
+    };
+    const raised = maxFeeForTips({
+      estimatedMaxFee: gwei("21"),
+      firstTip: gwei("1"),
+      increasePercent: 0,
+      latest: 100,
+      blocks,
+      parent,
+    });
+    // Block 103 may reach 33.75 x 1.125^2 = 42.71484375 gwei, plus the 1 gwei tip.
+    expect(toGwei(raised)).toBe("43.71484375");
+    const plan = planTips({
+      latest: 100,
+      parent,
+      firstTip: gwei("1"),
+      maxFee: capped(raised, userMaxFee),
+      increasePercent: 0,
+      blocks,
+    });
+    expect(plan.skipped).toEqual([]);
+    expect(plan.targets.map((target) => target.block)).toEqual(blocks);
+  });
+
+  it("stops each later tip at the chain's tip limit, keeping a higher first tip", () => {
+    const tips = (firstTip: bigint) =>
+      planTips({
+        latest: 100,
+        parent: null,
+        firstTip,
+        maxFee: HIGH_MAX_FEE,
+        increasePercent: 100,
+        blocks,
+        tipLimit: gwei("3"),
+      }).targets.map((target) => toGwei(target.tip));
+    expect(tips(gwei("1"))).toEqual(["1", "2", "3"]);
+    expect(tips(gwei("5"))).toEqual(["5", "5", "5"]);
+    expect(
+      toGwei(
+        maxFeeForTips({
+          estimatedMaxFee: gwei("11"),
+          firstTip: gwei("1"),
+          increasePercent: 100,
+          latest: 100,
+          blocks,
+          tipLimit: gwei("3"),
+        })
+      )
+    ).toBe("13");
   });
 });
 

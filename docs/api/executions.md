@@ -120,6 +120,8 @@ Returns real-time execution status with progress tracking.
 }
 ```
 
+A `nodeStatuses` entry for a Write Contract step sent with Send as Bundle can also carry `outcome`: `"not-included"` when the step succeeded but its bundle was not included in any of its blocks (its `notIncludedReason` says why), `"skipped-in-flight"` when it sent nothing because an earlier bundle from the workflow could still land, `"landed-late"` when its bundle was missed but its transaction was mined later and the run re-settled (the run's `transactionHashes` then list it), and `"landed-late-reverted"` when that late transaction reverted (the run is then `error`). Its `status` stays `success`; the editor shows such a step as Not included, Skipped, Landed late or Reverted late (in red) rather than plain green. More values may be added. The public read-only view carries `outcome` too.
+
 ### Status Values
 
 | Status | Description | Terminal |
@@ -132,7 +134,9 @@ Returns real-time execution status with progress tracking.
 | `system_error` | Failed for an infrastructure reason, or was reaped after going stale | yes |
 | `cancelled` | Manually cancelled | yes |
 | `skipped` | Refused before it started, skipped behind a run that was still going, or a Send as Bundle step sent no transaction because an earlier run's bundle could still land (the run's other steps still ran, and may have sent transactions). Not a failure. Counts towards usage only in that last case | yes |
-| `not_landed` | Finished, but a bundle in it was not seen in its target blocks (for example no block builder picked it up). Neither a success nor a failure, and counts towards usage. A bundle that could not be checked (`notIncludedReason` `not-checked`) can still land within about a day (less for a workflow that sends very often from one wallet, which keeps a shorter history); then the run changes to `success`, or to `error` if the call reverted. Re-read the run if that matters, and put a deadline in the calldata of calls that must not run late | yes |
+| `not_landed` | Finished, but a bundle in it was not seen in its target blocks (for example no block builder picked it up). Neither a success nor a failure, and counts towards usage. A bundle that could not be checked (`notIncludedReason` `not-checked`) can still land within about a day (less for a workflow that sends very often from one wallet, which keeps a shorter history); then the run changes to `success`, or to `error` if the call reverted. Re-read the run if that matters, and put a deadline in the calldata of calls that must not run late | yes, but see below: it can still change within about a day |
+
+`not_landed` is the only terminal status that can still change: when a bundle reported `not-checked` lands later (within about a day), the run becomes `success`, or `error` if the call reverted. `pollIntervalHint` is `0` for it, so a poller stops there; re-read the run later if a late landing matters to you.
 
 Treat this list as a lower bound rather than a closed set, and decide terminality from the `pollIntervalHint` response body field (or the `X-Poll-Interval-Hint` response header) rather than from the status string. The server computes that hint from its own terminal set, so it stays correct for statuses added after your client shipped; `0` means terminal. A client that routes an unrecognised status into a failing `default` branch reports a failure for a run that is still settling.
 

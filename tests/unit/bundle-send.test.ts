@@ -43,6 +43,7 @@ const h = vi.hoisted(() => ({
   confirmNonce: vi.fn(),
   markNonceDropped: vi.fn(),
   getGasConfig: vi.fn(),
+  priorityFeeLimit: vi.fn(),
 }));
 
 vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => {
@@ -65,7 +66,10 @@ vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => {
   };
 });
 vi.mock("@/lib/web3/gas-strategy", () => ({
-  getGasStrategy: () => ({ getGasConfig: h.getGasConfig }),
+  getGasStrategy: () => ({
+    getGasConfig: h.getGasConfig,
+    priorityFeeLimit: h.priorityFeeLimit,
+  }),
 }));
 vi.mock("@/lib/web3/nonce-manager", () => ({
   getNonceManager: () => ({
@@ -148,6 +152,8 @@ type Chain = {
   otherUnseen?: boolean;
   // Transactions from the wallet per block, as a block read with them returns.
   txs: Map<number, MinedTx[]>;
+  // The latest block's base fee; 10 gwei when unset.
+  baseFee?: bigint;
 };
 
 type MinedTx = { from: string; nonce: number; hash: string };
@@ -170,7 +176,7 @@ function manager() {
         ? await blockWithTxs(tag as number)
         : {
             number: chain.block,
-            baseFeePerGas: gwei("10"),
+            baseFeePerGas: chain.baseFee ?? gwei("10"),
             gasUsed: BigInt(15_000_000),
             gasLimit: BigInt(30_000_000),
           },
@@ -288,6 +294,7 @@ beforeEach(() => {
     maxFeePerGas: gwei("30"),
     maxPriorityFeePerGas: gwei("1"),
   });
+  h.priorityFeeLimit.mockResolvedValue(gwei("500"));
   chain = {
     block: LATEST,
     sent: false,
@@ -346,8 +353,9 @@ describe("sendBundleInSession", () => {
       gwei("1.2"),
       gwei("1.44"),
     ]);
+    // No Max Fee set: the estimate's 29 gwei of base-fee room plus the 1.44 top tip.
     expect(new Set(txs.map((tx) => tx.maxFeePerGas))).toEqual(
-      new Set([gwei("30")])
+      new Set([gwei("30.44")])
     );
     expect(new Set(txs.map((tx) => tx.gasLimit))).toEqual(
       new Set([BigInt(60_000)])
@@ -369,9 +377,95 @@ describe("sendBundleInSession", () => {
       hashes: signed.map((raw) => ethers.keccak256(raw)),
       lastTargetBlock: 1003,
       workflowId: "wf-1",
-      gasPrice: gwei("30").toString(),
+      gasPrice: gwei("30.44").toString(),
       node: { id: "write-1", name: "Write", iterationIndex: 2 },
     });
+  });
+
+  it("with Max Fee set above the estimate, raises the cap up to it so the tips are paid", async () => {
+    await sendBundleInSession(
+      input({ gas: { maxFeeOverride: gwei("60") }, tipIncreasePercent: 100 })
+    );
+    const txs = signed.map((raw) => ethers.Transaction.from(raw));
+    expect(txs.map((tx) => tx.maxPriorityFeePerGas)).toEqual([
+      gwei("1"),
+      gwei("2"),
+      gwei("4"),
+    ]);
+    // 29 gwei of base-fee room plus the 4 gwei top tip, under the 60 gwei Max Fee.
+    expect(new Set(txs.map((tx) => tx.maxFeePerGas))).toEqual(
+      new Set([gwei("33")])
+    );
+  });
+
+  it("with Max Fee empty, holds the raised cap to the highest Max Fee a user may set", async () => {
+    h.getGasConfig.mockResolvedValue({
+      gasLimit: BigInt(60_000),
+      maxFeePerGas: gwei("9000"),
+      maxPriorityFeePerGas: gwei("1000"),
+    });
+    h.priorityFeeLimit.mockResolvedValue(gwei("20000"));
+    await sendBundleInSession(input({ tipIncreasePercent: 100 }));
+    const txs = signed.map((raw) => ethers.Transaction.from(raw));
+    expect(txs.map((tx) => tx.maxPriorityFeePerGas)).toEqual([
+      gwei("1000"),
+      gwei("2000"),
+      gwei("4000"),
+    ]);
+    expect(new Set(txs.map((tx) => tx.maxFeePerGas))).toEqual(
+      new Set([gwei("10000")])
+    );
+  });
+
+  it("stops the later tips at the chain's tip limit", async () => {
+    h.priorityFeeLimit.mockResolvedValue(gwei("1.5"));
+    await sendBundleInSession(input({ tipIncreasePercent: 100 }));
+    const txs = signed.map((raw) => ethers.Transaction.from(raw));
+    // Blocks 2 and 3 share the 1.5 gwei tip, so one transaction covers both.
+    expect(txs.map((tx) => tx.maxPriorityFeePerGas)).toEqual([
+      gwei("1"),
+      gwei("1.5"),
+    ]);
+    expect(new Set(txs.map((tx) => tx.maxFeePerGas))).toEqual(
+      new Set([gwei("30.5")])
+    );
+  });
+
+  it("with an estimate below the base fee ahead, raises the cap to the last target's base fee", async () => {
+    // The base fee rose past the estimate: 8 gwei of room, but block 3 may reach 12.66.
+    h.getGasConfig.mockResolvedValue({
+      gasLimit: BigInt(60_000),
+      maxFeePerGas: gwei("9"),
+      maxPriorityFeePerGas: gwei("1"),
+    });
+    const outcome = await sendBundleInSession(
+      input({ gas: { maxFeeOverride: gwei("60") }, tipIncreasePercent: 0 })
+    );
+    expect(outcome.kind).not.toBe("refused");
+    const txs = signed.map((raw) => ethers.Transaction.from(raw));
+    expect(new Set(txs.map((tx) => tx.maxFeePerGas))).toEqual(
+      new Set([gwei("12.65625") + gwei("1")])
+    );
+  });
+
+  it("with Max Fee set below the raised cap, signs at that Max Fee", async () => {
+    h.getGasConfig.mockResolvedValue({
+      gasLimit: BigInt(60_000),
+      maxFeePerGas: gwei("13"),
+      maxPriorityFeePerGas: gwei("1"),
+    });
+    await sendBundleInSession(
+      input({ gas: { maxFeeOverride: gwei("13") }, tipIncreasePercent: 100 })
+    );
+    const txs = signed.map((raw) => ethers.Transaction.from(raw));
+    expect(txs.map((tx) => tx.maxPriorityFeePerGas)).toEqual([
+      gwei("1"),
+      gwei("2"),
+      gwei("4"),
+    ]);
+    expect(new Set(txs.map((tx) => tx.maxFeePerGas))).toEqual(
+      new Set([gwei("13")])
+    );
   });
 
   it("signs once when every tip is the same", async () => {
@@ -522,18 +616,19 @@ describe("sendBundleInSession", () => {
     );
   });
 
-  it("sends nothing when Max Fee is below every projected base fee", async () => {
+  it("sends nothing when the base fee is above the highest fee cap, and blames the network", async () => {
+    chain.baseFee = gwei("20000");
     h.getGasConfig.mockResolvedValue({
       gasLimit: BigInt(60_000),
-      maxFeePerGas: gwei("9"),
+      maxFeePerGas: gwei("9000"),
       maxPriorityFeePerGas: gwei("1"),
     });
     const progress = { sent: false };
     const outcome = await sendBundleInSession(input({ progress }));
     expect(outcome).toMatchObject({ kind: "refused", errorClass: "external" });
-    // The next base fee is exactly 10 gwei (half-full parent).
-    expect(outcome.kind === "refused" && outcome.error).toContain(
-      "may reach (10 gwei)"
+    // The next base fee is exactly 20000 gwei (half-full parent).
+    expect(outcome.kind === "refused" && outcome.error).toBe(
+      "The fee cap of 10,000 gwei, the most a bundle step signs, is below the base fee the target blocks may reach (20,000 gwei), so nothing was sent. Run it again later."
     );
     expect(h.events).not.toContain("nonce");
     nothingSigned(progress);
@@ -549,6 +644,9 @@ describe("sendBundleInSession", () => {
       input({ gas: { maxFeeOverride: gwei("9") } })
     );
     expect(outcome).toMatchObject({ kind: "refused", errorClass: "user" });
+    expect(outcome.kind === "refused" && outcome.error).toBe(
+      "Max fee 9 gwei is below the base fee the target blocks may reach (10 gwei), so nothing was sent. Raise the max fee or leave it empty."
+    );
   });
 
   it("keeps the simulation error when some targets reverted and the rest were fee-skipped", async () => {
@@ -559,13 +657,15 @@ describe("sendBundleInSession", () => {
       maxFeePerGas: gwei("9"),
       maxPriorityFeePerGas: gwei("1"),
     });
-    await expect(sendBundleInSession(input())).rejects.toBe(revert);
+    await expect(
+      sendBundleInSession(input({ gas: { maxFeeOverride: gwei("9") } }))
+    ).rejects.toBe(revert);
   });
 
   it("refuses a wallet that cannot hold gasLimit x maxFee + value, before signing", async () => {
     const value = ethers.parseEther("1");
-    // One wei short of 60k gas at 30 gwei plus the value.
-    chain.balance = BigInt(60_000) * gwei("30") + value - BigInt(1);
+    // One wei short of 60k gas at the 30.44 gwei Max Fee plus the value.
+    chain.balance = BigInt(60_000) * gwei("30.44") + value - BigInt(1);
     const progress = { sent: false };
     const outcome = await sendBundleInSession(
       input({ progress, call: { ...input().call, value } })

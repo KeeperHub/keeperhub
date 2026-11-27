@@ -43,7 +43,8 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
     "isTestnet": false,
     "isEnabled": true,
     "usePrivateMempoolRpc": false,
-    "bundleBuilders": ["flashbots", "buildernet", "titan"]
+    "bundleBuilders": ["flashbots", "buildernet", "titan"],
+    "tipLimitGwei": 500
   },
   {
     "id": "chain_2",
@@ -58,7 +59,8 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
     "isTestnet": true,
     "isEnabled": true,
     "usePrivateMempoolRpc": false,
-    "bundleBuilders": []
+    "bundleBuilders": [],
+    "tipLimitGwei": 500
   }
 ]
 ```
@@ -80,6 +82,7 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
 | `isEnabled` | boolean | Whether the chain is currently available for workflow execution |
 | `usePrivateMempoolRpc` | boolean | Whether this chain offers a configured private relay (Flashbots Protect): `true` only when the relay is switched on and its URL is set. This does not enable private routing by default. |
 | `bundleBuilders` | string[] | Names of the block builders that transaction bundles on this chain can be sent to (never their URLs). Empty on chains without builders. |
+| `tipLimitGwei` | number \| null | The highest priority fee (tip), in gwei, that KeeperHub's gas estimate picks on this chain. A bundle step's rising tips stop there too (see [Send as Bundle](/plugins/web3#send-as-bundle)). |
 
 RPC endpoint URLs (`defaultPrimaryRpc`, `defaultFallbackRpc`) are not returned by this endpoint. They may embed provider API keys and are read server-side only; client code should use the user-configurable RPC preferences API instead.
 
@@ -96,7 +99,8 @@ on a chain that has one and to the public mempool elsewhere (never sponsored),
 as it always did. New values of `usePrivateMempool` must be booleans; an older
 stored value that is not a boolean (such as the text `"false"`) is read the
 same way. Any `sendMode` other
-than `"transaction"` or `"private-relay"` is refused. When both keys are sent
+than `"transaction"`, `"private-relay"` or `"bundle"` is refused (`"bundle"` only on
+Write Contract; see below). When both keys are sent
 they must agree (`true` with `"private-relay"`, `false` with `"transaction"`),
 except on an update that changes only one of them: that key wins, and both are
 saved in agreement. To change the route, set `sendMode`. Saving
@@ -118,6 +122,17 @@ its own broadcast path. The direct node-execution API takes `sendMode`,
 Send as checks as a workflow save, and answers 400 with the first problem
 found. The contract-call and transfer execution endpoints and the MCP execute
 tools take no `sendMode` and always send normally.
+
+### Block Builders
+
+`bundleBuilders` lists the block builders a Write Contract step with Send as
+Bundle (`sendMode: "bundle"`) can send to; see
+[Send as Bundle](/plugins/web3#send-as-bundle). Bundle is offered only where the
+list is not empty, and only to organizations where bundles are turned on
+(`bundleSendEnabled` in `GET /api/features`). A step's `bundleBuilders` setting
+takes names from this list; a name not on it is refused at save. Saving a
+bundle step on a chain with an empty list is refused. The direct node-execution
+API refuses `"bundle"`: bundles only run in a workflow's Write Contract step.
 
 Neither this chain capability nor a saved workflow setting confirms that a
 specific transaction used a private route. Workflow Write Contract and Batch

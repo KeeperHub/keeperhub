@@ -1,6 +1,8 @@
 // "Send as", stored as `sendMode`; the old `usePrivateMempool` flag is still read.
 // Shared by the editor, save checks and the step cores.
 
+import { BUNDLE_STEP_ACTION_TYPES } from "@/lib/workflow/executor/run-outcome-keys";
+
 export const SEND_MODE = {
   TRANSACTION: "transaction",
   PRIVATE_RELAY: "private-relay",
@@ -9,8 +11,20 @@ export const SEND_MODE = {
 
 export type SendMode = (typeof SEND_MODE)[keyof typeof SEND_MODE];
 
-/** What a chain offers, as /api/chains reports it. */
-export type SendModeChain = { usePrivateMempoolRpc?: boolean | null };
+/**
+ * What a chain offers, as /api/chains reports it, plus whether the caller's
+ * organization may send bundles (unknown while it loads in the editor).
+ */
+export type SendModeChain = {
+  usePrivateMempoolRpc?: boolean | null;
+  bundleBuilders?: readonly string[] | null;
+  bundlesEnabled?: boolean;
+};
+
+/** The chain lists block builders to send bundles to. */
+export function chainHasBuilders(chain: SendModeChain | undefined): boolean {
+  return (chain?.bundleBuilders?.length ?? 0) > 0;
+}
 
 /** A chain row has a relay only with the flag on and a relay URL set. */
 export function chainHasPrivateRelay(row: {
@@ -44,7 +58,11 @@ type SendModeOption = {
   /** Notice shown when picking this mode turns Sponsor gas off. */
   sponsorOffNotice?: string;
   /** Why a step set to this mode will not send so on a chain without it. */
-  unavailableNotice?: (chainName: string, fallsBack: boolean) => string;
+  unavailableNotice?: (
+    chainName: string,
+    fallsBack: boolean,
+    chain: SendModeChain | undefined
+  ) => string;
 };
 
 // Listed in menu order. A new mode is one more entry here.
@@ -73,9 +91,26 @@ export const SEND_MODE_OPTIONS: readonly SendModeOption[] = [
         ? `${chainName} has no private relay, so this step sends to the public mempool.`
         : `${chainName} has no private relay, so this step fails before sending.`,
   },
+  {
+    value: SEND_MODE.BUNDLE,
+    label: "Bundle to block builders",
+    shortLabel: "Bundle",
+    description:
+      "Sent only to the builders on the list, for the next few blocks. Never included if it would revert, so a send that fails or misses those blocks costs no gas, unless its signed transaction is mined later.",
+    hint: "Sent only to the builders on the list, for the next few blocks. Never included if it would revert, so a send that fails or misses those blocks costs no gas, unless its signed transaction is mined later.",
+    badge: "BUNDLE",
+    // Also needs the organization in the rollout; unknown counts as no.
+    availableOn: (chain) =>
+      chain?.bundlesEnabled === true && chainHasBuilders(chain),
+    sponsorOffNotice:
+      "Sponsor gas turned off: bundles are paid from your wallet.",
+    unavailableNotice: (chainName, _fallsBack, chain) =>
+      chain?.bundlesEnabled === false
+        ? "Bundles are not turned on for this organization, so this step fails before sending."
+        : `${chainName} has no block builders, so this step fails before sending.`,
+  },
 ];
 
-// Bundle is known at run time; it joins the menu once the editor offers it.
 const SEND_MODE_VALUES: ReadonlySet<string> = new Set(Object.values(SEND_MODE));
 
 /**
@@ -90,11 +125,22 @@ const UNSUPPORTED_SEND_MODES: Readonly<
   },
 };
 
+/** Why a bundle step with a Safe connection will not send: the editor, save and run time say it alike. */
+export const BUNDLE_SAFE_REFUSAL = `Send as Bundle cannot send through a Safe or Roles connection yet. Use your wallet (EOA) connection, or set Send as to Normal transaction (sendMode: "transaction").`;
+
+const BUNDLE_WRITE_CONTRACT_ONLY = `Bundle (sendMode: "bundle") is only available on Write Contract steps. Set Send as to Normal transaction (sendMode: "transaction").`;
+
 /** Why `actionType` cannot send as `mode`, or nothing when it can. */
 export function unsupportedSendMode(
   actionType: unknown,
   mode: SendMode
 ): string | undefined {
+  if (mode === SEND_MODE.BUNDLE) {
+    return typeof actionType === "string" &&
+      BUNDLE_STEP_ACTION_TYPES.includes(actionType)
+      ? undefined
+      : BUNDLE_WRITE_CONTRACT_ONLY;
+  }
   return typeof actionType === "string"
     ? UNSUPPORTED_SEND_MODES[actionType]?.[mode]
     : undefined;
@@ -117,9 +163,10 @@ export function unknownSendModeIssue(value: unknown): string | undefined {
   if (sendModeUnset(value) || isSendMode(value)) {
     return;
   }
-  const known = SEND_MODE_OPTIONS.map(
+  const names = SEND_MODE_OPTIONS.map(
     (option) => `"${option.value}" (${option.shortLabel})`
-  ).join(" or ");
+  );
+  const known = `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`;
   return `sendMode must be ${known}, not ${JSON.stringify(value)}.`;
 }
 
@@ -208,7 +255,7 @@ export function sendModeConflict(config: SendModeConfig): string | undefined {
   if (legacy === (config.sendMode === SEND_MODE.PRIVATE_RELAY)) {
     return;
   }
-  return `sendMode "${config.sendMode}" and usePrivateMempool ${JSON.stringify(config.usePrivateMempool)} disagree. Send sendMode alone, or pair usePrivateMempool: true with "${SEND_MODE.PRIVATE_RELAY}" and usePrivateMempool: false with "${SEND_MODE.TRANSACTION}".`;
+  return `sendMode "${config.sendMode}" and usePrivateMempool ${JSON.stringify(config.usePrivateMempool)} disagree. Send sendMode alone, or pair usePrivateMempool: true with "${SEND_MODE.PRIVATE_RELAY}" and usePrivateMempool: false with "${SEND_MODE.TRANSACTION}" or "${SEND_MODE.BUNDLE}".`;
 }
 
 /** New values of the legacy key must be booleans; older stored ones are read as before. */

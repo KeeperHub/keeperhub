@@ -808,18 +808,21 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // The same Send as checks a workflow save runs. On a chain without a relay the
   // step refuses an explicit Private relay; the old flag alone sends publicly.
-  const sendModeCheck = await validateSendModeForSave([
-    {
-      id: "direct",
-      data: {
-        config: {
-          ...config,
-          actionType: resolved.actionType,
-          network: effectiveNetwork,
+  const sendModeCheck = await validateSendModeForSave(
+    [
+      {
+        id: "direct",
+        data: {
+          config: {
+            ...config,
+            actionType: resolved.actionType,
+            network: effectiveNetwork,
+          },
         },
       },
-    },
-  ]);
+    ],
+    { direct: true, organizationId: apiKeyCtx.organizationId }
+  );
   if (!sendModeCheck.valid) {
     return NextResponse.json(
       { error: sendModeCheck.issues[0].message },

@@ -2,7 +2,19 @@ import { inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { cleanBundleBuilders } from "@/lib/rpc/rpc-config";
+import { bundleLoopRefusal } from "@/lib/web3/bundles/loop-rule";
+import { isBundleSendEnabledForOrg } from "@/lib/web3/bundles/rollout";
 import {
+  BUNDLE_SETTING_KEYS,
+  BUNDLE_SETTING_LABELS,
+  quoted,
+  readBundleSettings,
+  shortened,
+} from "@/lib/web3/bundles/settings";
+import {
+  BUNDLE_SAFE_REFUSAL,
+  chainHasBuilders,
   chainHasPrivateRelay,
   hasLegacyFlagOnly,
   isLegacyPrivateRelayConfig,
@@ -27,6 +39,7 @@ import type {
   ActionConfigValidationResult,
   WorkflowNodeForValidation,
 } from "@/lib/workflow/validation/action-config";
+import { loopDepthsOf } from "@/lib/workflow/validation/loop-depth";
 
 type Node = WorkflowNodeForValidation;
 type Config = Record<string, unknown>;
@@ -36,7 +49,27 @@ export type SendModeSaveOptions = {
   savedNodes?: readonly Node[];
   // An import keeps old "(Flashbots)" steps as they were exported (no stored copy to compare).
   keepLegacy?: boolean;
+  // The saving organization, for the bundle rollout; none counts as outside it.
+  organizationId?: string;
+  // The workflow's edges, to find bundle steps inside nested For Each loops.
+  edges?: readonly unknown[];
+  // A single step run outside a workflow (direct execution), which cannot bundle.
+  direct?: boolean;
+  // Check bundle steps saved before as new ones (validate_workflow, duplicate), except
+  // builders: a stored step is refused only when none of its builders is listed, as at run time.
+  recheckBundles?: boolean;
+  // A copy (duplicate): reasons say why the step cannot run, without advice the copier cannot act on.
+  copy?: boolean;
 };
+
+/** A chain row as the checks read it, with the name messages use. */
+type ChainRow = SendModeChain & { name?: string };
+
+function networkName(chainId: number, row: ChainRow | undefined): string {
+  return row?.name ?? `chain ${chainId}`;
+}
+
+const SET_TO_BUNDLE = 'Send as: Bundle (sendMode "bundle")';
 
 function chainIdOf(network: unknown): number | undefined {
   if (typeof network !== "string" && typeof network !== "number") {
@@ -83,7 +116,17 @@ function storedLegacyFlag(config: Config): unknown {
     : flag;
 }
 
-/** Same action, network and Send as keys as stored (the server's own fill included): let through as saved. */
+/** A bundle step's own settings and connection, as stored, to compare. */
+function bundleKeysOf(config: Config): string {
+  return JSON.stringify([
+    config[BUNDLE_SETTING_KEYS.blocks],
+    config[BUNDLE_SETTING_KEYS.tipIncreasePercent],
+    config[BUNDLE_SETTING_KEYS.builders],
+    config.web3Connection,
+  ]);
+}
+
+/** Same action, network and Send as keys (and bundle settings) as stored, the server's own fill included: let through as saved. */
 function unchangedFromSaved(
   config: Config,
   before: Config | undefined,
@@ -94,7 +137,9 @@ function unchangedFromSaved(
     before.actionType === config.actionType &&
     Object.is(before[networkField], config[networkField]) &&
     Object.is(before[SEND_MODE_KEY], config[SEND_MODE_KEY]) &&
-    Object.is(storedLegacyFlag(before), storedLegacyFlag(config))
+    Object.is(storedLegacyFlag(before), storedLegacyFlag(config)) &&
+    (resolveSendMode(config) !== SEND_MODE.BUNDLE ||
+      bundleKeysOf(before) === bundleKeysOf(config))
   );
 }
 
@@ -159,6 +204,12 @@ type Candidate = {
   legacy: boolean;
   // Why the step cannot send with `mode`, unless kept as stored.
   unsupported?: string;
+  // Bundle only: the builder names picked, none meaning all.
+  builders?: string[];
+  // Bundle only: a stored step rechecked as is, held to the run-time builder rule.
+  storedAsIs?: boolean;
+  // Bundle only: checked for a copy (see SendModeSaveOptions.copy).
+  copy?: boolean;
 };
 
 function issueFor(
@@ -193,12 +244,130 @@ function sameRoute(config: Config, before: Config | undefined): boolean {
 }
 
 /** The checks that need no database, for one node; a candidate for the rest. */
+type BundleContext = {
+  enabled: boolean;
+  direct: boolean;
+  copy: boolean;
+};
+
+/** A bundle step's checks that need no database; a candidate for the chain's builders. */
+function bundleNodeIssues(
+  index: number,
+  node: Node,
+  config: Config,
+  networkField: string,
+  kept: { route: boolean; storedAsIs: boolean },
+  ctx: BundleContext
+): { issue?: ActionConfigValidationIssue; candidate?: Candidate } {
+  const mode = SEND_MODE.BUNDLE;
+  const keptRoute = kept.route;
+  const refuse = (message: string, field: string = SEND_MODE_KEY) => ({
+    issue: issueFor(
+      index,
+      node,
+      field === SEND_MODE_KEY ? mode : config[field],
+      message,
+      field
+    ),
+  });
+  if (ctx.direct) {
+    return refuse(
+      `${SET_TO_BUNDLE} only runs in a Write Contract step of a workflow, not through direct execution. ${USE_NORMAL_HINT}`
+    );
+  }
+  // A step saved as a bundle before keeps saving (a rollback of the rollout included).
+  const unsupported = keptRoute
+    ? undefined
+    : unsupportedSendMode(config.actionType, mode);
+  if (unsupported) {
+    return refuse(unsupported);
+  }
+  if (!(keptRoute || ctx.enabled)) {
+    return refuse(
+      ctx.copy
+        ? `${SET_TO_BUNDLE} cannot run in your organization: bundles are not turned on for it yet.`
+        : `${SET_TO_BUNDLE} is not turned on for this organization yet. ${USE_NORMAL_HINT}`
+    );
+  }
+  if (String(config.web3Connection ?? "").startsWith("safe:")) {
+    return refuse(
+      `web3Connection "safe:...": ${BUNDLE_SAFE_REFUSAL}`,
+      "web3Connection"
+    );
+  }
+  const read = readBundleSettings(config);
+  if (!read.ok) {
+    return refuse(read.error, read.field);
+  }
+  return {
+    candidate: {
+      index,
+      node,
+      chainId: chainIdOf(config[networkField]),
+      mode,
+      legacy: false,
+      builders: read.settings.builders,
+      storedAsIs: kept.storedAsIs,
+      copy: ctx.copy,
+    },
+  };
+}
+
+/** The chain's checks for a bundle step: builders listed, and every picked one among them. */
+function bundleCandidateIssue(
+  candidate: Candidate,
+  row: ChainRow | undefined
+): ActionConfigValidationIssue | undefined {
+  const { index, node, chainId, mode, builders } = candidate;
+  if (chainId === undefined) {
+    return;
+  }
+  if (!chainHasBuilders(row)) {
+    return issueFor(
+      index,
+      node,
+      mode,
+      candidate.copy
+        ? `${SET_TO_BUNDLE} cannot run on ${networkName(chainId, row)}: it has no block builders.`
+        : `${SET_TO_BUNDLE} is not available on ${networkName(chainId, row)}: it has no block builders. ${USE_NORMAL_HINT}`
+    );
+  }
+  const listed = row?.bundleBuilders ?? [];
+  const unknown = (builders ?? []).filter((name) => !listed.includes(name));
+  // Runs send to the listed ones, so a stored step fails only when none is listed.
+  const runs =
+    candidate.storedAsIs === true && unknown.length < (builders ?? []).length;
+  if (unknown.length === 0 || runs) {
+    return;
+  }
+  // Echoed names are cut short, in the message and in `received`.
+  const shown = unknown.map(quoted);
+  const received = unknown.map(shortened);
+  if (candidate.copy && candidate.storedAsIs) {
+    return issueFor(
+      index,
+      node,
+      received,
+      `${SET_TO_BUNDLE} cannot run: ${networkName(chainId, row)} lists none of its builders (${shown.join(", ")}).`,
+      BUNDLE_SETTING_KEYS.builders
+    );
+  }
+  return issueFor(
+    index,
+    node,
+    received,
+    `${BUNDLE_SETTING_LABELS.builders} (bundleBuilders) names ${unknown.length === 1 ? "a builder" : "builders"} ${networkName(chainId, row)} does not list: ${shown.join(", ")}. Pick from: ${listed.join(", ")}, or leave it out to send to all of them.`,
+    BUNDLE_SETTING_KEYS.builders
+  );
+}
+
 function nodeIssues(
   index: number,
   node: Node,
   config: Config,
   networkField: string,
-  kept: { legacy: boolean; flag: boolean; route: boolean }
+  kept: { legacy: boolean; flag: boolean; route: boolean; storedAsIs: boolean },
+  ctx: BundleContext
 ): { issue?: ActionConfigValidationIssue; candidate?: Candidate } {
   const unknown = unknownSendModeIssue(config[SEND_MODE_KEY]);
   if (unknown) {
@@ -227,16 +396,8 @@ function nodeIssues(
   if (mode === SEND_MODE.TRANSACTION) {
     return {};
   }
-  // Run time can send bundles; saving one opens once the editor offers it.
-  if (mode === SEND_MODE.BUNDLE && !kept.route) {
-    return {
-      issue: issueFor(
-        index,
-        node,
-        mode,
-        `Send as: Bundle is not available yet. ${USE_NORMAL_HINT}`
-      ),
-    };
+  if (mode === SEND_MODE.BUNDLE) {
+    return bundleNodeIssues(index, node, config, networkField, kept, ctx);
   }
   const reason =
     kept.legacy || kept.route
@@ -260,8 +421,11 @@ function nodeIssues(
 /** One issue at most: the step cannot send so, or the chain cannot. */
 function candidateIssue(
   candidate: Candidate,
-  row: SendModeChain | undefined
+  row: ChainRow | undefined
 ): ActionConfigValidationIssue | undefined {
+  if (candidate.mode === SEND_MODE.BUNDLE) {
+    return bundleCandidateIssue(candidate, row);
+  }
   const { index, node, chainId, mode, legacy, unsupported } = candidate;
   const available =
     chainId === undefined || sendModeOption(mode).availableOn(row);
@@ -271,15 +435,53 @@ function candidateIssue(
   if (unsupported) {
     return issueFor(index, node, mode, unsupported);
   }
-  if (available) {
+  if (available || chainId === undefined) {
     return;
   }
   return issueFor(
     index,
     node,
     mode,
-    `Send as "${mode}" is not available on chain ${chainId}. Set sendMode to "${SEND_MODE.TRANSACTION}", or use a network that offers it.`
+    `Send as "${mode}" is not available on ${networkName(chainId, row)}. Set sendMode to "${SEND_MODE.TRANSACTION}", or use a network that offers it.`
   );
+}
+
+/**
+ * Bundle steps inside a For Each nested in another, refused as at run time.
+ * Checked on every bundle step, unchanged ones included: the rule is not new.
+ */
+async function nestedLoopIssues(
+  nodes: readonly Node[],
+  edges: readonly unknown[] | undefined
+): Promise<ActionConfigValidationIssue[]> {
+  const bundleNodes = [...nodes.entries()].filter(([, node]) => {
+    const config = node.data?.config;
+    return (
+      config !== undefined &&
+      sendModeNetworkField(config) !== undefined &&
+      resolveSendMode(config) === SEND_MODE.BUNDLE
+    );
+  });
+  if (bundleNodes.length === 0 || !edges || edges.length === 0) {
+    return [];
+  }
+  const depths = await loopDepthsOf(
+    nodes,
+    edges.filter((edge): edge is Record<string, unknown> => isObject(edge))
+  );
+  const issues: ActionConfigValidationIssue[] = [];
+  for (const [index, node] of bundleNodes) {
+    const depth = typeof node.id === "string" ? (depths.get(node.id) ?? 0) : 0;
+    const refusal = bundleLoopRefusal(depth);
+    if (refusal) {
+      issues.push(issueFor(index, node, SEND_MODE.BUNDLE, refusal));
+    }
+  }
+  return issues;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 /**
@@ -293,6 +495,15 @@ export async function validateSendModeForSave(
   const saved = savedById(nodes, options.savedNodes);
   const issues: ActionConfigValidationIssue[] = [];
   const candidates: Candidate[] = [];
+  const ctx: BundleContext = {
+    enabled:
+      options.organizationId !== undefined &&
+      isBundleSendEnabledForOrg(options.organizationId),
+    direct: options.direct === true,
+    copy: options.copy === true,
+  };
+  issues.push(...(await nestedLoopIssues(nodes, options.edges)));
+  const refusedNodes = new Set(issues.map((issue) => issue.nodeId));
   for (const [index, node] of nodes.entries()) {
     const config = node.data?.config;
     const networkField = config ? sendModeNetworkField(config) : undefined;
@@ -300,19 +511,34 @@ export async function validateSendModeForSave(
       continue;
     }
     const before = typeof node.id === "string" ? saved.get(node.id) : undefined;
-    if (unchangedFromSaved(config, before, networkField)) {
+    const recheck =
+      options.recheckBundles === true &&
+      resolveSendMode(config) === SEND_MODE.BUNDLE;
+    const unchanged = unchangedFromSaved(config, before, networkField);
+    if (!recheck && unchanged) {
       continue;
     }
-    const { issue, candidate } = nodeIssues(index, node, config, networkField, {
-      legacy: options.keepLegacy === true && hasLegacyFlagOnly(config),
-      flag:
-        before !== undefined &&
-        Object.is(
-          before[LEGACY_PRIVATE_MEMPOOL_KEY],
-          config[LEGACY_PRIVATE_MEMPOOL_KEY]
-        ),
-      route: sameRoute(config, before),
-    });
+    if (typeof node.id === "string" && refusedNodes.has(node.id)) {
+      continue;
+    }
+    const { issue, candidate } = nodeIssues(
+      index,
+      node,
+      config,
+      networkField,
+      {
+        legacy: options.keepLegacy === true && hasLegacyFlagOnly(config),
+        flag:
+          before !== undefined &&
+          Object.is(
+            before[LEGACY_PRIVATE_MEMPOOL_KEY],
+            config[LEGACY_PRIVATE_MEMPOOL_KEY]
+          ),
+        route: !recheck && sameRoute(config, before),
+        storedAsIs: recheck && unchanged,
+      },
+      ctx
+    );
     if (issue) {
       issues.push(issue);
     }
@@ -333,16 +559,24 @@ export async function validateSendModeForSave(
       ? await db
           .select({
             chainId: chains.chainId,
+            name: chains.name,
             usePrivateMempoolRpc: chains.usePrivateMempoolRpc,
             defaultPrivateRpcUrl: chains.defaultPrivateRpcUrl,
+            bundleBuilders: chains.bundleBuilders,
           })
           .from(chains)
           .where(inArray(chains.chainId, ids))
       : [];
-  const byId = new Map(
+  const byId = new Map<number, ChainRow>(
     rows.map((row) => [
       row.chainId,
-      { usePrivateMempoolRpc: chainHasPrivateRelay(row) },
+      {
+        name: row.name,
+        usePrivateMempoolRpc: chainHasPrivateRelay(row),
+        bundleBuilders: cleanBundleBuilders(row.bundleBuilders).map(
+          (builder) => builder.name
+        ),
+      },
     ])
   );
   for (const candidate of candidates) {

@@ -10,6 +10,7 @@ import {
   runOutcomeOf,
   runOutcomeReason,
   signalsOfStep,
+  stepOutcomeKeysSql,
 } from "@/lib/workflow/executor/run-outcome";
 import type { StepContext } from "@/lib/workflow/executor/step-handler";
 import {
@@ -17,6 +18,11 @@ import {
   getRunOutcomeSignals,
   recordRunOutcomeIfPresent,
 } from "@/lib/workflow/executor/step-success-tracker";
+import {
+  runLogsDue,
+  selectedRunPollMs,
+  selectedRunPollMsAfterError,
+} from "@/lib/workflow/run-polling";
 
 const WRITE = "web3/write-contract";
 const executionId = "exec_run_outcome";
@@ -155,9 +161,9 @@ describe("recordRunOutcomeIfPresent", () => {
 });
 
 describe("runOutcomeReason", () => {
-  it("says the skipped step sent no transaction and other steps still ran", () => {
+  it("says the skipped step sent no transaction, and nothing about other steps", () => {
     expect(runOutcomeReason("skipped")).toBe(
-      "Skipped: this workflow's earlier bundle could still land, so the bundle step sent no transaction. Any other steps still ran."
+      "Skipped: this workflow's earlier bundle could still land, so the bundle step sent no transaction."
     );
   });
 
@@ -174,5 +180,50 @@ describe("runOutcomeReason", () => {
     expect(runOutcomeReason(runOutcomeOf(skip) ?? "not_landed")).toMatch(
       /^Skipped:/
     );
+  });
+});
+
+describe("stepOutcomeKeysSql", () => {
+  it("reads each key only when it holds a JSON string, as signalsOfStep does", () => {
+    const keys = stepOutcomeKeysSql(workflowExecutionLogs.output);
+    const dialect = new PgDialect();
+    for (const [part, key] of [
+      [keys.route, "route"],
+      [keys.notIncludedReason, "notIncludedReason"],
+    ] as const) {
+      const text = dialect.sqlToQuery(part).sql.replace(/\s+/g, " ");
+      expect(text).toContain(
+        `CASE WHEN jsonb_typeof("workflow_execution_logs"."output"->'${key}') = 'string' THEN "workflow_execution_logs"."output"->>'${key}' END`
+      );
+    }
+  });
+});
+
+describe("run views reading a not landed run again", () => {
+  it("reads a selected not landed run slowly, a pending or running one fast, and stops otherwise", () => {
+    expect(selectedRunPollMs("running")).toBe(500);
+    expect(selectedRunPollMs("pending")).toBe(500);
+    expect(selectedRunPollMs("not_landed")).toBe(60_000);
+    for (const status of ["success", "error", "skipped", "cancelled"]) {
+      expect(selectedRunPollMs(status)).toBeNull();
+    }
+  });
+
+  it("stops after a refused read and retries other failed reads slowly", () => {
+    for (const status of [400, 401, 403, 404, 410]) {
+      expect(selectedRunPollMsAfterError(status)).toBeNull();
+    }
+    for (const status of [undefined, 408, 429, 500, 502, 503]) {
+      expect(selectedRunPollMsAfterError(status)).toBe(60_000);
+    }
+  });
+
+  it("loads an open run's steps again once for each end status it reaches", () => {
+    expect(runLogsDue("running", false, undefined)).toBe(true);
+    expect(runLogsDue("not_landed", true, undefined)).toBe(true);
+    expect(runLogsDue("not_landed", true, "not_landed")).toBe(false);
+    // Re-settled by a late landing: the steps are read again, then not again.
+    expect(runLogsDue("success", true, "not_landed")).toBe(true);
+    expect(runLogsDue("success", true, "success")).toBe(false);
   });
 });

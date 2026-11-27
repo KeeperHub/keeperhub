@@ -1809,7 +1809,7 @@ describe("run outcome from step outputs", () => {
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("skipped");
     expect(set).not.toHaveProperty("billable");
-    expect(set?.error).toContain("Any other steps still ran");
+    expect(set?.error).toContain("the bundle step sent no transaction");
     expect(set?.errorType).toBeNull();
   });
 

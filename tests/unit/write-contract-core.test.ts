@@ -884,6 +884,22 @@ describe("writeContractCore simulateAt next-block", () => {
     expect(vi.mocked(getRpcProvider)).not.toHaveBeenCalled();
   });
 
+  it("refuses a bundle unless the caller is the Write Contract step (a protocol write), before any RPC", async () => {
+    vi.mocked(getRpcProvider).mockClear();
+    const result = await writeContractCore({
+      ...baseInput,
+      sendMode: "bundle",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+      error: expect.stringContaining(
+        "bundles are only available on Write Contract steps"
+      ),
+    });
+    expect(vi.mocked(getRpcProvider)).not.toHaveBeenCalled();
+  });
+
   it("simulates on the private-mempool relay, the same RPC that sends", async () => {
     await writeContractCore({
       ...baseInput,

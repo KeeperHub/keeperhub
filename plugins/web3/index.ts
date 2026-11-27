@@ -6,6 +6,7 @@ import {
   amountField,
   balanceCheckSuccessOutput,
   bundleOutputFields,
+  bundleSettingsFields,
   checkErrorOutput,
   contractAddressField,
   evmNetworkField,
@@ -320,7 +321,7 @@ const web3Plugin: IntegrationPlugin = {
           placeholder: "Select network",
           required: true,
         },
-        sendModeField(),
+        sendModeField("web3/transfer-funds"),
         {
           key: "amount",
           label: "Amount",
@@ -393,7 +394,7 @@ const web3Plugin: IntegrationPlugin = {
       ],
       configFields: [
         evmNetworkField(),
-        sendModeField(),
+        sendModeField("web3/transfer-token"),
         tokenConfigField(),
         amountField(),
         {
@@ -1970,7 +1971,7 @@ const web3Plugin: IntegrationPlugin = {
       ],
       configFields: [
         evmNetworkField(),
-        sendModeField(),
+        sendModeField("web3/approve-token"),
         tokenConfigField(),
         {
           key: "spenderAddress",
@@ -2167,7 +2168,8 @@ const web3Plugin: IntegrationPlugin = {
       ],
       configFields: [
         evmNetworkField(),
-        sendModeField(),
+        sendModeField("web3/write-contract"),
+        ...bundleSettingsFields(),
         contractAddressField(),
         {
           key: "abi",

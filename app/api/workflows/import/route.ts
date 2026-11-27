@@ -172,7 +172,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const actionConfigValidation = await validateWorkflowNodesForSave(
       sanitized.nodes,
-      { keepLegacy: true }
+      { keepLegacy: true, organizationId, edges: sanitized.edges }
     );
     if (!actionConfigValidation.valid) {
       return NextResponse.json(

@@ -772,6 +772,158 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
       expect(execution?.gasUsedWei).toBe(String(2 * FEE_WEI));
     });
 
+    it("two bundle writes, one landed and one reverted: error, both hashes with their receipts, both fees", async () => {
+      const bundleRun = await run("not_landed");
+      await missedStep(bundleRun, 8, [hash("2")], "write-2");
+      await missedStep(bundleRun, 7, [hash("1")]);
+
+      await settleAt({
+        transactionCount: 9,
+        latestBlock: 600,
+        mined: { [hash("1")]: 1, [hash("2")]: 0 },
+      });
+
+      const execution = await executionOf(bundleRun);
+      expect(execution?.status).toBe("error");
+      expect(execution?.error).toContain(hash("2"));
+      expect(
+        Object.fromEntries(
+          (execution?.transactionHashes ?? []).map((entry) => [
+            entry.nodeId,
+            entry.receiptStatus,
+          ])
+        )
+      ).toEqual({ "write-1": "success", "write-2": "reverted" });
+      expect(execution?.gasUsedWei).toBe(String(2 * FEE_WEI));
+    });
+
+    it("a late revert after another step already landed late writes both, with both fees", async () => {
+      const bundleRun = await run("not_landed");
+      await missedStep(bundleRun, 8, [hash("2")], "write-2");
+      await missedStep(bundleRun, 7, [hash("1")]);
+
+      // Nonce 7 lands first; the run waits for nonce 8.
+      await settleAt({
+        transactionCount: 8,
+        latestBlock: 600,
+        mined: { [hash("1")]: 1 },
+      });
+      expect(await statusOf(bundleRun)).toBe("not_landed");
+
+      await settleAt({
+        transactionCount: 9,
+        latestBlock: 601,
+        mined: { [hash("1")]: 1, [hash("2")]: 0 },
+      });
+
+      const execution = await executionOf(bundleRun);
+      expect(execution?.status).toBe("error");
+      expect(
+        Object.fromEntries(
+          (execution?.transactionHashes ?? []).map((entry) => [
+            entry.nodeId,
+            entry.receiptStatus,
+          ])
+        )
+      ).toEqual({ "write-1": "success", "write-2": "reverted" });
+      expect(execution?.gasUsedWei).toBe(String(2 * FEE_WEI));
+    });
+
+    it.each([
+      [1, "success"],
+      [0, "reverted"],
+    ] as const)(
+      "a landing after a late revert ended the run is added (receipt %s), once; the run stays error",
+      async (receipt, receiptStatus) => {
+        const bundleRun = await run("not_landed");
+        await missedStep(bundleRun, 8, [hash("2")], "write-2");
+        await missedStep(bundleRun, 7, [hash("1")]);
+
+        // Nonce 7 reverts first and ends the run; nonce 8 lands after.
+        await settleAt({
+          transactionCount: 8,
+          latestBlock: 600,
+          mined: { [hash("1")]: 0 },
+        });
+        expect(await statusOf(bundleRun)).toBe("error");
+        expect(await executionOf(bundleRun)).toMatchObject({
+          gasUsedWei: String(FEE_WEI),
+        });
+
+        const view = {
+          transactionCount: 9,
+          latestBlock: 601,
+          mined: { [hash("1")]: 0, [hash("2")]: receipt },
+        };
+        await settleAt(view);
+        sweepChain.view = view;
+        const again = await sweep();
+
+        expect(again.runsChecked).toBe(0);
+        const execution = await executionOf(bundleRun);
+        expect(execution?.status).toBe("error");
+        expect(execution?.error).toContain(hash("1"));
+        expect(
+          Object.fromEntries(
+            (execution?.transactionHashes ?? []).map((entry) => [
+              entry.nodeId,
+              entry.receiptStatus,
+            ])
+          )
+        ).toEqual({ "write-1": "reverted", "write-2": receiptStatus });
+        expect(execution?.gasUsedWei).toBe(String(2 * FEE_WEI));
+      }
+    );
+
+    it("the sweep adds a landing confirmed after a late revert ended the run, once", async () => {
+      const bundleRun = await run("not_landed");
+      await missedStep(bundleRun, 8, [hash("2")], "write-2");
+      await missedStep(bundleRun, 7, [hash("1")]);
+      await settleAt({
+        transactionCount: 8,
+        latestBlock: 600,
+        mined: { [hash("1")]: 0 },
+      });
+      expect(await statusOf(bundleRun)).toBe("error");
+
+      // Confirmed by a session whose settle did not finish.
+      await setRow(8, { status: "confirmed", confirmedAt: new Date() });
+      sweepChain.view = {
+        transactionCount: 9,
+        latestBlock: 600,
+        mined: { [hash("1")]: 0, [hash("2")]: 1 },
+      };
+      const first = await sweep();
+      const second = await sweep();
+
+      expect(first.runsChecked).toBe(1);
+      expect(second.runsChecked).toBe(0);
+      const execution = await executionOf(bundleRun);
+      expect(execution?.status).toBe("error");
+      expect(
+        execution?.transactionHashes.map((entry) => entry.hash).sort()
+      ).toEqual([hash("1"), hash("2")]);
+      expect(execution?.gasUsedWei).toBe(String(2 * FEE_WEI));
+    });
+
+    it("a plain error run takes no late landing", async () => {
+      const bundleRun = await run("error");
+      await missedStep(bundleRun, 7, [hash("1")]);
+      await setRow(7, { status: "confirmed", confirmedAt: new Date() });
+      sweepChain.view = {
+        transactionCount: 8,
+        latestBlock: 600,
+        mined: { [hash("1")]: 1 },
+      };
+
+      const result = await sweep();
+
+      expect(result.runsChecked).toBe(0);
+      const execution = await executionOf(bundleRun);
+      expect(execution?.transactionHashes ?? []).toEqual([]);
+      expect(execution?.gasUsedWei).toBeNull();
+    });
+
     it("a run with a step skipped behind a bundle in flight stays not landed", async () => {
       const bundleRun = await run("not_landed");
       await missedStep(bundleRun, 7, [hash("1")]);

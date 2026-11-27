@@ -658,7 +658,7 @@ describe.skipIf(SKIP)("Send as Bundle (anvil, fake builders)", () => {
 
     const run = await finalize(secondId);
     expect(run?.status).toBe("skipped");
-    expect(run?.error).toContain("Any other steps still ran");
+    expect(run?.error).toContain("the bundle step sent no transaction");
     expect(await first).toMatchObject({ success: true, included: false });
   }, 90_000);
 

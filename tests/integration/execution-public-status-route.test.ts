@@ -213,6 +213,128 @@ describe("GET /api/workflows/executions/[executionId]/status public access", () 
     expect(body.errorContext?.executionTrace).toEqual(["trace"]);
   });
 
+  describe("bundle step outcomes", () => {
+    const WRITE = "web3/write-contract";
+    const missed = {
+      status: "success",
+      nodeType: WRITE,
+      iterationIndex: null,
+      route: "bundle",
+      notIncludedReason: "not-picked",
+    };
+
+    async function statuses(
+      execution: Record<string, unknown>,
+      logs: Record<string, unknown>[],
+      mode: "full" | "publicReadOnly" = "full"
+    ) {
+      mockResolveExecutionViewAccess.mockResolvedValue({
+        mode,
+        execution: { ...makeExecution("public"), ...execution },
+      });
+      mockFindMany.mockResolvedValue(logs);
+      const response = await GET(
+        createRequest({ "x-forwarded-for": "203.0.113.60" }),
+        { params: Promise.resolve({ executionId: EXECUTION_ID }) }
+      );
+      return (
+        (await response.json()) as {
+          nodeStatuses: { nodeId: string; status: string; outcome?: string }[];
+        }
+      ).nodeStatuses;
+    }
+
+    it("marks Write Contract steps that missed or sent nothing, as the finalizer reads them", async () => {
+      const nodeStatuses = await statuses(
+        { status: "not_landed", transactionHashes: [] },
+        [
+          { ...missed, nodeId: "missed" },
+          {
+            ...missed,
+            nodeId: "skip",
+            route: "skipped-in-flight",
+            notIncludedReason: null,
+          },
+          { ...missed, nodeId: "landed", notIncludedReason: null },
+          { ...missed, nodeId: "failed", status: "error" },
+        ]
+      );
+      expect(nodeStatuses).toEqual([
+        { nodeId: "missed", status: "success", outcome: "not-included" },
+        { nodeId: "skip", status: "success", outcome: "skipped-in-flight" },
+        { nodeId: "landed", status: "success" },
+        { nodeId: "failed", status: "error" },
+      ]);
+      // Only the outcome's output keys are read, never the step bodies.
+      const query = mockFindMany.mock.calls[0][0] as {
+        columns: Record<string, boolean>;
+        extras: Record<string, unknown>;
+      };
+      expect(query.columns).toEqual({
+        nodeId: true,
+        nodeType: true,
+        status: true,
+        iterationIndex: true,
+      });
+      expect(Object.keys(query.extras)).toEqual(["route", "notIncludedReason"]);
+    });
+
+    it("gives no outcome to a step that is not Write Contract, such as a webhook trigger", async () => {
+      const nodeStatuses = await statuses(
+        { status: "success", transactionHashes: [] },
+        [
+          {
+            ...missed,
+            nodeId: "trigger",
+            nodeType: "Webhook",
+            route: "skipped-in-flight",
+          },
+          { ...missed, nodeId: "code", nodeType: "Code" },
+        ],
+        "publicReadOnly"
+      );
+      expect(nodeStatuses.every((entry) => entry.outcome === undefined)).toBe(
+        true
+      );
+    });
+
+    it("shows a missed step as landed late once its run re-settled", async () => {
+      const nodeStatuses = await statuses(
+        {
+          status: "success",
+          transactionHashes: [
+            { hash: "0xlate", nodeId: "missed", nodeName: "W" },
+          ],
+        },
+        [{ ...missed, nodeId: "missed", notIncludedReason: "not-checked" }]
+      );
+      expect(nodeStatuses).toEqual([
+        { nodeId: "missed", status: "success", outcome: "landed-late" },
+      ]);
+    });
+
+    it("shows a late landing that reverted as landed-late-reverted, also in the public view", async () => {
+      for (const mode of ["full", "publicReadOnly"] as const) {
+        const nodeStatuses = await statuses(
+          {
+            status: "error",
+            transactionHashes: [
+              {
+                hash: "0xlate",
+                nodeId: "missed",
+                nodeName: "W",
+                receiptStatus: "reverted",
+              },
+            ],
+          },
+          [{ ...missed, nodeId: "missed", notIncludedReason: "not-checked" }],
+          mode
+        );
+        expect(nodeStatuses[0]?.outcome, mode).toBe("landed-late-reverted");
+      }
+    });
+  });
+
   it("rate-limits garbage Authorization on the anonymous bucket", async () => {
     mockResolveExecutionViewAccess.mockResolvedValue({
       mode: "publicReadOnly",

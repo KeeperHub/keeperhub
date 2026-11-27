@@ -511,7 +511,9 @@ function buildConfigFieldsFromAction(
       required: true,
       ...(allowedChainIds.length > 0 ? { allowedChainIds } : {}),
     },
-    ...(action.type === "write" ? [sendModeField()] : []),
+    ...(action.type === "write"
+      ? [sendModeField(`${def.slug}/${action.slug}`)]
+      : []),
   ];
 
   if (contract?.userSpecifiedAddress) {

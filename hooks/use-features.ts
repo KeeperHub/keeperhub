@@ -12,6 +12,8 @@ import { resolveActionFeature } from "@/lib/features";
 type SnapshotResponse = FeatureSnapshotForClient & {
   billingEnabled: boolean;
   pythPriceTriggerEnabled: boolean;
+  /** The organization may send Write Contract steps as bundles. */
+  bundleSendEnabled?: boolean;
 };
 
 const RETRY_INTERVAL_MS = 250;
@@ -25,28 +27,38 @@ let inflight: Promise<SnapshotResponse> | null = null;
 let cacheVersion = 0;
 const invalidationListeners = new Set<() => void>();
 
-function fetchSnapshot(): Promise<SnapshotResponse> {
+export function fetchSnapshot(): Promise<SnapshotResponse> {
   if (cachedSnapshot) {
     return Promise.resolve(cachedSnapshot);
   }
   if (inflight) {
     return inflight;
   }
-  inflight = fetch("/api/features", { credentials: "include" })
+  // A read started before an invalidation (an org switch) must not fill the cache.
+  const version = cacheVersion;
+  const request: Promise<SnapshotResponse> = fetch("/api/features", {
+    credentials: "include",
+  })
     .then(async (res) => {
       if (!res.ok) {
         throw new Error(`Failed to load features: ${res.status}`);
       }
       const data = (await res.json()) as SnapshotResponse;
+      if (version !== cacheVersion) {
+        return fetchSnapshot();
+      }
       cachedSnapshot = data;
       inflight = null;
       return data;
     })
     .catch((err: unknown) => {
-      inflight = null;
+      if (inflight === request) {
+        inflight = null;
+      }
       throw err;
     });
-  return inflight;
+  inflight = request;
+  return request;
 }
 
 export function invalidateFeatureSnapshot(): void {
@@ -56,6 +68,14 @@ export function invalidateFeatureSnapshot(): void {
   for (const listener of invalidationListeners) {
     listener();
   }
+}
+
+/** Calls `listener` whenever the snapshot is invalidated (an org or session switch). */
+export function subscribeFeatureInvalidation(listener: () => void): () => void {
+  invalidationListeners.add(listener);
+  return () => {
+    invalidationListeners.delete(listener);
+  };
 }
 
 type UseFeaturesResult = {

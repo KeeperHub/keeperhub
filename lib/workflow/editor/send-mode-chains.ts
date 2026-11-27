@@ -11,12 +11,16 @@ import {
 export type EditorChain = SendModeChain & {
   chainId: number | string;
   name?: string;
+  // The network's tip limit in gwei, as /api/chains gives it.
+  tipLimitGwei?: number | null;
 };
 
 // The editor's chain list, shared by every Send as reader in the tab.
 let editorChains: readonly EditorChain[] | undefined;
 // Every load attempt failed; cleared when a later load starts.
 let editorChainsFailed = false;
+// Whether the organization may send bundles; undefined until known.
+let editorBundlesEnabled: boolean | undefined;
 const chainListeners = new Set<() => void>();
 
 function notifyChainListeners(): void {
@@ -43,6 +47,17 @@ export function setEditorSendModeChainsFailed(failed: boolean): void {
 
 export function getEditorSendModeChainsFailed(): boolean {
   return editorChainsFailed;
+}
+
+export function setEditorBundlesEnabled(enabled: boolean | undefined): void {
+  if (editorBundlesEnabled !== enabled) {
+    editorBundlesEnabled = enabled;
+    notifyChainListeners();
+  }
+}
+
+export function getEditorBundlesEnabled(): boolean | undefined {
+  return editorBundlesEnabled;
 }
 
 /** The chain list is still loading: neither listed nor failed. */
@@ -73,7 +88,8 @@ export function editorChainOf(network: unknown): EditorChain | undefined {
   } catch {
     return;
   }
-  return editorChains.find((row) => Number(row.chainId) === chainId);
+  const row = editorChains.find((entry) => Number(entry.chainId) === chainId);
+  return row && { ...row, bundlesEnabled: editorBundlesEnabled };
 }
 
 /**
