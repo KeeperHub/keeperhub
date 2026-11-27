@@ -10,7 +10,7 @@ const STEPS = [
   {
     icon: ArrowDownUp,
     title: "KeeperHub is the backup",
-    text: "If your endpoints fail, or cannot serve a call such as a trigger that needs WSS, KeeperHub's endpoints take over.",
+    text: "A config without a fallback of its own falls back to KeeperHub's endpoint, and calls it cannot serve, such as a trigger that needs WSS, use KeeperHub's endpoints.",
   },
   {
     icon: Lock,

@@ -53,7 +53,7 @@ When a step's endpoints fail, it moves to the fallback endpoint. If a config has
 
 ## Your endpoints only
 
-By default, KeeperHub's endpoints are the backup: if your endpoints fail, or cannot serve a call (for example a trigger that needs a WSS endpoint), KeeperHub's endpoints take over.
+By default, KeeperHub's endpoints are the backup: a config without a fallback of its own falls back to KeeperHub's endpoint, and a call your config cannot serve (for example a trigger that needs a WSS endpoint) uses KeeperHub's endpoints. A config with both a primary and a fallback stays on those two.
 
 **Your endpoints only** turns that backup off for one chain. Open the chain in **Settings > RPC endpoints** and turn it on to make sure KeeperHub never uses its own RPC providers on that chain for your organization. If your endpoints fail, the step fails instead. Other chains keep KeeperHub as their backup. On a chain with it on:
 

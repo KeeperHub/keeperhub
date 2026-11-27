@@ -61,7 +61,7 @@ export function ChainOwnRpcOnly({
           <span className="text-muted-foreground text-xs">
             {group.ownRpcOnly
               ? "On: KeeperHub's endpoints are never used here. If yours fail, the step fails."
-              : "Off: if your endpoints fail or cannot serve a call, KeeperHub's endpoints take over."}
+              : "Off: KeeperHub's endpoint is the fallback for a config without one, and serves calls your configs cannot."}
           </span>
         </div>
         {canManage ? (
