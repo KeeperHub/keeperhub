@@ -4817,7 +4817,9 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(alert?.subject).toContain(
         "bundles have not landed in the last 3 runs"
       );
-      expect(alert?.text).toContain("tip is too low");
+      expect(alert?.text).toContain(
+        "A higher tip (Priority Fee or the tip increase) or more builders can help."
+      );
 
       await notLanded(org, wf, 1, -3);
       const before = mailsTo(org).length;
