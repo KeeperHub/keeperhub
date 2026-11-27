@@ -216,6 +216,44 @@ describe("executeWorkflow: For Each spurious max-retries recovery", () => {
     ).toBe(true);
   });
 
+  it("keeps the For Each failed after the run when its Collect threw", async () => {
+    mocks.collectStep.mockRejectedValue(MAX_RETRIES("collectStep"));
+    mocks.getCompletedStepOutput.mockImplementation(
+      (_executionId: string, nodeId: string) =>
+        nodeId === "loop"
+          ? { output: { success: true, arrayLength: 3 }, source: "db" }
+          : null
+    );
+
+    const result = await run();
+
+    expect(result.results.loop).toMatchObject({ success: false });
+    expect(result.success).toBe(false);
+  });
+
+  it("keeps the For Each failed after the run when an iteration was dropped", async () => {
+    mocks.httpRequestStep.mockImplementation(
+      (input: { endpoint: string; _context?: { iterationIndex?: number } }) => {
+        if (input._context?.iterationIndex === 1) {
+          return Promise.reject(MAX_RETRIES("httpRequestStep"));
+        }
+        return { success: true, data: { url: input.endpoint } };
+      }
+    );
+    mocks.getCompletedStepOutput.mockImplementation(
+      (_executionId: string, nodeId: string) =>
+        nodeId === "loop"
+          ? { output: { success: true, arrayLength: 3 }, source: "db" }
+          : null
+    );
+
+    const result = await run();
+
+    expect(result.results.loop).toMatchObject({ success: false });
+    expect(result.success).toBe(false);
+    expect(mocks.collectStep).not.toHaveBeenCalled();
+  });
+
   it("recovers a body step whose first attempt was still running", async () => {
     mocks.httpRequestStep.mockImplementation(
       (input: { endpoint: string; _context?: { iterationIndex?: number } }) => {

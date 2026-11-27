@@ -35,6 +35,10 @@ function isSpuriousError(message: string): boolean {
  * return here skips the candidate and continues to the next. A single transient
  * DB failure cannot abort the whole pass.
  *
+ * Nodes in `skipNodeIds` are never overridden. The executor passes the For
+ * Each nodes whose loop started: their error comes from a step inside the
+ * loop, so the For Each step's own success row says nothing about it.
+ *
  * Mutates `results` in-place (same contract as the rest of the executor).
  */
 export async function reconcileSpuriousFailures(params: {
@@ -43,9 +47,16 @@ export async function reconcileSpuriousFailures(params: {
   workflowId?: string;
   organizationId?: string;
   organizationPlan?: string;
+  skipNodeIds?: ReadonlySet<string>;
 }): Promise<void> {
-  const { executionId, results, workflowId, organizationId, organizationPlan } =
-    params;
+  const {
+    executionId,
+    results,
+    workflowId,
+    organizationId,
+    organizationPlan,
+    skipNodeIds,
+  } = params;
 
   if (!executionId) {
     return;
@@ -65,7 +76,7 @@ export async function reconcileSpuriousFailures(params: {
   }
 
   for (const [nodeId, result] of Object.entries(results)) {
-    if (result.success) {
+    if (result.success || skipNodeIds?.has(nodeId)) {
       continue;
     }
 
