@@ -22,12 +22,10 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   KEEPERHUB_ENDPOINT_LABEL,
-  rpcEndpointLabel,
   shareOf,
 } from "@/lib/analytics/rpc-usage-shape";
 import type {
   RpcOwnOnlyChainUsage,
-  RpcUsageBreakdownRow,
   RpcUsageBucket,
   RpcUsageResponse,
   RpcUsageSummary,
@@ -216,70 +214,6 @@ function ChartLegend(): ReactNode {
   );
 }
 
-function breakdownRowKey(row: RpcUsageBreakdownRow): string {
-  return `${row.origin}:${row.configId ?? ""}:${row.chainId}`;
-}
-
-function BreakdownTable({ rows }: { rows: RpcUsageBreakdownRow[] }): ReactNode {
-  return (
-    <div className="overflow-x-auto">
-      <table
-        className="w-full min-w-160 text-left"
-        data-testid="rpc-usage-breakdown"
-      >
-        <thead>
-          <tr className="border-b text-xs text-muted-foreground">
-            <th className="pb-2 pr-3 font-medium">Endpoint</th>
-            <th className="pb-2 pr-3 font-medium">Chain</th>
-            <th className="pb-2 pr-3 text-right font-medium">Requests</th>
-            <th className="pb-2 pr-3 text-right font-medium">Errors</th>
-            <th className="pb-2 pr-3 text-right font-medium">Failovers</th>
-            <th className="pb-2 pr-3 text-right font-medium">Avg latency</th>
-            <th className="pb-2 pr-3 text-right font-medium">Max latency</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr
-              className="border-b border-muted text-sm last:border-0"
-              data-config-removed={String(row.configRemoved)}
-              data-origin={row.origin}
-              key={breakdownRowKey(row)}
-            >
-              <td
-                className={cn(
-                  "py-2 pr-3",
-                  row.configRemoved && "text-muted-foreground italic"
-                )}
-              >
-                {rpcEndpointLabel(row)}
-              </td>
-              <td className="py-2 pr-3 text-muted-foreground">
-                {row.chainName ?? String(row.chainId)}
-              </td>
-              <td className="py-2 pr-3 text-right tabular-nums">
-                {formatCount(row.requests)}
-              </td>
-              <td className="py-2 pr-3 text-right tabular-nums">
-                {formatCount(row.errors)}
-              </td>
-              <td className="py-2 pr-3 text-right tabular-nums">
-                {formatCount(row.failovers)}
-              </td>
-              <td className="py-2 pr-3 text-right tabular-nums">
-                {formatDuration(row.avgLatencyMs)}
-              </td>
-              <td className="py-2 pr-3 text-right tabular-nums">
-                {formatDuration(row.maxLatencyMs)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function hasAnyUsage(usage: RpcUsageResponse): boolean {
   const { summary } = usage;
   return (
@@ -317,14 +251,6 @@ function RpcUsageBody({ usage }: { usage: RpcUsageResponse }): ReactNode {
             buckets={usage.buckets}
             intervalMs={usage.intervalMs}
           />
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Endpoints and chains</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <BreakdownTable rows={usage.breakdown} />
         </CardContent>
       </Card>
     </>

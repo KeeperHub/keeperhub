@@ -11,7 +11,6 @@ import {
   KEEPERHUB_ENDPOINT_LABEL,
   REMOVED_CONFIG_LABEL,
   type RpcUsageRow,
-  rpcEndpointLabel,
   rpcStepEndpointLabel,
   rpcUsageBreakdown,
   rpcUsageBuckets,
@@ -128,22 +127,13 @@ describe("rpcUsageBuckets", () => {
 });
 
 describe("labels", () => {
-  it("names KeeperHub, a config, and a removed config", () => {
-    expect(
-      rpcEndpointLabel({ origin: RpcOrigin.PLATFORM, configName: null })
-    ).toBe(KEEPERHUB_ENDPOINT_LABEL);
-    expect(
-      rpcEndpointLabel({ origin: RpcOrigin.ORG, configName: "Main" })
-    ).toBe("Main");
-    expect(rpcEndpointLabel({ origin: RpcOrigin.ORG, configName: null })).toBe(
-      REMOVED_CONFIG_LABEL
-    );
-  });
-
   it("names the endpoint that served a step", () => {
     expect(
       rpcStepEndpointLabel({ rpcOrigin: RpcOrigin.ORG, rpcConfigName: "Main" })
     ).toBe("Your endpoint: Main");
+    expect(
+      rpcStepEndpointLabel({ rpcOrigin: RpcOrigin.ORG, rpcConfigName: null })
+    ).toBe(`Your endpoint: ${REMOVED_CONFIG_LABEL.toLowerCase()}`);
     expect(
       rpcStepEndpointLabel({
         rpcOrigin: RpcOrigin.PLATFORM,

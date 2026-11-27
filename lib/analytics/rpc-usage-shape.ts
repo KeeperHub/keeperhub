@@ -1,7 +1,7 @@
 /**
  * Pure shaping for the RPC usage analytics: totals, the per-endpoint
- * breakdown, the time series and the endpoint labels. Client safe, so the
- * analytics page labels endpoints the same way the API groups them.
+ * breakdown, the time series and the step endpoint label. Client safe, so
+ * the run details label endpoints the same way the API groups them.
  */
 import { RpcOrigin } from "@/lib/rpc/engine/types";
 import type {
@@ -167,17 +167,6 @@ export function rpcUsageBuckets(
   return [...byTimestamp.values()].sort((a, b) =>
     a.timestamp.localeCompare(b.timestamp)
   );
-}
-
-/** How the analytics page names an endpoint. */
-export function rpcEndpointLabel(endpoint: {
-  origin: RpcOrigin;
-  configName: string | null;
-}): string {
-  if (!isOwnEndpoint(endpoint)) {
-    return KEEPERHUB_ENDPOINT_LABEL;
-  }
-  return endpoint.configName ?? REMOVED_CONFIG_LABEL;
 }
 
 /** How the run details name the endpoint that served a step. */
