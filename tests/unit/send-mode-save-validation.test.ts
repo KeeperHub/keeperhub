@@ -7,7 +7,7 @@ const rows = vi.hoisted(() => ({
     chainId: number;
     usePrivateMempoolRpc: boolean | null;
     defaultPrivateRpcUrl?: string | null;
-    bundleBuilders?: unknown;
+    builderRpcUrls?: unknown;
     name?: string;
   }[],
   queries: 0,
@@ -50,12 +50,12 @@ beforeEach(() => {
       chainId: 1,
       usePrivateMempoolRpc: true,
       defaultPrivateRpcUrl: "https://relay.example",
-      bundleBuilders: [
-        { name: "flashbots", url: "https://relay.flashbots.example" },
-        { name: "titan", url: "https://rpc.titan.example" },
-      ],
+      builderRpcUrls: {
+        flashbots: "https://relay.flashbots.example",
+        titan: "https://rpc.titan.example",
+      },
     },
-    { chainId: 8453, usePrivateMempoolRpc: false, bundleBuilders: [] },
+    { chainId: 8453, usePrivateMempoolRpc: false, builderRpcUrls: null },
   ];
   rows.queries = 0;
   vi.unstubAllEnvs();
@@ -811,7 +811,7 @@ describe("Send as Bundle at save", () => {
         chainId: 8453,
         name: "Base",
         usePrivateMempoolRpc: false,
-        bundleBuilders: [],
+        builderRpcUrls: null,
       },
     ];
     const result = await check([bundle({ network: "8453" })]);

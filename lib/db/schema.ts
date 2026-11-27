@@ -1396,12 +1396,8 @@ export const chains = pgTable(
       .notNull()
       .default([])
       .$type<string[]>(),
-    // Block builders bundles go to, set from CHAIN_RPC_CONFIG by the chain seed.
-    bundleBuilders: jsonb("bundle_builders")
-      .notNull()
-      .default([])
-      .$type<{ name: string; url: string; supportsMinTimestamp: boolean }[]>(),
-    // Block builder endpoints for next-block sends, seeded from chain-config.
+    // Block builder endpoints by label, seeded from chain-config: next-block
+    // sends also go to them, and Send as Bundle sends its bundles to them.
     builderRpcUrls: jsonb("builder_rpc_urls").$type<Record<string, string>>(),
     isTestnet: boolean("is_testnet").default(false),
     isEnabled: boolean("is_enabled").default(true), // Can disable chains

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { chains, explorerConfigs } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { cleanBundleBuilders } from "@/lib/rpc/rpc-config";
+import { builderLabels } from "@/lib/rpc/rpc-config";
 import { chainTipLimitGwei } from "@/lib/web3/gas-strategy";
 import { chainHasPrivateRelay } from "@/lib/web3/send-mode";
 
@@ -21,7 +21,7 @@ export type ChainResponse = {
   isEnabled: boolean;
   // The chain has a private relay: the flag on and a relay URL set (never sent).
   usePrivateMempoolRpc: boolean;
-  // Names of the block builders bundles can go to (never their URLs).
+  // Labels of the chain's block builders (builder_rpc_urls), never their URLs.
   bundleBuilders: string[];
   // The highest tip the gas estimate picks here (gwei); bundle tips stop there too.
   tipLimitGwei: number | null;
@@ -71,9 +71,7 @@ export async function GET(request: Request) {
       isTestnet: chain.isTestnet ?? false,
       isEnabled: chain.isEnabled ?? true,
       usePrivateMempoolRpc: chainHasPrivateRelay(chain),
-      bundleBuilders: cleanBundleBuilders(chain.bundleBuilders).map(
-        (builder) => builder.name
-      ),
+      bundleBuilders: builderLabels(chain.builderRpcUrls),
       tipLimitGwei: chainTipLimitGwei(chain.chainId, chain.gasConfig),
     }));
 

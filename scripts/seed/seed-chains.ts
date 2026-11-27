@@ -21,6 +21,7 @@ import {
   type NewExplorerConfig,
 } from "../../lib/db/schema";
 import {
+  type BuilderRpcUrls,
   CHAIN_CONFIG,
   getBuilderRpcUrls,
   getConfigValue,
@@ -29,9 +30,8 @@ import {
   getUsePrivateMempoolRpc,
   getWssUrl,
   parseRpcConfigWithDetails,
-  ETH_MAINNET_BUNDLE_BUILDERS,
+  ETH_MAINNET_BUILDER_RPC_URLS,
   readBroadcastRpcUrls,
-  readBundleBuilders,
 } from "../../lib/rpc/rpc-config";
 
 // Parse JSON config from environment (if available) - used for WSS URLs and config values
@@ -86,11 +86,6 @@ export const DEFAULT_CHAINS: NewChain[] = [
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "eth-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "eth-mainnet" }),
     broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "eth-mainnet" }),
-    bundleBuilders: readBundleBuilders({
-      rpcConfig,
-      jsonKey: "eth-mainnet",
-      defaults: ETH_MAINNET_BUNDLE_BUILDERS,
-    }),
     aliases: ["ethereum", "eth"],
   },
   {
@@ -115,7 +110,6 @@ export const DEFAULT_CHAINS: NewChain[] = [
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "eth-sepolia" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "eth-sepolia" }),
     broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "eth-sepolia" }),
-    bundleBuilders: readBundleBuilders({ rpcConfig, jsonKey: "eth-sepolia" }),
   },
   {
     chainId: getChainConfigValue("eth-hoodi", "chainId", 560_048),
@@ -139,7 +133,6 @@ export const DEFAULT_CHAINS: NewChain[] = [
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "eth-hoodi" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "eth-hoodi" }),
     broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "eth-hoodi" }),
-    bundleBuilders: readBundleBuilders({ rpcConfig, jsonKey: "eth-hoodi" }),
     aliases: ["hoodi", "eth-hoodi"],
   },
   {
@@ -1281,6 +1274,11 @@ export function buildExplorerConfigs(
 }
 
 
+// Code-default builders per chain, under chain-config's builderRpcUrls.
+const DEFAULT_BUILDER_RPC_URLS: Record<number, Readonly<BuilderRpcUrls>> = {
+  1: ETH_MAINNET_BUILDER_RPC_URLS,
+};
+
 async function seedChains() {
   // Resolved before anything is written: a chain with no explorer mapping
   // fails the run here, with the database untouched, rather than after every
@@ -1302,7 +1300,11 @@ async function seedChains() {
   for (const chain of DEFAULT_CHAINS) {
     const jsonKey = CHAIN_CONFIG[chain.chainId]?.jsonKey;
     const builderRpcUrls = jsonKey
-      ? (getBuilderRpcUrls({ rpcConfig, jsonKey }) ?? null)
+      ? (getBuilderRpcUrls({
+          rpcConfig,
+          jsonKey,
+          defaults: DEFAULT_BUILDER_RPC_URLS[chain.chainId],
+        }) ?? null)
       : null;
 
     // Check if chain already exists
@@ -1329,7 +1331,6 @@ async function seedChains() {
           usePrivateMempoolRpc: chain.usePrivateMempoolRpc ?? false,
           defaultPrivateRpcUrl: chain.defaultPrivateRpcUrl ?? null,
           broadcastRpcUrls: chain.broadcastRpcUrls ?? [],
-          bundleBuilders: chain.bundleBuilders ?? [],
           builderRpcUrls,
           isTestnet: chain.isTestnet,
           isEnabled: chain.isEnabled,

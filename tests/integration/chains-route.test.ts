@@ -274,16 +274,16 @@ describe("/api/chains route", () => {
       expect(JSON.stringify(data)).not.toContain("relay.example");
     });
 
-    it("lists bundle builder names only, never their URLs", async () => {
+    it("lists builder labels from builder_rpc_urls only, never their URLs", async () => {
       mockQueryResult = [
         {
           ...mockChains.ethereumWithExplorer,
           chain: {
             ...mockChains.ethereumWithExplorer.chain,
-            bundleBuilders: [
-              { name: "alpha", url: "https://alpha.builder.example" },
-              { name: "Bad Name", url: "https://bad.builder.example" },
-            ],
+            builderRpcUrls: {
+              alpha: "https://alpha.builder.example",
+              "Bad Name": "https://bad.builder.example",
+            },
           },
         },
         mockChains.sepoliaWithExplorer,

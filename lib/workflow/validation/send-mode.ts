@@ -2,7 +2,7 @@ import { inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { cleanBundleBuilders } from "@/lib/rpc/rpc-config";
+import { builderLabels } from "@/lib/rpc/rpc-config";
 import { bundleLoopRefusal } from "@/lib/web3/bundles/loop-rule";
 import { isBundleSendEnabledForOrg } from "@/lib/web3/bundles/rollout";
 import {
@@ -562,7 +562,7 @@ export async function validateSendModeForSave(
             name: chains.name,
             usePrivateMempoolRpc: chains.usePrivateMempoolRpc,
             defaultPrivateRpcUrl: chains.defaultPrivateRpcUrl,
-            bundleBuilders: chains.bundleBuilders,
+            builderRpcUrls: chains.builderRpcUrls,
           })
           .from(chains)
           .where(inArray(chains.chainId, ids))
@@ -573,9 +573,7 @@ export async function validateSendModeForSave(
       {
         name: row.name,
         usePrivateMempoolRpc: chainHasPrivateRelay(row),
-        bundleBuilders: cleanBundleBuilders(row.bundleBuilders).map(
-          (builder) => builder.name
-        ),
+        bundleBuilders: builderLabels(row.builderRpcUrls),
       },
     ])
   );

@@ -987,13 +987,6 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
-        "bundle_builders": {
-          "name": "bundle_builders",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
         "is_testnet": {
           "name": "is_testnet",
           "type": "boolean",

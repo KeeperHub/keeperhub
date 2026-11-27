@@ -568,9 +568,7 @@ describe("/api/workflows/[workflowId]/validate", () => {
       const listed = {
         chainId: 1,
         name: "Ethereum",
-        bundleBuilders: [
-          { name: "flashbots", url: "https://relay.flashbots.example" },
-        ],
+        builderRpcUrls: { flashbots: "https://relay.flashbots.example" },
       };
       const sendModeErrors = async () => {
         selectCallIndex = 0;

@@ -456,9 +456,7 @@ describe("Workflow duplicate API with a bundle step", () => {
       {
         chainId: 1,
         name: "Ethereum",
-        bundleBuilders: [
-          { name: "flashbots", url: "https://relay.flashbots.example" },
-        ],
+        builderRpcUrls: { flashbots: "https://relay.flashbots.example" },
       },
     ]);
     mockDbQuery.workflows.findFirst.mockResolvedValue(

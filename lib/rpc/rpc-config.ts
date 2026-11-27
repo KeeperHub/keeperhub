@@ -559,8 +559,6 @@ export type RpcConfigEntry = {
   isPrivateMempoolRpcEnabled?: boolean;
   privateMempoolRpcUrl?: string;
   broadcastRpcUrls?: string[];
-  // Block builders bundles go to; absent means the code default list.
-  bundleBuilders?: unknown;
   // Block builder endpoints keyed by label, e.g. { "titan": "https://..." }.
   builderRpcUrls?: Record<string, string>;
   isEnabled?: boolean;
@@ -755,7 +753,9 @@ const MAX_BROADCAST_RPC_URLS = 10;
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
 
 /** The raw broadcastRpcUrls list of a chain-config entry, cleaned. */
-export function readBroadcastRpcUrls(options: ChainConfigLookupOptions): string[] {
+export function readBroadcastRpcUrls(
+  options: ChainConfigLookupOptions
+): string[] {
   return cleanBroadcastRpcUrls(
     findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.broadcastRpcUrls
   );
@@ -818,101 +818,6 @@ export function cleanBroadcastRpcUrls(
   return urls.slice(0, MAX_BROADCAST_RPC_URLS);
 }
 
-/** A block builder that takes eth_sendBundle for a chain. */
-type BundleBuilder = {
-  name: string;
-  url: string;
-  // Whether it honours minTimestamp; read once a bundle can wait for an unlock time.
-  supportsMinTimestamp: boolean;
-};
-
-const MAX_BUNDLE_BUILDERS = 16;
-const BUILDER_NAME_RE = /^[a-z0-9-]{1,32}$/;
-
-// Mainnet default, used when CHAIN_RPC_CONFIG has no bundleBuilders for it.
-export const ETH_MAINNET_BUNDLE_BUILDERS: readonly BundleBuilder[] = [
-  {
-    name: "flashbots",
-    url: "https://relay.flashbots.net",
-    supportsMinTimestamp: false,
-  },
-  {
-    name: "buildernet",
-    url: "https://rpc.buildernet.org",
-    supportsMinTimestamp: false,
-  },
-  {
-    name: "titan",
-    url: "https://rpc.titanbuilder.xyz",
-    supportsMinTimestamp: false,
-  },
-  {
-    name: "beaverbuild",
-    url: "https://rpc.beaverbuild.org",
-    supportsMinTimestamp: false,
-  },
-  {
-    name: "quasar",
-    url: "https://rpc.quasar.win",
-    supportsMinTimestamp: false,
-  },
-  { name: "btcs", url: "https://rpc.btcs.com", supportsMinTimestamp: false },
-  {
-    name: "eureka",
-    url: "https://rpc.eurekabuilder.xyz",
-    supportsMinTimestamp: false,
-  },
-];
-
-/** A chain-config entry's bundleBuilders, cleaned; the default list when absent. */
-export function readBundleBuilders(
-  options: ChainConfigLookupOptions & { defaults?: readonly BundleBuilder[] }
-): BundleBuilder[] {
-  const entry = findRpcConfigEntry(options.rpcConfig, options.jsonKey);
-  if (entry?.bundleBuilders === undefined) {
-    return cleanBundleBuilders(options.defaults ?? []);
-  }
-  return cleanBundleBuilders(entry.bundleBuilders);
-}
-
-function toBundleBuilder(raw: unknown): BundleBuilder | undefined {
-  if (typeof raw !== "object" || raw === null) {
-    return;
-  }
-  const { name, url, supportsMinTimestamp } = raw as Record<string, unknown>;
-  const parsed = parseRpcUrl(url);
-  if (
-    typeof name !== "string" ||
-    !BUILDER_NAME_RE.test(name) ||
-    !parsed ||
-    !isAllowedBroadcastUrl(parsed)
-  ) {
-    return;
-  }
-  return {
-    name,
-    url: urlKey(parsed),
-    supportsMinTimestamp: supportsMinTimestamp === true,
-  };
-}
-
-/** Builders as they may be used: valid name and https URL, unique names, at most 16. */
-export function cleanBundleBuilders(raw: unknown): BundleBuilder[] {
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  const names = new Set<string>();
-  const builders: BundleBuilder[] = [];
-  for (const entry of raw) {
-    const builder = toBundleBuilder(entry);
-    if (builder && !names.has(builder.name)) {
-      names.add(builder.name);
-      builders.push(builder);
-    }
-  }
-  return builders.slice(0, MAX_BUNDLE_BUILDERS);
-}
-
 /**
  * Get whether the chain has private mempool routing enabled.
  *
@@ -931,7 +836,23 @@ export type BuilderRpcUrls = Record<string, string>;
 
 const BUILDER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
-// Keeps lowercase labels mapped to https URLs; undefined when none remain.
+// Bundles send to at most this many of a chain's builders.
+export const MAX_CHAIN_BUILDERS = 16;
+
+// Ethereum mainnet builders, for next-block sends and bundles. A chain-config
+// builderRpcUrls entry overrides a label here; an empty URL removes it.
+export const ETH_MAINNET_BUILDER_RPC_URLS: Readonly<BuilderRpcUrls> = {
+  flashbots: "https://relay.flashbots.net",
+  buildernet: "https://rpc.buildernet.org",
+  titan: "https://rpc.titanbuilder.xyz",
+  beaverbuild: "https://rpc.beaverbuild.org",
+  quasar: "https://rpc.quasar.win",
+  btcs: "https://rpc.btcs.com",
+  eureka: "https://rpc.eurekabuilder.xyz",
+};
+
+// Keeps lowercase labels mapped to https URLs (or http to a local node);
+// undefined when none remain.
 export function normalizeBuilderRpcUrls(
   value: unknown
 ): BuilderRpcUrls | undefined {
@@ -940,27 +861,41 @@ export function normalizeBuilderRpcUrls(
   }
   const result: BuilderRpcUrls = {};
   for (const [label, url] of Object.entries(value)) {
-    if (!BUILDER_LABEL_PATTERN.test(label) || typeof url !== "string") {
+    if (!BUILDER_LABEL_PATTERN.test(label)) {
       continue;
     }
-    try {
-      if (new URL(url).protocol === "https:") {
-        result[label] = url;
-      }
-    } catch {
-      // Not a URL: skipped.
+    const parsed = parseRpcUrl(url);
+    if (parsed && isAllowedBroadcastUrl(parsed)) {
+      result[label] = urlKey(parsed);
     }
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
-// Block builder endpoints from chain-config JSON, with no env-var fallback.
-export function getBuilderRpcUrls(
-  options: ChainConfigLookupOptions
-): BuilderRpcUrls | undefined {
-  return normalizeBuilderRpcUrls(
-    findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.builderRpcUrls
+/** A chain's builder labels (never URLs), in order, at most MAX_CHAIN_BUILDERS. */
+export function builderLabels(value: unknown): string[] {
+  return Object.keys(normalizeBuilderRpcUrls(value) ?? {}).slice(
+    0,
+    MAX_CHAIN_BUILDERS
   );
+}
+
+// Block builder endpoints from chain-config JSON over the code defaults,
+// with no env-var fallback.
+export function getBuilderRpcUrls(
+  options: ChainConfigLookupOptions & { defaults?: Readonly<BuilderRpcUrls> }
+): BuilderRpcUrls | undefined {
+  const configured = findRpcConfigEntry(
+    options.rpcConfig,
+    options.jsonKey
+  )?.builderRpcUrls;
+  const fromConfig =
+    typeof configured === "object" &&
+    configured !== null &&
+    !Array.isArray(configured)
+      ? configured
+      : {};
+  return normalizeBuilderRpcUrls({ ...options.defaults, ...fromConfig });
 }
 
 /**

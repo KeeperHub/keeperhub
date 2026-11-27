@@ -13,7 +13,6 @@ CREATE TRIGGER queue_alert_check
   WHEN (NEW.status IN ('success', 'error', 'skipped', 'not_landed'))
   EXECUTE FUNCTION public.queue_alert_check();
 --> statement-breakpoint
-ALTER TABLE "chains" ADD COLUMN "bundle_builders" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
 ALTER TABLE "pending_transactions" ADD COLUMN "last_target_block" bigint;--> statement-breakpoint
 ALTER TABLE "pending_transactions" ADD COLUMN "bundle_runs" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
 SET LOCAL lock_timeout = DEFAULT;

@@ -187,13 +187,11 @@ describe("submitSignedTransactionWithFailover broadcast info and builders", () =
 
   it("never reports a refused RPC as not sent when a builder took the bytes", async () => {
     const fake = {
-      sendRaw: vi
-        .fn()
-        .mockRejectedValue(
-          Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:8545"), {
-            code: "ECONNREFUSED",
-          })
-        ),
+      sendRaw: vi.fn().mockRejectedValue(
+        Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:8545"), {
+          code: "ECONNREFUSED",
+        })
+      ),
       getTransactionReceipt: vi.fn().mockResolvedValue(null),
       getTransaction: vi.fn().mockResolvedValue(null),
     };
