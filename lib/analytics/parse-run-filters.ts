@@ -24,6 +24,9 @@ const VALID_GAS = new Set<GasSpend>(["sponsored", "wallet", "free"]);
 // and the cap keeps an ILIKE pattern from being handed an arbitrary payload.
 const MAX_SEARCH_LENGTH = 128;
 
+// Config ids and origins are short; anything longer cannot match one.
+const MAX_ID_LENGTH = 64;
+
 function parseNonNegativeInt(raw: string | null): number | undefined {
   // A blank value is absent, not zero. Number("") and Number("   ") are both
   // 0, so `?durationMax=` read as durationMaxMs 0 and filtered on
@@ -57,6 +60,9 @@ export function parseRunFilters(params: URLSearchParams): RunQueryFilters {
       VALID_SOURCES.has(value as RunSource)
     );
   const networks = params.getAll("network").filter((value) => value.length > 0);
+  const rpcEndpoints = params
+    .getAll("rpcEndpoint")
+    .filter((value) => value.length > 0 && value.length <= MAX_ID_LENGTH);
   const gas = params
     .getAll("gas")
     .filter((value): value is GasSpend => VALID_GAS.has(value as GasSpend));
@@ -66,6 +72,9 @@ export function parseRunFilters(params: URLSearchParams): RunQueryFilters {
     ...(statuses.length > 0 ? { statuses: [...new Set(statuses)] } : {}),
     ...(sources.length > 0 ? { sources: [...new Set(sources)] } : {}),
     ...(networks.length > 0 ? { networks: [...new Set(networks)] } : {}),
+    ...(rpcEndpoints.length > 0
+      ? { rpcEndpoints: [...new Set(rpcEndpoints)] }
+      : {}),
     ...(gas.length > 0 ? { gas: [...new Set(gas)] } : {}),
     ...(parseNonNegativeInt(params.get("durationMin")) === undefined
       ? {}

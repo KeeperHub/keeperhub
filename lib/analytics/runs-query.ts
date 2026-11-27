@@ -48,6 +48,7 @@ export type RunsQueryInput = {
   statuses?: NormalizedStatus[];
   sources?: RunSource[];
   networks?: string[];
+  rpcEndpoints?: string[];
   gas?: GasSpend[];
   duration?: DurationPresetId | null;
   search?: string;
@@ -81,6 +82,9 @@ export function buildRunsQuery(input: RunsQueryInput): string {
   }
   for (const network of input.networks ?? []) {
     params.append("network", network);
+  }
+  for (const endpoint of input.rpcEndpoints ?? []) {
+    params.append("rpcEndpoint", endpoint);
   }
   for (const value of input.gas ?? []) {
     params.append("gas", value);

@@ -27,6 +27,7 @@ import {
   analyticsNetworksAtom,
   analyticsProjectIdAtom,
   analyticsRangeAtom,
+  analyticsRpcEndpointFiltersAtom,
   analyticsRpcUsageAtom,
   analyticsRunsAtom,
   analyticsSearchAtom,
@@ -127,6 +128,7 @@ export function useAnalytics(): UseAnalyticsReturn {
   const statusFilters = useAtomValue(analyticsStatusFiltersAtom);
   const sourceFilters = useAtomValue(analyticsSourceFiltersAtom);
   const networkFilters = useAtomValue(analyticsNetworkFiltersAtom);
+  const rpcEndpointFilters = useAtomValue(analyticsRpcEndpointFiltersAtom);
   const gasFilters = useAtomValue(analyticsGasFiltersAtom);
   const durationFilter = useAtomValue(analyticsDurationFilterAtom);
   const search = useAtomValue(analyticsSearchAtom);
@@ -175,6 +177,7 @@ export function useAnalytics(): UseAnalyticsReturn {
       statuses: statusFilters,
       sources: sourceFilters,
       networks: networkFilters,
+      rpcEndpoints: rpcEndpointFilters,
       gas: gasFilters,
       duration: durationFilter,
       search,
@@ -323,6 +326,7 @@ export function useAnalytics(): UseAnalyticsReturn {
     statusFilters,
     sourceFilters,
     networkFilters,
+    rpcEndpointFilters,
     gasFilters,
     durationFilter,
     search,

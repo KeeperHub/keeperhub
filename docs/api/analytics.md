@@ -247,6 +247,7 @@ Returns a unified list of both workflow executions and direct executions with pa
 | `status` | string | Filter by status. Repeatable. One of `pending`, `running`, `success`, `error`, `system_error`, `external_error`, `skipped`, `cancelled` |
 | `source` | string | Filter by source: `workflow`, `direct`. Repeatable |
 | `network` | string | Restrict to these networks. Repeatable |
+| `rpcEndpoint` | string | Which endpoints served the run's RPC calls: `org` for any of the organization's own endpoints, `platform` for KeeperHub, or one endpoint's `rpcConfigId`. Repeatable. A run that used several endpoints matches each of them |
 | `gas` | string | How the run's gas was paid: `sponsored`, `wallet` or `free`. Repeatable. Any other value is dropped rather than refused, so `?gas=8453` returns the unfiltered list with no error: filter by chain with `network` above |
 | `durationMin` | number | Only runs at or above this duration, in milliseconds |
 | `durationMax` | number | Only runs strictly below this duration, in milliseconds. The bound is exclusive: a run of exactly this duration is not returned |

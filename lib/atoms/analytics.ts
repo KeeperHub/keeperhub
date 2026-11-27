@@ -36,6 +36,7 @@ export const analyticsErrorAtom = atom<string | null>(null);
 export const analyticsStatusFiltersAtom = atom<NormalizedStatus[]>([]);
 export const analyticsSourceFiltersAtom = atom<RunSource[]>([]);
 export const analyticsNetworkFiltersAtom = atom<string[]>([]);
+export const analyticsRpcEndpointFiltersAtom = atom<string[]>([]);
 export const analyticsGasFiltersAtom = atom<GasSpend[]>([]);
 
 // Duration is the one dimension where overlapping choices would be confusing,
@@ -47,6 +48,8 @@ export const analyticsFacetsAtom = atom<RunFacets>({
   statusCounts: {},
   networkCounts: {},
   gasCounts: {},
+  rpcEndpointCounts: {},
+  rpcConfigNames: {},
 });
 
 export const analyticsSearchAtom = atom("");

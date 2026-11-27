@@ -44,6 +44,7 @@ import {
   analyticsNetworkFiltersAtom,
   analyticsProjectIdAtom,
   analyticsRangeAtom,
+  analyticsRpcEndpointFiltersAtom,
   analyticsRunsAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
@@ -825,6 +826,7 @@ export function RunsTable(): ReactNode {
   const statuses = useAtomValue(analyticsStatusFiltersAtom);
   const sources = useAtomValue(analyticsSourceFiltersAtom);
   const networks = useAtomValue(analyticsNetworkFiltersAtom);
+  const rpcEndpoints = useAtomValue(analyticsRpcEndpointFiltersAtom);
   const gas = useAtomValue(analyticsGasFiltersAtom);
   const duration = useAtomValue(analyticsDurationFilterAtom);
   const search = useAtomValue(analyticsSearchAtom);
@@ -857,6 +859,7 @@ export function RunsTable(): ReactNode {
           statuses,
           sources,
           networks,
+          rpcEndpoints,
           gas,
           duration,
           search,
@@ -884,6 +887,7 @@ export function RunsTable(): ReactNode {
       statuses,
       sources,
       networks,
+      rpcEndpoints,
       gas,
       duration,
       search,

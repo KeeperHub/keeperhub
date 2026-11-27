@@ -33,7 +33,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     const params = req.nextUrl.searchParams;
     // Explicit, and status-only by default: the dashboard's poll must never
     // pull the step-log counts by accident.
-    const valid = new Set<FacetDimension>(["status", "network", "gas"]);
+    const valid = new Set<FacetDimension>(["status", "network", "gas", "rpc"]);
     const dimensions = params
       .getAll("dimension")
       .filter((value): value is FacetDimension =>

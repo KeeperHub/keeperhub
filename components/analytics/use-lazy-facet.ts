@@ -13,6 +13,7 @@ import {
   analyticsNetworkFiltersAtom,
   analyticsProjectIdAtom,
   analyticsRangeAtom,
+  analyticsRpcEndpointFiltersAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
   analyticsStatusFiltersAtom,
@@ -33,6 +34,7 @@ export function useLazyFacet(dimension: FacetDimension): () => void {
   const statuses = useAtomValue(analyticsStatusFiltersAtom);
   const sources = useAtomValue(analyticsSourceFiltersAtom);
   const networks = useAtomValue(analyticsNetworkFiltersAtom);
+  const rpcEndpoints = useAtomValue(analyticsRpcEndpointFiltersAtom);
   const gas = useAtomValue(analyticsGasFiltersAtom);
   const duration = useAtomValue(analyticsDurationFilterAtom);
   const search = useAtomValue(analyticsSearchAtom);
@@ -53,6 +55,7 @@ export function useLazyFacet(dimension: FacetDimension): () => void {
       statuses,
       sources,
       networks,
+      rpcEndpoints,
       gas,
       duration,
       search,
@@ -90,6 +93,12 @@ export function useLazyFacet(dimension: FacetDimension): () => void {
               ? data.networkCounts
               : current.networkCounts,
           gasCounts: dimension === "gas" ? data.gasCounts : current.gasCounts,
+          rpcEndpointCounts:
+            dimension === "rpc"
+              ? data.rpcEndpointCounts
+              : current.rpcEndpointCounts,
+          rpcConfigNames:
+            dimension === "rpc" ? data.rpcConfigNames : current.rpcConfigNames,
         }));
       })
       .catch(() => {
@@ -105,6 +114,7 @@ export function useLazyFacet(dimension: FacetDimension): () => void {
     statuses,
     sources,
     networks,
+    rpcEndpoints,
     gas,
     duration,
     search,

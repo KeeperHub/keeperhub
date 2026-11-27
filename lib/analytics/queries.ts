@@ -40,6 +40,7 @@ import {
 } from "@/lib/execute/value-ledger";
 import { getRetentionConfig } from "@/lib/retention/config";
 import { getOrgLogRetentionCutoff } from "@/lib/retention/progress";
+import { RpcOrigin } from "@/lib/rpc/engine/types";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { attachAlertsSent } from "./alert-sent";
@@ -234,6 +235,54 @@ function workflowNetworkCondition(networks: string[], scope: LogScope): SQL {
          AND ${stepNetwork} IN (${wanted})
     )
     OR ${runTransactionNetworks} && ARRAY[${wanted}]::text[]
+  )`;
+}
+
+const RPC_ORIGINS: ReadonlySet<string> = new Set(Object.values(RpcOrigin));
+
+/**
+ * One step served by any wanted endpoint is enough: a run that read on its
+ * own endpoint and fell back to KeeperHub's shows under both.
+ */
+function rpcEndpointMatch(
+  endpoints: string[],
+  origin: AnyColumn,
+  configId: AnyColumn
+): SQL {
+  const origins = endpoints.filter((value) => RPC_ORIGINS.has(value));
+  const configIds = endpoints.filter((value) => !RPC_ORIGINS.has(value));
+  const arms: SQL[] = [];
+  if (origins.length > 0) {
+    arms.push(
+      sql`${origin} IN (${sql.join(
+        origins.map((value) => sql`${value}`),
+        sql`, `
+      )})`
+    );
+  }
+  if (configIds.length > 0) {
+    arms.push(
+      sql`${configId} IN (${sql.join(
+        configIds.map((value) => sql`${value}`),
+        sql`, `
+      )})`
+    );
+  }
+  return sql`(${sql.join(arms, sql` OR `)})`;
+}
+
+function workflowRpcEndpointCondition(
+  endpoints: string[],
+  scope: LogScope
+): SQL {
+  return sql`${workflowExecutions.id} IN (
+    SELECT ${workflowExecutionLogs.executionId}
+    ${scopedLogs(scope)}
+       AND ${rpcEndpointMatch(
+         endpoints,
+         workflowExecutionLogs.rpcOrigin,
+         workflowExecutionLogs.rpcConfigId
+       )}
   )`;
 }
 
@@ -465,6 +514,10 @@ function workflowFilterConditions(
   if (networks.length > 0) {
     conditions.push(workflowNetworkCondition(networks, scope));
   }
+  const rpcEndpoints = filters.rpcEndpoints ?? [];
+  if (rpcEndpoints.length > 0) {
+    conditions.push(workflowRpcEndpointCondition(rpcEndpoints, scope));
+  }
   if (filters.durationMinMs !== undefined) {
     conditions.push(
       sql`${workflowExecutions.duration} >= ${filters.durationMinMs}`
@@ -504,6 +557,16 @@ function directFilterConditions(
         networks.map((network) => sql`${network}`),
         sql`, `
       )})`
+    );
+  }
+  const rpcEndpoints = filters.rpcEndpoints ?? [];
+  if (rpcEndpoints.length > 0) {
+    conditions.push(
+      rpcEndpointMatch(
+        rpcEndpoints,
+        directExecutions.rpcOrigin,
+        directExecutions.rpcConfigId
+      )
     );
   }
   if (filters.durationMinMs !== undefined) {
@@ -1947,6 +2010,7 @@ function hasFilters(filters: RunQueryFilters): boolean {
     (filters.statuses?.length ?? 0) > 0 ||
       (filters.sources?.length ?? 0) > 0 ||
       (filters.networks?.length ?? 0) > 0 ||
+      (filters.rpcEndpoints?.length ?? 0) > 0 ||
       filters.durationMinMs !== undefined ||
       filters.durationMaxMs !== undefined ||
       (filters.gas?.length ?? 0) > 0 ||
@@ -1969,7 +2033,7 @@ async function computeRunFacets(
 
   // Both of these read the step logs, the table that took prod down when the
   // run filters walked it too eagerly, so neither is computed unless asked for.
-  const [networkCounts, gasCounts] = await Promise.all([
+  const [networkCounts, gasCounts, rpcFacets] = await Promise.all([
     dimensions.has("network")
       ? computeNetworkFacets(
           organizationId,
@@ -1988,6 +2052,15 @@ async function computeRunFacets(
           projectId
         )
       : {},
+    dimensions.has("rpc")
+      ? computeRpcEndpointFacets(
+          organizationId,
+          rangeStart,
+          rangeEnd,
+          filters,
+          projectId
+        )
+      : { rpcEndpointCounts: {}, rpcConfigNames: {} },
   ]);
 
   const workflowRows =
@@ -2040,7 +2113,119 @@ async function computeRunFacets(
     statusCounts[status] =
       (statusCounts[status] ?? 0) + (Number(row.value) || 0);
   }
-  return { statusCounts, networkCounts, gasCounts };
+  return { statusCounts, networkCounts, gasCounts, ...rpcFacets };
+}
+
+/**
+ * Runs per endpoint that served any of their steps, keyed by origin and by
+ * config, with the names of the configs that still exist.
+ */
+async function computeRpcEndpointFacets(
+  organizationId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  filters: RunQueryFilters,
+  projectId?: string
+): Promise<Pick<RunFacets, "rpcEndpointCounts" | "rpcConfigNames">> {
+  const wanted = resolveSources(filters.sources, projectId);
+  const withoutEndpoints: RunQueryFilters = {
+    ...filters,
+    rpcEndpoints: undefined,
+  };
+
+  const workflowRows = wanted.workflow
+    ? (
+        await db.execute<{ endpoint: string; value: string }>(sql`
+          SELECT served.endpoint AS endpoint,
+                 COUNT(DISTINCT ${workflowExecutions.id}) AS value
+            FROM ${workflowExecutions}
+            JOIN ${workflows} ON ${workflows.id} = ${workflowExecutions.workflowId}
+            CROSS JOIN LATERAL (
+              SELECT ${workflowExecutionLogs.rpcOrigin} AS endpoint
+                FROM ${workflowExecutionLogs}
+               WHERE ${workflowExecutionLogs.executionId} = ${workflowExecutions.id}
+                 AND ${workflowExecutionLogs.rpcOrigin} IS NOT NULL
+              UNION
+              SELECT ${workflowExecutionLogs.rpcConfigId} AS endpoint
+                FROM ${workflowExecutionLogs}
+               WHERE ${workflowExecutionLogs.executionId} = ${workflowExecutions.id}
+                 AND ${workflowExecutionLogs.rpcConfigId} IS NOT NULL
+            ) AS served
+           WHERE ${and(
+             eq(workflows.organizationId, organizationId),
+             projectId ? eq(workflows.projectId, projectId) : undefined,
+             gte(workflowExecutions.startedAt, rangeStart),
+             lt(workflowExecutions.startedAt, rangeEnd),
+             isNull(workflowExecutions.deletedAt),
+             ...workflowFilterConditions(withoutEndpoints, {
+               organizationId,
+               rangeStart,
+               rangeEnd,
+               projectId,
+             })
+           )}
+           GROUP BY served.endpoint
+        `)
+      ).map((row) => ({ endpoint: row.endpoint, value: Number(row.value) }))
+    : [];
+
+  // A direct execution has one origin and at most one config, so each row
+  // counts once under each.
+  const directRows = wanted.direct
+    ? (
+        await db
+          .select({
+            origin: directExecutions.rpcOrigin,
+            configId: directExecutions.rpcConfigId,
+            value: count(),
+          })
+          .from(directExecutions)
+          .where(
+            and(
+              eq(directExecutions.organizationId, organizationId),
+              gte(directExecutions.createdAt, rangeStart),
+              lt(directExecutions.createdAt, rangeEnd),
+              isNotNull(directExecutions.rpcOrigin),
+              ...directFilterConditions(withoutEndpoints)
+            )
+          )
+          .groupBy(directExecutions.rpcOrigin, directExecutions.rpcConfigId)
+      ).flatMap((row) =>
+        [row.origin, row.configId].flatMap((endpoint) =>
+          endpoint ? [{ endpoint, value: Number(row.value) }] : []
+        )
+      )
+    : [];
+
+  const rpcEndpointCounts: Record<string, number> = {};
+  for (const row of [...workflowRows, ...directRows]) {
+    rpcEndpointCounts[row.endpoint] =
+      (rpcEndpointCounts[row.endpoint] ?? 0) + (Number(row.value) || 0);
+  }
+
+  const configIds = Object.keys(rpcEndpointCounts).filter(
+    (endpoint) => !RPC_ORIGINS.has(endpoint)
+  );
+  const configs =
+    configIds.length > 0
+      ? await db
+          .select({
+            id: organizationRpcConfigs.id,
+            name: organizationRpcConfigs.name,
+          })
+          .from(organizationRpcConfigs)
+          .where(
+            and(
+              eq(organizationRpcConfigs.organizationId, organizationId),
+              inArray(organizationRpcConfigs.id, configIds)
+            )
+          )
+      : [];
+  const rpcConfigNames: Record<string, string> = {};
+  for (const config of configs) {
+    rpcConfigNames[config.id] = config.name;
+  }
+  return { rpcEndpointCounts, rpcConfigNames };
 }
 
 /**

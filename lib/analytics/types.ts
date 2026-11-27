@@ -181,6 +181,11 @@ export type RunQueryFilters = {
   gas?: GasSpend[];
   sources?: RunSource[];
   networks?: string[];
+  /**
+   * Which endpoints served the run's RPC calls: an `RpcOrigin` for any of the
+   * organization's endpoints or KeeperHub's, or one config's id.
+   */
+  rpcEndpoints?: string[];
   /** Inclusive lower bound on run duration, in milliseconds. */
   durationMinMs?: number;
   /** Exclusive upper bound on run duration, in milliseconds. */
@@ -207,6 +212,10 @@ export type RunFacets = {
   statusCounts: StatusFacets;
   networkCounts: Record<string, number>;
   gasCounts: Partial<Record<GasSpend, number>>;
+  /** Keyed like `rpcEndpoints`: an origin, or a config id. */
+  rpcEndpointCounts: Record<string, number>;
+  /** Names of the configs in `rpcEndpointCounts` that still exist. */
+  rpcConfigNames: Record<string, string>;
 };
 
 /**
@@ -216,7 +225,7 @@ export type RunFacets = {
  * count per bucket. Only status is cheap enough to ride the dashboard's poll;
  * the other two are asked for when their dropdown is opened.
  */
-export type FacetDimension = "status" | "network" | "gas";
+export type FacetDimension = "status" | "network" | "gas" | "rpc";
 
 export type RunsFilters = RunQueryFilters & {
   range: TimeRange;
