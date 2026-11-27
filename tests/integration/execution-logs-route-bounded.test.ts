@@ -53,7 +53,12 @@ describe("GET /api/workflows/executions/[executionId]/logs bounded payloads", ()
     vi.clearAllMocks();
     mockResolveAuthorizedExecution.mockResolvedValue({
       ok: true,
-      execution: { id: EXECUTION_ID, status: "system_error", error: null },
+      execution: {
+        id: EXECUTION_ID,
+        status: "system_error",
+        error: null,
+        workflow: { organizationId: "org_1" },
+      },
       auth: { userId: "user_1" },
     });
     mockFindMany.mockResolvedValue([

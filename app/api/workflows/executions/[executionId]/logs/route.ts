@@ -1,8 +1,8 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
-import { workflowExecutionLogs } from "@/lib/db/schema";
+import { organizationRpcConfigs, workflowExecutionLogs } from "@/lib/db/schema";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { redactSensitiveData } from "@/lib/utils/redact";
 import { boundedJsonb } from "@/lib/workflow/bounded-jsonb";
@@ -37,6 +37,26 @@ function truncateField(value: unknown, maxBytes: number): unknown | TruncatedMar
     originalSize,
     preview: stringified.slice(0, maxBytes),
   };
+}
+
+/** Names of the organization's RPC configs that served these steps. */
+async function rpcConfigNames(
+  organizationId: string | null,
+  configIds: string[]
+): Promise<Map<string, string>> {
+  if (organizationId === null || configIds.length === 0) {
+    return new Map();
+  }
+  const rows = await db
+    .select({ id: organizationRpcConfigs.id, name: organizationRpcConfigs.name })
+    .from(organizationRpcConfigs)
+    .where(
+      and(
+        eq(organizationRpcConfigs.organizationId, organizationId),
+        inArray(organizationRpcConfigs.id, configIds)
+      )
+    );
+  return new Map(rows.map((row) => [row.id, row.name]));
 }
 
 export async function GET(
@@ -101,8 +121,21 @@ export async function GET(
       orderBy: [desc(workflowExecutionLogs.timestamp)],
     });
 
+    const configNames = await rpcConfigNames(
+      execution.workflow.organizationId,
+      [
+        ...new Set(
+          logs.flatMap((log) => (log.rpcConfigId ? [log.rpcConfigId] : []))
+        ),
+      ]
+    );
+
     const redactedLogs = logs.map((log) => ({
       ...log,
+      // A removed config leaves the step attributed with no name to show.
+      rpcConfigName: log.rpcConfigId
+        ? (configNames.get(log.rpcConfigId) ?? null)
+        : null,
       input: redactSensitiveData(log.input),
       output: redactSensitiveData(log.output),
       error:

@@ -14,6 +14,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { StepRpcEndpoint } from "@/components/rpc/step-rpc-endpoint";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,7 +23,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { rpcStepEndpointLabel } from "@/lib/analytics/rpc-usage-shape";
 import { buildRunsQuery, runsPageCount } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
@@ -407,34 +407,6 @@ function StepErrorMessage({ message }: { message: string }): ReactNode {
 type StepLogRowProps = {
   step: StepLog;
 };
-
-/** Which endpoint served the step's RPC calls, and whether it failed over. */
-function StepRpcEndpoint({ step }: StepLogRowProps): ReactNode {
-  const label = rpcStepEndpointLabel(step);
-  if (label === null) {
-    return null;
-  }
-  // text-[0.625rem] is --ds-text-2xs, the badge size.
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1">
-      <span
-        className="rounded bg-muted px-1 py-0.5 text-[0.625rem] text-muted-foreground"
-        data-rpc-origin={step.rpcOrigin}
-        data-testid="step-rpc-endpoint"
-      >
-        {label}
-      </span>
-      {step.rpcFailedOver ? (
-        <span
-          className="rounded bg-destructive/10 px-1 py-0.5 text-[0.625rem] text-destructive"
-          data-testid="step-rpc-failed-over"
-        >
-          failed over
-        </span>
-      ) : null}
-    </span>
-  );
-}
 
 function StepLogRow({ step }: StepLogRowProps): ReactNode {
   const chains = useChainDisplay();

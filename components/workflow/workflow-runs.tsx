@@ -20,6 +20,7 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { StepRpcEndpoint } from "@/components/rpc/step-rpc-endpoint";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { api, type ExecutionSummary } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
@@ -35,6 +36,7 @@ import {
   OUTPUT_DISPLAY_CONFIGS,
   type OutputDisplayConfig,
 } from "@/lib/output-display-configs";
+import type { RpcOrigin } from "@/lib/rpc/engine/types";
 import { cn } from "@/lib/utils";
 import { startSerialPoll } from "@/lib/utils/serial-poll";
 import { getRelativeTime } from "@/lib/utils/time";
@@ -84,6 +86,9 @@ type ExecutionLog = {
   error: string | null;
   iterationIndex: number | null;
   forEachNodeId: string | null;
+  rpcOrigin: RpcOrigin | null;
+  rpcConfigName: string | null;
+  rpcFailedOver: boolean | null;
 };
 
 type WorkflowExecution = ExecutionSummary;
@@ -889,6 +894,7 @@ function ExecutionLogEntry({
                 <span className="truncate font-medium text-sm transition-colors group-hover:text-foreground">
                   {log.nodeName || log.nodeType}
                 </span>
+                <StepRpcEndpoint step={log} />
                 {isSponsoredOutput(log.output) && (
                   <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 font-medium text-primary text-xs">
                     Gas sponsored
@@ -1151,6 +1157,9 @@ export function WorkflowRuns({
         duration: string | null;
         iterationIndex?: number | null;
         forEachNodeId?: string | null;
+        rpcOrigin?: RpcOrigin | null;
+        rpcConfigName?: string | null;
+        rpcFailedOver?: boolean | null;
       }>,
       _workflow?: {
         nodes: unknown;
@@ -1170,6 +1179,9 @@ export function WorkflowRuns({
         error: log.error,
         iterationIndex: log.iterationIndex ?? null,
         forEachNodeId: log.forEachNodeId ?? null,
+        rpcOrigin: log.rpcOrigin ?? null,
+        rpcConfigName: log.rpcConfigName ?? null,
+        rpcFailedOver: log.rpcFailedOver ?? null,
       })),
     []
   );

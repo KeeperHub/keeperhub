@@ -11,6 +11,7 @@ import type {
 } from "@/lib/errors/execution-status";
 import type { Page } from "@/lib/pagination";
 import { refetchSidebarIfTriggerChanged } from "@/lib/refetch-sidebar";
+import type { RpcOrigin } from "@/lib/rpc/engine/types";
 import type { ActorCredential } from "@/lib/security/credential-label";
 import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
@@ -977,6 +978,9 @@ export const workflowApi = {
         duration: string | null;
         iterationIndex: number | null;
         forEachNodeId: string | null;
+        rpcOrigin: RpcOrigin | null;
+        rpcConfigName: string | null;
+        rpcFailedOver: boolean | null;
       }>;
     }>(`/api/workflows/executions/${executionId}/logs`),
 
