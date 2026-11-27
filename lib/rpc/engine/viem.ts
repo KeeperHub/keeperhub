@@ -84,7 +84,11 @@ function endpointTransport(
   const { telemetry } = client;
   return (config) => {
     const transport = base(config);
-    const request: typeof transport.request = async (args, options) => {
+    type Request = typeof transport.request;
+    const call = async (
+      args: Parameters<Request>[0],
+      options?: Parameters<Request>[1]
+    ): Promise<unknown> => {
       const operation = BROADCAST_METHODS.has(args.method)
         ? RpcOperationType.WRITE_BROADCAST
         : RpcOperationType.READ;
@@ -106,7 +110,8 @@ function endpointTransport(
         throw error;
       }
     };
-    return { ...transport, request };
+    // The wrapper returns whatever the inner request does, so its typing holds.
+    return { ...transport, request: call as Request };
   };
 }
 
