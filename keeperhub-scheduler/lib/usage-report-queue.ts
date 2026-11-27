@@ -115,10 +115,9 @@ export class UsageReportQueue {
 
   /** Copies of every bucket not yet stored, the unanswered report's first. */
   pendingBuckets(): QueuedUsageBucket[] {
-    return [
-      ...(this.pending?.buckets ?? []),
-      ...this.buckets.values(),
-    ].map(copyOf);
+    return [...(this.pending?.buckets ?? []), ...this.buckets.values()].map(
+      copyOf,
+    );
   }
 
   /**

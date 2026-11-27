@@ -33,9 +33,9 @@ import {
 import { metrics, registry } from "../lib/metrics.js";
 import {
   BLOCK_PROGRESS_ANNOTATION,
+  ROUTE_BLOCK_PROGRESS_ANNOTATION,
   parseBlockProgress,
   parseRouteBlockProgress,
-  ROUTE_BLOCK_PROGRESS_ANNOTATION,
   serializeBlockProgress,
 } from "./block-progress.js";
 import { BlockMonitorService } from "./monitor-service.js";
