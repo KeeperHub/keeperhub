@@ -69,6 +69,12 @@ import {
 } from "@/lib/workflow/executor/get-completed-step-output";
 import { awaitCompletedStepOutputStep } from "@/lib/workflow/executor/get-completed-step-output.step";
 import {
+  resolveIterationSpuriousRecovery,
+  SPURIOUS_RECOVERY_INFLIGHT_TIMEOUT_MS,
+  SPURIOUS_RECOVERY_POLL_INTERVAL_MS,
+  SPURIOUS_RECOVERY_POLL_TIMEOUT_MS,
+} from "@/lib/workflow/executor/iteration-spurious-recovery";
+import {
   createLoopBackTracker,
   findUnsupportedBackEdges,
   resetLoopBodyState,
@@ -263,21 +269,6 @@ function formatConditionValueForDisplay(value: unknown): unknown {
   }
   return value;
 }
-
-/**
- * Spurious-max-retries recovery poll window. When the framework re-fires a
- * step after a lost completion event and throws before the step's success row
- * is committed, the real success lands ~0.3-0.5s later. The catch handler
- * polls the step authority for up to this window before falling back to
- * nullifying the node.
- *
- * A duplicate delivery of a step whose first attempt is still executing throws
- * the same error; that success lands when the attempt finishes. While the node
- * still has a 'running' row the poll extends up to the in-flight window.
- */
-const SPURIOUS_RECOVERY_POLL_TIMEOUT_MS = 3000;
-const SPURIOUS_RECOVERY_POLL_INTERVAL_MS = 250;
-const SPURIOUS_RECOVERY_INFLIGHT_TIMEOUT_MS = 60_000;
 
 /**
  * KEEP-398: SDK error shapes that indicate a spurious step-completion failure.
@@ -3092,17 +3083,21 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       // forEach rows out. Returning null falls through to the standard
       // failure path (the throw was real, not spurious).
       resolveSpuriousRecovery: executionId
-        ? async ({ nodeId: bodyNodeId, iterationMeta: meta }) => {
-            const recovered = await getCompletedStepOutput(
+        ? ({ nodeId: bodyNodeId, iterationMeta: meta, errorMessage }) =>
+            resolveIterationSpuriousRecovery({
               executionId,
-              bodyNodeId,
-              {
-                forEachNodeId: meta.forEachNodeId,
-                iterationIndex: meta.iterationIndex,
-              }
-            );
-            return recovered ? { output: recovered.output } : null;
-          }
+              nodeId: bodyNodeId,
+              forEachNodeId: meta.forEachNodeId,
+              iterationIndex: meta.iterationIndex,
+              errorMessage,
+              onPollError: (pollError) =>
+                logSystemWarn(
+                  ErrorCategory.WORKFLOW_ENGINE,
+                  "[For Each body] Spurious-recovery poll failed; falling back to failure path",
+                  pollError,
+                  { ...baseLogLabels, node_id: bodyNodeId }
+                ),
+            })
         : undefined,
       onSpuriousRecovery: ({
         nodeId: bodyNodeId,
@@ -3688,6 +3683,75 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
   }
 
   // Helper to execute a single node
+  /**
+   * Iterate a top-level For Each over its array, run the body subgraph per
+   * element, then continue from the Collect or done targets. Shared by the
+   * normal path and the spurious-recovery path, so a recovered For Each still
+   * runs its body inside the loop instead of dispatching its body edges as
+   * ordinary top-level downstream nodes.
+   */
+  async function runTopLevelForEach(
+    nodeId: string,
+    node: WorkflowNode,
+    visited: Set<string>
+  ): Promise<void> {
+    // KEEP-468: same strict-mode treatment as action steps so an
+    // unresolved array reference cannot iterate zero times silently.
+    const forEachTracker = createTracker();
+    const forEachConfig = processTemplates(
+      node.data.config ?? {},
+      outputs,
+      forEachTracker
+    );
+    assertResolved(
+      forEachTracker,
+      forEachConfig,
+      {
+        nodeId: node.id,
+        nodeLabel: getNodeName(node),
+        actionType: "For Each",
+      },
+      { rendererScanned: true }
+    );
+    const iterationSummary = await handleForEachExecution({
+      forEachNodeId: nodeId,
+      forEachNode: node,
+      processedConfig: forEachConfig,
+      currentOutputs: outputs,
+      currentResults: results,
+      currentVisited: visited,
+      continueAfterCollect: async (collectId) => {
+        const nextNodes = edgesBySource.get(collectId) ?? [];
+        await executeReadyDownstream(collectId, nextNodes, visited);
+      },
+      continueWithDoneTargets: async (fromNodeId, targets) => {
+        await executeReadyDownstream(fromNodeId, targets, visited);
+      },
+    });
+
+    outputs[sanitizeNodeId(nodeId)] = {
+      label: getNodeName(node),
+      data: iterationSummary,
+    };
+    // KEEP-586: A failed iteration body must fail the For Each node so
+    // computeFinalSuccess marks the run as error instead of silently
+    // reporting success while the loop dropped work mid-iteration.
+    const feFailed =
+      typeof iterationSummary === "object" &&
+      iterationSummary !== null &&
+      "failedIterations" in iterationSummary &&
+      (iterationSummary as { failedIterations: number }).failedIterations > 0;
+    results[nodeId] = feFailed
+      ? {
+          success: false,
+          error:
+            (iterationSummary as { firstFailureError?: string })
+              .firstFailureError ?? "For Each iteration body failed",
+          data: iterationSummary,
+        }
+      : { success: true, data: iterationSummary };
+  }
+
   async function executeNode(nodeId: string, visited: Set<string> = new Set()) {
     console.log("[Workflow Executor] Executing node:", nodeId);
 
@@ -3728,6 +3792,10 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       label: BUILTIN_NODE_LABEL,
       data: getBuiltinVariables(),
     };
+
+    // Set once the loop starts, so a throw from inside the loop is never
+    // recovered by running the loop a second time.
+    let forEachLoopStarted = false;
 
     try {
       let result: ExecutionResult;
@@ -4000,66 +4068,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             : undefined;
 
         if (currentActionType === "For Each") {
-          // For Each: iterate over array, execute body subgraph per element,
-          // store results on Collect, then continue from Collect downstream.
-          // KEEP-468: same strict-mode treatment as action steps so an
-          // unresolved array reference cannot iterate zero times silently.
-          const forEachTracker = createTracker();
-          const forEachConfig = processTemplates(
-            node.data.config ?? {},
-            outputs,
-            forEachTracker
-          );
-          assertResolved(
-            forEachTracker,
-            forEachConfig,
-            {
-              nodeId: node.id,
-              nodeLabel: getNodeName(node),
-              actionType: "For Each",
-            },
-            { rendererScanned: true }
-          );
-          const iterationSummary = await handleForEachExecution({
-            forEachNodeId: nodeId,
-            forEachNode: node,
-            processedConfig: forEachConfig,
-            currentOutputs: outputs,
-            currentResults: results,
-            currentVisited: visited,
-            continueAfterCollect: async (collectId) => {
-              const nextNodes = edgesBySource.get(collectId) ?? [];
-              await executeReadyDownstream(collectId, nextNodes, visited);
-            },
-            continueWithDoneTargets: async (fromNodeId, targets) => {
-              await executeReadyDownstream(fromNodeId, targets, visited);
-            },
-          });
-
-          // Update the For Each node's output with resolved iteration metadata
-          const sanitizedFEId = sanitizeNodeId(nodeId);
-          outputs[sanitizedFEId] = {
-            label: getNodeName(node),
-            data: iterationSummary,
-          };
-          // KEEP-586: A failed iteration body must fail the For Each node so
-          // computeFinalSuccess marks the run as error instead of silently
-          // reporting success while the loop dropped work mid-iteration.
-          const feFailed =
-            typeof iterationSummary === "object" &&
-            iterationSummary !== null &&
-            "failedIterations" in iterationSummary &&
-            (iterationSummary as { failedIterations: number })
-              .failedIterations > 0;
-          results[nodeId] = feFailed
-            ? {
-                success: false,
-                error:
-                  (iterationSummary as { firstFailureError?: string })
-                    .firstFailureError ?? "For Each iteration body failed",
-                data: iterationSummary,
-              }
-            : { success: true, data: iterationSummary };
+          forEachLoopStarted = true;
+          await runTopLevelForEach(nodeId, node, visited);
         } else if (currentActionType === "Condition") {
           // For condition nodes, route to true/false handle targets
           const conditionResult = (result.data as { condition?: boolean })
@@ -4107,7 +4117,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
         (EXCEEDED_MAX_RETRIES_REGEX.test(errorMessage) ||
           FAILED_AFTER_RETRIES_REGEX.test(errorMessage) ||
           NO_STEP_COMPLETION_REGEX.test(errorMessage)) &&
-        loopTracker.iterationOf(nodeId) === 0;
+        loopTracker.iterationOf(nodeId) === 0 &&
+        !forEachLoopStarted;
       let recordedOutput =
         isSpuriousMaxRetries && executionId
           ? (await getCompletedStepOutput(executionId, nodeId))?.output
@@ -4183,6 +4194,17 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
             recordedOutput as { condition?: boolean } | undefined
           )?.condition;
           await continueFromCondition(nodeId, recoveredCondition, visited);
+        } else if (recoveredActionType === "For Each") {
+          // The loop's body edges are not top-level downstream edges.
+          forEachLoopStarted = true;
+          try {
+            await runTopLevelForEach(nodeId, node, visited);
+          } catch (loopError) {
+            results[nodeId] = {
+              success: false,
+              error: await getErrorMessageAsync(loopError),
+            };
+          }
         } else {
           const nextNodes = edgesBySource.get(nodeId) ?? [];
           await executeReadyDownstream(nodeId, nextNodes, visited);
