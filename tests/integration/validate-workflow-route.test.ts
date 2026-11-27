@@ -568,7 +568,12 @@ describe("/api/workflows/[workflowId]/validate", () => {
       const listed = {
         chainId: 1,
         name: "Ethereum",
-        builderRpcUrls: { flashbots: "https://relay.flashbots.example" },
+        builderRpcUrls: {
+          flashbots: {
+            url: "https://relay.flashbots.example",
+            methods: ["bundle"],
+          },
+        },
       };
       const sendModeErrors = async () => {
         selectCallIndex = 0;

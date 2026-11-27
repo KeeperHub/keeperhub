@@ -21,17 +21,17 @@ import {
   type NewExplorerConfig,
 } from "../../lib/db/schema";
 import {
-  type BuilderRpcUrls,
+  type ChainBuilder,
   CHAIN_CONFIG,
-  getBuilderRpcUrls,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrlByChainId,
   getUsePrivateMempoolRpc,
   getWssUrl,
   parseRpcConfigWithDetails,
-  ETH_MAINNET_BUILDER_RPC_URLS,
+  ETH_MAINNET_BUILDERS,
   readBroadcastRpcUrls,
+  readChainBuilders,
 } from "../../lib/rpc/rpc-config";
 
 // Parse JSON config from environment (if available) - used for WSS URLs and config values
@@ -1275,8 +1275,8 @@ export function buildExplorerConfigs(
 
 
 // Code-default builders per chain, under chain-config's builderRpcUrls.
-const DEFAULT_BUILDER_RPC_URLS: Record<number, Readonly<BuilderRpcUrls>> = {
-  1: ETH_MAINNET_BUILDER_RPC_URLS,
+const DEFAULT_CHAIN_BUILDERS: Record<number, readonly ChainBuilder[]> = {
+  1: ETH_MAINNET_BUILDERS,
 };
 
 async function seedChains() {
@@ -1299,13 +1299,15 @@ async function seedChains() {
 
   for (const chain of DEFAULT_CHAINS) {
     const jsonKey = CHAIN_CONFIG[chain.chainId]?.jsonKey;
-    const builderRpcUrls = jsonKey
-      ? (getBuilderRpcUrls({
+    // Stored as an ordered array, so the configured order survives jsonb.
+    const builders = jsonKey
+      ? readChainBuilders({
           rpcConfig,
           jsonKey,
-          defaults: DEFAULT_BUILDER_RPC_URLS[chain.chainId],
-        }) ?? null)
-      : null;
+          defaults: DEFAULT_CHAIN_BUILDERS[chain.chainId],
+        })
+      : [];
+    const builderRpcUrls = builders.length > 0 ? builders : null;
 
     // Check if chain already exists
     const existing = await db

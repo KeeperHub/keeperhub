@@ -368,7 +368,11 @@ describe.skipIf(SKIP)("Send as Bundle (anvil, fake builders)", () => {
       symbol: "ETH",
       defaultPrimaryRpc: proxy.url,
       isTestnet: true,
-      builderRpcUrls: Object.fromEntries(builders.map((b) => [b.name, b.url])),
+      builderRpcUrls: builders.map((b) => ({
+        label: b.name,
+        url: b.url,
+        methods: ["bundle" as const],
+      })),
     });
     insertedChain = true;
 

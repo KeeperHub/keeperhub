@@ -81,7 +81,7 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
 | `isTestnet` | boolean | Whether this chain is a testnet |
 | `isEnabled` | boolean | Whether the chain is currently available for workflow execution |
 | `usePrivateMempoolRpc` | boolean | Whether this chain offers a configured private relay (Flashbots Protect): `true` only when the relay is switched on and its URL is set. This does not enable private routing by default. |
-| `bundleBuilders` | string[] | Names of this chain's block builders (never their URLs): the builders Send as Bundle can send to, and the ones a next-block Write Contract or Batch Write Contract also sends its transaction to. Empty on chains without builders. |
+| `bundleBuilders` | string[] | Names of the block builders that take transaction bundles on this chain, in KeeperHub's order (never their URLs): the builders Send as Bundle can send to. Empty on chains without them. |
 | `tipLimitGwei` | number \| null | The highest priority fee (tip), in gwei, that KeeperHub's gas estimate picks on this chain. A bundle step's rising tips stop there too (see [Send as Bundle](/plugins/web3#send-as-bundle)). |
 
 RPC endpoint URLs (`defaultPrimaryRpc`, `defaultFallbackRpc`) are not returned by this endpoint. They may embed provider API keys and are read server-side only; client code should use the user-configurable RPC preferences API instead.
@@ -125,13 +125,15 @@ tools take no `sendMode` and always send normally.
 
 ### Block Builders
 
-`bundleBuilders` lists the chain's block builders. A Write Contract step with
-Send as Bundle (`sendMode: "bundle"`) sends its bundle to them (see
-[Send as Bundle](/plugins/web3#send-as-bundle)), and a public Write Contract or
-Batch Write Contract with Simulate at set to Next block also sends its
-transaction to them (see
-[Simulate at the next block](/plugins/web3#simulate-at-the-next-block)). It is
-the same list for both. Bundle is offered only where the
+`bundleBuilders` lists the chain's block builders that take bundles. A Write
+Contract step with Send as Bundle (`sendMode: "bundle"`) sends its bundle to
+them; see [Send as Bundle](/plugins/web3#send-as-bundle). Each builder
+KeeperHub knows takes bundles, single signed transactions, or both: a builder
+that only takes single transactions is not listed here and never gets a
+bundle, and one that only takes bundles never gets the single transaction a
+next-block send also sends to builders (see
+[Simulate at the next block](/plugins/web3#simulate-at-the-next-block)). The
+Ethereum builders listed by default take bundles only. Bundle is offered only where the
 list is not empty, and only to organizations where bundles are turned on
 (`bundleSendEnabled` in `GET /api/features`). A step's `bundleBuilders` setting
 takes names from this list; a name not on it is refused at save. Saving a

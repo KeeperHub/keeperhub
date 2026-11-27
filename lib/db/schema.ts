@@ -1396,9 +1396,13 @@ export const chains = pgTable(
       .notNull()
       .default([])
       .$type<string[]>(),
-    // Block builder endpoints by label, seeded from chain-config: next-block
-    // sends also go to them, and Send as Bundle sends its bundles to them.
-    builderRpcUrls: jsonb("builder_rpc_urls").$type<Record<string, string>>(),
+    // Block builders, seeded from chain-config: an ordered array of
+    // { label, url, methods }. Bundles use the "bundle" ones, next-block sends
+    // the "raw" ones. The older { label: url } form reads as raw only.
+    builderRpcUrls: jsonb("builder_rpc_urls").$type<
+      | { label: string; url: string; methods: ("bundle" | "raw")[] }[]
+      | Record<string, unknown>
+    >(),
     isTestnet: boolean("is_testnet").default(false),
     isEnabled: boolean("is_enabled").default(true), // Can disable chains
     // Support maturity signal surfaced to agents via list_action_schemas:

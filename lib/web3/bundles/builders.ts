@@ -3,12 +3,12 @@ import "server-only";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
-import { builderLabels, normalizeBuilderRpcUrls } from "@/lib/rpc/rpc-config";
+import { bundleCapableBuilders } from "@/lib/rpc/rpc-config";
 
 /** A builder a bundle goes to; the URL never leaves the server. */
 export type BuilderEndpoint = { name: string; url: string };
 
-/** The network's builders (chains.builder_rpc_urls, set by the chain seed). */
+/** The network's bundle-capable builders (chains.builder_rpc_urls), in order. */
 export async function loadChainBuilders(
   chainId: number
 ): Promise<BuilderEndpoint[]> {
@@ -17,8 +17,10 @@ export async function loadChainBuilders(
     .from(chains)
     .where(eq(chains.chainId, chainId))
     .limit(1);
-  const urls = normalizeBuilderRpcUrls(row?.builderRpcUrls) ?? {};
-  return builderLabels(urls).map((name) => ({ name, url: urls[name] }));
+  return bundleCapableBuilders(row?.builderRpcUrls).map(({ label, url }) => ({
+    name: label,
+    url,
+  }));
 }
 
 /** The builders a step picked (all when none), and the picked names the network lacks. */

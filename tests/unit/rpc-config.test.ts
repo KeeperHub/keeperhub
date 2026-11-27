@@ -9,9 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logSystemError } from "@/lib/logging";
 import {
   builderLabels,
+  bundleCapableBuilders,
   CHAIN_CONFIG,
   cleanBroadcastRpcUrls,
-  ETH_MAINNET_BUILDER_RPC_URLS,
+  ETH_MAINNET_BUILDERS,
   getBuilderRpcUrls,
   getConfigValue,
   getPrivateRpcUrl,
@@ -20,11 +21,13 @@ import {
   getWssUrl,
   normalizeBuilderRpcUrls,
   PUBLIC_RPCS,
+  parseChainBuilders,
   parseRpcConfig,
   parseRpcConfigWithDetails,
   RPC_CONFIG_GZIP_PREFIX,
   type RpcConfig,
   readBroadcastRpcUrls,
+  readChainBuilders,
 } from "../../lib/rpc/rpc-config";
 
 vi.mock("@/lib/logging", async (importActual) => {
@@ -1287,83 +1290,146 @@ describe("readBroadcastRpcUrls / cleanBroadcastRpcUrls", () => {
   });
 });
 
-describe("builder defaults and labels", () => {
-  it("fills chain-config builderRpcUrls with the defaults it does not set", () => {
+describe("builder methods, defaults and order", () => {
+  const MAINNET_LABELS = [
+    "flashbots",
+    "buildernet",
+    "titan",
+    "beaverbuild",
+    "quasar",
+    "btcs",
+    "eureka",
+  ];
+  const bundleOnly = (url: string) => ({
+    url,
+    methods: ["bundle" as const],
+  });
+
+  it("reads a plain URL as raw only: never used for bundles", () => {
+    const value = { titan: "https://titan.example" };
+    expect(parseChainBuilders(value)).toEqual([
+      { label: "titan", url: "https://titan.example", methods: ["raw"] },
+    ]);
+    expect(normalizeBuilderRpcUrls(value)).toEqual({
+      titan: "https://titan.example",
+    });
+    expect(builderLabels(value)).toEqual([]);
+    expect(bundleCapableBuilders(value)).toEqual([]);
+  });
+
+  it("never sends raw transactions to a bundle-only builder", () => {
+    const value = { flashbots: bundleOnly("https://relay.example") };
+    expect(builderLabels(value)).toEqual(["flashbots"]);
+    expect(normalizeBuilderRpcUrls(value)).toBeUndefined();
+  });
+
+  it("uses a builder with both methods for bundles and raw sends", () => {
+    const value = {
+      titan: { url: "https://titan.example", methods: ["raw", "bundle"] },
+    };
+    expect(builderLabels(value)).toEqual(["titan"]);
+    expect(normalizeBuilderRpcUrls(value)).toEqual({
+      titan: "https://titan.example",
+    });
+    expect(parseChainBuilders(value)[0]?.methods).toEqual(["bundle", "raw"]);
+  });
+
+  it("drops entries with no known method, a bad URL or a bad label", () => {
+    expect(
+      parseChainBuilders({
+        none: { url: "https://none.example", methods: [] },
+        odd: { url: "https://odd.example", methods: ["call"] },
+        remote: "http://remote.example",
+        "Bad Label": "https://bad.example",
+        local: { url: "http://127.0.0.1:9000", methods: ["bundle"] },
+      })
+    ).toEqual([
+      { label: "local", url: "http://127.0.0.1:9000", methods: ["bundle"] },
+    ]);
+  });
+
+  it("keeps the stored array order, not alphabetical or jsonb key order", () => {
+    const stored = [
+      { label: "zeta", url: "https://z.example", methods: ["bundle"] },
+      { label: "alpha", url: "https://a.example", methods: ["bundle"] },
+      { label: "mid", url: "https://m.example", methods: ["bundle"] },
+    ];
+    expect(builderLabels(stored)).toEqual(["zeta", "alpha", "mid"]);
+  });
+
+  it("keeps the first sixteen bundle-capable builders in order", () => {
+    const stored = Array.from({ length: 20 }, (_, i) => ({
+      label: `b${i}`,
+      url: `https://b${i}.example`,
+      methods: i === 0 ? ["raw"] : ["bundle"],
+    }));
+    const labels = builderLabels(stored);
+    expect(labels).toHaveLength(16);
+    expect(labels[0]).toBe("b1");
+    expect(labels[15]).toBe("b16");
+  });
+
+  it("seeds mainnet with the seven builders, bundle only, in order", () => {
+    const builders = readChainBuilders({
+      rpcConfig: {},
+      jsonKey: "eth-mainnet",
+      defaults: ETH_MAINNET_BUILDERS,
+    });
+    expect(builders.map((b) => b.label)).toEqual(MAINNET_LABELS);
+    expect(builderLabels(builders)).toEqual(MAINNET_LABELS);
+    // The next-block raw broadcast stays off on mainnet by default.
+    expect(normalizeBuilderRpcUrls(builders)).toBeUndefined();
+    expect(
+      getBuilderRpcUrls({
+        rpcConfig: {},
+        jsonKey: "eth-mainnet",
+        defaults: ETH_MAINNET_BUILDERS,
+      })
+    ).toBeUndefined();
+  });
+
+  it("replaces a default in place, removes one with an empty URL, appends the rest in config order", () => {
     const rpcConfig: RpcConfig = {
       "eth-mainnet": {
         builderRpcUrls: {
-          titan: "https://titan.example/",
-          extra: "https://extra.example",
+          zed: "https://zed.example",
+          titan: {
+            url: "https://titan.example",
+            methods: ["bundle", "raw"],
+          },
+          flashbots: "",
+          aaa: bundleOnly("https://aaa.example"),
         },
       },
     };
-    expect(
-      getBuilderRpcUrls({
-        rpcConfig,
-        jsonKey: "eth-mainnet",
-        defaults: {
-          titan: "https://default.example",
-          quasar: "https://q.example",
-        },
-      })
-    ).toEqual({
-      titan: "https://titan.example",
-      quasar: "https://q.example",
-      extra: "https://extra.example",
-    });
-  });
-
-  it("drops a default that chain-config sets to an empty URL", () => {
-    const rpcConfig: RpcConfig = {
-      "eth-mainnet": { builderRpcUrls: { flashbots: "" } },
-    };
-    const urls = getBuilderRpcUrls({
+    const builders = readChainBuilders({
       rpcConfig,
       jsonKey: "eth-mainnet",
-      defaults: ETH_MAINNET_BUILDER_RPC_URLS,
+      defaults: ETH_MAINNET_BUILDERS,
     });
-    expect(urls).not.toHaveProperty("flashbots");
-    expect(Object.keys(urls ?? {})).toHaveLength(6);
-  });
-
-  it("keeps plain http only to a local node", () => {
-    expect(
-      normalizeBuilderRpcUrls({
-        local: "http://127.0.0.1:9000",
-        remote: "http://remote.example",
-      })
-    ).toEqual({ local: "http://127.0.0.1:9000" });
-  });
-
-  it("lists labels only, at most sixteen", () => {
-    const many = Object.fromEntries(
-      Array.from({ length: 20 }, (_, i) => [`b${i}`, `https://b${i}.example`])
-    );
-    expect(builderLabels(many)).toHaveLength(16);
-    expect(builderLabels({ titan: "https://titan.example" })).toEqual([
-      "titan",
-    ]);
-    expect(builderLabels(null)).toEqual([]);
-  });
-
-  it("seeds mainnet with the seven probed builders", () => {
-    expect(
-      Object.keys(
-        getBuilderRpcUrls({
-          rpcConfig: {},
-          jsonKey: "eth-mainnet",
-          defaults: ETH_MAINNET_BUILDER_RPC_URLS,
-        }) ?? {}
-      )
-    ).toEqual([
-      "flashbots",
+    expect(builders.map((b) => b.label)).toEqual([
       "buildernet",
       "titan",
       "beaverbuild",
       "quasar",
       "btcs",
       "eureka",
+      "zed",
+      "aaa",
     ]);
+    expect(builderLabels(builders)).toEqual([
+      "buildernet",
+      "titan",
+      "beaverbuild",
+      "quasar",
+      "btcs",
+      "eureka",
+      "aaa",
+    ]);
+    expect(normalizeBuilderRpcUrls(builders)).toEqual({
+      titan: "https://titan.example",
+      zed: "https://zed.example",
+    });
   });
 });
 

@@ -517,6 +517,37 @@ describe("config-service", () => {
       });
     });
 
+    it("never returns a bundle-only builder for a raw send", async () => {
+      mockChainQuery({
+        builderRpcUrls: [
+          {
+            label: "flashbots",
+            url: "https://relay.example",
+            methods: ["bundle"],
+          },
+          { label: "titan", url: "https://titan.example", methods: ["raw"] },
+        ],
+      });
+
+      await expect(getChainBuilderRpcUrls(1)).resolves.toEqual({
+        titan: "https://titan.example",
+      });
+    });
+
+    it("returns undefined when every builder is bundle only", async () => {
+      mockChainQuery({
+        builderRpcUrls: [
+          {
+            label: "flashbots",
+            url: "https://relay.example",
+            methods: ["bundle"],
+          },
+        ],
+      });
+
+      await expect(getChainBuilderRpcUrls(1)).resolves.toBeUndefined();
+    });
+
     it("returns undefined when the lookup fails", async () => {
       vi.mocked(db.select).mockImplementation(() => {
         throw new Error("db down");

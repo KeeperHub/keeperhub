@@ -274,16 +274,34 @@ describe("/api/chains route", () => {
       expect(JSON.stringify(data)).not.toContain("relay.example");
     });
 
-    it("lists builder labels from builder_rpc_urls only, never their URLs", async () => {
+    it("lists bundle-capable builder labels in stored order, never their URLs", async () => {
       mockQueryResult = [
         {
           ...mockChains.ethereumWithExplorer,
           chain: {
             ...mockChains.ethereumWithExplorer.chain,
-            builderRpcUrls: {
-              alpha: "https://alpha.builder.example",
-              "Bad Name": "https://bad.builder.example",
-            },
+            builderRpcUrls: [
+              {
+                label: "zeta",
+                url: "https://zeta.builder.example",
+                methods: ["bundle"],
+              },
+              {
+                label: "alpha",
+                url: "https://alpha.builder.example",
+                methods: ["bundle", "raw"],
+              },
+              {
+                label: "rawonly",
+                url: "https://raw.builder.example",
+                methods: ["raw"],
+              },
+              {
+                label: "Bad Name",
+                url: "https://bad.builder.example",
+                methods: ["bundle"],
+              },
+            ],
           },
         },
         mockChains.sepoliaWithExplorer,
@@ -293,7 +311,7 @@ describe("/api/chains route", () => {
 
       expect(
         data.map((chain: { bundleBuilders: string[] }) => chain.bundleBuilders)
-      ).toEqual([["alpha"], []]);
+      ).toEqual([["zeta", "alpha"], []]);
       expect(JSON.stringify(data)).not.toContain("builder.example");
     });
 

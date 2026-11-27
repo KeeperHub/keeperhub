@@ -50,10 +50,20 @@ beforeEach(() => {
       chainId: 1,
       usePrivateMempoolRpc: true,
       defaultPrivateRpcUrl: "https://relay.example",
-      builderRpcUrls: {
-        flashbots: "https://relay.flashbots.example",
-        titan: "https://rpc.titan.example",
-      },
+      builderRpcUrls: [
+        {
+          label: "flashbots",
+          url: "https://relay.flashbots.example",
+          methods: ["bundle"],
+        },
+        {
+          label: "titan",
+          url: "https://rpc.titan.example",
+          methods: ["bundle", "raw"],
+        },
+        // Raw only: never offered for bundles.
+        { label: "rawonly", url: "https://raw.example", methods: ["raw"] },
+      ],
     },
     { chainId: 8453, usePrivateMempoolRpc: false, builderRpcUrls: null },
   ];
@@ -848,6 +858,15 @@ describe("Send as Bundle at save", () => {
     expect(result.issues[0]).toMatchObject({ field: "bundleBuilders" });
     expect(result.issues[0].message).toContain(
       'does not list: "gone". Pick from: flashbots, titan'
+    );
+  });
+
+  it("refuses a raw-only builder for a bundle", async () => {
+    enable();
+    const result = await check([bundle({ bundleBuilders: ["rawonly"] })]);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0].message).toContain(
+      'does not list: "rawonly". Pick from: flashbots, titan'
     );
   });
 

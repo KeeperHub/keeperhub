@@ -21,7 +21,7 @@ export type ChainResponse = {
   isEnabled: boolean;
   // The chain has a private relay: the flag on and a relay URL set (never sent).
   usePrivateMempoolRpc: boolean;
-  // Labels of the chain's block builders (builder_rpc_urls), never their URLs.
+  // Labels of the chain's bundle-capable builders, in order (never URLs).
   bundleBuilders: string[];
   // The highest tip the gas estimate picks here (gwei); bundle tips stop there too.
   tipLimitGwei: number | null;
