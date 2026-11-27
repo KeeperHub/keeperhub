@@ -9,7 +9,7 @@
  * only a value that actually is a SQLSTATE -- see `isSqlState`.
  */
 
-import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
+import { findInErrorChain, MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
 
 export type CuratedDbError = { message: string; status: number };
 
@@ -123,19 +123,13 @@ export function isUniqueViolation(err: unknown): boolean {
  * error, somewhere down the cause chain.
  */
 export function violatedConstraint(err: unknown): string | undefined {
-  let current: unknown = err;
-  for (
-    let depth = 0;
-    depth < MAX_CAUSE_DEPTH && current && typeof current === "object";
-    depth++
-  ) {
-    const name = (current as { constraint_name?: unknown }).constraint_name;
-    if (typeof name === "string") {
-      return name;
-    }
-    current = (current as { cause?: unknown }).cause;
-  }
-  return;
+  const named = findInErrorChain(
+    err,
+    (candidate) =>
+      typeof (candidate as { constraint_name?: unknown }).constraint_name ===
+      "string"
+  );
+  return (named as { constraint_name?: string } | undefined)?.constraint_name;
 }
 
 /** Postgres `foreign_key_violation`. */
