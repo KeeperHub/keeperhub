@@ -251,7 +251,12 @@ A step's `input`, `output` or `outputRaw` larger than 1 MiB is returned as `{ "_
       "startedAt": "2024-01-01T00:00:00Z",
       "completedAt": "2024-01-01T00:00:01Z",
       "iterationIndex": null,
-      "forEachNodeId": null
+      "forEachNodeId": null,
+      "rpcOrigin": "platform",
+      "rpcConfigId": null,
+      "rpcConfigName": null,
+      "rpcFailedOver": false,
+      "rpcEndpoints": []
     }
   ]
 }
@@ -275,6 +280,11 @@ A step's `input`, `output` or `outputRaw` larger than 1 MiB is returned as `{ "_
 | `completedAt` | timestamp | When the step finished (null while running) |
 | `iterationIndex` | number \| null | 0-based index when this log row was produced inside a For-Each iteration; `null` for top-level steps |
 | `forEachNodeId` | string \| null | Parent For-Each node id when this is a loop iteration row; `null` otherwise |
+| `rpcOrigin` | string \| null | Which endpoint served the step's RPC calls: `org` for one of the organization's own endpoints, `platform` for KeeperHub. `null` for steps that made no RPC call |
+| `rpcConfigId` | string \| null | The organization endpoint that served the step, when `rpcOrigin` is `org` |
+| `rpcConfigName` | string \| null | That endpoint's name; `null` when it has since been removed |
+| `rpcFailedOver` | boolean \| null | `true` when one of the step's calls moved from the primary endpoint to the fallback |
+| `rpcEndpoints` | array | Every endpoint the step's calls reached, the busiest first: `origin`, `configId`, `configName`, `position` (`primary` or `fallback`), `requests` and `errors`. Empty for steps that made no RPC call or were recorded before this field existed |
 
 ### Output shapes by node type
 

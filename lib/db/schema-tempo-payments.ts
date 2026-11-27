@@ -68,6 +68,9 @@ export const tempoHeldPayments = pgTable(
     tokenDecimals: integer("token_decimals"),
     amountDisplay: text("amount_display"),
     memo: text("memo"),
+    // The signing node's RPC selection, so the later broadcast and its
+    // reconcile go through the same route. Null means Auto.
+    rpcSelection: text("rpc_selection"),
     serializedTx: text("serialized_tx").notNull(),
     precomputedHash: text("precomputed_hash").notNull(),
     nonceKey: text("nonce_key").notNull(),

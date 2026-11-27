@@ -1,6 +1,7 @@
-import { Contract, JsonRpcProvider } from "ethers";
+import { Contract } from "ethers";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { railForProtocol } from "@/lib/payments/rails";
+import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
 
 const X402_RAIL = railForProtocol("x402");
 
@@ -14,13 +15,21 @@ const TIMEOUT_PATTERNS = [
   "unable to estimate gas",
 ];
 
-// Module-level singleton: avoid creating a new provider (and its connection
-// pool) on every reconciliation call. Mirrors the pattern used in
-// lib/x402/server.ts. BASE_RPC_URL is read once at module load.
-const provider = new JsonRpcProvider(
-  process.env[X402_RAIL.rpcUrlEnvVar] ?? X402_RAIL.defaultRpcUrl
-);
-const settlementAsset = new Contract(X402_RAIL.asset, AUTH_STATE_ABI, provider);
+async function readAuthorizationState(
+  payerAddress: string,
+  nonce: string
+): Promise<bigint> {
+  const { manager } = await rpc.evm(
+    platformScope(PlatformRpcPurpose.PAYMENTS),
+    X402_RAIL.chainId
+  );
+  return (await manager.executeWithFailover((provider) =>
+    new Contract(X402_RAIL.asset, AUTH_STATE_ABI, provider).authorizationState(
+      payerAddress,
+      nonce
+    )
+  )) as bigint;
+}
 
 /**
  * Returns true if the error message indicates a transient facilitator timeout
@@ -61,10 +70,7 @@ export async function pollForPaymentConfirmation({
 
   while (Date.now() < deadline) {
     try {
-      const state = (await settlementAsset.authorizationState(
-        payerAddress,
-        nonce
-      )) as bigint;
+      const state = await readAuthorizationState(payerAddress, nonce);
 
       if (state === BigInt(1)) {
         return true;

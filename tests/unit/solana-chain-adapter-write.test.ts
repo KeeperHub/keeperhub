@@ -83,6 +83,25 @@ describe("SolanaChainAdapter - sendTransaction", () => {
     ).rejects.toThrow("[SolanaChainAdapter] Missing options.solanaSigner");
   });
 
+  it("confirms on the manager it sent with, without looking the route up again", async () => {
+    const { mockManager } = createMockManager();
+    const factory = vi
+      .fn()
+      .mockResolvedValueOnce(mockManager as any)
+      .mockRejectedValue(new Error("route lookup failed"));
+    const adapter = new SolanaChainAdapter(DEVNET_CHAIN_ID, factory);
+
+    const receipt = await adapter.sendTransaction(
+      null as any,
+      { to: recipientKeypair.publicKey.toBase58(), value: BigInt(5000) },
+      null as any,
+      { solanaSigner, gasOverrides: {} } as any
+    );
+
+    expect(receipt.hash).toBe("signature123");
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
   describe("on-chain failure handling", () => {
     it("throws when confirmTransaction reports an execution error", async () => {
       const { mockManager, mockConnection } = createMockManager();

@@ -20,6 +20,9 @@ vi.mock("postgres", () => ({
   default: () => ({ end: mocks.queryClientEnd }),
 }));
 vi.mock("drizzle-orm/postgres-js", () => ({ drizzle: () => ({}) }));
+vi.mock("../lib/rpc/engine/usage-store", () => ({
+  flushRpcUsage: vi.fn().mockResolvedValue(0),
+}));
 vi.mock("../lib/db/integrations", () => ({
   validateWorkflowIntegrations: () => Promise.resolve({ valid: true }),
 }));

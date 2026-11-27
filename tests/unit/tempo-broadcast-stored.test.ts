@@ -17,9 +17,14 @@ vi.mock("@/lib/logging", () => ({
   logUserError: vi.fn(),
 }));
 
-const mockGetRpcProvider = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
+const mockRpcEvm = vi.fn();
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: (...args: unknown[]) => mockRpcEvm(...args),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 const mockDeserialize = vi.fn();
@@ -31,11 +36,13 @@ vi.mock("ox/tempo", () => ({
   },
 }));
 
+import { rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { isOnChainPendingError } from "@/lib/web3/onchain-revert";
 import { broadcastStoredTempoTx } from "@/plugins/tempo/steps/tempo-tx-core";
 
 const NOW_SEC = 1_800_000_000;
 const CHAIN = 42_431;
+const SCOPE = rpcScopeForOrganization("org1");
 const mockSend = vi.fn();
 const mockGetTransaction = vi.fn();
 const WINDOW_CLOSED_RE = /validity window closed/;
@@ -47,15 +54,17 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW_SEC * 1000);
   mockGetTransaction.mockResolvedValue(null);
-  mockGetRpcProvider.mockResolvedValue({
-    executeWithFailover: (fn: (p: unknown) => unknown) =>
-      Promise.resolve(
-        fn({
-          send: (...a: unknown[]) => mockSend(...a),
-          getTransaction: (...a: unknown[]) => mockGetTransaction(...a),
-        })
-      ),
-    getProvider: () => ({}),
+  mockRpcEvm.mockResolvedValue({
+    manager: {
+      executeWithFailover: (fn: (p: unknown) => unknown) =>
+        Promise.resolve(
+          fn({
+            send: (...a: unknown[]) => mockSend(...a),
+            getTransaction: (...a: unknown[]) => mockGetTransaction(...a),
+          })
+        ),
+      getProvider: () => ({}),
+    },
   });
 });
 
@@ -67,7 +76,11 @@ describe("broadcastStoredTempoTx", () => {
   it("refuses a blob whose validity window has already closed", async () => {
     mockDeserialize.mockReturnValue({ validBefore: NOW_SEC - 100 });
     await expect(
-      broadcastStoredTempoTx({ chainId: CHAIN, serialized: "0x76blob" })
+      broadcastStoredTempoTx({
+        chainId: CHAIN,
+        rpcScope: SCOPE,
+        serialized: "0x76blob",
+      })
     ).rejects.toThrow(WINDOW_CLOSED_RE);
     expect(mockSend).not.toHaveBeenCalled();
   });
@@ -78,6 +91,7 @@ describe("broadcastStoredTempoTx", () => {
     await expect(
       broadcastStoredTempoTx({
         chainId: CHAIN,
+        rpcScope: SCOPE,
         serialized: "0x76blob",
         expectedHash: "0xhash",
       })
@@ -91,6 +105,7 @@ describe("broadcastStoredTempoTx", () => {
 
     const res = await broadcastStoredTempoTx({
       chainId: CHAIN,
+      rpcScope: SCOPE,
       serialized: "0x76blob",
       waitForConfirmation: false,
     });
@@ -112,6 +127,7 @@ describe("broadcastStoredTempoTx", () => {
 
     const thrown = await broadcastStoredTempoTx({
       chainId: CHAIN,
+      rpcScope: SCOPE,
       serialized: "0x76blob",
       waitForConfirmation: false,
     }).then(
@@ -133,6 +149,7 @@ describe("broadcastStoredTempoTx", () => {
 
     const thrown = await broadcastStoredTempoTx({
       chainId: CHAIN,
+      rpcScope: SCOPE,
       serialized: "0x76blob",
       waitForConfirmation: false,
     }).then(
@@ -151,6 +168,7 @@ describe("broadcastStoredTempoTx", () => {
 
     const thrown = await broadcastStoredTempoTx({
       chainId: CHAIN,
+      rpcScope: SCOPE,
       serialized: "0x76blob",
       waitForConfirmation: false,
     }).then(
@@ -177,6 +195,7 @@ describe("broadcastStoredTempoTx", () => {
 
     const thrown = await broadcastStoredTempoTx({
       chainId: CHAIN,
+      rpcScope: SCOPE,
       serialized: "0x76blob",
       waitForConfirmation: false,
     }).then(
@@ -202,6 +221,7 @@ describe("broadcastStoredTempoTx", () => {
 
     const result = await broadcastStoredTempoTx({
       chainId: CHAIN,
+      rpcScope: SCOPE,
       serialized: "0x76blob",
       waitForConfirmation: false,
     });
@@ -221,6 +241,7 @@ describe("broadcastStoredTempoTx", () => {
 
     const thrown = await broadcastStoredTempoTx({
       chainId: CHAIN,
+      rpcScope: SCOPE,
       serialized: "0x76blob",
       waitForConfirmation: false,
     }).then(
@@ -235,7 +256,11 @@ describe("broadcastStoredTempoTx", () => {
 
   it("rejects a non-Tempo chain before touching the blob", async () => {
     await expect(
-      broadcastStoredTempoTx({ chainId: 1, serialized: "0x76blob" })
+      broadcastStoredTempoTx({
+        chainId: 1,
+        rpcScope: SCOPE,
+        serialized: "0x76blob",
+      })
     ).rejects.toThrow(NOT_TEMPO_RE);
     expect(mockDeserialize).not.toHaveBeenCalled();
   });

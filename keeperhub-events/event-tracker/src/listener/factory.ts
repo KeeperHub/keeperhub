@@ -1,6 +1,8 @@
 import { SQS_QUEUE_URL } from "../../lib/config/environment";
 import { sqs } from "../../lib/sqs-client";
 import { chainProviderManager } from "../chains/provider-manager";
+import { RouteProviderPool } from "../chains/route-provider-pool";
+import { RpcUsageReporter } from "../usage/rpc-usage-reporter";
 import { createRedisArmStateStore } from "./arm-state-redis";
 import { createRedisDedupStore } from "./dedup-redis";
 import { ListenerRegistry } from "./registry";
@@ -13,9 +15,22 @@ import { ListenerRegistry } from "./registry";
  * the test runtime.
  */
 
-export function createRegistry(): ListenerRegistry {
+export interface RouteRuntime {
+  pool: RouteProviderPool;
+  usage: RpcUsageReporter;
+}
+
+export function createRouteRuntime(): RouteRuntime {
+  const usage = new RpcUsageReporter();
+  return { pool: new RouteProviderPool({ usage }), usage };
+}
+
+export function createRegistry(
+  routePool?: RouteProviderPool,
+): ListenerRegistry {
   return new ListenerRegistry({
     providerManager: chainProviderManager,
+    routePool,
     dedup: createRedisDedupStore(),
     armStore: createRedisArmStateStore(),
     sqs,

@@ -37,7 +37,7 @@ const CHART_COLORS = {
  * name instead, a two-month custom window printed the same day four times over
  * because its buckets were still an hour wide.
  */
-function formatTimestamp(value: string, intervalMs: number): string {
+export function formatTimestamp(value: string, intervalMs: number): string {
   const date = new Date(value);
 
   if (intervalMs >= DAY_MS) {
@@ -94,7 +94,7 @@ type CustomTooltipProps = {
   intervalMs: number;
 };
 
-function ChartTooltip({
+export function ChartTooltip({
   active,
   payload,
   label,
@@ -130,7 +130,7 @@ function ChartTooltip({
   );
 }
 
-function ChartSkeleton(): ReactNode {
+export function ChartSkeleton(): ReactNode {
   return (
     <div className="flex h-[300px] items-center justify-center">
       <div className="h-full w-full animate-pulse rounded bg-muted" />

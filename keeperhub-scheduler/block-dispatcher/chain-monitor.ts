@@ -11,12 +11,15 @@
  * provider goes silent.
  */
 
+import type { LookupFunction } from "node:net";
 import { ethers } from "ethers";
-import { metrics } from "../lib/metrics.js";
+import { WebSocket } from "ws";
+import { type ChainMetrics, metrics } from "../lib/metrics.js";
 import {
   createPhantomExecution,
   failPhantomExecution,
 } from "../lib/phantom.js";
+import { RpcEndpointRole, RpcUsageCounter } from "../lib/rpc-route.js";
 import type { BlockWorkflow, ChainConfig } from "../lib/types.js";
 import { enqueueBlockTrigger } from "./sqs-enqueue.js";
 
@@ -163,6 +166,25 @@ function withTimeout<T>(
   ]);
 }
 
+export type MonitorLogger = Pick<Console, "log" | "warn" | "error">;
+
+/** Counts RPC usage against the endpoint that served it. */
+export type MonitorUsage = {
+  record(role: RpcEndpointRole, counter: RpcUsageCounter): void;
+};
+
+function noop(): void {
+  // intentionally does nothing
+}
+
+export const silentLogger: MonitorLogger = {
+  log: noop,
+  warn: noop,
+  error: noop,
+};
+
+const noUsage: MonitorUsage = { record: noop };
+
 type ChainMonitorConfig = {
   chain: ChainConfig;
   workflows: BlockWorkflow[];
@@ -170,6 +192,13 @@ type ChainMonitorConfig = {
   // the first block this monitor receives backfills the gap after it (up to
   // MAX_BACKFILL_BLOCKS) instead of starting fresh at that block.
   resumeFromBlock?: number | null;
+  // Defaults suit KeeperHub's endpoints; organization routes inject silent ones.
+  logger?: MonitorLogger;
+  metrics?: ChainMetrics;
+  usage?: MonitorUsage;
+  // Organization routes dial their endpoints only at the app's vetted
+  // addresses; undefined for a URL means ordinary DNS.
+  lookupFor?: (url: string) => LookupFunction | undefined;
 };
 
 export type BlockHeader = {
@@ -324,8 +353,16 @@ export class ChainMonitor {
   // and how many range attempts have failed on it.
   private heldBlock: number | null = null;
   private heldBlockAttempts = 0;
+  private readonly log: MonitorLogger;
+  private readonly metrics: ChainMetrics;
+  private readonly usage: MonitorUsage;
+  private readonly lookupFor: ChainMonitorConfig["lookupFor"];
 
   constructor(config: ChainMonitorConfig) {
+    this.log = config.logger ?? console;
+    this.metrics = config.metrics ?? metrics;
+    this.usage = config.usage ?? noUsage;
+    this.lookupFor = config.lookupFor;
     this.chainId = config.chain.chainId;
     this.chainName = config.chain.name;
     this.primaryWss = config.chain.defaultPrimaryWss;
@@ -341,10 +378,10 @@ export class ChainMonitor {
     this.isRunning = true;
     this.silentReconnects = 0;
     this.monitorBootAt = Date.now();
-    metrics.setSilentReconnectsCurrent(this.chainName, 0);
-    metrics.setWorkflowsTracked(this.chainName, this.workflows.length);
+    this.metrics.setSilentReconnectsCurrent(this.chainName, 0);
+    this.metrics.setWorkflowsTracked(this.chainName, this.workflows.length);
     if (this.lastProcessedBlock !== null) {
-      console.log(
+      this.log.log(
         `[BlockMonitor:${this.chainName}] Resuming after block ${this.lastProcessedBlock}, the first block received backfills the gap`,
       );
     }
@@ -355,10 +392,10 @@ export class ChainMonitor {
       this.startPingPong();
       this.resetNoBlockTimer();
       this.startPrimaryProbe();
-      metrics.setIsAlive(this.chainName, true);
+      this.metrics.setIsAlive(this.chainName, true);
     } catch (error) {
       this.isRunning = false;
-      metrics.setIsAlive(this.chainName, false);
+      this.metrics.setIsAlive(this.chainName, false);
       throw error;
     }
   }
@@ -377,12 +414,12 @@ export class ChainMonitor {
     // disappears entirely from /metrics output. No need to flip individual
     // gauges to 0 first — that would leave residual labels behind. Counters
     // and histograms keep their cumulative history.
-    metrics.forgetChain(this.chainName);
+    this.metrics.forgetChain(this.chainName);
   }
 
   updateWorkflows(workflows: BlockWorkflow[]): void {
     this.workflows = workflows;
-    metrics.setWorkflowsTracked(this.chainName, workflows.length);
+    this.metrics.setWorkflowsTracked(this.chainName, workflows.length);
   }
 
   hasConfigChanged(chain: ChainConfig): boolean {
@@ -464,6 +501,12 @@ export class ChainMonitor {
     };
   }
 
+  private currentRole(): RpcEndpointRole {
+    return this.currentUrlIndex === 1
+      ? RpcEndpointRole.FALLBACK
+      : RpcEndpointRole.PRIMARY;
+  }
+
   // ---------------------------------------------------------------------------
   // Provider lifecycle
   // ---------------------------------------------------------------------------
@@ -509,14 +552,14 @@ export class ChainMonitor {
           "removeAllListeners",
         );
       } catch (error) {
-        console.warn(
+        this.log.warn(
           `[BlockMonitor:${this.chainName}] destroyProvider.removeAllListeners: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
       try {
         await withTimeout(this.provider.destroy(), destroyTimeoutMs, "destroy");
       } catch (error) {
-        console.warn(
+        this.log.warn(
           `[BlockMonitor:${this.chainName}] destroyProvider.destroy: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
@@ -524,18 +567,33 @@ export class ChainMonitor {
     }
   }
 
+  private openProvider(url: string): ethers.WebSocketProvider {
+    const lookup = this.lookupFor?.(url);
+    return lookup
+      ? new ethers.WebSocketProvider(() => new WebSocket(url, { lookup }))
+      : new ethers.WebSocketProvider(url);
+  }
+
   private async connect(): Promise<void> {
     type Candidate = {
       url: string;
       index: 0 | 1;
-      label: "primary" | "fallback";
+      label: RpcEndpointRole;
     };
     const candidates: Candidate[] = [];
     if (this.primaryWss) {
-      candidates.push({ url: this.primaryWss, index: 0, label: "primary" });
+      candidates.push({
+        url: this.primaryWss,
+        index: 0,
+        label: RpcEndpointRole.PRIMARY,
+      });
     }
     if (this.fallbackWss) {
-      candidates.push({ url: this.fallbackWss, index: 1, label: "fallback" });
+      candidates.push({
+        url: this.fallbackWss,
+        index: 1,
+        label: RpcEndpointRole.FALLBACK,
+      });
     }
 
     if (candidates.length === 0) {
@@ -557,7 +615,7 @@ export class ChainMonitor {
     for (const [iterIdx, candidate] of ordered.entries()) {
       let provider: ethers.WebSocketProvider | null = null;
       try {
-        provider = new ethers.WebSocketProvider(candidate.url);
+        provider = this.openProvider(candidate.url);
 
         // ethers v6 WebSocketProvider does not attach an 'error' listener on
         // the underlying ws. Without one, an HTTP 429 (or any non-101 upgrade
@@ -575,6 +633,7 @@ export class ChainMonitor {
         // To actually confirm the upgrade succeeded we issue a real network
         // call which internally waits for the underlying ws to be open via
         // `_waitUntilReady()`.
+        this.usage.record(candidate.label, RpcUsageCounter.REQUESTS);
         const blockNumber = (await Promise.race([
           provider.getBlockNumber(),
           wsErrorPromise,
@@ -588,18 +647,20 @@ export class ChainMonitor {
 
         this.provider = provider;
         this.currentUrlIndex = candidate.index;
-        metrics.setCurrentUrlIndex(this.chainName, candidate.index);
-        console.log(
+        this.usage.record(candidate.label, RpcUsageCounter.WS_CONNECTS);
+        this.metrics.setCurrentUrlIndex(this.chainName, candidate.index);
+        this.log.log(
           `[BlockMonitor:${this.chainName}] Connected to ${candidate.label} WSS (block: ${blockNumber})`,
         );
         return;
       } catch (error) {
+        this.usage.record(candidate.label, RpcUsageCounter.ERRORS);
         // Destroy the provider if it was created but failed/timed out
         if (provider) {
           await provider.removeAllListeners();
           await provider.destroy().catch(() => {});
         }
-        console.warn(
+        this.log.warn(
           `[BlockMonitor:${this.chainName}] Failed to connect to ${candidate.label} WSS:`,
           error instanceof Error ? error.message : error,
         );
@@ -622,7 +683,7 @@ export class ChainMonitor {
     return new Promise<never>((_, reject) => {
       ws?.on?.("error", (err: Error) => {
         const message = err?.message ?? String(err);
-        console.warn(
+        this.log.warn(
           `[BlockMonitor:${this.chainName}] WebSocket error during connect: ${message}`,
         );
         reject(new Error(`WebSocket error: ${message}`));
@@ -639,19 +700,27 @@ export class ChainMonitor {
       return;
     }
 
-    console.log(`[BlockMonitor:${this.chainName}] Subscribing to block events`);
+    this.log.log(
+      `[BlockMonitor:${this.chainName}] Subscribing to block events`,
+    );
 
     // ethers v6 provider.on() is async - it sends eth_subscribe over the
     // WebSocket and waits for the subscription ID. Must be awaited or the
     // subscription silently fails on reconnection.
-    await this.provider.on("block", (blockNumber: number) => {
-      this.onBlock(blockNumber).catch((error: unknown) => {
-        console.error(
-          `[BlockMonitor:${this.chainName}] Error processing block ${blockNumber}:`,
-          error instanceof Error ? error.message : error,
-        );
+    this.usage.record(this.currentRole(), RpcUsageCounter.REQUESTS);
+    try {
+      await this.provider.on("block", (blockNumber: number) => {
+        this.onBlock(blockNumber).catch((error: unknown) => {
+          this.log.error(
+            `[BlockMonitor:${this.chainName}] Error processing block ${blockNumber}:`,
+            error instanceof Error ? error.message : error,
+          );
+        });
       });
-    });
+    } catch (error) {
+      this.usage.record(this.currentRole(), RpcUsageCounter.ERRORS);
+      throw error;
+    }
 
     this.hasActiveSubscription = true;
     // KEEP-570: do NOT seed lastBlockAdvanceAt here. Resetting it on every
@@ -666,14 +735,14 @@ export class ChainMonitor {
     this.wsFrameCount = 0;
     this.subscriptionPushCount = 0;
     this.lastWsFrameAt = null;
-    metrics.setHasActiveSubscription(this.chainName, true);
-    metrics.setSubscribedAt(this.chainName, subscribedAt);
+    this.metrics.setHasActiveSubscription(this.chainName, true);
+    this.metrics.setSubscribedAt(this.chainName, subscribedAt);
     // resetNoBlockTimer is called from start/reconnect, but seed it here too
     // for the same reason — the watchdog needs a baseline from the moment we
     // are subscribed, not from the previous run.
     this.resetNoBlockTimer();
     this.startSocketAgeTimer();
-    console.log(`[BlockMonitor:${this.chainName}] Block subscription active`);
+    this.log.log(`[BlockMonitor:${this.chainName}] Block subscription active`);
 
     // Handle WebSocket close for reconnection - store reference for cleanup
     const ws = this.provider.websocket as unknown as {
@@ -681,10 +750,10 @@ export class ChainMonitor {
     };
     if (ws?.on) {
       this.wsCloseHandler = (): void => {
-        console.warn(`[BlockMonitor:${this.chainName}] WebSocket closed`);
+        this.log.warn(`[BlockMonitor:${this.chainName}] WebSocket closed`);
         this.hasActiveSubscription = false;
-        metrics.setHasActiveSubscription(this.chainName, false);
-        metrics.recordWsClose(this.chainName, "upstream_close");
+        this.metrics.setHasActiveSubscription(this.chainName, false);
+        this.metrics.recordWsClose(this.chainName, "upstream_close");
         this.handleDisconnect();
       };
       ws.on("close", this.wsCloseHandler);
@@ -781,7 +850,7 @@ export class ChainMonitor {
 
   private async processBlockRange(blockNumber: number): Promise<void> {
     if (this.lastProcessedBlock === null) {
-      console.log(
+      this.log.log(
         `[BlockMonitor:${this.chainName}] First block received: ${blockNumber}, tracking ${this.workflows.length} workflow(s): ${this.workflows.map((wf) => `${wf.id}(interval=${wf.blockInterval})`).join(", ")}`,
       );
     }
@@ -794,12 +863,12 @@ export class ChainMonitor {
     const gap = blockNumber - fromBlock;
 
     if (gap > MAX_BACKFILL_BLOCKS) {
-      console.warn(
+      this.log.warn(
         `[BlockMonitor:${this.chainName}] Gap too large (${gap} blocks), skipping backfill. Resuming from block ${blockNumber}`,
       );
       fromBlock = blockNumber;
     } else if (fromBlock < blockNumber) {
-      console.log(
+      this.log.log(
         `[BlockMonitor:${this.chainName}] Gap detected: last=${this.lastProcessedBlock}, received=${blockNumber}, backfilling ${gap} block(s)`,
       );
     }
@@ -824,12 +893,13 @@ export class ChainMonitor {
     }
 
     this.blocksReceived++;
-    metrics.recordBlockReceived(this.chainName);
+    this.usage.record(this.currentRole(), RpcUsageCounter.EVENTS_RECEIVED);
+    this.metrics.recordBlockReceived(this.chainName);
 
     // Heartbeat log
     const now = Date.now();
     if (now - this.lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
-      console.log(
+      this.log.log(
         `[BlockMonitor:${this.chainName}] Heartbeat: block=${blockNumber}, received=${this.blocksReceived}, matched=${this.blocksMatched}, workflows=${this.workflows.length}`,
       );
       this.lastHeartbeat = now;
@@ -851,9 +921,9 @@ export class ChainMonitor {
     // reconnects would still trigger a URL flip on the next disconnect.
     this.silentReconnects = 0;
     this.resetNoBlockTimer();
-    metrics.setLastProcessedBlock(this.chainName, blockNumber);
-    metrics.setLastBlockAdvanceAt(this.chainName, advancedAt);
-    metrics.setSilentReconnectsCurrent(this.chainName, 0);
+    this.metrics.setLastProcessedBlock(this.chainName, blockNumber);
+    this.metrics.setLastBlockAdvanceAt(this.chainName, advancedAt);
+    this.metrics.setSilentReconnectsCurrent(this.chainName, 0);
   }
 
   // Returns true while an unfetched block is held for a retry on the next
@@ -871,7 +941,7 @@ export class ChainMonitor {
     const maxAttempts = liveness("GET_BLOCK_MAX_HOLD_ATTEMPTS");
     if (this.heldBlockAttempts < maxAttempts) {
       this.lastProcessedBlock = blockNumber - 1;
-      console.warn(
+      this.log.warn(
         `[BlockMonitor:${this.chainName}] Holding at block ${blockNumber - 1}, block ${blockNumber} could not be fetched (attempt ${this.heldBlockAttempts}/${maxAttempts}), retrying on the next block received`,
       );
       return true;
@@ -879,7 +949,7 @@ export class ChainMonitor {
     const workflowIds = this.matchingWorkflowsFor(blockNumber).map(
       (wf) => wf.id,
     );
-    console.error(
+    this.log.error(
       `[BlockMonitor:${this.chainName}] Skipping block ${blockNumber} permanently after ${this.heldBlockAttempts} failed fetch attempts, not dispatched for workflow(s): ${workflowIds.join(", ")}`,
     );
     this.heldBlock = null;
@@ -912,16 +982,16 @@ export class ChainMonitor {
     // Stale block warning + lag histogram
     const nowSeconds = Math.floor(Date.now() / 1000);
     const lagSeconds = nowSeconds - block.timestamp;
-    metrics.observeBlockLag(this.chainName, lagSeconds);
+    this.metrics.observeBlockLag(this.chainName, lagSeconds);
     if (lagSeconds > STALE_BLOCK_THRESHOLD_S) {
-      console.warn(
+      this.log.warn(
         `[BlockMonitor:${this.chainName}] Block ${blockNumber} timestamp is ${lagSeconds}s behind wall clock`,
       );
     }
 
     this.blocksMatched++;
-    metrics.recordBlockMatched(this.chainName);
-    console.log(
+    this.metrics.recordBlockMatched(this.chainName);
+    this.log.log(
       `[BlockMonitor:${this.chainName}] Block ${blockNumber} matched ${matchingWorkflows.length} workflow(s): ${matchingWorkflows.map((wf) => `${wf.id}(interval=${wf.blockInterval})`).join(", ")}`,
     );
 
@@ -933,13 +1003,13 @@ export class ChainMonitor {
 
     for (const [index, result] of results.entries()) {
       if (result.status === "rejected") {
-        metrics.recordSqsEnqueue(this.chainName, "error");
-        console.error(
+        this.metrics.recordSqsEnqueue(this.chainName, "error");
+        this.log.error(
           `[BlockMonitor:${this.chainName}] Failed to enqueue workflow ${matchingWorkflows[index].id}:`,
           result.reason,
         );
       } else {
-        metrics.recordSqsEnqueue(this.chainName, "success");
+        this.metrics.recordSqsEnqueue(this.chainName, "success");
       }
     }
     return true;
@@ -967,15 +1037,15 @@ export class ChainMonitor {
     // here matters most on a fast chain, where enqueueing would otherwise cost
     // a message and an executor round-trip on every block, indefinitely.
     if (refused) {
-      console.log(
+      this.log.log(
         `[BlockMonitor:${this.chainName}] Skipping refused dispatch for ${dispatchKey} (${refused})`,
       );
-      metrics.recordDispatchRefused(this.chainName, refused);
+      this.metrics.recordDispatchRefused(this.chainName, refused);
       return;
     }
 
     if (alreadyExisted) {
-      console.log(
+      this.log.log(
         `[BlockMonitor:${this.chainName}] Skipping duplicate dispatch for ${dispatchKey} (already enqueued)`,
       );
       return;
@@ -1063,6 +1133,8 @@ export class ChainMonitor {
         failure = "no connected provider";
         continue;
       }
+      const role = this.currentRole();
+      this.usage.record(role, RpcUsageCounter.REQUESTS);
       try {
         const block = await withTimeout(
           provider.getBlock(blockNumber),
@@ -1078,11 +1150,12 @@ export class ChainMonitor {
         }
         failure = "getBlock returned null";
       } catch (error) {
+        this.usage.record(role, RpcUsageCounter.ERRORS);
         failure = error instanceof Error ? error.message : String(error);
       }
     }
 
-    console.warn(
+    this.log.warn(
       `[BlockMonitor:${this.chainName}] Failed to fetch block ${blockNumber} after ${GET_BLOCK_ATTEMPTS} attempts:`,
       failure,
     );
@@ -1103,7 +1176,7 @@ export class ChainMonitor {
     };
 
     if (!ws?.ping || !ws?.on) {
-      console.warn(
+      this.log.warn(
         `[BlockMonitor:${this.chainName}] WebSocket does not support ping/pong, skipping keepalive`,
       );
       return;
@@ -1128,10 +1201,10 @@ export class ChainMonitor {
       try {
         ws.ping!();
       } catch {
-        console.warn(
+        this.log.warn(
           `[BlockMonitor:${this.chainName}] Failed to send ping, triggering reconnect`,
         );
-        metrics.recordWsClose(this.chainName, "ping_send_failure");
+        this.metrics.recordWsClose(this.chainName, "ping_send_failure");
         this.handleDisconnect();
         return;
       }
@@ -1143,15 +1216,15 @@ export class ChainMonitor {
       // If no pong arrives within timeout, the transport is dead.
       this.pongTimer = setTimeout(() => {
         this.pongTimer = null;
-        console.warn(
+        this.log.warn(
           `[BlockMonitor:${this.chainName}] Pong timeout (${pongTimeoutMs}ms), triggering reconnect`,
         );
-        metrics.recordWsClose(this.chainName, "pong_timeout");
+        this.metrics.recordWsClose(this.chainName, "pong_timeout");
         this.handleDisconnect();
       }, pongTimeoutMs);
     }, pingIntervalMs);
 
-    console.log(
+    this.log.log(
       `[BlockMonitor:${this.chainName}] Ping/pong keepalive started (interval=${pingIntervalMs}ms, timeout=${pongTimeoutMs}ms)`,
     );
   }
@@ -1176,11 +1249,11 @@ export class ChainMonitor {
         // flip to the other URL is made by reconnectWithBackoff before its
         // next connect attempt, based on SILENT_FAILOVER_THRESHOLD.
         this.silentReconnects++;
-        metrics.setSilentReconnectsCurrent(
+        this.metrics.setSilentReconnectsCurrent(
           this.chainName,
           this.silentReconnects,
         );
-        metrics.recordWsClose(this.chainName, "block_advance_timeout");
+        this.metrics.recordWsClose(this.chainName, "block_advance_timeout");
         // KEEP-570: enrich the silent-window warning with the raw ws frame
         // counters. The three load-bearing comparisons:
         //   wsFrameCount == 0  -> no frames at all (network or upstream silent)
@@ -1191,7 +1264,7 @@ export class ChainMonitor {
         //                       (the ethers v6 sharp edge)
         const lastFrameAgoMs =
           this.lastWsFrameAt === null ? null : Date.now() - this.lastWsFrameAt;
-        console.warn(
+        this.log.warn(
           `[BlockMonitor:${this.chainName}] Block height has not advanced in ${timeoutMs / 1000}s ` +
             `(silentReconnects=${this.silentReconnects}, wsFrames=${this.wsFrameCount}, ` +
             `subscriptionPushes=${this.subscriptionPushCount}, blocksReceived=${this.blocksReceived}, ` +
@@ -1232,10 +1305,10 @@ export class ChainMonitor {
       if (!this.isRunning || this.isReconnecting) {
         return;
       }
-      console.log(
+      this.log.log(
         `[BlockMonitor:${this.chainName}] Socket age exceeded ${Math.floor(maxAgeMs / 1000)}s, recycling`,
       );
-      metrics.recordWsClose(this.chainName, "socket_age_recycle");
+      this.metrics.recordWsClose(this.chainName, "socket_age_recycle");
       this.handleDisconnect();
     }, maxAgeMs);
   }
@@ -1286,7 +1359,7 @@ export class ChainMonitor {
 
     let probeProvider: ethers.WebSocketProvider | null = null;
     try {
-      probeProvider = new ethers.WebSocketProvider(this.primaryWss);
+      probeProvider = this.openProvider(this.primaryWss);
       // Inline silent listener (not attachConnectErrorListener) so probe
       // failures produce only the single "Primary probe failed" line below.
       const ws = probeProvider.websocket as unknown as {
@@ -1298,6 +1371,7 @@ export class ChainMonitor {
         });
       });
 
+      this.usage.record(RpcEndpointRole.PRIMARY, RpcUsageCounter.REQUESTS);
       await Promise.race([
         probeProvider.getBlockNumber(),
         wsErrorPromise,
@@ -1309,7 +1383,7 @@ export class ChainMonitor {
         }),
       ]);
 
-      console.log(
+      this.log.log(
         `[BlockMonitor:${this.chainName}] Primary recovered, switching back from fallback`,
       );
       await probeProvider.removeAllListeners();
@@ -1323,12 +1397,13 @@ export class ChainMonitor {
       // actually happens — causing the URL Flipped alert to re-fire every probe
       // interval.
       this.currentUrlIndex = 0;
-      metrics.recordUrlFlip(this.chainName, "to_primary");
-      metrics.recordWsClose(this.chainName, "primary_probe_recovered");
+      this.metrics.recordUrlFlip(this.chainName, "to_primary");
+      this.metrics.recordWsClose(this.chainName, "primary_probe_recovered");
       this.handleDisconnect();
     } catch (error) {
+      this.usage.record(RpcEndpointRole.PRIMARY, RpcUsageCounter.ERRORS);
       const reason = summarizeProbeError(error);
-      console.warn(
+      this.log.warn(
         `[BlockMonitor:${this.chainName}] Primary probe failed: ${reason}`,
       );
       if (probeProvider) {
@@ -1351,18 +1426,18 @@ export class ChainMonitor {
 
     this.isReconnecting = true;
     this.reconnectingStartedAt = Date.now();
-    metrics.setIsReconnecting(this.chainName, true);
-    metrics.setHasActiveSubscription(this.chainName, false);
+    this.metrics.setIsReconnecting(this.chainName, true);
+    this.metrics.setHasActiveSubscription(this.chainName, false);
     this.stopTimers();
 
     this.reconnectWithBackoff().catch((error: unknown) => {
-      console.error(
+      this.log.error(
         `[BlockMonitor:${this.chainName}] Reconnect loop failed:`,
         error instanceof Error ? error.message : error,
       );
       this.isReconnecting = false;
       this.reconnectingStartedAt = null;
-      metrics.setIsReconnecting(this.chainName, false);
+      this.metrics.setIsReconnecting(this.chainName, false);
     });
   }
 
@@ -1372,15 +1447,15 @@ export class ChainMonitor {
 
     while (this.isRunning) {
       if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-        console.error(
+        this.log.error(
           `[BlockMonitor:${this.chainName}] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached, stopping monitor`,
         );
         this.isRunning = false;
         this.isReconnecting = false;
         this.reconnectingStartedAt = null;
-        metrics.recordReconnect(this.chainName, "exhausted");
-        metrics.setIsAlive(this.chainName, false);
-        metrics.setIsReconnecting(this.chainName, false);
+        this.metrics.recordReconnect(this.chainName, "exhausted");
+        this.metrics.setIsAlive(this.chainName, false);
+        this.metrics.setIsReconnecting(this.chainName, false);
         return;
       }
 
@@ -1390,7 +1465,7 @@ export class ChainMonitor {
         MAX_DELAY_MS,
       );
 
-      console.log(
+      this.log.log(
         `[BlockMonitor:${this.chainName}] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`,
       );
 
@@ -1407,22 +1482,23 @@ export class ChainMonitor {
       try {
         await this.connect();
         await this.subscribeToBlocks();
+        this.usage.record(this.currentRole(), RpcUsageCounter.WS_RECONNECTS);
         this.reconnectAttempts = 0;
         this.isReconnecting = false;
         this.reconnectingStartedAt = null;
         this.startPingPong();
         this.resetNoBlockTimer();
         this.startPrimaryProbe();
-        metrics.recordReconnect(this.chainName, "success");
-        metrics.observeReconnectDuration(
+        this.metrics.recordReconnect(this.chainName, "success");
+        this.metrics.observeReconnectDuration(
           this.chainName,
           Date.now() - reconnectStartedAt,
         );
-        metrics.setIsReconnecting(this.chainName, false);
-        metrics.setIsAlive(this.chainName, true);
+        this.metrics.setIsReconnecting(this.chainName, false);
+        this.metrics.setIsAlive(this.chainName, true);
         return;
       } catch (error) {
-        console.warn(
+        this.log.warn(
           `[BlockMonitor:${this.chainName}] Reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} failed:`,
           error instanceof Error ? error.message : error,
         );
@@ -1455,18 +1531,21 @@ export class ChainMonitor {
     if (!(this.primaryWss && this.fallbackWss)) {
       return;
     }
-    const previousLabel = this.currentUrlIndex === 0 ? "primary" : "fallback";
-    const nextLabel = this.currentUrlIndex === 0 ? "fallback" : "primary";
+    const previousLabel = this.currentRole();
+    const nextLabel =
+      this.currentUrlIndex === 0
+        ? RpcEndpointRole.FALLBACK
+        : RpcEndpointRole.PRIMARY;
     const nextIndex: 0 | 1 = this.currentUrlIndex === 0 ? 1 : 0;
     this.currentUrlIndex = nextIndex;
     this.silentReconnects = 0;
-    metrics.setSilentReconnectsCurrent(this.chainName, 0);
-    metrics.recordUrlFlip(
+    this.metrics.setSilentReconnectsCurrent(this.chainName, 0);
+    this.metrics.recordUrlFlip(
       this.chainName,
       nextIndex === 1 ? "to_fallback" : "to_primary",
     );
-    metrics.recordWsClose(this.chainName, "silent_failover");
-    console.warn(
+    this.metrics.recordWsClose(this.chainName, "silent_failover");
+    this.log.warn(
       `[BlockMonitor:${this.chainName}] Silent-reconnect threshold (${threshold}) reached on ${previousLabel}, flipping URL preference to ${nextLabel}`,
     );
   }

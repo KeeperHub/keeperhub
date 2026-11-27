@@ -10,6 +10,10 @@ import {
   DURATION_PRESETS,
   type DurationPresetId,
 } from "@/lib/analytics/duration-presets";
+import {
+  KEEPERHUB_ENDPOINT_LABEL,
+  REMOVED_CONFIG_LABEL,
+} from "@/lib/analytics/rpc-usage-shape";
 import { STATUS_DISPLAY } from "@/lib/analytics/status-display";
 import type {
   GasSpend,
@@ -21,6 +25,7 @@ import {
   analyticsFacetsAtom,
   analyticsGasFiltersAtom,
   analyticsNetworkFiltersAtom,
+  analyticsRpcEndpointFiltersAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
   analyticsStatusFiltersAtom,
@@ -30,6 +35,7 @@ import {
   ChainDisplayProvider,
   useChainDisplay,
 } from "@/lib/hooks/use-chain-display";
+import { RpcOrigin } from "@/lib/rpc/engine/types";
 import { FilterCheckbox, FilterPopover, FilterRadio } from "./filter-popover";
 import { useLazyFacet } from "./use-lazy-facet";
 
@@ -261,6 +267,73 @@ function NetworkFilter(): ReactNode {
   );
 }
 
+const RPC_ORIGINS: ReadonlySet<string> = new Set(Object.values(RpcOrigin));
+
+/**
+ * Which endpoints served a run: any of the organization's, one of its configs
+ * nested under them, or KeeperHub's. A run that used both shows under both.
+ */
+function RpcEndpointFilter(): ReactNode {
+  const [endpoints, setEndpoints] = useAtom(analyticsRpcEndpointFiltersAtom);
+  const { rpcEndpointCounts: counts, rpcConfigNames: names } =
+    useAtomValue(analyticsFacetsAtom);
+  const loadCounts = useLazyFacet("rpc");
+  const clear = useCallback((): void => setEndpoints([]), [setEndpoints]);
+  const selectAll = useCallback(
+    (): void => setEndpoints([RpcOrigin.ORG, RpcOrigin.PLATFORM]),
+    [setEndpoints]
+  );
+
+  const configs = useMemo(
+    () =>
+      Object.entries(counts)
+        .filter(([endpoint]) => !RPC_ORIGINS.has(endpoint))
+        .map(([endpoint, count]) => ({
+          value: endpoint,
+          label: names[endpoint] ?? REMOVED_CONFIG_LABEL,
+          count,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [counts, names]
+  );
+
+  const toggleEndpoint = (value: string): void =>
+    setEndpoints((current) => toggle(current, value));
+
+  return (
+    <FilterPopover
+      label="RPC endpoint"
+      onClear={clear}
+      onOpen={loadCounts}
+      onSelectAll={selectAll}
+      selectedCount={endpoints.length}
+    >
+      <FilterCheckbox
+        checked={endpoints.includes(RpcOrigin.ORG)}
+        count={counts[RpcOrigin.ORG]}
+        label="Your endpoints"
+        onToggle={() => toggleEndpoint(RpcOrigin.ORG)}
+      />
+      {configs.map((config) => (
+        <FilterCheckbox
+          checked={endpoints.includes(config.value)}
+          count={config.count}
+          indented
+          key={config.value}
+          label={config.label}
+          onToggle={() => toggleEndpoint(config.value)}
+        />
+      ))}
+      <FilterCheckbox
+        checked={endpoints.includes(RpcOrigin.PLATFORM)}
+        count={counts[RpcOrigin.PLATFORM]}
+        label={KEEPERHUB_ENDPOINT_LABEL}
+        onToggle={() => toggleEndpoint(RpcOrigin.PLATFORM)}
+      />
+    </FilterPopover>
+  );
+}
+
 // Grouped like the statuses: one click for "it cost something", with who paid
 // nested under it. Sponsored and wallet overlap on a run that started sponsored
 // and fell back, which is why they are separate ticks rather than a toggle.
@@ -431,6 +504,9 @@ function ClearAllButton(): ReactNode {
   const [statuses, setStatuses] = useAtom(analyticsStatusFiltersAtom);
   const [sources, setSources] = useAtom(analyticsSourceFiltersAtom);
   const [networks, setNetworks] = useAtom(analyticsNetworkFiltersAtom);
+  const [rpcEndpoints, setRpcEndpoints] = useAtom(
+    analyticsRpcEndpointFiltersAtom
+  );
   const [duration, setDuration] = useAtom(analyticsDurationFilterAtom);
   const [gas, setGas] = useAtom(analyticsGasFiltersAtom);
   const [search, setSearch] = useAtom(analyticsSearchAtom);
@@ -439,15 +515,25 @@ function ClearAllButton(): ReactNode {
     setStatuses([]);
     setSources([]);
     setNetworks([]);
+    setRpcEndpoints([]);
     setDuration(null);
     setGas([]);
     setSearch("");
-  }, [setStatuses, setSources, setNetworks, setDuration, setGas, setSearch]);
+  }, [
+    setStatuses,
+    setSources,
+    setNetworks,
+    setRpcEndpoints,
+    setDuration,
+    setGas,
+    setSearch,
+  ]);
 
   const active =
     statuses.length > 0 ||
     sources.length > 0 ||
     networks.length > 0 ||
+    rpcEndpoints.length > 0 ||
     duration !== null ||
     gas.length > 0 ||
     search.trim().length > 0;
@@ -478,6 +564,7 @@ export function RunsFilters(): ReactNode {
         <SourceFilter />
         <DurationFilter />
         <NetworkFilter />
+        <RpcEndpointFilter />
         <GasFilter />
         <ClearAllButton />
       </div>

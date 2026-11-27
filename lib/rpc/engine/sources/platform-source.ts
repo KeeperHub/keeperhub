@@ -1,0 +1,154 @@
+import { and, eq } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { type Chain, chains } from "@/lib/db/schema";
+import { ErrorCategory, logSystemError, logWarn } from "@/lib/logging";
+import { getErrorMessage } from "@/lib/utils";
+import { type BuilderRpcUrls, normalizeBuilderRpcUrls } from "../../rpc-config";
+import { SecretUrl } from "../secret-url";
+import {
+  type PlatformEndpoints,
+  type RpcChain,
+  RpcChainType,
+  type RpcRoute,
+} from "../types";
+
+export type PlatformChainRecord = {
+  chain: RpcChain;
+  endpoints: PlatformEndpoints;
+};
+
+/** KeeperHub's own endpoints per chain. */
+export type PlatformRpcSource = {
+  load(chainId: number): Promise<PlatformChainRecord | null>;
+};
+
+type ChainRow = Pick<
+  Chain,
+  | "chainId"
+  | "name"
+  | "chainType"
+  | "isEnabled"
+  | "defaultPrimaryRpc"
+  | "defaultFallbackRpc"
+  | "defaultPrimaryWss"
+  | "defaultFallbackWss"
+  | "usePrivateMempoolRpc"
+  | "defaultPrivateRpcUrl"
+>;
+
+/** Map a `chains` row to the engine's shape. Throws on a malformed URL. */
+export function platformRecordFromChainRow(row: ChainRow): PlatformChainRecord {
+  return {
+    chain: {
+      chainId: row.chainId,
+      name: row.name,
+      chainType:
+        row.chainType === RpcChainType.SOLANA
+          ? RpcChainType.SOLANA
+          : RpcChainType.EVM,
+      isEnabled: row.isEnabled ?? false,
+    },
+    endpoints: {
+      httpPrimary: SecretUrl.parse(row.defaultPrimaryRpc),
+      httpFallback: SecretUrl.parseOptional(row.defaultFallbackRpc),
+      wssPrimary: SecretUrl.parseOptional(row.defaultPrimaryWss),
+      wssFallback: SecretUrl.parseOptional(row.defaultFallbackWss),
+      privateTx: row.usePrivateMempoolRpc
+        ? SecretUrl.parseOptional(row.defaultPrivateRpcUrl)
+        : undefined,
+    },
+  };
+}
+
+export type DbPlatformRpcSourceOptions = {
+  ttlMs?: number;
+  now?: () => number;
+};
+
+export type CachedPlatformRpcSource = PlatformRpcSource & {
+  clear(): void;
+};
+
+const DEFAULT_TTL_MS = 30_000;
+
+/**
+ * Reads the `chains` table, which deploys seed from the environment's chain
+ * config. Rows are cached briefly: they change only on deploy or by admin
+ * edit, and every RPC call would otherwise cost a query.
+ */
+export function createDbPlatformRpcSource(
+  options: DbPlatformRpcSourceOptions = {}
+): CachedPlatformRpcSource {
+  const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+  const now = options.now ?? Date.now;
+  const cache = new Map<
+    number,
+    { at: number; record: PlatformChainRecord | null }
+  >();
+
+  async function read(chainId: number): Promise<PlatformChainRecord | null> {
+    const rows = await db
+      .select()
+      .from(chains)
+      .where(eq(chains.chainId, chainId))
+      .limit(1);
+    const row = rows[0];
+    if (!row) {
+      return null;
+    }
+    try {
+      return platformRecordFromChainRow(row);
+    } catch (error) {
+      logSystemError(
+        ErrorCategory.CONFIGURATION,
+        `[RPC Engine] Chain ${chainId} has a malformed RPC URL`,
+        error,
+        { chain_id: String(chainId) }
+      );
+      return null;
+    }
+  }
+
+  return {
+    async load(chainId: number): Promise<PlatformChainRecord | null> {
+      const hit = cache.get(chainId);
+      if (hit && now() - hit.at < ttlMs) {
+        return hit.record;
+      }
+      const record = await read(chainId);
+      cache.set(chainId, { at: now(), record });
+      return record;
+    },
+    clear(): void {
+      cache.clear();
+    },
+  };
+}
+
+/**
+ * KeeperHub's block builder endpoints for the route's chain. None for an
+ * own-RPC-only route, which never leaves the organization's endpoints.
+ * Builders are optional, so a failed lookup returns undefined.
+ */
+export async function builderRpcUrlsFor(
+  route: RpcRoute
+): Promise<BuilderRpcUrls | undefined> {
+  if (route.ownRpcOnly) {
+    return undefined;
+  }
+  const { chainId } = route.chain;
+  try {
+    const rows = await db
+      .select({ builderRpcUrls: chains.builderRpcUrls })
+      .from(chains)
+      .where(and(eq(chains.chainId, chainId), eq(chains.isEnabled, true)))
+      .limit(1);
+    return normalizeBuilderRpcUrls(rows[0]?.builderRpcUrls);
+  } catch (error) {
+    logWarn(
+      `[RPC Engine] Builder endpoint lookup failed: ${getErrorMessage(error)}`,
+      { chain_id: String(chainId) }
+    );
+    return undefined;
+  }
+}

@@ -43,10 +43,6 @@ vi.mock("@/lib/web3/wallet-helpers", () => ({
   initializeWalletSigner: vi.fn(),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProviderFromUrls: vi.fn(),
-}));
-
 const mockRecordTransaction = vi.fn().mockResolvedValue(undefined);
 const mockConfirmTransaction = vi.fn().mockResolvedValue(undefined);
 const mockGetNextNonce = vi.fn().mockReturnValue(42);
@@ -171,7 +167,6 @@ function makeContext(
     executionId: "exec-1",
     workflowId: "wf-1",
     chainId: 1,
-    rpcUrl: "https://rpc.example",
     rpcManager,
   };
 }
@@ -414,6 +409,7 @@ describe("executeTransaction", () => {
       "Transaction 0xreverted reverted on-chain (status 0, block 500)"
     );
     expect(result.nonce).toBe(42);
+    expect(initializeWalletSigner).toHaveBeenCalledWith("org-1", rpcManager);
     expect(mockRecordTransaction).toHaveBeenCalledOnce();
     expect(mockConfirmTransaction).not.toHaveBeenCalled();
     expect(logUserError).toHaveBeenCalledOnce();

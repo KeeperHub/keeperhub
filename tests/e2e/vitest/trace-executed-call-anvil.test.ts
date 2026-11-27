@@ -72,16 +72,13 @@ describe.skipIf(shouldSkip)("traceExecutedCallWithFailover (anvil E2E)", () => {
 
   beforeAll(async () => {
     vi.stubEnv("SAFE_FETCH_SHADOW", "true");
-    const { getRpcProviderFromUrls } = await import(
-      "@/lib/rpc/provider-factory"
-    );
+    const { createRpcProviderManager } = await import("@/lib/rpc/providers");
     trace = await import("@/lib/web3/trace-executed-call");
-    rpcManager = await getRpcProviderFromUrls(
-      ANVIL_URL,
-      undefined,
-      CHAIN_ID,
-      "anvil-trace-test"
-    );
+    rpcManager = createRpcProviderManager({
+      primaryRpcUrl: ANVIL_URL,
+      chainId: CHAIN_ID,
+      chainName: "anvil-trace-test",
+    });
     provider = new ethers.JsonRpcProvider(ANVIL_URL, CHAIN_ID, {
       staticNetwork: true,
     });

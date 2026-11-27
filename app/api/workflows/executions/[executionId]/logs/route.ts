@@ -3,6 +3,11 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { workflowExecutionLogs } from "@/lib/db/schema";
+import {
+  namedRpcEndpoints,
+  rpcStepConfigIds,
+} from "@/lib/analytics/rpc-usage-shape";
+import { rpcConfigNamesOf } from "@/lib/rpc/engine/org/config-names";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { redactSensitiveData } from "@/lib/utils/redact";
 import { boundedJsonb } from "@/lib/workflow/bounded-jsonb";
@@ -101,8 +106,18 @@ export async function GET(
       orderBy: [desc(workflowExecutionLogs.timestamp)],
     });
 
+    const configNames = await rpcConfigNamesOf(
+      execution.workflow.organizationId,
+      rpcStepConfigIds(logs)
+    );
+
     const redactedLogs = logs.map((log) => ({
       ...log,
+      // A removed config leaves the step attributed with no name to show.
+      rpcConfigName: log.rpcConfigId
+        ? (configNames.get(log.rpcConfigId) ?? null)
+        : null,
+      rpcEndpoints: namedRpcEndpoints(log.rpcEndpoints, configNames),
       input: redactSensitiveData(log.input),
       output: redactSensitiveData(log.output),
       error:

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { ethers } from "ethers";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
 
 /**
  * Name-shaped input guard: at least one dot, no whitespace, does not start
@@ -11,6 +11,9 @@ import { getRpcProvider } from "@/lib/rpc/provider-factory";
  * attempting.
  */
 export const ENS_NAME_REGEX = /^(?!0x)[^\s.]+(?:\.[^\s.]+)+$/i;
+
+/** ENS is an L1 registry, so names resolve on Ethereum mainnet. */
+const ENS_CHAIN_ID = 1;
 
 /** Bounded so a slow/hung ENS lookup cannot stall the scan request. */
 const ENS_RESOLVE_TIMEOUT_MS = 3000;
@@ -23,9 +26,12 @@ const ENS_RESOLVE_TIMEOUT_MS = 3000;
  */
 export async function resolveEnsName(name: string): Promise<string | null> {
   try {
-    const rpc = await getRpcProvider({ chainId: 1 });
+    const { manager } = await rpc.evm(
+      platformScope(PlatformRpcPurpose.PUBLIC_TOOL),
+      ENS_CHAIN_ID
+    );
     const resolved = await Promise.race([
-      rpc.executeWithFailover((provider: ethers.JsonRpcProvider) =>
+      manager.executeWithFailover((provider: ethers.JsonRpcProvider) =>
         provider.resolveName(name)
       ),
       new Promise<null>((resolve) => {

@@ -5,7 +5,7 @@ import { ethers } from "ethers";
 import type { Hex } from "viem";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
 import { getErrorMessage } from "@/lib/utils";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import {
@@ -162,20 +162,18 @@ async function stepHandlerImpl(input: BatchPayoutInput): Promise<BatchPayoutResu
     return orgCtx;
   }
 
+  const rpcScope = rpcScopeFromStep(input, orgCtx.organizationId);
   let broadcastHash: string | undefined;
 
   try {
-    const rpcManager = await getRpcProvider({
-      chainId,
-      userId: orgCtx.userId,
-    });
+    const { manager: rpcManager } = await rpc.evm(rpcScope, chainId);
     const token = await resolveTempoToken(tokenConfig, chainId, rpcManager);
     const entries = parsePayouts(payouts);
     const { calls, total } = buildPayoutCalls(entries, token, memo);
 
     const { hash, from } = await signAndBroadcastTempoTx({
       organizationId: orgCtx.organizationId,
-      userId: orgCtx.userId,
+      rpcScope,
       chainId,
       calls,
       feeToken: token.address,

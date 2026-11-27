@@ -28,12 +28,20 @@ vi.mock("@/lib/rpc/network-utils", () => ({
 }));
 
 const mockFailover = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: () =>
-    Promise.resolve({
-      executeWithFailover: (op: (p: unknown) => unknown) => mockFailover(op),
-      getProvider: () => ({ _getConnection: () => ({ url: "https://rpc" }) }),
-    }),
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: () =>
+      Promise.resolve({
+        manager: {
+          executeWithFailover: (op: (p: unknown) => unknown) =>
+            mockFailover(op),
+          resolveActiveRpcUrl: () => Promise.resolve("https://rpc"),
+        },
+      }),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 const mockResolveToken = vi.fn();
@@ -52,7 +60,7 @@ vi.mock("@/lib/web3/ui-multiplier", () => ({
 
 vi.mock("@/lib/web3/resolve-org-context", () => ({
   resolveOrganizationContext: () =>
-    Promise.resolve({ success: true, organizationId: "org1", userId: "u1" }),
+    Promise.resolve({ success: true, organizationId: "org1" }),
 }));
 
 const mockSignerMode = vi.fn(() => ({ kind: "eoa" }));

@@ -12,12 +12,13 @@ import { db } from "@/lib/db";
 import { supportedTokens } from "@/lib/db/schema";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getSolanaProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
+import { rpcScopeFromStep } from "@/lib/rpc/engine";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import type { TokenFieldValue } from "@/lib/wallet/types";
-import { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
+import { getChainAdapter } from "@/lib/web3/chain-adapter";
+import type { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 import { parseSolanaMintAccount } from "@/lib/web3/solana-mint";
 import { validateChainAddress } from "@/lib/web3/validate-chain-address";
 import {
@@ -243,11 +244,8 @@ async function fetchSplBalance(
 async function stepHandler(
   input: GetSplTokenBalanceInput
 ): Promise<GetSplTokenBalanceResult> {
-  const { network, address, _context } = input;
+  const { network, address } = input;
   const tokenConfig = parseTokenConfig(input);
-
-  // Get userId from execution context (for user RPC preferences)
-  const userId = await getRpcPreferenceUserId(_context?.executionId);
 
   let chainId: number;
   try {
@@ -317,12 +315,10 @@ async function stepHandler(
     };
   }
 
-  // A fresh, userId-aware adapter is constructed directly (bypassing
-  // getChainAdapter's chainId-only cache) so a user's custom RPC preference
-  // is honored, matching the other Solana steps.
-  const adapter = new SolanaChainAdapter(chainId, () =>
-    getSolanaProvider({ chainId, userId })
-  );
+  const adapter = getChainAdapter(
+    chainId,
+    rpcScopeFromStep(input)
+  ) as SolanaChainAdapter;
 
   try {
     const offChainDisplay = await getOffChainDisplayInfo(

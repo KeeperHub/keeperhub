@@ -5,7 +5,7 @@ import type { ethers } from "ethers";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { db } from "@/lib/db";
 import { type OrganizationWallet, organizationWallets } from "@/lib/db/schema";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { ensureOrganizationSolanaAddress } from "@/lib/turnkey/ensure-solana-address";
 import { isSolanaWalletProvisioningEnabled } from "@/lib/turnkey/solana-provisioning-flag";
 import { TurnkeySolanaSigner } from "@/lib/turnkey/solana-signer";
@@ -36,13 +36,15 @@ export async function getOrganizationWallet(
   return wallet[0];
 }
 
+/**
+ * A signer bound to the endpoint the route's manager is serving from. Call
+ * `rpcManager.resolveActiveRpcUrl()` first so that endpoint is a live one.
+ */
 export async function initializeWalletSigner(
   organizationId: string,
-  rpcUrl: string,
-  chainId: number
+  rpcManager: RpcProviderManager
 ): Promise<ethers.Signer> {
   const wallet = await getOrganizationWallet(organizationId);
-  const rpcManager = await getRpcProviderFromUrls(rpcUrl, undefined, chainId);
   const provider = rpcManager.getProvider();
 
   return initializeTurnkeySigner(wallet, provider);

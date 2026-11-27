@@ -68,7 +68,6 @@ describe("releaseHeldPaymentNow broadcast evidence", () => {
     const result = await releaseHeldPaymentNow({
       paymentId: "payment-1",
       organizationId: "org-1",
-      userId: "user-1",
     });
 
     expect(broker.markBroadcast).toHaveBeenCalledWith("payment-1", "0xpending");

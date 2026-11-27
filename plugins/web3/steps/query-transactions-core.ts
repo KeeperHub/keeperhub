@@ -1,5 +1,4 @@
 import "server-only";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
@@ -15,7 +14,12 @@ import {
   resolveExplorerUrlConfig,
 } from "@/lib/explorer";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  isOrgSettingRouteError,
+  rpc,
+  RpcPurpose,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { serializeArg } from "@/lib/web3/serialize-arg";
 import { evmOnlyGuard } from "@/lib/web3/validate-chain-address";
@@ -357,16 +361,20 @@ async function queryTransactionsInner(
 
   const { iface, functionFragment, chainId } = validation.data;
 
-  const userId = await getRpcPreferenceUserId(input._context?.executionId);
-
   let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId, userId });
+    const client = await rpc.evm(rpcScopeFromStep(input), chainId, {
+      purpose: RpcPurpose.READ,
+    });
+    rpcManager = client.manager;
   } catch (error) {
     return {
       success: false,
       destinationError: true,
       error: getErrorMessage(error),
+      ...(isOrgSettingRouteError(error) && {
+        errorClass: ExecutionErrorType.USER,
+      }),
     };
   }
 

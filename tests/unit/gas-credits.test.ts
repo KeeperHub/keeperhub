@@ -4,9 +4,36 @@ vi.mock("server-only", () => ({}));
 
 const mockReadContract = vi.fn();
 
+const {
+  mockCreatePublicClient,
+  mockRpcEvm,
+  mockViemTransportOf,
+  mockOwnEndpointsScope,
+} = vi.hoisted(() => ({
+  mockCreatePublicClient: vi.fn(),
+  mockRpcEvm: vi.fn(),
+  mockViemTransportOf: vi.fn(),
+  mockOwnEndpointsScope: vi.fn(),
+}));
+const ROUTE_TRANSPORT = { kind: "route-transport" };
+const RPC_CLIENT = { kind: "billing-client" };
+
 vi.mock("viem", () => ({
-  createPublicClient: () => ({ readContract: mockReadContract }),
-  http: () => ({}),
+  createPublicClient: (...args: unknown[]) => {
+    mockCreatePublicClient(...args);
+    return { readContract: mockReadContract };
+  },
+}));
+
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  rpc: { evm: mockRpcEvm },
+  ownEndpointsScope: mockOwnEndpointsScope,
+}));
+
+vi.mock("@/lib/rpc/engine/viem", () => ({
+  viemTransportOf: mockViemTransportOf,
 }));
 
 const mockLogSystemWarn = vi.fn();
@@ -40,6 +67,8 @@ vi.mock("@/lib/web3/chainlink-feeds", () => ({
       7001: "0x0000000000000000000000000000000000007001",
       7002: "0x0000000000000000000000000000000000007002",
       7003: "0x0000000000000000000000000000000000007003",
+      7004: "0x0000000000000000000000000000000000007004",
+      7005: "0x0000000000000000000000000000000000007005",
       8453: "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
       42161: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612",
     };
@@ -127,6 +156,8 @@ import {
 import type { PlanLimits } from "@/lib/billing/plans";
 import { getOrgSubscription } from "@/lib/billing/plans-server";
 import { ErrorCategory } from "@/lib/logging";
+import { platformScope } from "@/lib/rpc/engine/scope";
+import { PlatformRpcPurpose } from "@/lib/rpc/engine/types";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -134,6 +165,9 @@ beforeEach(() => {
   mockOnConflictDoUpdate.mockResolvedValue(undefined);
   mockSelectLimit.mockResolvedValue([]);
   mockReadContract.mockReset();
+  mockOwnEndpointsScope.mockResolvedValue(null);
+  mockRpcEvm.mockResolvedValue(RPC_CLIENT);
+  mockViemTransportOf.mockReturnValue(ROUTE_TRANSPORT);
   // Clear ALL per-plan gas-credit env overrides (not just free/pro) so caps
   // fall through to the mocked plan defaults. A developer .env that sets
   // GAS_CREDITS_BUSINESS_CENTS / GAS_CREDITS_ENTERPRISE_CENTS otherwise leaks
@@ -211,14 +245,35 @@ describe("getGasTokenPriceUsd", () => {
       BigInt(1),
     ]);
 
-    const price = await getGasTokenPriceUsd("https://rpc.example.com", 1);
+    const price = await getGasTokenPriceUsd(1);
 
     expect(price).toBe(2500);
     expect(mockReadContract).toHaveBeenCalledOnce();
   });
 
+  it("reads the oracle on KeeperHub's billing route, whatever the caller's route", async () => {
+    mockReadContract.mockResolvedValue([
+      BigInt(1),
+      BigInt(250_000_000_000),
+      nowSeconds,
+      nowSeconds,
+      BigInt(1),
+    ]);
+
+    await getGasTokenPriceUsd(7004);
+
+    expect(mockRpcEvm).toHaveBeenCalledWith(
+      platformScope(PlatformRpcPurpose.BILLING),
+      7004
+    );
+    expect(mockViemTransportOf).toHaveBeenCalledWith(RPC_CLIENT);
+    expect(mockCreatePublicClient).toHaveBeenCalledWith({
+      transport: ROUTE_TRANSPORT,
+    });
+  });
+
   it("returns fallback when chain has no feed address", async () => {
-    const price = await getGasTokenPriceUsd("https://rpc.example.com", 999);
+    const price = await getGasTokenPriceUsd(999);
 
     expect(price).toBe(3000);
     expect(mockReadContract).not.toHaveBeenCalled();
@@ -227,7 +282,7 @@ describe("getGasTokenPriceUsd", () => {
   it("returns fallback when oracle call fails", async () => {
     mockReadContract.mockRejectedValue(new Error("RPC timeout"));
 
-    const price = await getGasTokenPriceUsd("https://rpc.example.com", 8453);
+    const price = await getGasTokenPriceUsd(8453);
 
     expect(price).toBe(3000);
   });
@@ -243,7 +298,7 @@ describe("getGasTokenPriceUsd", () => {
       BigInt(1),
     ]);
 
-    const price = await getGasTokenPriceUsd("https://rpc.example.com", 8453);
+    const price = await getGasTokenPriceUsd(8453);
 
     expect(price).toBe(3000);
   });
@@ -252,7 +307,7 @@ describe("getGasTokenPriceUsd", () => {
   // and how loudly depends on how far the billed number has drifted from an
   // observed price. The four tests below pin one branch each.
   it("logs an error when the chain has no configured feed", async () => {
-    const price = await getGasTokenPriceUsd("https://rpc.example.com", 31_337);
+    const price = await getGasTokenPriceUsd(31_337);
 
     expect(price).toBe(3000);
     expect(mockReadContract).not.toHaveBeenCalled();
@@ -272,7 +327,7 @@ describe("getGasTokenPriceUsd", () => {
   it("logs an error when it bills on the hardcoded fallback", async () => {
     mockReadContract.mockRejectedValue(new Error("RPC timeout"));
 
-    const price = await getGasTokenPriceUsd("https://rpc.example.com", 42_161);
+    const price = await getGasTokenPriceUsd(42_161);
 
     expect(price).toBe(3000);
     expect(mockLogSystemError).toHaveBeenCalledOnce();
@@ -298,15 +353,13 @@ describe("getGasTokenPriceUsd", () => {
         seconds,
         BigInt(1),
       ]);
-      expect(await getGasTokenPriceUsd("https://rpc.example.com", 137)).toBe(
-        2500
-      );
+      expect(await getGasTokenPriceUsd(137)).toBe(2500);
 
       // Past the 60s cache TTL, so the next call re-reads the feed and fails.
       vi.advanceTimersByTime(61_000);
       mockReadContract.mockRejectedValue(new Error("RPC timeout"));
 
-      const price = await getGasTokenPriceUsd("https://rpc.example.com", 137);
+      const price = await getGasTokenPriceUsd(137);
 
       expect(price).toBe(2500);
       expect(mockLogSystemError).not.toHaveBeenCalled();
@@ -340,16 +393,14 @@ describe("getGasTokenPriceUsd", () => {
         seconds,
         BigInt(1),
       ]);
-      expect(await getGasTokenPriceUsd("https://rpc.example.com", 10)).toBe(
-        2500
-      );
+      expect(await getGasTokenPriceUsd(10)).toBe(2500);
 
       // Past the 1h threshold an oracle answer itself is rejected at, so the
       // feed has been failing for at least that long.
       vi.advanceTimersByTime(3_600_001);
       mockReadContract.mockRejectedValue(new Error("RPC timeout"));
 
-      const price = await getGasTokenPriceUsd("https://rpc.example.com", 10);
+      const price = await getGasTokenPriceUsd(10);
 
       // Still billed on the cached price - it beats the hardcoded constant.
       // Only the severity changes.
@@ -374,18 +425,14 @@ describe("getGasTokenPriceUsd", () => {
       mockReadContract.mockRejectedValue(new Error("RPC timeout"));
 
       for (let i = 0; i < 5; i++) {
-        expect(await getGasTokenPriceUsd("https://rpc.example.com", 5000)).toBe(
-          3000
-        );
+        expect(await getGasTokenPriceUsd(5000)).toBe(3000);
       }
       expect(mockLogSystemError).toHaveBeenCalledOnce();
 
       // Throttled, not one-shot: the condition is reported again once the
       // window closes, so a still-broken feed does not go quiet.
       vi.advanceTimersByTime(300_001);
-      expect(await getGasTokenPriceUsd("https://rpc.example.com", 5000)).toBe(
-        3000
-      );
+      expect(await getGasTokenPriceUsd(5000)).toBe(3000);
       expect(mockLogSystemError).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -404,19 +451,29 @@ describe("getFreshGasTokenPriceUsd", () => {
   it("returns a fresh oracle price and serves it from cache within the TTL", async () => {
     mockReadContract.mockResolvedValue(freshRound());
 
-    expect(
-      await getFreshGasTokenPriceUsd("https://rpc.example.com", 7001)
-    ).toBe(2500);
-    expect(
-      await getFreshGasTokenPriceUsd("https://rpc.example.com", 7001)
-    ).toBe(2500);
+    expect(await getFreshGasTokenPriceUsd(7001)).toBe(2500);
+    expect(await getFreshGasTokenPriceUsd(7001)).toBe(2500);
+    expect(mockReadContract).toHaveBeenCalledOnce();
+  });
+
+  it("reads an own-RPC-only organization's price on its endpoints, uncached", async () => {
+    const own = { kind: "org", organizationId: "org_1" };
+    mockOwnEndpointsScope.mockResolvedValue(own);
+    mockReadContract.mockResolvedValue(freshRound());
+
+    expect(await getFreshGasTokenPriceUsd(7005, own as never)).toBe(2500);
+    expect(mockRpcEvm).toHaveBeenLastCalledWith(own, 7005);
+
+    mockOwnEndpointsScope.mockResolvedValue(null);
+    mockReadContract.mockClear();
+    expect(await getFreshGasTokenPriceUsd(7005)).toBe(2500);
     expect(mockReadContract).toHaveBeenCalledOnce();
   });
 
   it("throws when the chain has no feed", async () => {
-    await expect(
-      getFreshGasTokenPriceUsd("https://rpc.example.com", 31_338)
-    ).rejects.toThrow("No gas-token USD price feed for chain 31338");
+    await expect(getFreshGasTokenPriceUsd(31_338)).rejects.toThrow(
+      "No gas-token USD price feed for chain 31338"
+    );
     expect(mockReadContract).not.toHaveBeenCalled();
   });
 
@@ -424,16 +481,14 @@ describe("getFreshGasTokenPriceUsd", () => {
     vi.useFakeTimers();
     try {
       mockReadContract.mockResolvedValue(freshRound());
-      expect(
-        await getFreshGasTokenPriceUsd("https://rpc.example.com", 7002)
-      ).toBe(2500);
+      expect(await getFreshGasTokenPriceUsd(7002)).toBe(2500);
 
       vi.advanceTimersByTime(61_000);
       mockReadContract.mockRejectedValue(new Error("RPC timeout"));
 
-      await expect(
-        getFreshGasTokenPriceUsd("https://rpc.example.com", 7002)
-      ).rejects.toThrow("RPC timeout");
+      await expect(getFreshGasTokenPriceUsd(7002)).rejects.toThrow(
+        "RPC timeout"
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -449,9 +504,9 @@ describe("getFreshGasTokenPriceUsd", () => {
       BigInt(1),
     ]);
 
-    await expect(
-      getFreshGasTokenPriceUsd("https://rpc.example.com", 7003)
-    ).rejects.toThrow("Chainlink price stale");
+    await expect(getFreshGasTokenPriceUsd(7003)).rejects.toThrow(
+      "Chainlink price stale"
+    );
     expect(mockLogSystemError).not.toHaveBeenCalled();
   });
 });

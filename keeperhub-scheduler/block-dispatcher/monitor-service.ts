@@ -4,6 +4,7 @@
  * Keeps one ChainMonitor per chain that has active block workflows. A
  * reconcile loop refetches the workflows, starts and stops monitors, and
  * recreates a monitor whose config changed or that reports not alive.
+ * Workflows on an organization route get a silent monitor per route key.
  *
  * The service also keeps the last fully processed block per chain. Any new
  * monitor for that chain resumes from it, whether it replaces a dead monitor,
@@ -11,16 +12,82 @@
  * from the previous leader's progress.
  */
 
+import type { LookupFunction } from "node:net";
 import { RECONCILE_INTERVAL_MS } from "../lib/config.js";
-import { metrics } from "../lib/metrics.js";
-import type { BlockWorkflow, ChainConfig } from "../lib/types.js";
-import { fetchBlockWorkflows } from "./api-client.js";
-import { ChainMonitor } from "./chain-monitor.js";
+import { metrics, silentChainMetrics } from "../lib/metrics.js";
+import { pinnedLookup } from "../lib/pinned-lookup.js";
+import {
+  RpcEndpointRole,
+  RpcOrigin,
+  type RpcUsageCounter,
+} from "../lib/rpc-route.js";
+import { RpcUsageReporter } from "../lib/rpc-usage.js";
+import type {
+  BlockWorkflow,
+  ChainConfig,
+  RpcRoute,
+  RpcRouteEndpoint,
+} from "../lib/types.js";
+import { type RouteGroup, fetchBlockWorkflows } from "./api-client.js";
+import {
+  ChainMonitor,
+  type MonitorUsage,
+  silentLogger,
+} from "./chain-monitor.js";
 import { type HealthStatus, buildHealthStatus } from "./health.js";
+
+type RouteMonitor = {
+  monitor: ChainMonitor;
+  route: RpcRoute;
+  starting: boolean;
+};
+
+function sameEndpoint(
+  a: RpcRouteEndpoint | undefined,
+  b: RpcRouteEndpoint | undefined,
+): boolean {
+  return (
+    a?.url === b?.url &&
+    a?.origin === b?.origin &&
+    a?.configId === b?.configId &&
+    (a?.addresses ?? []).join(",") === (b?.addresses ?? []).join(",")
+  );
+}
+
+/**
+ * Pinned to the vetted addresses for an organization endpoint, ordinary DNS
+ * for a KeeperHub one, and no address for a URL the route does not hold.
+ */
+function lookupFor(route: RpcRoute, url: string): LookupFunction | undefined {
+  const endpoint = [route.primary, route.fallback].find(
+    (candidate) => candidate?.url === url,
+  );
+  if (!endpoint) {
+    return pinnedLookup([]);
+  }
+  if (endpoint.origin !== RpcOrigin.ORG) {
+    return undefined;
+  }
+  return pinnedLookup(endpoint.addresses ?? []);
+}
+
+function routeChanged(current: RpcRoute, next: RpcRoute): boolean {
+  return (
+    current.organizationId !== next.organizationId ||
+    current.chainId !== next.chainId ||
+    current.transport !== next.transport ||
+    !sameEndpoint(current.primary, next.primary) ||
+    !sameEndpoint(current.fallback, next.fallback)
+  );
+}
 
 export class BlockMonitorService {
   private readonly monitors: Map<number, ChainMonitor> = new Map();
   private readonly resumeBlocks: Map<number, number> = new Map();
+  private readonly routeMonitors: Map<string, RouteMonitor> = new Map();
+  // Last block a dropped route monitor processed, so its replacement backfills.
+  private readonly routeResumeBlocks: Map<string, number> = new Map();
+  private readonly usageReporter = new RpcUsageReporter();
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private isShuttingDown = false;
 
@@ -31,10 +98,18 @@ export class BlockMonitorService {
    */
   async start(
     resumeFrom: ReadonlyMap<number, number> = new Map(),
+    routeResumeFrom: ReadonlyMap<string, number> = new Map(),
   ): Promise<void> {
     // Reset the shutdown flag so the service is restartable: on failover the
     // same process may lose leadership (stop()) and later regain it (start()).
     this.isShuttingDown = false;
+
+    for (const [key, block] of routeResumeFrom) {
+      const known = this.routeResumeBlocks.get(key);
+      if (known === undefined || block > known) {
+        this.routeResumeBlocks.set(key, block);
+      }
+    }
 
     for (const [chainId, block] of resumeFrom) {
       const known = this.resumeBlocks.get(chainId);
@@ -56,6 +131,7 @@ export class BlockMonitorService {
       `[BlockMonitorService] Starting (reconcile every ${RECONCILE_INTERVAL_MS}ms)`,
     );
 
+    this.usageReporter.start();
     await this.reconcile();
 
     this.reconcileTimer = setInterval(() => {
@@ -92,6 +168,10 @@ export class BlockMonitorService {
     }
 
     this.monitors.clear();
+    await this.stopAllRouteMonitors();
+    await this.usageReporter.stop().catch(() => {
+      // the reporter logs its own failure
+    });
     console.log("[BlockMonitorService] Stopped");
   }
 
@@ -99,6 +179,12 @@ export class BlockMonitorService {
   getResumeBlocks(): ReadonlyMap<number, number> {
     this.captureProgress();
     return new Map(this.resumeBlocks);
+  }
+
+  /** The same per organization route key, so its monitors backfill too. */
+  getRouteResumeBlocks(): ReadonlyMap<string, number> {
+    this.captureRouteProgress();
+    return new Map(this.routeResumeBlocks);
   }
 
   getHealth(): {
@@ -116,7 +202,7 @@ export class BlockMonitorService {
     }
 
     try {
-      const grouped = await fetchBlockWorkflows();
+      const { platform: grouped, routed } = await fetchBlockWorkflows();
       const activeChainIds = new Set(grouped.keys());
 
       await this.removeStaleMonitors(activeChainIds);
@@ -128,6 +214,7 @@ export class BlockMonitorService {
         }
       }
       await this.syncActiveMonitors(grouped);
+      await this.syncRouteMonitors(routed);
 
       const chainNames = [...grouped.entries()]
         .map(
@@ -165,6 +252,10 @@ export class BlockMonitorService {
     grouped: Map<number, { chain: ChainConfig; workflows: BlockWorkflow[] }>,
   ): Promise<void> {
     for (const [chainId, { chain, workflows }] of grouped) {
+      // Leadership can be lost while the workflow fetch or a stop was awaited.
+      if (this.isShuttingDown) {
+        return;
+      }
       const existing = this.monitors.get(chainId);
 
       // A replacement monitor resumes after the last block the old one fully
@@ -196,6 +287,12 @@ export class BlockMonitorService {
     }
   }
 
+  private captureRouteProgress(): void {
+    for (const [key, entry] of this.routeMonitors) {
+      this.rememberResumeBlock(key, entry.monitor);
+    }
+  }
+
   private recordProgress(chainId: number, monitor: ChainMonitor): void {
     const { lastBlock } = monitor.getStatus();
     if (lastBlock !== null) {
@@ -208,6 +305,9 @@ export class BlockMonitorService {
     chain: ChainConfig,
     workflows: BlockWorkflow[],
   ): Promise<void> {
+    if (this.isShuttingDown) {
+      return;
+    }
     // Kept across a failed start so the next attempt still backfills.
     const resumeFromBlock = this.resumeBlocks.get(chainId) ?? null;
     console.log(
@@ -217,6 +317,12 @@ export class BlockMonitorService {
     this.monitors.set(chainId, monitor);
     try {
       await monitor.start();
+      // stop() ran while this start was awaited and may have missed it.
+      if (this.isShuttingDown) {
+        this.recordProgress(chainId, monitor);
+        this.monitors.delete(chainId);
+        await monitor.stop();
+      }
     } catch (error) {
       console.error(
         `[BlockMonitorService] Failed to start monitor for ${chain.name}:`,
@@ -224,5 +330,139 @@ export class BlockMonitorService {
       );
       this.monitors.delete(chainId);
     }
+  }
+
+  private async syncRouteMonitors(
+    routed: Map<string, RouteGroup>,
+  ): Promise<void> {
+    if (this.isShuttingDown) {
+      return;
+    }
+    // Progress for a route that is gone, including progress handed over by
+    // an earlier leader, is dropped so the lease annotation stays bounded.
+    for (const key of [...this.routeResumeBlocks.keys()]) {
+      if (!routed.has(key)) {
+        this.routeResumeBlocks.delete(key);
+      }
+    }
+    for (const key of [...this.routeMonitors.keys()]) {
+      if (!routed.has(key)) {
+        await this.dropRouteMonitor(key);
+      }
+    }
+    for (const [key, group] of routed) {
+      // Leadership can be lost while a route was being awaited above.
+      if (this.isShuttingDown) {
+        return;
+      }
+      try {
+        await this.syncRouteMonitor(key, group);
+      } catch {
+        await this.dropRouteMonitor(key);
+      }
+    }
+  }
+
+  private async syncRouteMonitor(
+    key: string,
+    group: RouteGroup,
+  ): Promise<void> {
+    const existing = this.routeMonitors.get(key);
+    if (!existing) {
+      this.startRouteMonitor(key, group);
+      return;
+    }
+    if (routeChanged(existing.route, group.route)) {
+      this.rememberResumeBlock(key, existing.monitor);
+      await this.dropRouteMonitor(key);
+      this.startRouteMonitor(key, group);
+      return;
+    }
+    if (!(existing.starting || existing.monitor.isAlive())) {
+      this.rememberResumeBlock(key, existing.monitor);
+      await this.dropRouteMonitor(key);
+      return;
+    }
+    existing.monitor.updateWorkflows(group.workflows);
+  }
+
+  private rememberResumeBlock(key: string, monitor: ChainMonitor): void {
+    const { lastBlock } = monitor.getStatus();
+    if (lastBlock !== null) {
+      this.routeResumeBlocks.set(key, lastBlock);
+    }
+  }
+
+  // Not awaited: a slow organization endpoint must not hold up the reconcile.
+  private startRouteMonitor(key: string, group: RouteGroup): void {
+    if (this.isShuttingDown) {
+      return;
+    }
+    const monitor = new ChainMonitor({
+      chain: group.chain,
+      workflows: group.workflows,
+      resumeFromBlock: this.routeResumeBlocks.get(key) ?? null,
+      logger: silentLogger,
+      metrics: silentChainMetrics,
+      usage: this.usageFor(group.route),
+      lookupFor: (url) => lookupFor(group.route, url),
+    });
+    // The resume block stays until this monitor processes a newer one, so a
+    // start that fails, or a handover during it, still backfills the gap.
+    const entry: RouteMonitor = { monitor, route: group.route, starting: true };
+    this.routeMonitors.set(key, entry);
+    monitor.start().then(
+      async () => {
+        entry.starting = false;
+        if (this.routeMonitors.get(key) !== entry) {
+          await monitor.stop().catch(() => undefined);
+        }
+      },
+      async () => {
+        entry.starting = false;
+        if (this.routeMonitors.get(key) === entry) {
+          await this.dropRouteMonitor(key);
+        }
+      },
+    );
+  }
+
+  private usageFor(route: RpcRoute): MonitorUsage {
+    return {
+      record: (role: RpcEndpointRole, counter: RpcUsageCounter): void => {
+        const endpoint =
+          role === RpcEndpointRole.PRIMARY ? route.primary : route.fallback;
+        if (!endpoint) {
+          return;
+        }
+        this.usageReporter.record(
+          {
+            organizationId: route.organizationId,
+            configId: endpoint.configId,
+            origin: endpoint.origin,
+            chainId: route.chainId,
+            transport: route.transport,
+          },
+          counter,
+        );
+      },
+    };
+  }
+
+  private async dropRouteMonitor(key: string): Promise<void> {
+    const entry = this.routeMonitors.get(key);
+    if (!entry) {
+      return;
+    }
+    this.routeMonitors.delete(key);
+    await entry.monitor.stop().catch(() => undefined);
+  }
+
+  private async stopAllRouteMonitors(): Promise<void> {
+    // Kept for the handover and for this process leading again.
+    this.captureRouteProgress();
+    const entries = [...this.routeMonitors.values()];
+    this.routeMonitors.clear();
+    await Promise.allSettled(entries.map((entry) => entry.monitor.stop()));
   }
 }

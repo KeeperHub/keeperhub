@@ -27,4 +27,21 @@ describe("workflowSaveErrorMessage", () => {
       "Failed to save"
     );
   });
+
+  it("names the steps a save would leave without an RPC endpoint", () => {
+    const error = new ApiError(
+      409,
+      "Some steps would have no RPC endpoint to use. Pick an RPC config for each one listed.",
+      undefined,
+      {
+        code: "COVERAGE_GAPS",
+        gaps: [
+          { nodeLabel: "Read balance", message: "No config covers Base." },
+        ],
+      }
+    );
+    expect(workflowSaveErrorMessage(error, "Failed to save")).toContain(
+      '"Read balance": No config covers Base.'
+    );
+  });
 });

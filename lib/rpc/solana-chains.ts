@@ -18,3 +18,12 @@ const SOLANA_CHAIN_IDS = new Set([101, 103]);
 export function isSolanaChain(chainId: number): boolean {
   return SOLANA_CHAIN_IDS.has(chainId);
 }
+
+/**
+ * Genesis hash of each Solana cluster, keyed by our chain id. An endpoint
+ * proves which cluster it serves by answering `getGenesisHash` with this.
+ */
+export const SOLANA_GENESIS_HASHES: Readonly<Record<number, string>> = {
+  101: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  103: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+};

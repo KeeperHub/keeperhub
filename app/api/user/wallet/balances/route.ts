@@ -11,9 +11,9 @@ import {
   supportedTokens,
 } from "@/lib/db/schema";
 import { safeWallets } from "@/lib/db/schema-extensions";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcRouteError, rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { formatWeiToBalance } from "@/lib/wallet/fetch-balances";
 import { getOrganizationWallet } from "@/lib/web3/wallet-helpers";
 
@@ -192,9 +192,10 @@ export async function GET(request: Request) {
         const isTestnet = chain.isTestnet === true;
 
         try {
-          const rpcManager = await getRpcProvider({
-            chainId: chain.chainId,
-          });
+          const { manager: rpcManager } = await rpc.evm(
+            rpcScopeForOrganization(activeOrgId),
+            chain.chainId
+          );
 
           // Fetch native balance with retry/failover
           const nativeBalanceRaw = await rpcManager.executeWithFailover(
@@ -322,7 +323,9 @@ export async function GET(request: Request) {
             supportedTokens: supportedTokenBalances,
           };
         } catch (error) {
-          logSystemError(
+          const log =
+            error instanceof RpcRouteError ? logUserError : logSystemError;
+          log(
             ErrorCategory.EXTERNAL_SERVICE,
             `[Balances] Failed to fetch balance for chain ${chain.name}`,
             error,

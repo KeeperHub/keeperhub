@@ -8,18 +8,14 @@ vi.mock("ethers", () => ({
   },
 }));
 
-const { mockConnectionGetTransaction, mockGetSolanaProvider } = vi.hoisted(
-  () => ({
-    mockConnectionGetTransaction: vi.fn(),
-    mockGetSolanaProvider: vi.fn(),
-  })
-);
+const { mockConnectionGetTransaction, mockRpcSolana } = vi.hoisted(() => ({
+  mockConnectionGetTransaction: vi.fn(),
+  mockRpcSolana: vi.fn(),
+}));
 
-// Fake adapter: constructed directly (not via the shared registry) so the
-// step can thread userId into getSolanaProvider - see fetchSolanaTransaction
-// in get-transaction.ts. executeWithSolanaFailover both exercises the
-// userId-carrying provider factory (for assertions below) and hands back a
-// fake connection.
+// Fake adapter built by the real registry: executeWithSolanaFailover calls the
+// registry's provider factory, which resolves the route through rpc.solana,
+// then hands back a fake connection.
 vi.mock("@/lib/web3/chain-adapter/solana", () => ({
   SolanaChainAdapter: class MockSolanaChainAdapter {
     private readonly providerFactory: () => unknown;
@@ -45,10 +41,13 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   }),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: vi.fn(),
-  getSolanaProvider: (...args: unknown[]) => mockGetSolanaProvider(...args),
-  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: vi.fn(),
+    solana: (...args: unknown[]) => mockRpcSolana(...args),
+    route: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/security/org-role", () => ({
@@ -91,6 +90,7 @@ vi.mock("@/lib/db/schema", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: () => ({}),
+  sql: () => ({}),
 }));
 
 vi.mock("@/lib/explorer", () => ({
@@ -118,6 +118,7 @@ vi.mock("@/lib/utils", async () => {
   };
 });
 
+import { RpcScopeKind } from "@/lib/rpc/engine";
 import { getTransactionStep } from "@/plugins/web3/steps/get-transaction";
 
 const VALID_SIGNATURE =
@@ -144,8 +145,11 @@ function fakeSolanaTx(
   };
 }
 
+const ORG_ID = "org_1";
+
 const context = () => ({
   executionId: "exec_1",
+  organizationId: ORG_ID,
   nodeId: "node_1",
   nodeName: "Get Transaction",
   nodeType: "get-transaction" as const,
@@ -154,7 +158,9 @@ const context = () => ({
 describe("getTransactionStep - Solana", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetSolanaProvider.mockResolvedValue({ executeWithFailover: vi.fn() });
+    mockRpcSolana.mockResolvedValue({
+      manager: { executeWithFailover: vi.fn() },
+    });
   });
 
   it("fetches a Solana transaction and maps fee payer, slot, and compute units", async () => {
@@ -178,7 +184,7 @@ describe("getTransactionStep - Solana", () => {
     }
   });
 
-  it("threads the caller's userId into the Solana RPC provider", async () => {
+  it("resolves the Solana route for the step's organization", async () => {
     mockConnectionGetTransaction.mockResolvedValue(fakeSolanaTx());
 
     await getTransactionStep({
@@ -187,10 +193,13 @@ describe("getTransactionStep - Solana", () => {
       _context: context(),
     });
 
-    expect(mockGetSolanaProvider).toHaveBeenCalledWith({
-      chainId: 103,
-      userId: "user_1",
-    });
+    expect(mockRpcSolana).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: RpcScopeKind.ORG,
+        organizationId: ORG_ID,
+      }),
+      103
+    );
   });
 
   it("returns not-found when the signature doesn't resolve to a transaction", async () => {

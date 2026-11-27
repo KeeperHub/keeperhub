@@ -32,7 +32,7 @@ const rpcSpies = vi.hoisted(() => ({
   executeWithFailover: vi.fn(),
   getChainIdFromNetwork: vi.fn(),
   getOrganizationWalletAddress: vi.fn(),
-  getRpcProvider: vi.fn(),
+  rpcManager: vi.fn(),
   isSolanaChain: vi.fn(),
   parseTokenAddress: vi.fn(),
   chainsLookup: vi.fn(() => Promise.resolve([{ symbol: "ETH" }])),
@@ -49,8 +49,18 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: rpcSpies.getChainIdFromNetwork,
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: rpcSpies.getRpcProvider,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await rpcSpies.rpcManager(...args),
+    }),
+  },
+}));
+
+vi.mock("@/lib/rpc/solana-chains", () => ({
   isSolanaChain: rpcSpies.isSolanaChain,
 }));
 
@@ -116,12 +126,14 @@ import {
   simulateNativeTransfer,
   simulateTokenTransfer,
 } from "@/lib/execute/simulate";
+import { RpcRouteError, RpcRouteErrorCode } from "@/lib/rpc/engine/route-error";
+import { orgScope } from "@/lib/rpc/engine/scope";
 
 const {
   executeWithFailover,
   getChainIdFromNetwork,
   getOrganizationWalletAddress,
-  getRpcProvider,
+  rpcManager,
   isSolanaChain,
   parseTokenAddress,
 } = rpcSpies;
@@ -152,7 +164,7 @@ function resetSpies(): void {
   vi.clearAllMocks();
   getChainIdFromNetwork.mockReturnValue(1);
   getOrganizationWalletAddress.mockResolvedValue(FROM_ADDRESS);
-  getRpcProvider.mockResolvedValue({ executeWithFailover });
+  rpcManager.mockResolvedValue({ executeWithFailover });
   isSolanaChain.mockReturnValue(false);
 }
 
@@ -195,7 +207,7 @@ describe("simulateContractCall", () => {
     if (!result.success) {
       expect(result.error).toContain("matches 2 overloads");
     }
-    expect(getRpcProvider).not.toHaveBeenCalled();
+    expect(rpcManager).not.toHaveBeenCalled();
     expect(executeWithFailover).not.toHaveBeenCalled();
   });
 
@@ -700,7 +712,7 @@ describe("simulateContractCall", () => {
       expect(result.failureKind).toBe("validation");
       expect(result.error).toContain("Unknown network");
     }
-    expect(getRpcProvider).not.toHaveBeenCalled();
+    expect(rpcManager).not.toHaveBeenCalled();
   });
 
   it("returns unavailable instead of rejecting when wallet resolution fails", async () => {
@@ -724,12 +736,12 @@ describe("simulateContractCall", () => {
       expect(result.wouldRevert).toBe(false);
       expect(result.error).toContain("organization wallet");
     }
-    expect(getRpcProvider).not.toHaveBeenCalled();
+    expect(rpcManager).not.toHaveBeenCalled();
   });
 
   it("returns unavailable instead of rejecting when provider setup fails", async () => {
     resetSpies();
-    getRpcProvider.mockRejectedValueOnce(new Error("provider config missing"));
+    rpcManager.mockRejectedValueOnce(new Error("provider config missing"));
 
     const result = await simulateContractCall({
       organizationId: "org_test",
@@ -775,6 +787,41 @@ describe("simulateNativeTransfer", () => {
       expect.any(Function),
       "preflight"
     );
+  });
+
+  it("simulates on the calling organization's RPC route", async () => {
+    resetSpies();
+    executeWithFailover.mockResolvedValueOnce([BigInt(21_000), "0x"]);
+
+    await simulateNativeTransfer({
+      organizationId: "org_test",
+      network: "1",
+      recipientAddress: RECIPIENT_ADDRESS,
+      amount: "0.5",
+    });
+
+    expect(rpcManager).toHaveBeenCalledWith(orgScope("org_test"), 1);
+  });
+
+  it("reports a route the organization cannot use as a validation failure", async () => {
+    resetSpies();
+    rpcManager.mockRejectedValueOnce(
+      new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, 1)
+    );
+
+    const result = await simulateNativeTransfer({
+      organizationId: "org_test",
+      network: "1",
+      recipientAddress: RECIPIENT_ADDRESS,
+      amount: "0.5",
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toBe(
+        new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, 1).message
+      );
+    }
   });
 
   it("surfaces return data when the recipient is a contract or precompile", async () => {
@@ -984,7 +1031,7 @@ describe("simulateNativeTransfer", () => {
       expect(result.error).toContain("EVM networks only");
     }
     expect(getOrganizationWalletAddress).toHaveBeenCalledTimes(1);
-    expect(getRpcProvider).not.toHaveBeenCalled();
+    expect(rpcManager).not.toHaveBeenCalled();
   });
 
   it("rejects a malformed amount before touching the network", async () => {
@@ -1134,7 +1181,7 @@ describe("simulateTokenTransfer", () => {
       expect(result.error).toContain("token configuration");
     }
     expect(getOrganizationWalletAddress).toHaveBeenCalledTimes(1);
-    expect(getRpcProvider).toHaveBeenCalledTimes(1);
+    expect(rpcManager).toHaveBeenCalledTimes(1);
   });
 
   it("returns unavailable when the decimals RPC is unavailable", async () => {

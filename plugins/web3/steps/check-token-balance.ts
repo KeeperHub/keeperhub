@@ -5,9 +5,14 @@ import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
 import { rawToUi, resolveForDisplay } from "@/lib/web3/ui-multiplier";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
+import {
+  RpcPurpose,
+  type RpcScope,
+  rpc,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
@@ -117,11 +122,12 @@ async function checkEvmTokenBalance(
   address: string,
   tokenAddress: string,
   chainId: number,
-  userId: string | undefined
+  scope: RpcScope
 ): Promise<CheckTokenBalanceResult> {
   let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId, userId });
+    const client = await rpc.evm(scope, chainId, { purpose: RpcPurpose.READ });
+    rpcManager = client.manager;
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -140,7 +146,7 @@ async function checkEvmTokenBalance(
     };
   }
 
-  const adapter = getChainAdapter(chainId);
+  const adapter = getChainAdapter(chainId, scope);
 
   try {
     // Resolved through failover in its own right, rather than pinned to the
@@ -150,7 +156,8 @@ async function checkEvmTokenBalance(
     const uiMultiplier = await resolveForDisplay(
       (op) => adapter.executeWithFailover(rpcManager, op),
       chainId,
-      tokenAddress
+      tokenAddress,
+      rpcManager.cacheKey
     );
     const balance = await adapter.executeWithFailover(
       rpcManager,
@@ -189,17 +196,8 @@ async function stepHandler(
     executionId: input._context?.executionId,
   });
 
-  const { network, address, _context } = input;
+  const { network, address } = input;
   const tokenConfig = parseTokenConfig(input);
-
-  // Get userId from execution context (for user RPC preferences)
-  const userId = await getRpcPreferenceUserId(_context?.executionId);
-  if (userId) {
-    console.log(
-      "[Check Token Balance] Using user RPC preferences for userId:",
-      userId
-    );
-  }
 
   let chainId: number;
   try {
@@ -282,7 +280,12 @@ async function stepHandler(
     };
   }
 
-  return checkEvmTokenBalance(address, tokenAddress, chainId, userId);
+  return checkEvmTokenBalance(
+    address,
+    tokenAddress,
+    chainId,
+    rpcScopeFromStep(input)
+  );
 }
 
 /**

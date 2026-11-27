@@ -27,6 +27,8 @@ import {
 import { SCOPE_MCP_READ, SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
+import { type RpcScope, rpcScopeFromStep } from "@/lib/rpc/engine";
+import { runWithRpcAttribution } from "@/lib/rpc/engine/step-attribution";
 import { getErrorMessage } from "@/lib/utils";
 import { normalizeErrorAbiDocuments } from "@/lib/web3/extra-error-abis";
 import { readContractCore } from "@/plugins/web3/steps/read-contract-core";
@@ -81,7 +83,8 @@ function findFunctionInAbi(
 }
 
 async function resolveAbiForRequest(
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  rpcScope: RpcScope
 ): Promise<{ abi: string } | { error: string }> {
   if (typeof body.abi === "string" && body.abi.trim() !== "") {
     return { abi: body.abi };
@@ -91,6 +94,7 @@ async function resolveAbiForRequest(
     const resolved = await resolveAbi({
       contractAddress: body.contractAddress as string,
       network: body.network as string,
+      rpcScope,
     });
     return { abi: resolved.abi };
   } catch (err: unknown) {
@@ -191,11 +195,10 @@ async function handleSimulateSequence(
   for (const [index, call] of rawCalls.entries()) {
     // Each call resolves its own ABI: a sequence usually spans two contracts,
     // and a top-level `abi` is the fallback only when the call omits one.
-    const abiResult = await resolveAbiForRequest({
-      ...call,
-      abi: call.abi ?? body.abi,
-      network: body.network,
-    });
+    const abiResult = await resolveAbiForRequest(
+      { ...call, abi: call.abi ?? body.abi, network: body.network },
+      rpcScopeFromStep(body, organizationId)
+    );
     if ("error" in abiResult) {
       return NextResponse.json(
         { error: abiResult.error, field: `calls[${index}].abi` },
@@ -351,7 +354,7 @@ async function handleWriteCall(
   );
 }
 
-export async function POST(request: Request): Promise<NextResponse> {
+async function handlePost(request: Request): Promise<NextResponse> {
   const apiKeyCtx = await validateApiKey(request);
   if ("error" in apiKeyCtx) {
     return NextResponse.json(
@@ -467,7 +470,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   // Decode `data` here so everything below keeps seeing a named function with
   // typed arguments.
   if (isRawCalldataRequest(body)) {
-    const rawAbi = await resolveAbiForRequest(body);
+    const rawAbi = await resolveAbiForRequest(
+      body,
+      rpcScopeFromStep(body, apiKeyCtx.organizationId)
+    );
     if ("error" in rawAbi) {
       return NextResponse.json(
         { error: rawAbi.error, field: "abi" },
@@ -487,7 +493,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     body.data = undefined;
   }
 
-  const abiResult = await resolveAbiForRequest(body);
+  const abiResult = await resolveAbiForRequest(
+    body,
+    rpcScopeFromStep(body, apiKeyCtx.organizationId)
+  );
   if ("error" in abiResult) {
     return NextResponse.json(
       { error: abiResult.error, field: "abi" },
@@ -578,4 +587,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     ),
     rateLimit
   );
+}
+
+/** Runs in an RPC collector so the execution row records its endpoints. */
+export function POST(request: Request): Promise<NextResponse> {
+  return runWithRpcAttribution(() => handlePost(request));
 }

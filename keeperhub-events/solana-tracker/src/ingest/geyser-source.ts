@@ -40,7 +40,7 @@ export class GeyserSource implements BlockSource {
   constructor(private readonly opts: GeyserSourceOptions) {}
 
   start(): Promise<void> {
-    logger.error(
+    (this.opts.logger ?? logger).error(
       `[geyser] chain ${this.opts.chainId} GeyserSource is a seam only - not yet wired (needs @triton-one/yellowstone-grpc + endpoint ${this.opts.geyserEndpoint})`,
     );
     return Promise.reject(new Error("GeyserSource not yet implemented"));

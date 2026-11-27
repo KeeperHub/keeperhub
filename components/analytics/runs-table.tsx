@@ -14,6 +14,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import {
+  StepRpcEndpoint,
+  StepRpcEndpointsInline,
+} from "@/components/rpc/step-rpc-endpoint";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,6 +47,7 @@ import {
   analyticsNetworkFiltersAtom,
   analyticsProjectIdAtom,
   analyticsRangeAtom,
+  analyticsRpcEndpointFiltersAtom,
   analyticsRunsAtom,
   analyticsSearchAtom,
   analyticsSourceFiltersAtom,
@@ -425,6 +430,8 @@ function StepLogRow({ step }: StepLogRowProps): ReactNode {
               ({step.nodeType})
             </span>
           </span>
+          <StepRpcEndpoint step={step} />
+          <StepRpcEndpointsInline endpoints={step.rpcEndpoints} />
           {step.error ? <StepErrorMessage message={step.error} /> : null}
         </div>
       </td>
@@ -823,6 +830,7 @@ export function RunsTable(): ReactNode {
   const statuses = useAtomValue(analyticsStatusFiltersAtom);
   const sources = useAtomValue(analyticsSourceFiltersAtom);
   const networks = useAtomValue(analyticsNetworkFiltersAtom);
+  const rpcEndpoints = useAtomValue(analyticsRpcEndpointFiltersAtom);
   const gas = useAtomValue(analyticsGasFiltersAtom);
   const duration = useAtomValue(analyticsDurationFilterAtom);
   const search = useAtomValue(analyticsSearchAtom);
@@ -855,6 +863,7 @@ export function RunsTable(): ReactNode {
           statuses,
           sources,
           networks,
+          rpcEndpoints,
           gas,
           duration,
           search,
@@ -882,6 +891,7 @@ export function RunsTable(): ReactNode {
       statuses,
       sources,
       networks,
+      rpcEndpoints,
       gas,
       duration,
       search,

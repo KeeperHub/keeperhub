@@ -50,46 +50,34 @@ vi.mock("@solana/spl-token", async () => {
   };
 });
 
-const {
-  mockConnectionGetAccountInfo,
-  mockGetAddressUrl,
-  mockGetSolanaProvider,
-} = vi.hoisted(() => ({
-  mockConnectionGetAccountInfo: vi.fn(),
-  mockGetAddressUrl: vi.fn(),
-  mockGetSolanaProvider: vi.fn(),
-}));
+const { mockConnectionGetAccountInfo, mockGetAddressUrl, mockGetChainAdapter } =
+  vi.hoisted(() => ({
+    mockConnectionGetAccountInfo: vi.fn(),
+    mockGetAddressUrl: vi.fn(),
+    mockGetChainAdapter: vi.fn(),
+  }));
 
-// check-token-balance.ts's (unexercised here) EVM branch still imports the
-// real registry, which pulls in EvmChainAdapter -> nonce-manager -> schema's
-// drizzle sql() helper. Stub it so that module-load chain never runs.
-vi.mock("@/lib/web3/chain-adapter", () => ({
-  getChainAdapter: vi.fn(),
-}));
-
-// Fake adapter: constructed directly (not via the shared registry) so the
-// step can thread userId into getSolanaProvider - see stepHandler in
-// get-spl-token-balance.ts. The real adapter would resolve an on-chain RPC
-// connection; here executeWithSolanaFailover both exercises the
-// userId-carrying provider factory (for assertions below) and hands back a
+// The registry pulls in EvmChainAdapter -> nonce-manager -> schema's drizzle
+// sql() helper, so it is stubbed with a fake Solana adapter that hands back a
 // fake connection.
-vi.mock("@/lib/web3/chain-adapter/solana", () => ({
-  SolanaChainAdapter: class MockSolanaChainAdapter {
-    private readonly providerFactory: () => unknown;
-    constructor(_chainId: number, providerFactory: () => unknown) {
-      this.providerFactory = providerFactory;
-    }
-    async executeWithSolanaFailover(fn: (connection: unknown) => unknown) {
-      await this.providerFactory();
-      return fn({
-        getAccountInfo: (...args: unknown[]) =>
-          mockConnectionGetAccountInfo(...args),
-      });
-    }
-    getAddressUrl(...args: unknown[]) {
-      return mockGetAddressUrl(...args);
-    }
-  },
+vi.mock("@/lib/web3/chain-adapter", () => ({
+  getChainAdapter: (...args: unknown[]) => mockGetChainAdapter(...args),
+}));
+
+const fakeSolanaAdapter = {
+  executeWithSolanaFailover: (fn: (connection: unknown) => unknown) =>
+    fn({
+      getAccountInfo: (...args: unknown[]) =>
+        mockConnectionGetAccountInfo(...args),
+    }),
+  getAddressUrl: (...args: unknown[]) => mockGetAddressUrl(...args),
+};
+
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: { evm: vi.fn(), solana: vi.fn() },
 }));
 
 vi.mock("@/lib/rpc/network-utils", () => ({
@@ -104,16 +92,9 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   }),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: vi.fn(),
-  getSolanaProvider: (...args: unknown[]) => mockGetSolanaProvider(...args),
-  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
-}));
-
-// The workflowExecutions lookup (selects userId) resolves a caller; the
-// supportedTokens address lookup (selects tokenAddress) resolves the mint for
-// supported-token configs; the supportedTokens display-info lookup (selects
-// symbol/name) finds no row, so the Metaplex fallback is reachable.
+// The supportedTokens address lookup (selects tokenAddress) resolves the mint
+// for supported-token configs; the supportedTokens display-info lookup
+// (selects symbol/name) finds no row, so the Metaplex fallback is reachable.
 vi.mock("@/lib/security/org-role", () => ({
   getOrgRole: () => Promise.resolve("member"),
 }));
@@ -132,9 +113,6 @@ vi.mock("@/lib/db", () => ({
         }),
         where: () => ({
           limit: () => {
-            if ("userId" in shape) {
-              return Promise.resolve([{ userId: "user_1" }]);
-            }
             if ("tokenAddress" in shape) {
               return Promise.resolve([
                 {
@@ -190,6 +168,7 @@ vi.mock("@/lib/utils", async () => {
   };
 });
 
+import { RpcScopeKind } from "@/lib/rpc/engine/types";
 import { checkTokenBalanceStep } from "@/plugins/web3/steps/check-token-balance";
 import { getSplTokenBalanceStep } from "@/plugins/web3/steps/get-spl-token-balance";
 
@@ -235,6 +214,7 @@ function fakeMetadataAccountInfo(name: string, symbol: string) {
 
 const context = () => ({
   executionId: "exec_1",
+  organizationId: "org_1",
   nodeId: "node_1",
   nodeName: "Get SPL Balance",
   nodeType: "get-spl-token-balance" as const,
@@ -253,9 +233,7 @@ const input = () => ({
 describe("getSplTokenBalanceStep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetSolanaProvider.mockResolvedValue({
-      executeWithFailover: vi.fn(),
-    });
+    mockGetChainAdapter.mockReturnValue(fakeSolanaAdapter);
     mockGetAssociatedTokenAddressSync.mockReturnValue(new PublicKey(ATA));
     mockGetAddressUrl.mockResolvedValue(
       "https://solscan.io/account/x?cluster=devnet"
@@ -476,7 +454,7 @@ describe("getSplTokenBalanceStep", () => {
     expect(mockConnectionGetAccountInfo).toHaveBeenCalledTimes(2);
   });
 
-  it("threads the caller's userId into the Solana RPC provider", async () => {
+  it("resolves the Solana adapter for the step's organization scope", async () => {
     mockConnectionGetAccountInfo
       .mockResolvedValueOnce(fakeAccountInfo(TOKEN_PROGRAM_ID))
       .mockResolvedValueOnce(null);
@@ -484,10 +462,13 @@ describe("getSplTokenBalanceStep", () => {
 
     await getSplTokenBalanceStep(input());
 
-    expect(mockGetSolanaProvider).toHaveBeenCalledWith({
-      chainId: 103,
-      userId: "user_1",
-    });
+    expect(mockGetChainAdapter).toHaveBeenCalledWith(
+      103,
+      expect.objectContaining({
+        kind: RpcScopeKind.ORG,
+        organizationId: "org_1",
+      })
+    );
   });
 
   it("propagates a real RPC error instead of treating it as a zero balance", async () => {
@@ -570,9 +551,7 @@ describe("checkTokenBalanceStep - Solana rejection", () => {
 describe("getSplTokenBalanceStep - failOnError", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetSolanaProvider.mockResolvedValue({
-      executeWithFailover: vi.fn(),
-    });
+    mockGetChainAdapter.mockReturnValue(fakeSolanaAdapter);
     mockGetAssociatedTokenAddressSync.mockReturnValue(new PublicKey(ATA));
   });
 

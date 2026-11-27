@@ -52,6 +52,8 @@ export interface RawWorkflow {
   organizationId?: string;
   enabled?: boolean;
   nodes?: RawWorkflowNode[];
+  /** Present when the organization's route differs from KeeperHub's. Validated by the mapper. */
+  rpcRoute?: unknown;
 }
 
 /** Raw envelope from either discovery endpoint. */

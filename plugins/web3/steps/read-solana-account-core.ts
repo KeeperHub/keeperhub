@@ -5,6 +5,7 @@
  */
 import "server-only";
 import { ErrorCategory, logUserError } from "@/lib/logging";
+import { rpcScopeFromStep } from "@/lib/rpc/engine";
 import {
   fetchSolanaAccountInfo,
   resolveSolanaAccountAddress,
@@ -18,7 +19,7 @@ import {
 export type ReadSolanaAccountCoreInput = ReadFailOnErrorInput & {
   network: string;
   accountAddress: string;
-  _context?: { executionId?: string };
+  _context?: { executionId?: string; organizationId?: string };
 };
 
 export type ReadSolanaAccountResult =
@@ -56,7 +57,11 @@ async function readSolanaAccountInner(
 ): Promise<ReadSolanaAccountResult> {
   const { network, accountAddress } = input;
 
-  const resolved = resolveSolanaAccountAddress(network, accountAddress);
+  const resolved = resolveSolanaAccountAddress(
+    network,
+    accountAddress,
+    rpcScopeFromStep(input)
+  );
   if ("error" in resolved) {
     return { success: false, destinationError: true, error: resolved.error };
   }

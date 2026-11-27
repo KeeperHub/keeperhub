@@ -25,6 +25,29 @@ export function signHmacHeaders(
   };
 }
 
+/**
+ * POST a pre-serialised JSON body to an internal app route, signing exactly
+ * the bytes sent. Resolves with the HTTP status, or 0 when no answer
+ * arrived. Never logs the target URL.
+ */
+export async function postSignedInternal(
+  path: string,
+  rawBody: string,
+  signal?: AbortSignal,
+): Promise<number> {
+  const url = `${KEEPERHUB_API_URL}${path}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...signHmacHeaders("POST", url, rawBody),
+    },
+    body: rawBody,
+    signal,
+  }).catch(() => null);
+  return response?.status ?? 0;
+}
+
 export async function fetchActiveWorkflows(
   signal?: AbortSignal,
 ): Promise<SyncData | null> {

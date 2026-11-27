@@ -5,14 +5,19 @@ import { normalizeAddressForStorage } from "@/lib/address-utils";
 import { db } from "@/lib/db";
 import type { SafeWallet } from "@/lib/db/schema";
 import { safeRoles, safeWallets } from "@/lib/db/schema";
-import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import {
   recordSignerMode,
   recordSignerProbeFailure,
 } from "@/lib/metrics/instrumentation/safe";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
-import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
+import {
+  type EvmRpcClient,
+  RpcRouteError,
+  RpcRouteErrorCode,
+  RpcSelectionMode,
+  rpc,
+  rpcScopeForOrganization,
+} from "@/lib/rpc/engine";
 // reconcileSafeRoleFromChain is dynamically imported below to keep the
 // roles-orchestrator (and its defi-kit transitive dep, which proxies the
 // entire SDK at module load) out of the import graph for routes that only
@@ -79,6 +84,29 @@ export type SignerMode =
       delegateAddress: string;
     };
 
+async function probeRpcClient(
+  organizationId: string,
+  chainId: number
+): Promise<EvmRpcClient> {
+  try {
+    // Stateless reads stay off org endpoints, which may be write-side relays.
+    return await rpc.evm(
+      rpcScopeForOrganization(organizationId, {
+        mode: RpcSelectionMode.PLATFORM,
+      }),
+      chainId
+    );
+  } catch (error) {
+    if (
+      error instanceof RpcRouteError &&
+      error.code === RpcRouteErrorCode.PLATFORM_FORBIDDEN
+    ) {
+      return await rpc.evm(rpcScopeForOrganization(organizationId), chainId);
+    }
+    throw error;
+  }
+}
+
 /**
  * One-shot chain probe to detect a Roles modifier enabled on a Safe even
  * when our DB has no `safe_roles` row. Used as a recovery path when the
@@ -94,29 +122,11 @@ export type SignerMode =
  * reconcile (or the user-triggered Sync button) repairs the DB later.
  */
 async function probeRolesModifierFromChain(
-  safe: Pick<SafeWallet, "id" | "chainId" | "safeAddress">
+  safe: Pick<SafeWallet, "id" | "organizationId" | "chainId" | "safeAddress">
 ): Promise<string | null> {
   try {
-    // Deliberately uses the static chain RPC config rather than
-    // `resolveRpcConfig(chainId, userId, ...)`. The probe issues stateless
-    // `eth_call`s (readEnabledSafeModules, findRolesModifierForSafe) that
-    // should not be routed through any user write-side private mempool
-    // (Flashbots Protect, custom bundler endpoints, etc.). Those endpoints
-    // are not designed to serve reads, and routing them would leak the
-    // workflow's resolver-time RPC traffic into the user's private channel.
-    // Reads always go to the public/configured chain RPC; user RPC prefs
-    // apply only to the broadcast side. See KEEP-566.
-    const primaryRpcUrl = getRpcUrlByChainId(
-      safe.chainId,
-      RPC_ENDPOINT.PRIMARY
-    );
-    const fallbackRpcUrl = getRpcUrlByChainId(
-      safe.chainId,
-      RPC_ENDPOINT.FALLBACK
-    );
-    const rpcManager = await getRpcProviderFromUrls(
-      primaryRpcUrl,
-      fallbackRpcUrl === primaryRpcUrl ? undefined : fallbackRpcUrl,
+    const { manager: rpcManager } = await probeRpcClient(
+      safe.organizationId,
       safe.chainId
     );
     const modules = await rpcManager.executeWithFailover((provider) =>
@@ -136,7 +146,8 @@ async function probeRolesModifierFromChain(
     // resolver instead. Logged via logSystemError (Sentry) AND the
     // signer_probe.failure counter (dashboards).
     recordSignerProbeFailure({ chainId: safe.chainId });
-    logSystemError(
+    const log = error instanceof RpcRouteError ? logUserError : logSystemError;
+    log(
       ErrorCategory.TRANSACTION,
       `[Safe] signer-resolver chain probe failed for safe=${safe.id}`,
       error,
@@ -288,6 +299,7 @@ async function resolveSignerModeImpl(
   // once and route through `safe-role` if a modifier is found.
   const probedModifier = await probeRolesModifierFromChain({
     id: safe.id,
+    organizationId,
     chainId,
     safeAddress: safe.safeAddress,
   });
@@ -503,6 +515,7 @@ export async function resolveSignerForNode(
 
   const probedModifier = await probeRolesModifierFromChain({
     id: safe.id,
+    organizationId: safe.organizationId,
     chainId: input.chainId,
     safeAddress: safe.safeAddress,
   });

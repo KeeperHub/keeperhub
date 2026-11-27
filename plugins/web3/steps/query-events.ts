@@ -2,10 +2,9 @@ import "server-only";
 
 import { ethers } from "ethers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcPurpose, rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import { evmOnlyGuard } from "@/lib/web3/validate-chain-address";
@@ -161,11 +160,12 @@ async function openBlockRange(
   chainId: number,
   headMargin: number
 ): Promise<OpenedBlockRange> {
-  const userId = await getRpcPreferenceUserId(input._context?.executionId);
-
   let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId, userId });
+    const client = await rpc.evm(rpcScopeFromStep(input), chainId, {
+      purpose: RpcPurpose.READ,
+    });
+    rpcManager = client.manager;
   } catch (error) {
     return {
       success: false,

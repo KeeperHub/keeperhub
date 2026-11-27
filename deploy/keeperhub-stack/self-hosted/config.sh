@@ -393,8 +393,6 @@ CHART_SECRET_VARS=(
 # actually set. That is deliberate rather than tidy: several of these are read
 # with `??`, which falls back on undefined but NOT on an empty string, so
 # supplying an empty value would replace a working default with nothing.
-# BASE_RPC_URL is the clearest case - lib/payments/x402/reconcile.ts reads
-# `process.env.BASE_RPC_URL ?? "https://mainnet.base.org"`.
 APP_INTEGRATION_VARS=(
     AGENT_ID
     AGENT_REGISTRY_CHAIN_ID

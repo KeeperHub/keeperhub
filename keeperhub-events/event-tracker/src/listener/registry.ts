@@ -1,6 +1,11 @@
 import type { SQSClient } from "@aws-sdk/client-sqs";
 import { logger } from "../../lib/utils/logger";
 import type { ChainProviderManager } from "../chains/provider-manager";
+import type {
+  RouteLease,
+  RouteProviderPool,
+} from "../chains/route-provider-pool";
+import type { RpcRoute } from "../chains/rpc-route";
 import type { AbiEvent } from "../chains/validation";
 import type { ArmStateStore } from "./arm-state";
 import type { DedupStore } from "./dedup";
@@ -51,6 +56,8 @@ export interface WorkflowRegistration {
    */
   recipientFilter?: string;
   memoFilter?: string;
+  /** The organization route this workflow listens on, when it has one. */
+  rpcRoute?: RpcRoute;
   /**
    * Stable hash over the listener-affecting fields of this registration.
    * Produced by `workflow-mapper.hashRegistration` and used by the Phase 4
@@ -77,6 +84,7 @@ export interface StateThresholdRegistration {
   wssUrl: string;
   fallbackWssUrl?: string;
   subscription: StateThresholdSubscription;
+  rpcRoute?: RpcRoute;
   configHash: string;
 }
 
@@ -107,11 +115,19 @@ export interface RegistryDeps {
    * drain, and a listener with nowhere to keep it has no such guard.
    */
   armStore?: ArmStateStore;
+  /** Owns one manager per organization route; required for routed workflows. */
+  routePool?: RouteProviderPool;
 }
 
 interface RegistryEntry {
   listener: EventListener | StateThresholdListener;
   configHash: string;
+  lease: RouteLease | null;
+}
+
+interface ManagerBinding {
+  manager: ChainProviderManager;
+  lease: RouteLease | null;
 }
 
 export class ListenerRegistry {
@@ -170,9 +186,13 @@ export class ListenerRegistry {
       await this.addStateThreshold(reg);
       return;
     }
+    const binding = this.bindManager(reg);
+    if (!binding) {
+      return;
+    }
     const listener = new EventListener({
       ...reg,
-      providerManager: this.deps.providerManager,
+      providerManager: binding.manager,
       dedup: this.deps.dedup,
       sqs: this.deps.sqs,
       sqsQueueUrl: this.deps.sqsQueueUrl,
@@ -183,15 +203,35 @@ export class ListenerRegistry {
     try {
       await listener.start();
     } catch (err) {
+      binding.lease?.release();
       logger.warn(
-        `[ListenerRegistry] failed to start listener ${reg.workflowId}: ${formatError(err)}`,
+        `[ListenerRegistry] failed to start listener ${reg.workflowId}: ${describeStartError(reg, err)}`,
       );
       return;
     }
     this.entries.set(reg.workflowId, {
       listener,
       configHash: reg.configHash,
+      lease: binding.lease,
     });
+  }
+
+  /**
+   * The shared platform manager for a workflow without a route, or a lease on
+   * its route's own manager. Null when a route arrives with no pool to serve it.
+   */
+  private bindManager(reg: AnyRegistration): ManagerBinding | null {
+    if (!reg.rpcRoute) {
+      return { manager: this.deps.providerManager, lease: null };
+    }
+    if (!this.deps.routePool) {
+      logger.warn(
+        `[ListenerRegistry] refusing listener ${reg.workflowId}: organization route given but no route pool configured`,
+      );
+      return null;
+    }
+    const lease = this.deps.routePool.acquire(reg.rpcRoute);
+    return { manager: lease.manager, lease };
   }
 
   private async addStateThreshold(
@@ -202,6 +242,10 @@ export class ListenerRegistry {
       logger.warn(
         `[ListenerRegistry] refusing state-threshold listener ${reg.workflowId}: no arm-state store configured`,
       );
+      return;
+    }
+    const binding = this.bindManager(reg);
+    if (!binding) {
       return;
     }
     const listener = new StateThresholdListener({
@@ -215,21 +259,23 @@ export class ListenerRegistry {
       sqs: this.deps.sqs,
       sqsQueueUrl: this.deps.sqsQueueUrl,
       armStore,
-      providerManager: this.deps.providerManager,
+      providerManager: binding.manager,
       pacer: this.pacerFor(reg.chainId),
       inFlight: this.inFlight,
     });
     try {
       await listener.start();
     } catch (err) {
+      binding.lease?.release();
       logger.warn(
-        `[ListenerRegistry] failed to start state listener ${reg.workflowId}: ${formatError(err)}`,
+        `[ListenerRegistry] failed to start state listener ${reg.workflowId}: ${describeStartError(reg, err)}`,
       );
       return;
     }
     this.entries.set(reg.workflowId, {
       listener,
       configHash: reg.configHash,
+      lease: binding.lease,
     });
   }
 
@@ -239,7 +285,27 @@ export class ListenerRegistry {
       return;
     }
     entry.listener.stop();
+    entry.lease?.release();
     this.entries.delete(workflowId);
+  }
+
+  /**
+   * Drop every listener whose organization route failed permanently, so the
+   * caller's next add re-creates the route's manager. Returns how many.
+   */
+  evictFailedRoutes(): number {
+    let evicted = 0;
+    for (const [workflowId, entry] of this.entries) {
+      if (!entry.lease?.failed) {
+        continue;
+      }
+      logger.warn(
+        `[ListenerRegistry] organization route for ${workflowId} failed; re-creating its listener`,
+      );
+      this.remove(workflowId);
+      evicted++;
+    }
+    return evicted;
   }
 
   has(workflowId: string): boolean {
@@ -299,7 +365,17 @@ export class ListenerRegistry {
       );
     }
 
+    for (const entry of this.entries.values()) {
+      entry.lease?.release();
+    }
     this.entries.clear();
     this.pacers.clear();
   }
+}
+
+/** Errors from an organization route can carry its hosts, so they are not logged. */
+function describeStartError(reg: AnyRegistration, err: unknown): string {
+  return reg.rpcRoute
+    ? "organization route unavailable; retrying on the next poll"
+    : formatError(err);
 }

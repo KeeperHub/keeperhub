@@ -3875,7 +3875,15 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
                   triggerGasUsed =
                     (await fetchTriggerTransactionGas(
                       triggerData.transactionHash,
-                      config.network as string | number
+                      config.network as string | number,
+                      {
+                        _context: {
+                          executionId,
+                          nodeId: node.id,
+                          organizationId,
+                          workflowId,
+                        },
+                      }
                     )) ?? undefined;
                 } catch {
                   // Non-critical: the trigger simply reports no gas.

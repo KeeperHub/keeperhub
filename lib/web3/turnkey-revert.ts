@@ -95,8 +95,9 @@ export class SponsoredTxPendingError extends Error {
     message: string;
     sendTransactionStatusId?: string;
     txHash?: Hex;
+    cause?: unknown;
   }) {
-    super(opts.message);
+    super(opts.message, { cause: opts.cause });
     this.name = "SponsoredTxPendingError";
     this.sendTransactionStatusId = opts.sendTransactionStatusId;
     this.txHash = opts.txHash;

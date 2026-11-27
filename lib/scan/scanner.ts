@@ -13,7 +13,7 @@ import { getMetricsCollector } from "@/lib/metrics";
 import { recordScanCacheLookup } from "@/lib/metrics/collectors/prometheus";
 import { MetricNames } from "@/lib/metrics/types";
 import { getEnabledChains } from "@/lib/rpc/chain-service";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { PlatformRpcPurpose, platformScope, rpc } from "@/lib/rpc/engine";
 import {
   buildAaveV3Calls,
   decodeAaveV3Results,
@@ -45,6 +45,9 @@ import {
   type StablecoinBalance,
 } from "@/lib/scan/types";
 import { maybeZerionFallback } from "@/lib/scan/zerion-fallback";
+
+/** Scans are an unauthenticated public tool, served by KeeperHub's endpoints. */
+const SCAN_RPC_SCOPE = platformScope(PlatformRpcPurpose.PUBLIC_TOOL);
 
 /** Cache TTL in milliseconds — 5 minutes (SCAN-13). */
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -80,7 +83,7 @@ async function scanOneChain(
   chainId: number,
   userAddress: string
 ): Promise<ChainScanOutput> {
-  const rpcManager = await getRpcProvider({ chainId });
+  const { manager: rpcManager } = await rpc.evm(SCAN_RPC_SCOPE, chainId);
 
   // Stablecoins registered for this chain (isStablecoin = true).
   const rawChainStablecoins: StablecoinToken[] = await db
@@ -343,7 +346,7 @@ async function detectAddressKind(
 }> {
   const probes = await Promise.allSettled(
     chainIds.map(async (chainId) => {
-      const rpcManager = await getRpcProvider({ chainId });
+      const { manager: rpcManager } = await rpc.evm(SCAN_RPC_SCOPE, chainId);
       const code = await Promise.race([
         rpcManager.executeWithFailover((provider: ethers.JsonRpcProvider) =>
           provider.getCode(address)

@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import { type Commitment, PublicKey } from "@solana/web3.js";
 import type { DiscoveryData, NetworkConfig, RawWorkflow } from "../lib/types";
-import { logger } from "../lib/utils/logger";
+import { type LogSink, logger, silentLogger } from "../lib/utils/logger";
 import type {
   ChainRegistration,
+  RouteRegistration,
+  RouteSpec,
   SolanaBlockTrigger,
   SolanaEventTrigger,
 } from "./registrations";
+import { parseRoute } from "./rpc-route/route";
 
 function sha256(input: unknown): string {
   return createHash("sha256").update(JSON.stringify(input)).digest("hex");
@@ -30,6 +33,7 @@ function chainIdOf(workflow: RawWorkflow): number | null {
 
 function toEventTrigger(
   workflow: RawWorkflow,
+  log: LogSink,
 ): Omit<SolanaEventTrigger, "configHash"> | null {
   const id = typeof workflow.id === "string" ? workflow.id : null;
   const config = workflow.nodes?.[0]?.data?.config;
@@ -41,7 +45,7 @@ function toEventTrigger(
   try {
     new PublicKey(programId);
   } catch {
-    logger.warn(
+    log.warn(
       `[mapper] event workflow ${id} programId "${programId}" is not valid base58; skipping`,
     );
     return null;
@@ -164,76 +168,166 @@ function resolveEndpoints(
   };
 }
 
+type PendingEvent = Omit<SolanaEventTrigger, "configHash">;
+type PendingBlock = Omit<SolanaBlockTrigger, "configHash">;
+
+interface PendingGroup {
+  chainId: number;
+  events: PendingEvent[];
+  blocks: PendingBlock[];
+}
+
+/** Groups valid triggers by the key `keyOf` assigns; a null key leaves the workflow out. */
+function groupTriggers<K>(
+  data: DiscoveryData,
+  keyOf: (workflow: RawWorkflow, chainId: number) => K | null,
+  log: LogSink,
+): Map<K, PendingGroup> {
+  const groups = new Map<K, PendingGroup>();
+  const groupFor = (key: K, chainId: number): PendingGroup => {
+    const existing = groups.get(key);
+    if (existing) {
+      return existing;
+    }
+    const created: PendingGroup = { chainId, events: [], blocks: [] };
+    groups.set(key, created);
+    return created;
+  };
+  for (const wf of data.eventWorkflows) {
+    const chainId = chainIdOf(wf);
+    const key = chainId === null ? null : keyOf(wf, chainId);
+    const trigger = key === null ? null : toEventTrigger(wf, log);
+    if (chainId !== null && key !== null && trigger) {
+      groupFor(key, chainId).events.push(trigger);
+    }
+  }
+  for (const wf of data.blockWorkflows) {
+    const chainId = chainIdOf(wf);
+    const key = chainId === null ? null : keyOf(wf, chainId);
+    const trigger = key === null ? null : toBlockTrigger(wf);
+    if (chainId !== null && key !== null && trigger) {
+      groupFor(key, chainId).blocks.push(trigger);
+    }
+  }
+  return groups;
+}
+
+interface ResolvedTriggers {
+  eventTriggers: SolanaEventTrigger[];
+  blockTriggers: SolanaBlockTrigger[];
+  sourceMode: SourceMode | undefined;
+}
+
+function resolveTriggers(
+  group: PendingGroup,
+  override: SourceMode | undefined,
+): ResolvedTriggers {
+  const eventTriggers: SolanaEventTrigger[] = group.events.map((t) => ({
+    ...t,
+    configHash: sha256(t),
+  }));
+  const blockTriggers: SolanaBlockTrigger[] = group.blocks.map((t) => ({
+    ...t,
+    configHash: sha256(t),
+  }));
+  return {
+    eventTriggers,
+    blockTriggers,
+    sourceMode: override ?? defaultSourceMode(eventTriggers.length > 0),
+  };
+}
+
+function registrationHash(
+  endpoints: unknown,
+  { eventTriggers, blockTriggers, sourceMode }: ResolvedTriggers,
+): string {
+  return sha256({
+    endpoints,
+    sourceMode: sourceMode ?? null,
+    events: eventTriggers.map((t) => t.configHash).sort(),
+    blocks: blockTriggers.map((t) => t.configHash).sort(),
+  });
+}
+
 /**
  * Builds one ChainRegistration per Solana chain that has at least one valid
  * event or block trigger and resolvable endpoints. Malformed triggers and
  * chains missing RPC/WSS are skipped-and-logged, never thrown.
  */
 export function buildRegistrations(data: DiscoveryData): ChainRegistration[] {
-  const eventsByChain = new Map<
-    number,
-    Omit<SolanaEventTrigger, "configHash">[]
-  >();
-  const blocksByChain = new Map<
-    number,
-    Omit<SolanaBlockTrigger, "configHash">[]
-  >();
-
-  for (const wf of data.eventWorkflows) {
-    const chainId = chainIdOf(wf);
-    const trigger = chainId === null ? null : toEventTrigger(wf);
-    if (chainId !== null && trigger) {
-      const list = eventsByChain.get(chainId) ?? [];
-      list.push(trigger);
-      eventsByChain.set(chainId, list);
-    }
-  }
-  for (const wf of data.blockWorkflows) {
-    const chainId = chainIdOf(wf);
-    const trigger = chainId === null ? null : toBlockTrigger(wf);
-    if (chainId !== null && trigger) {
-      const list = blocksByChain.get(chainId) ?? [];
-      list.push(trigger);
-      blocksByChain.set(chainId, list);
-    }
-  }
-
-  const chainIds = new Set<number>([
-    ...eventsByChain.keys(),
-    ...blocksByChain.keys(),
-  ]);
+  const groups = groupTriggers(
+    data,
+    // A workflow with an organization route is never served on KeeperHub's endpoints.
+    (wf, chainId) => (wf.rpcRoute == null ? chainId : null),
+    logger,
+  );
   const override = sourceModeOverride();
   const registrations: ChainRegistration[] = [];
 
-  for (const chainId of chainIds) {
+  for (const [chainId, group] of groups) {
     const network = data.networks[chainId];
     const endpoints = resolveEndpoints(network, chainId);
     if (!endpoints || !network) {
       continue;
     }
-    const eventTriggers: SolanaEventTrigger[] = (
-      eventsByChain.get(chainId) ?? []
-    ).map((t) => ({ ...t, configHash: sha256(t) }));
-    const blockTriggers: SolanaBlockTrigger[] = (
-      blocksByChain.get(chainId) ?? []
-    ).map((t) => ({ ...t, configHash: sha256(t) }));
-    const sourceMode = override ?? defaultSourceMode(eventTriggers.length > 0);
-
-    const configHash = sha256({
-      endpoints,
-      sourceMode: sourceMode ?? null,
-      events: eventTriggers.map((t) => t.configHash).sort(),
-      blocks: blockTriggers.map((t) => t.configHash).sort(),
-    });
-
+    const triggers = resolveTriggers(group, override);
     registrations.push({
       chainId,
       isTestnet: network.isTestnet === true,
       ...endpoints,
-      sourceMode,
-      eventTriggers,
-      blockTriggers,
-      configHash,
+      sourceMode: triggers.sourceMode,
+      eventTriggers: triggers.eventTriggers,
+      blockTriggers: triggers.blockTriggers,
+      configHash: registrationHash(endpoints, triggers),
+    });
+  }
+
+  return registrations;
+}
+
+/** One registration per organization route key; logs nothing. */
+export function buildRouteRegistrations(
+  data: DiscoveryData,
+): RouteRegistration[] {
+  const routes = new Map<string, RouteSpec>();
+  const groups = groupTriggers(
+    data,
+    (wf, chainId) => {
+      const route = parseRoute(wf.rpcRoute);
+      if (!route || route.chainId !== chainId) {
+        return null;
+      }
+      if (!routes.has(route.key)) {
+        routes.set(route.key, route);
+      }
+      return route.key;
+    },
+    silentLogger,
+  );
+  const override = sourceModeOverride();
+  const registrations: RouteRegistration[] = [];
+
+  for (const [key, group] of groups) {
+    const route = routes.get(key);
+    const network = data.networks[group.chainId];
+    if (!route || network?.chainType !== "solana") {
+      continue;
+    }
+    const endpoints = {
+      rpcUrl: route.primary.url,
+      fallbackRpcUrl: route.fallback?.url,
+      commitment: "confirmed" as const,
+    };
+    const triggers = resolveTriggers(group, override);
+    registrations.push({
+      chainId: group.chainId,
+      isTestnet: network.isTestnet === true,
+      ...endpoints,
+      route,
+      sourceMode: triggers.sourceMode,
+      eventTriggers: triggers.eventTriggers,
+      blockTriggers: triggers.blockTriggers,
+      configHash: registrationHash({ ...endpoints, route }, triggers),
     });
   }
 

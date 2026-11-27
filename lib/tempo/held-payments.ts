@@ -43,6 +43,8 @@ export type CreateHeldPaymentArgs = {
   tokenDecimals?: number;
   amountDisplay?: string;
   memo?: string;
+  /** The signing node's RPC selection; null or absent means Auto. */
+  rpcSelection?: string | null;
   serializedTx: string;
   precomputedHash: string;
   nonceKey: string;
@@ -73,6 +75,7 @@ export async function createHeldPayment(
       tokenDecimals: args.tokenDecimals,
       amountDisplay: args.amountDisplay,
       memo: args.memo,
+      rpcSelection: args.rpcSelection ?? null,
       serializedTx: args.serializedTx,
       precomputedHash: args.precomputedHash,
       nonceKey: args.nonceKey,

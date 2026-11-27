@@ -8,7 +8,6 @@ const fallbackGetTransactionReceipt = vi.fn();
 const getFallbackProvider = vi.fn(() => ({
   getTransactionReceipt: fallbackGetTransactionReceipt,
 }));
-const resolveRpcConfig = vi.fn();
 const isSolanaChain = vi.fn(
   (chainId: number) => chainId === 101 || chainId === 103
 );
@@ -30,37 +29,47 @@ const solanaExecuteWithFailover =
     ) => Promise<unknown>
   >();
 
-vi.mock("@/lib/rpc/providers", () => ({
-  // Regular function, not an arrow function: `new RpcProviderManager(...)` in
-  // the module under test requires a constructible mock. Returning an object
-  // from the constructor overrides the constructed `this`, which is how the
-  // shared `executeWithFailover` spy gets attached to every instance.
-  RpcProviderManager: vi.fn().mockImplementation(function RpcProviderManager() {
-    return { executeWithFailover, getFallbackProvider };
-  }),
+const { rpcEvm, rpcSolana, orgLoad } = vi.hoisted(() => ({
+  rpcEvm: vi.fn(),
+  rpcSolana: vi.fn(),
+  orgLoad: vi.fn(),
 }));
-vi.mock("@/lib/rpc/providers/solana", () => ({
-  // Same constructible-mock shape as RpcProviderManager above.
-  SolanaProviderManager: vi
-    .fn()
-    .mockImplementation(function SolanaProviderManager() {
-      return {
-        executeWithFailover: solanaExecuteWithFailover,
-        getFallbackConnection,
-      };
-    }),
+
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: { evm: rpcEvm, solana: rpcSolana },
+  orgRpcSource: { load: orgLoad },
 }));
-vi.mock("@/lib/rpc/config-service", () => ({
-  resolveRpcConfig: (...args: unknown[]) => resolveRpcConfig(...args),
-}));
-vi.mock("@/lib/rpc/provider-factory", () => ({
+vi.mock("@/lib/rpc/solana-chains", () => ({
   isSolanaChain: (chainId: number) => isSolanaChain(chainId),
 }));
 
+import { RpcRouteError, RpcRouteErrorCode } from "@/lib/rpc/engine/route-error";
+import { orgScope } from "@/lib/rpc/engine/scope";
 import {
   describeVerificationFailure,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
+
+const SCOPE = orgScope("org-1");
+
+function useEngineManagers(): void {
+  orgLoad.mockReset();
+  orgLoad.mockResolvedValue({ policy: { ownRpcOnly: false }, configs: [] });
+  rpcEvm.mockReset();
+  rpcEvm.mockResolvedValue({
+    manager: { executeWithFailover, getFallbackProvider },
+  });
+  rpcSolana.mockReset();
+  rpcSolana.mockResolvedValue({
+    manager: {
+      executeWithFailover: solanaExecuteWithFailover,
+      getFallbackConnection,
+    },
+  });
+}
 
 const EXECUTION_FAILURE_TOPIC = new ethers.Interface([
   "event ExecutionFailure(bytes32 txHash, uint256 payment)",
@@ -95,29 +104,24 @@ describe("verifyExecutionReceipts", () => {
     executeWithFailover.mockReset();
     fallbackGetTransactionReceipt.mockReset();
     fallbackGetTransactionReceipt.mockResolvedValue(null);
-    resolveRpcConfig.mockReset();
-    resolveRpcConfig.mockResolvedValue({
-      chainId: CHAIN_ID,
-      chainName: "ethereum",
-      primaryRpcUrl: "https://primary.example",
-      fallbackRpcUrl: "https://fallback.example",
-    });
+    useEngineManagers();
   });
   afterEach(() => {
     vi.clearAllMocks();
   });
 
   it("empty input returns allVerified true with no results", async () => {
-    const result = await verifyExecutionReceipts([]);
+    const result = await verifyExecutionReceipts([], SCOPE);
     expect(result).toEqual({ allVerified: true, results: [] });
     expect(executeWithFailover).not.toHaveBeenCalled();
   });
 
   it("status 1 with no Safe logs verifies as success", async () => {
     executeWithFailover.mockResolvedValueOnce(makeReceipt(1));
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE
+    );
     expect(allVerified).toBe(true);
     expect(results[0]).toMatchObject({
       hash: HASH,
@@ -130,9 +134,10 @@ describe("verifyExecutionReceipts", () => {
 
   it("status 0 verifies as reverted", async () => {
     executeWithFailover.mockResolvedValueOnce(makeReceipt(0));
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE
+    );
     expect(allVerified).toBe(false);
     expect(results[0]).toMatchObject({ verified: false, status: "reverted" });
   });
@@ -141,9 +146,10 @@ describe("verifyExecutionReceipts", () => {
     executeWithFailover.mockResolvedValueOnce(
       makeReceipt(1, [{ topics: [EXECUTION_FAILURE_TOPIC as string] }])
     );
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE
+    );
     expect(allVerified).toBe(false);
     expect(results[0]).toMatchObject({
       verified: false,
@@ -155,9 +161,10 @@ describe("verifyExecutionReceipts", () => {
     executeWithFailover.mockResolvedValueOnce(
       makeReceipt(1, [{ topics: [EXECUTION_SUCCESS_TOPIC as string] }])
     );
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE
+    );
     expect(allVerified).toBe(true);
     expect(results[0].status).toBe("success");
   });
@@ -166,6 +173,7 @@ describe("verifyExecutionReceipts", () => {
     executeWithFailover.mockResolvedValue(null);
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
     expect(allVerified).toBe(false);
@@ -177,6 +185,7 @@ describe("verifyExecutionReceipts", () => {
     fallbackGetTransactionReceipt.mockRejectedValue(new Error("RPC exhausted"));
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
     expect(allVerified).toBe(false);
@@ -193,6 +202,7 @@ describe("verifyExecutionReceipts", () => {
 
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE,
       FAST_RETRY
     );
 
@@ -209,6 +219,7 @@ describe("verifyExecutionReceipts", () => {
 
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
 
@@ -222,6 +233,7 @@ describe("verifyExecutionReceipts", () => {
 
     const { results } = await verifyExecutionReceipts(
       [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE,
       FAST_RETRY
     );
 
@@ -229,27 +241,57 @@ describe("verifyExecutionReceipts", () => {
     expect(executeWithFailover).toHaveBeenCalledTimes(1);
   });
 
-  it("unresolvable chain (resolveRpcConfig returns null) fails closed as timeout", async () => {
-    resolveRpcConfig.mockResolvedValueOnce(null);
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: 999 },
-    ]);
+  it("a chain the scope cannot route fails closed as timeout", async () => {
+    rpcEvm.mockRejectedValueOnce(
+      new RpcRouteError(RpcRouteErrorCode.CHAIN_UNAVAILABLE, 999)
+    );
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: 999 }],
+      SCOPE
+    );
     expect(allVerified).toBe(false);
     expect(results[0].status).toBe("timeout");
   });
 
-  it("groups hashes by chainId, building one manager per distinct chain", async () => {
-    const { RpcProviderManager } = await import("@/lib/rpc/providers");
+  it("reads through another enabled config when the scope's route is not covered", async () => {
+    orgLoad.mockResolvedValue({
+      policy: { ownRpcOnly: true },
+      configs: [
+        { id: "cfg-off", enabled: false },
+        { id: "cfg-pinned", enabled: true },
+      ],
+    });
+    rpcEvm.mockRejectedValueOnce(
+      new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, CHAIN_ID)
+    );
     executeWithFailover.mockResolvedValue(makeReceipt(1));
 
-    await verifyExecutionReceipts([
-      { hash: "0x1", chainId: 1 },
-      { hash: "0x2", chainId: 1 },
-      { hash: "0x3", chainId: 137 },
-    ]);
+    const { allVerified } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE
+    );
 
-    // one construction per distinct chainId (2), not per hash (3)
-    expect(RpcProviderManager).toHaveBeenCalledTimes(2);
+    expect(allVerified).toBe(true);
+    expect(rpcEvm).toHaveBeenCalledTimes(2);
+    expect(rpcEvm.mock.calls[1]?.[0]).toMatchObject({
+      selection: { mode: "config", configId: "cfg-pinned" },
+    });
+  });
+
+  it("groups hashes by chainId, building one manager per distinct chain", async () => {
+    executeWithFailover.mockResolvedValue(makeReceipt(1));
+
+    await verifyExecutionReceipts(
+      [
+        { hash: "0x1", chainId: 1 },
+        { hash: "0x2", chainId: 1 },
+        { hash: "0x3", chainId: 137 },
+      ],
+      SCOPE
+    );
+
+    // one manager per distinct chainId (2), not per hash (3)
+    expect(rpcEvm).toHaveBeenCalledTimes(2);
     expect(executeWithFailover).toHaveBeenCalledTimes(3);
   });
 
@@ -257,10 +299,13 @@ describe("verifyExecutionReceipts", () => {
     executeWithFailover
       .mockResolvedValueOnce(makeReceipt(1))
       .mockResolvedValueOnce(makeReceipt(0));
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: "0x1", chainId: CHAIN_ID },
-      { hash: "0x2", chainId: CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [
+        { hash: "0x1", chainId: CHAIN_ID },
+        { hash: "0x2", chainId: CHAIN_ID },
+      ],
+      SCOPE
+    );
     expect(allVerified).toBe(false);
     expect(results).toHaveLength(2);
   });
@@ -298,13 +343,7 @@ describe("Solana signatures", () => {
     executeWithFailover.mockReset();
     fallbackGetTransactionReceipt.mockReset();
     fallbackGetTransactionReceipt.mockResolvedValue(null);
-    resolveRpcConfig.mockReset();
-    resolveRpcConfig.mockResolvedValue({
-      chainId: SOLANA_CHAIN_ID,
-      chainName: "solana",
-      primaryRpcUrl: "https://solana-primary.example",
-      fallbackRpcUrl: "https://solana-fallback.example",
-    });
+    useEngineManagers();
     getSignatureStatuses.mockReset();
     getSignatureStatuses.mockResolvedValue({ value: [null] });
     fallbackGetSignatureStatuses.mockReset();
@@ -325,11 +364,15 @@ describe("Solana signatures", () => {
       value: [makeSignatureStatus("confirmed")],
     });
 
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: SIGNATURE, chainId: SOLANA_CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE
+    );
 
-    expect(resolveRpcConfig).toHaveBeenCalledWith(SOLANA_CHAIN_ID);
+    expect(rpcSolana).toHaveBeenCalledWith(SCOPE, SOLANA_CHAIN_ID, {
+      tuning: expect.any(Object),
+      unattributed: true,
+    });
     expect(getSignatureStatuses).toHaveBeenCalledWith([SIGNATURE], {
       searchTransactionHistory: true,
     });
@@ -347,9 +390,10 @@ describe("Solana signatures", () => {
       value: [makeSignatureStatus("finalized")],
     });
 
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: SIGNATURE, chainId: SOLANA_CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE
+    );
 
     expect(allVerified).toBe(true);
     expect(results[0].status).toBe("success");
@@ -364,6 +408,7 @@ describe("Solana signatures", () => {
 
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE,
       FAST_RETRY
     );
 
@@ -375,6 +420,7 @@ describe("Solana signatures", () => {
   it("a signature the cluster does not report verifies as not_found", async () => {
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
 
@@ -389,6 +435,7 @@ describe("Solana signatures", () => {
 
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
 
@@ -403,6 +450,7 @@ describe("Solana signatures", () => {
 
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
 
@@ -418,6 +466,7 @@ describe("Solana signatures", () => {
 
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE,
       FAST_RETRY
     );
 
@@ -426,66 +475,64 @@ describe("Solana signatures", () => {
     expect(getSignatureStatuses).toHaveBeenCalledTimes(3);
   });
 
-  it("unresolvable Solana chain (resolveRpcConfig returns null) fails closed as timeout", async () => {
-    resolveRpcConfig.mockResolvedValueOnce(null);
+  it("a Solana chain the scope cannot route fails closed as timeout", async () => {
+    rpcSolana.mockRejectedValueOnce(
+      new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, SOLANA_CHAIN_ID)
+    );
 
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: SIGNATURE, chainId: SOLANA_CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE
+    );
 
     expect(allVerified).toBe(false);
     expect(results[0].status).toBe("timeout");
     expect(getSignatureStatuses).not.toHaveBeenCalled();
   });
 
-  it("the Solana manager gets the resolved endpoints and the same retry budget as the EVM manager", async () => {
-    const { RpcProviderManager } = await import("@/lib/rpc/providers");
-    const { SolanaProviderManager } = await import(
-      "@/lib/rpc/providers/solana"
-    );
+  it("both managers come from the caller's scope with the same retry budget", async () => {
     executeWithFailover.mockResolvedValue(makeReceipt(1));
     getSignatureStatuses.mockResolvedValue({
       value: [makeSignatureStatus("confirmed")],
     });
 
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: CHAIN_ID },
-      { hash: SIGNATURE, chainId: SOLANA_CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [
+        { hash: HASH, chainId: CHAIN_ID },
+        { hash: SIGNATURE, chainId: SOLANA_CHAIN_ID },
+      ],
+      SCOPE
+    );
 
-    const evmConfig = vi
-      .mocked(RpcProviderManager)
-      .mock.calls.at(-1)?.[0].config;
-    const solanaConfig = vi
-      .mocked(SolanaProviderManager)
-      .mock.calls.at(-1)?.[0].config;
-    expect(evmConfig).toBeDefined();
-    expect(solanaConfig).toMatchObject({
-      primaryRpcUrl: "https://solana-primary.example",
-      fallbackRpcUrl: "https://solana-fallback.example",
-      maxRetries: evmConfig?.maxRetries,
-      timeoutMs: evmConfig?.timeoutMs,
-    });
+    const evmRequest = rpcEvm.mock.calls.at(-1);
+    const solanaRequest = rpcSolana.mock.calls.at(-1);
+    expect(evmRequest?.[0]).toBe(SCOPE);
+    expect(evmRequest?.[1]).toBe(CHAIN_ID);
+    expect(evmRequest?.[2]?.tuning).toBeDefined();
+    expect(evmRequest?.[2]?.unattributed).toBe(true);
+    expect(solanaRequest?.[0]).toBe(SCOPE);
+    expect(solanaRequest?.[1]).toBe(SOLANA_CHAIN_ID);
+    expect(solanaRequest?.[2]).toEqual(evmRequest?.[2]);
     expect(allVerified).toBe(true);
     expect(results.map((result) => result.hash)).toEqual([HASH, SIGNATURE]);
   });
 
   it("groups signatures by chainId, building one Solana manager per distinct chain", async () => {
-    const { SolanaProviderManager } = await import(
-      "@/lib/rpc/providers/solana"
-    );
     getSignatureStatuses.mockResolvedValue({
       value: [makeSignatureStatus("confirmed")],
     });
 
-    await verifyExecutionReceipts([
-      { hash: SIGNATURE, chainId: SOLANA_CHAIN_ID },
-      { hash: `${SIGNATURE.slice(0, -1)}X`, chainId: SOLANA_CHAIN_ID },
-      { hash: SIGNATURE, chainId: SOLANA_DEVNET_CHAIN_ID },
-    ]);
+    await verifyExecutionReceipts(
+      [
+        { hash: SIGNATURE, chainId: SOLANA_CHAIN_ID },
+        { hash: `${SIGNATURE.slice(0, -1)}X`, chainId: SOLANA_CHAIN_ID },
+        { hash: SIGNATURE, chainId: SOLANA_DEVNET_CHAIN_ID },
+      ],
+      SCOPE
+    );
 
-    // one construction per distinct chainId (2), not per signature (3)
-    expect(SolanaProviderManager).toHaveBeenCalledTimes(2);
+    // one manager per distinct chainId (2), not per signature (3)
+    expect(rpcSolana).toHaveBeenCalledTimes(2);
     expect(getSignatureStatuses).toHaveBeenCalledTimes(3);
   });
 
@@ -500,6 +547,7 @@ describe("Solana signatures", () => {
 
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
 
@@ -514,6 +562,7 @@ describe("Solana signatures", () => {
 
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
 
@@ -531,6 +580,7 @@ describe("Solana signatures", () => {
 
     const { allVerified, results } = await verifyExecutionReceipts(
       [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
 
@@ -548,6 +598,7 @@ describe("Solana signatures", () => {
 
     await verifyExecutionReceipts(
       [{ hash: SIGNATURE, chainId: SOLANA_CHAIN_ID }],
+      SCOPE,
       SINGLE_ROUND
     );
 
@@ -576,21 +627,16 @@ describe("sponsored (wrapped) executions", () => {
     executeWithFailover.mockReset();
     fallbackGetTransactionReceipt.mockReset();
     fallbackGetTransactionReceipt.mockResolvedValue(null);
-    resolveRpcConfig.mockReset();
-    resolveRpcConfig.mockResolvedValue({
-      chainId: CHAIN_ID,
-      chainName: "ethereum",
-      primaryRpcUrl: "https://primary.example",
-      fallbackRpcUrl: "https://fallback.example",
-    });
+    useEngineManagers();
   });
 
   it("fails closed when the outer relayer transaction reverted", async () => {
     executeWithFailover.mockResolvedValueOnce(makeReceipt(0));
 
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE
+    );
 
     expect(allVerified).toBe(false);
     expect(results[0]).toMatchObject({ verified: false, status: "reverted" });
@@ -610,9 +656,10 @@ describe("sponsored (wrapped) executions", () => {
       ])
     );
 
-    const { allVerified, results } = await verifyExecutionReceipts([
-      { hash: HASH, chainId: CHAIN_ID },
-    ]);
+    const { allVerified, results } = await verifyExecutionReceipts(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      SCOPE
+    );
 
     expect(allVerified).toBe(true);
     expect(results[0]).toMatchObject({ verified: true, status: "success" });

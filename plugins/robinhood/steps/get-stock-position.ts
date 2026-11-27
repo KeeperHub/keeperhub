@@ -3,7 +3,7 @@ import "server-only";
 import { ethers } from "ethers";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcPurpose, rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
 import { getErrorMessage } from "@/lib/utils";
 import {
   runPluginStep,
@@ -75,7 +75,11 @@ async function stepHandler(
   const { token } = resolved;
 
   try {
-    const rpcManager = await getRpcProvider({ chainId });
+    const { manager: rpcManager } = await rpc.evm(
+      rpcScopeFromStep(input),
+      chainId,
+      { purpose: RpcPurpose.READ }
+    );
     const position = await rpcManager.executeWithFailover((provider) =>
       readPosition(provider, token, input.address)
     );

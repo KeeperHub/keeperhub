@@ -50,10 +50,16 @@ vi.mock("@/lib/rpc/network-utils", () => ({
 }));
 
 const mockExecuteWithFailover = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: () =>
-    Promise.resolve({ executeWithFailover: mockExecuteWithFailover }),
-  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: () =>
+      Promise.resolve({
+        manager: { executeWithFailover: mockExecuteWithFailover },
+      }),
+  },
 }));
 
 const mockFetch = vi.fn();

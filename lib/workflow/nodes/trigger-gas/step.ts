@@ -1,8 +1,15 @@
 import "server-only";
 
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
+import {
+  RpcPurpose,
+  RpcRouteError,
+  type RpcStepInput,
+  rpc,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 
 /**
  * Native cost, in wei, of the transaction that fired an on-chain trigger.
@@ -21,7 +28,8 @@ import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
  */
 export async function fetchTriggerTransactionGas(
   transactionHash: string,
-  network: string | number
+  network: string | number,
+  rpcInput: RpcStepInput
 ): Promise<string | null> {
   "use step";
 
@@ -31,7 +39,9 @@ export async function fetchTriggerTransactionGas(
       return null;
     }
 
-    const manager = await getRpcProvider({ chainId });
+    const { manager } = await rpc.evm(rpcScopeFromStep(rpcInput), chainId, {
+      purpose: RpcPurpose.READ,
+    });
     const receipt = await manager.executeWithFailover(
       (provider) => provider.getTransactionReceipt(transactionHash),
       "read"
@@ -44,6 +54,9 @@ export async function fetchTriggerTransactionGas(
     // which is the same figure the write steps record as their own gasUsed.
     return receipt.fee.toString();
   } catch (error) {
+    if (error instanceof RpcRouteError) {
+      return null;
+    }
     logSystemWarn(
       ErrorCategory.NETWORK_RPC,
       "[Trigger Gas] Could not read the receipt for the triggering transaction",

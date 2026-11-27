@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
+import { RpcRouteError, RpcRouteErrorCode } from "@/lib/rpc/engine";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { initializeSolanaWallet } from "@/lib/web3/wallet-helpers";
@@ -77,7 +78,6 @@ describe("sendRawSolanaInstructionCore", () => {
     vi.mocked(resolveOrganizationContext).mockResolvedValue({
       success: true,
       organizationId: "mock-org-id",
-      userId: "mock-user-id",
     } as never);
     vi.mocked(initializeSolanaWallet).mockResolvedValue({
       signer: { getPublicKey: vi.fn(), signTransaction: vi.fn() },
@@ -350,6 +350,19 @@ describe("sendRawSolanaInstructionCore", () => {
       broadcastAttempted: true,
     });
     expect((result as { error: string }).error).toContain("Simulation failed");
+  });
+
+  it("reports nothing sent when the RPC route cannot be resolved", async () => {
+    const routeError = new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, 103);
+    mockAdapter.sendTransaction.mockRejectedValue(routeError);
+
+    const result = await sendRawSolanaInstructionCore(validInput);
+
+    expect(result).toEqual({
+      success: false,
+      error: routeError.message,
+      broadcastAttempted: false,
+    });
   });
 
   it("rejects malformed base64 that would silently truncate", async () => {

@@ -11,7 +11,7 @@ import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcRouteError, rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { organizationHasWallet } from "@/lib/web3/wallet-helpers";
 
 /**
@@ -229,7 +229,10 @@ export async function POST(request: Request) {
     }
 
     // Fetch token metadata from the contract with retry/failover
-    const rpcManager = await getRpcProvider({ chainId });
+    const { manager: rpcManager } = await rpc.evm(
+      rpcScopeForOrganization(activeOrgId),
+      chainId
+    );
 
     let symbol: string;
     let name: string;
@@ -284,6 +287,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ token: newToken });
   } catch (error) {
+    if (error instanceof RpcRouteError) {
+      return apiError(error, "Failed to add token", 400);
+    }
     return apiError(error, "Failed to add token");
   }
 }

@@ -8,16 +8,18 @@ import { explorerConfigs } from "@/lib/db/schema";
 import { getAddressUrl, getTransactionUrl } from "@/lib/explorer";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
-  getRpcProvider,
-  getSolanaProvider,
-  isSolanaChain,
-} from "@/lib/rpc/provider-factory";
+  RpcPurpose,
+  type RpcScope,
+  rpc,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
-import { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
+import { getChainAdapter } from "@/lib/web3/chain-adapter";
+import type { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 import { validateChainTxHash } from "@/lib/web3/validate-chain-address";
 import {
   applyReadFailOnError,
@@ -96,11 +98,12 @@ export type GetTransactionInput = StepInput & GetTransactionCoreInput;
 async function fetchEvmTransaction(
   hash: string,
   chainId: number,
-  userId: string | undefined
+  scope: RpcScope
 ): Promise<GetTransactionResult> {
   let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId, userId });
+    const client = await rpc.evm(scope, chainId, { purpose: RpcPurpose.READ });
+    rpcManager = client.manager;
   } catch (error) {
     return {
       success: false,
@@ -147,19 +150,15 @@ async function fetchEvmTransaction(
 }
 
 /**
- * Solana branch: a fresh, userId-aware adapter is constructed directly
- * (bypassing getChainAdapter's chainId-only cache) so a user's custom RPC
- * preference is actually honored here, the same way getRpcProvider({chainId,
- * userId}) already honors it on the EVM branch above.
+ * Solana branch: the adapter resolves its route through the engine for this
+ * step's scope.
  */
 async function fetchSolanaTransaction(
   hash: string,
   chainId: number,
-  userId: string | undefined
+  scope: RpcScope
 ): Promise<GetTransactionResult> {
-  const adapter = new SolanaChainAdapter(chainId, () =>
-    getSolanaProvider({ chainId, userId })
-  );
+  const adapter = getChainAdapter(chainId, scope) as SolanaChainAdapter;
   const tx = await adapter.executeWithSolanaFailover((connection) =>
     connection.getTransaction(hash, {
       commitment: "confirmed",
@@ -209,7 +208,7 @@ async function fetchSolanaTransaction(
 async function stepHandler(
   input: GetTransactionInput
 ): Promise<GetTransactionResult> {
-  const { network, transactionHash, _context } = input;
+  const { network, transactionHash } = input;
 
   if (!transactionHash?.trim()) {
     return {
@@ -241,12 +240,12 @@ async function stepHandler(
     };
   }
 
-  const userId = await getRpcPreferenceUserId(_context?.executionId);
+  const scope = rpcScopeFromStep(input);
 
   try {
     return isSolanaChain(chainId)
-      ? await fetchSolanaTransaction(hash, chainId, userId)
-      : await fetchEvmTransaction(hash, chainId, userId);
+      ? await fetchSolanaTransaction(hash, chainId, scope)
+      : await fetchEvmTransaction(hash, chainId, scope);
   } catch (error) {
     const message = `Failed to fetch transaction: ${getErrorMessage(error)}`;
     return { success: false, error: message };

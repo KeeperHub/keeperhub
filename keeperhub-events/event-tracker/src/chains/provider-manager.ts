@@ -1,3 +1,4 @@
+import type { LookupFunction } from "node:net";
 import { ethers } from "ethers";
 import { WebSocket } from "ws";
 import { logger } from "../../lib/utils/logger";
@@ -8,6 +9,7 @@ import {
   decodeAggregate3,
   encodeAggregate3,
 } from "./multicall3";
+import { RpcUsageCounter } from "./rpc-route";
 
 /**
  * ChainProviderManager centralises WebSocket provider ownership and
@@ -418,7 +420,34 @@ export interface ChainProviderManagerOptions {
    * watchdog without advancing timers past the production threshold.
    */
   blockStalenessTimeoutMs?: number;
+  /** Where the manager writes its log lines. Defaults to the module logger. */
+  logger?: ManagerLogger;
+  /** Called for each connect, reconnect attempt, RPC call, failure and log delivered. */
+  onUsage?: ProviderUsageHook;
 }
+
+export interface ManagerLogger {
+  log(message: unknown): void;
+  warn(message: unknown): void;
+  error(message: unknown): void;
+}
+
+/** Discards every line, for managers whose traffic must not reach the logs. */
+export const silentLogger: ManagerLogger = {
+  log: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+};
+
+export interface ProviderUsageEvent {
+  chainId: number;
+  /** The endpoint the counted activity went to. */
+  url: string;
+  counter: RpcUsageCounter;
+  count: number;
+}
+
+export type ProviderUsageHook = (event: ProviderUsageEvent) => void;
 
 interface Subscriber {
   address: string; // normalized to lowercase
@@ -629,14 +658,21 @@ function newChainStats(): ChainStats {
  * the time the connection attempt resolves so the EventEmitter does not
  * re-throw synchronously.
  */
-const defaultFactory: ProviderFactory = (wssUrl) =>
-  new ethers.WebSocketProvider(() => {
-    const socket = new WebSocket(wssUrl);
+export function createWebSocketProvider(
+  wssUrl: string,
+  lookup?: LookupFunction,
+): ethers.WebSocketProvider {
+  return new ethers.WebSocketProvider(() => {
+    const socket = new WebSocket(wssUrl, lookup ? { lookup } : undefined);
     socket.on("error", () => {
       // intentionally empty - see comment on defaultFactory
     });
     return socket;
   });
+}
+
+const defaultFactory: ProviderFactory = (wssUrl) =>
+  createWebSocketProvider(wssUrl);
 
 const defaultOnPermanentFailure = (chainId: number): void => {
   logger.error(
@@ -677,6 +713,8 @@ export class ChainProviderManager {
   private readonly chains = new Map<number, ChainEntry>();
   private readonly factory: ProviderFactory;
   private readonly onPermanentFailure: (chainId: number) => void;
+  private readonly log: ManagerLogger;
+  private readonly onUsage: ProviderUsageHook | null;
   /**
    * Explicit override for the block-staleness threshold. Null means derive it
    * per chain; tests set a small value to exercise the watchdog.
@@ -704,6 +742,8 @@ export class ChainProviderManager {
     this.onPermanentFailure =
       opts.onPermanentFailure ?? defaultOnPermanentFailure;
     this.blockStalenessTimeoutOverrideMs = opts.blockStalenessTimeoutMs ?? null;
+    this.log = opts.logger ?? logger;
+    this.onUsage = opts.onUsage ?? null;
     let resolve!: () => void;
     const promise = new Promise<void>((r) => {
       resolve = r;
@@ -986,7 +1026,7 @@ export class ChainProviderManager {
     }
     this.chains.clear();
     if (errors.length > 0) {
-      logger.warn(
+      this.log.warn(
         `[ChainProviderManager] ${errors.length} provider destroy errors: ${errors
           .map(String)
           .join("; ")}`,
@@ -1107,6 +1147,7 @@ export class ChainProviderManager {
           }
         }
         await this.probeSubscriptionSupport(provider, entry, url);
+        this.recordUsage(entry, RpcUsageCounter.WS_CONNECTS, 1, url);
         return { provider, urlUsed: url };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1115,6 +1156,7 @@ export class ChainProviderManager {
         // reconnect loop, and embedded in the stack the listener registry
         // prints - so a raw URL here leaks through every one of them.
         failures.push(`${redactRpcUrl(url)}: ${message}`);
+        this.recordUsage(entry, RpcUsageCounter.ERRORS, 1, url);
         if (provider) {
           try {
             await provider.destroy();
@@ -1137,7 +1179,7 @@ export class ChainProviderManager {
     entry.provider = provider;
     entry.activeWssUrl = urlUsed;
     if (urlUsed !== entry.wssUrl) {
-      logger.warn(
+      this.log.warn(
         `[ChainProviderManager] chain=${entry.chainId} primary failed; running on fallback ${redactRpcUrl(urlUsed)}`,
       );
     }
@@ -1211,13 +1253,13 @@ export class ChainProviderManager {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `chain ${entry.chainId} (${urlUsed}): RPC does not support eth_subscribe: ${message}`,
+        `chain ${entry.chainId} (${redactRpcUrl(urlUsed)}): RPC does not support eth_subscribe: ${message}`,
       );
     }
     try {
       await provider.send("eth_unsubscribe", [filterId]);
     } catch (err) {
-      logger.warn(
+      this.log.warn(
         `[ChainProviderManager] chain=${entry.chainId} probe eth_unsubscribe failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
@@ -1386,7 +1428,7 @@ export class ChainProviderManager {
       return;
     }
     if (behind > GETLOGS_MAX_CATCHUP_BLOCKS) {
-      logger.warn(
+      this.log.warn(
         `[ChainProviderManager] chain=${entry.chainId} ${behind} blocks behind head; skipping to ${entry.headBlock} without fetching logs for the gap`,
       );
       // Counted, not only logged: a chain that repeatedly falls behind and
@@ -1504,7 +1546,7 @@ export class ChainProviderManager {
       // chain re-announces on every block and the counter carries the rest.
       entry.stats.reorgRewindsRefused += 1;
       if (entry.stats.reorgRewindsRefused === 1) {
-        logger.warn(
+        this.log.warn(
           `[ChainProviderManager] chain=${entry.chainId} block=${blockNumber} re-announced ${depth} blocks below the mark; deeper than REORG_REWIND_MAX_BLOCKS, not re-fetching`,
         );
       }
@@ -1540,7 +1582,7 @@ export class ChainProviderManager {
       return;
     }
     const listener = (err: Error): void => {
-      logger.warn(
+      this.log.warn(
         `[ChainProviderManager] chain=${entry.chainId} provider error: ${err.message}`,
       );
       this.triggerReconnect(entry, "provider_error", err.message);
@@ -1576,6 +1618,8 @@ export class ChainProviderManager {
     if (this.isDestroyed || entry.isReconnecting || !entry.provider) {
       return;
     }
+    const heartbeatUrl = entry.activeWssUrl;
+    this.recordUsage(entry, RpcUsageCounter.REQUESTS, 1, heartbeatUrl);
     try {
       await Promise.race([
         entry.provider.send("eth_blockNumber", []),
@@ -1592,7 +1636,8 @@ export class ChainProviderManager {
         message === "heartbeat timeout"
           ? "heartbeat_timeout"
           : "heartbeat_failure";
-      logger.warn(
+      this.recordUsage(entry, RpcUsageCounter.ERRORS, 1, heartbeatUrl);
+      this.log.warn(
         `[ChainProviderManager] chain=${entry.chainId} heartbeat failed: ${message}`,
       );
       this.triggerReconnect(entry, reason, message);
@@ -1674,7 +1719,7 @@ export class ChainProviderManager {
     if (age <= timeout) {
       return;
     }
-    logger.warn(
+    this.log.warn(
       `[ChainProviderManager] chain=${entry.chainId} no block for ${age}ms while heartbeat passing; treating subscription as dead and reconnecting`,
     );
     this.triggerReconnect(
@@ -1713,7 +1758,7 @@ export class ChainProviderManager {
     // via the logger, not via an await that callers have to handle.
     entry.reconnectPromise = this.reconnectLoop(entry, reason, message).catch(
       (err) => {
-        logger.error(
+        this.log.error(
           `[ChainProviderManager] chain=${entry.chainId} reconnect loop crashed: ${String(err)}`,
         );
       },
@@ -1725,6 +1770,8 @@ export class ChainProviderManager {
     reason: DisconnectReason,
     message: string,
   ): Promise<void> {
+    // Read before the first await: `reconnect` clears it.
+    const droppedUrl = entry.activeWssUrl ?? entry.wssUrl;
     try {
       // Fire disconnect handlers in parallel before the backoff begins.
       // Sequential await here lets one slow handler delay reconnect
@@ -1734,7 +1781,7 @@ export class ChainProviderManager {
           try {
             await handler({ chainId: entry.chainId, reason, message });
           } catch (err) {
-            logger.warn(
+            this.log.warn(
               `[ChainProviderManager] chain=${entry.chainId} disconnect handler threw: ${String(err)}`,
             );
           }
@@ -1754,14 +1801,15 @@ export class ChainProviderManager {
         if (this.isDestroyed) {
           return;
         }
+        this.recordUsage(entry, RpcUsageCounter.WS_RECONNECTS, 1, droppedUrl);
         try {
           await this.reconnect(entry);
-          logger.log(
+          this.log.log(
             `[ChainProviderManager] chain=${entry.chainId} reconnected on attempt ${attempt}`,
           );
           return;
         } catch (err) {
-          logger.warn(
+          this.log.warn(
             `[ChainProviderManager] chain=${entry.chainId} reconnect attempt ${attempt} failed: ${String(err)}`,
           );
           // Surface the most recent attempt error through /healthz so an
@@ -1773,7 +1821,7 @@ export class ChainProviderManager {
         }
       }
 
-      logger.error(
+      this.log.error(
         `[ChainProviderManager] chain=${entry.chainId} exhausted ${MAX_RECONNECT_ATTEMPTS} reconnect attempts`,
       );
       this.onPermanentFailure(entry.chainId);
@@ -1859,7 +1907,7 @@ export class ChainProviderManager {
     entry.provider = provider;
     entry.activeWssUrl = urlUsed;
     if (urlUsed !== entry.wssUrl) {
-      logger.warn(
+      this.log.warn(
         `[ChainProviderManager] chain=${entry.chainId} reconnected on fallback ${redactRpcUrl(urlUsed)}`,
       );
     }
@@ -1943,7 +1991,7 @@ export class ChainProviderManager {
         try {
           await sub.handler(result, blockNumber);
         } catch (err) {
-          logger.warn(
+          this.log.warn(
             `[ChainProviderManager] chain=${entry.chainId} state subscriber handler threw: ${String(err)}`,
           );
         }
@@ -1966,6 +2014,8 @@ export class ChainProviderManager {
     if (entry.multicall3 !== "unknown") {
       return entry.multicall3;
     }
+    const probeUrl = entry.activeWssUrl;
+    this.recordUsage(entry, RpcUsageCounter.REQUESTS, 1, probeUrl);
     try {
       const code = await this.sendWithTimeout(
         provider,
@@ -1976,13 +2026,14 @@ export class ChainProviderManager {
       const deployed = typeof code === "string" && code.length > 2;
       entry.multicall3 = deployed ? "present" : "absent";
       if (!deployed) {
-        logger.warn(
+        this.log.warn(
           `[ChainProviderManager] chain=${entry.chainId} no Multicall3 at ${MULTICALL3_ADDRESS}; state reads on this chain cost one eth_call per subscription`,
         );
       }
       return entry.multicall3;
     } catch (err) {
-      logger.warn(
+      this.recordUsage(entry, RpcUsageCounter.ERRORS, 1, probeUrl);
+      this.log.warn(
         `[ChainProviderManager] chain=${entry.chainId} Multicall3 probe failed, sampling one call per subscription this drain: ${String(err)}`,
       );
       return "unknown";
@@ -1997,6 +2048,7 @@ export class ChainProviderManager {
     blockTag: string,
   ): Promise<Array<Aggregate3Result | undefined>> {
     const results = new Array<Aggregate3Result | undefined>(subscribers.length);
+    const url = entry.activeWssUrl;
     let offset = 0;
     for (const chunk of chunkCalls(subscribers)) {
       const base = offset;
@@ -2005,6 +2057,7 @@ export class ChainProviderManager {
         break;
       }
       entry.stats.stateCalls += 1;
+      this.recordUsage(entry, RpcUsageCounter.REQUESTS, 1, url);
       try {
         const data = encodeAggregate3(
           chunk.map((sub) => ({
@@ -2024,7 +2077,8 @@ export class ChainProviderManager {
         }
       } catch (err) {
         entry.stats.stateCallErrors += 1;
-        logger.warn(
+        this.recordUsage(entry, RpcUsageCounter.ERRORS, 1, url);
+        this.log.warn(
           `[ChainProviderManager] chain=${entry.chainId} block=${blockTag} aggregate3 of ${chunk.length} call(s) failed, no sample this drain: ${String(err)}`,
         );
       }
@@ -2048,12 +2102,14 @@ export class ChainProviderManager {
     blockTag: string,
   ): Promise<Array<Aggregate3Result | undefined>> {
     const results = new Array<Aggregate3Result | undefined>(subscribers.length);
+    const url = entry.activeWssUrl;
     for (let i = 0; i < subscribers.length; i += 1) {
       if (entry.provider !== provider) {
         break;
       }
       const sub = subscribers[i];
       entry.stats.stateCalls += 1;
+      this.recordUsage(entry, RpcUsageCounter.REQUESTS, 1, url);
       try {
         const raw = await this.sendWithTimeout(
           provider,
@@ -2064,6 +2120,7 @@ export class ChainProviderManager {
         results[i] = { success: true, returnData: raw as string };
       } catch {
         entry.stats.stateCallErrors += 1;
+        this.recordUsage(entry, RpcUsageCounter.ERRORS, 1, url);
         results[i] = { success: false, returnData: "0x" };
       }
     }
@@ -2113,6 +2170,7 @@ export class ChainProviderManager {
     // a connection this range does not belong to, or throw a TypeError that
     // the catch below would report as an ordinary getLogs failure.
     const provider = entry.provider;
+    const url = entry.activeWssUrl;
     if (subscribers.length === 0 || !provider) {
       return false;
     }
@@ -2134,6 +2192,7 @@ export class ChainProviderManager {
         // than GETLOGS_ADDRESS_BATCH addresses is still several requests,
         // and requests are the quantity the provider bills.
         entry.stats.getLogsCalls += 1;
+        this.recordUsage(entry, RpcUsageCounter.REQUESTS, 1, url);
         entry.stats.getLogsCallsTotal += 1;
         // Raced against an explicit timeout for the same reason as the
         // probe in `probeSubscriptionSupport`: ethers gives no externally
@@ -2187,17 +2246,24 @@ export class ChainProviderManager {
       entry.stats.ranges += 1;
       entry.stats.blocksCovered += toBlock - fromBlock + 1;
       entry.stats.logsDispatched += logs.length;
+      this.recordUsage(
+        entry,
+        RpcUsageCounter.EVENTS_RECEIVED,
+        logs.length,
+        url,
+      );
       // The connection served a range, so whatever timeouts preceded it were
       // a slow upstream rather than a socket that stopped answering.
       entry.consecutiveGetLogsTimeouts = 0;
       return true;
     } catch (err) {
       entry.stats.getLogsErrors += 1;
+      this.recordUsage(entry, RpcUsageCounter.ERRORS, 1, url);
       const range =
         fromBlock === toBlock
           ? `block=${fromBlock}`
           : `blocks=${fromBlock}-${toBlock}`;
-      logger.warn(
+      this.log.warn(
         `[ChainProviderManager] chain=${entry.chainId} ${range} getLogs failed, will retry: ${String(err)}`,
       );
       if (err instanceof GetLogsTimeoutError) {
@@ -2270,7 +2336,7 @@ export class ChainProviderManager {
         entry.headBlock !== null && entry.lastProcessedBlock !== null
           ? Math.max(0, entry.headBlock - entry.lastProcessedBlock)
           : 0;
-      logger.log(
+      this.log.log(
         `[ChainProviderManager] getlogs-stats chain=${entry.chainId} blockIntervalMs=${interval} minRequestIntervalMs=${GETLOGS_MIN_INTERVAL_MS} statsIntervalMs=${STATS_LOG_INTERVAL_MS} getLogsCalls=${stats.getLogsCalls} getLogsErrors=${stats.getLogsErrors} blocksCovered=${stats.blocksCovered} ranges=${stats.ranges} blocksSkipped=${stats.blocksSkipped} reorgRewinds=${stats.reorgRewinds} reorgRewindsRefused=${stats.reorgRewindsRefused} blocksBehindHead=${behind} logsDispatched=${stats.logsDispatched} getLogsCallsTotal=${stats.getLogsCallsTotal} stateCalls=${stats.stateCalls} stateCallErrors=${stats.stateCallErrors}`,
       );
       stats.getLogsCalls = 0;
@@ -2283,6 +2349,23 @@ export class ChainProviderManager {
       stats.reorgRewindsRefused = 0;
       stats.stateCalls = 0;
       stats.stateCallErrors = 0;
+    }
+  }
+
+  /** Report activity to the usage hook. A throwing hook never reaches the caller. */
+  private recordUsage(
+    entry: ChainEntry,
+    counter: RpcUsageCounter,
+    count: number,
+    url: string | null,
+  ): void {
+    if (!this.onUsage || url === null || count <= 0) {
+      return;
+    }
+    try {
+      this.onUsage({ chainId: entry.chainId, url, counter, count });
+    } catch {
+      // Usage accounting must not disturb delivery.
     }
   }
 
@@ -2324,7 +2407,7 @@ export class ChainProviderManager {
         try {
           await sub.handler(log);
         } catch (err) {
-          logger.warn(
+          this.log.warn(
             `[ChainProviderManager] chain=${entry.chainId} subscriber handler threw: ${String(err)}`,
           );
         }

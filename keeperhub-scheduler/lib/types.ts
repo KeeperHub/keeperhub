@@ -4,6 +4,8 @@
  * Used by schedule-dispatcher, block-dispatcher, and executor
  */
 
+import type { RpcOrigin, RpcTransport } from "./rpc-route.js";
+
 // Schedule types
 export type Schedule = {
   id: string;
@@ -37,6 +39,25 @@ export type BlockWorkflow = {
   blockInterval: number;
 };
 
+/** One endpoint of an organization route. The url carries credentials. */
+export type RpcRouteEndpoint = {
+  url: string;
+  origin: RpcOrigin;
+  configId: string | null;
+  /** On an organization's endpoint: the only addresses it may be dialled at. */
+  addresses?: string[];
+};
+
+/** Endpoints a workflow listens on when its organization's route differs from KeeperHub's. */
+export type RpcRoute = {
+  key: string;
+  organizationId: string;
+  chainId: number;
+  transport: RpcTransport;
+  primary: RpcRouteEndpoint;
+  fallback?: RpcRouteEndpoint;
+};
+
 export type ChainConfig = {
   chainId: number;
   name: string;
@@ -66,6 +87,7 @@ export type FetchBlockWorkflowsResponse = {
     userId: string;
     organizationId: string | null;
     enabled: boolean;
+    rpcRoute?: RpcRoute;
     nodes: Array<{
       data?: {
         config?: {

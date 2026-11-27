@@ -4,6 +4,7 @@ vi.mock("server-only", () => ({}));
 
 import { type BN, BorshInstructionCoder } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
+import { RpcScopeKind } from "@/lib/rpc/engine";
 import { encodeAnchorInstruction, parseAnchorIdl } from "@/lib/web3/anchor-idl";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
@@ -323,7 +324,6 @@ describe("callSolanaProgramCore", () => {
     vi.mocked(resolveOrganizationContext).mockResolvedValue({
       success: true,
       organizationId: "mock-org-id",
-      userId: "mock-user-id",
     } as never);
     vi.mocked(initializeSolanaWallet).mockResolvedValue({
       signer: { getPublicKey: vi.fn(), signTransaction: vi.fn() },
@@ -343,6 +343,10 @@ describe("callSolanaProgramCore", () => {
       instruction: "do_thing",
     });
     expect(mockAdapter.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getChainAdapter).mock.calls[0]?.[1]).toMatchObject({
+      kind: RpcScopeKind.ORG,
+      organizationId: "mock-org-id",
+    });
     const options = mockAdapter.sendTransaction.mock.calls[0][3];
     expect(options.gasOverrides).toEqual({});
   });

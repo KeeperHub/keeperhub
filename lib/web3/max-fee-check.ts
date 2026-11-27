@@ -2,9 +2,9 @@ import "server-only";
 
 import { ethers } from "ethers";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
-import type { getRpcProvider } from "@/lib/rpc/provider-factory";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 
-type RpcManager = Awaited<ReturnType<typeof getRpcProvider>>;
+type RpcManager = RpcProviderManager;
 
 type FeeHistory = { baseFeePerGas?: string[] };
 

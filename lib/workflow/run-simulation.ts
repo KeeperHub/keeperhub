@@ -10,7 +10,7 @@ import { simulateCallSequence } from "@/lib/execute/simulate-sequence";
 import { MAX_SEQUENCE_CALLS } from "@/lib/execute/simulate-sequence-limits";
 import { isMutatingActionType } from "@/lib/mcp/action-type";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import {
   parseWeb3Connection,
   resolveSignerForNode,

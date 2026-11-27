@@ -203,7 +203,6 @@ describe("transferSplTokenCore", () => {
     vi.mocked(resolveOrganizationContext).mockResolvedValue({
       success: true,
       organizationId: "mock-org-id",
-      userId: "mock-user-id",
     } as never);
     vi.mocked(initializeSolanaWallet).mockResolvedValue({
       signer: { getPublicKey: vi.fn(), signTransaction: vi.fn() },

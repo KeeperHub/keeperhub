@@ -9,7 +9,12 @@ import {
   type ShowWhen,
 } from "@/lib/workflow/editor/show-when";
 import { LEGACY_ACTION_MAPPINGS } from "./legacy-mappings";
-import { integrationRegistry, registerIntegration } from "./registry-core";
+import {
+  integrationRegistry,
+  registerIntegration,
+  registeredIntegration,
+  registeredIntegrations,
+} from "./registry-core";
 
 // Side-effect import: forces every plugin's index.ts to evaluate (and call
 // registerIntegration) before any reader of this module runs. The Map and
@@ -55,6 +60,7 @@ export type ActionConfigFieldBase = {
     | "datetime" // Native date + time picker (stores an ISO 8601 string)
     | "select" // Dropdown select
     | "chain-select" // Dynamic chain selector that fetches from /api/chains
+    | "rpc-config-select" // Which RPC endpoints the node uses; derived for every action with a chain-select
     | "schema-builder" // Schema builder for structured output
     | "abi-function-select" // Dynamic dropdown that parses ABI and shows functions
     | "abi-function-args" // Dynamic inputs for function arguments based on selected ABI function
@@ -101,6 +107,11 @@ export type ActionConfigFieldBase = {
   // (e.g., "Ethereum Mainnet (Flashbots)") for chains with usePrivateMempoolRpc=true.
   // On selection, sets both the network field AND config.usePrivateMempool.
   showPrivateVariants?: boolean;
+
+  // For chain-select: false when the chain picks something other than RPC
+  // endpoints (an explorer, say). Such actions get no RPC selector and do not
+  // count as RPC users when an organization uses only its own endpoints.
+  rpcRouted?: boolean;
 
   // Example value for AI prompt generation
   example?: string;
@@ -485,14 +496,14 @@ export function parseActionId(actionId: string | undefined | null): {
 export function getIntegration(
   type: IntegrationType
 ): IntegrationPlugin | undefined {
-  return integrationRegistry.get(type);
+  return registeredIntegration(type);
 }
 
 /**
  * Get all registered integrations
  */
 export function getAllIntegrations(): IntegrationPlugin[] {
-  return Array.from(integrationRegistry.values());
+  return registeredIntegrations();
 }
 
 /**
@@ -508,7 +519,7 @@ export function getIntegrationTypes(): IntegrationType[] {
 export function getAllActions(): ActionWithFullId[] {
   const actions: ActionWithFullId[] = [];
 
-  for (const plugin of integrationRegistry.values()) {
+  for (const plugin of registeredIntegrations()) {
     for (const action of plugin.actions) {
       actions.push({
         ...action,
@@ -527,7 +538,7 @@ export function getAllActions(): ActionWithFullId[] {
 export function getActionsByCategory(): Record<string, ActionWithFullId[]> {
   const categories: Record<string, ActionWithFullId[]> = {};
 
-  for (const plugin of integrationRegistry.values()) {
+  for (const plugin of registeredIntegrations()) {
     for (const action of plugin.actions) {
       if (!categories[action.category]) {
         categories[action.category] = [];
@@ -557,7 +568,7 @@ export function findActionById(
   // First try parsing as a namespaced ID
   const parsed = parseActionId(actionId);
   if (parsed) {
-    const plugin = integrationRegistry.get(parsed.integration as IntegrationType);
+    const plugin = registeredIntegration(parsed.integration as IntegrationType);
     if (plugin) {
       const action = plugin.actions.find((a) => a.slug === parsed.slug);
       if (action) {
@@ -578,7 +589,7 @@ export function findActionById(
   }
 
   // Fall back to legacy label-based lookup (exact label match)
-  for (const plugin of integrationRegistry.values()) {
+  for (const plugin of registeredIntegrations()) {
     const action = plugin.actions.find((a) => a.label === actionId);
     if (action) {
       return {
@@ -597,7 +608,7 @@ export function findActionById(
  */
 export function getIntegrationLabels(): Record<IntegrationType, string> {
   const labels: Record<string, string> = {};
-  for (const plugin of integrationRegistry.values()) {
+  for (const plugin of registeredIntegrations()) {
     labels[plugin.type] = plugin.label;
   }
   return labels as Record<IntegrationType, string>;
@@ -608,7 +619,7 @@ export function getIntegrationLabels(): Record<IntegrationType, string> {
  */
 export function getIntegrationDescriptions(): Record<IntegrationType, string> {
   const descriptions: Record<string, string> = {};
-  for (const plugin of integrationRegistry.values()) {
+  for (const plugin of registeredIntegrations()) {
     descriptions[plugin.type] = plugin.description;
   }
   return descriptions as Record<IntegrationType, string>;
@@ -627,7 +638,7 @@ export function getSortedIntegrationTypes(): IntegrationType[] {
 export function getAllDependencies(): Record<string, string> {
   const deps: Record<string, string> = {};
 
-  for (const plugin of integrationRegistry.values()) {
+  for (const plugin of registeredIntegrations()) {
     if (plugin.dependencies) {
       Object.assign(deps, plugin.dependencies);
     }
@@ -872,7 +883,7 @@ export function buildExampleConfig(
 export function generateAIActionPrompts(): string {
   const lines: string[] = [];
 
-  for (const plugin of integrationRegistry.values()) {
+  for (const plugin of registeredIntegrations()) {
     for (const action of plugin.actions) {
       const fullId = computeActionId(plugin.type, action.slug);
       const exampleConfig = buildExampleConfig(fullId, action.configFields);

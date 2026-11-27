@@ -5,8 +5,8 @@ import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
 import { rawToUi, resolveForDisplay } from "@/lib/web3/ui-multiplier";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
+import { RpcPurpose, rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
@@ -42,7 +42,7 @@ type CheckAllowanceResult =
 async function stepHandler(
   input: CheckAllowanceInput
 ): Promise<CheckAllowanceResult> {
-  const { network, ownerAddress, spenderAddress, _context } = input;
+  const { network, ownerAddress, spenderAddress } = input;
 
   // Get chain ID
   let chainId: number;
@@ -87,13 +87,13 @@ async function stepHandler(
     };
   }
 
-  // Get userId from execution context (for user RPC preferences)
-  const userId = await getRpcPreferenceUserId(_context?.executionId);
+  const scope = rpcScopeFromStep(input);
 
   // Resolve RPC provider with failover support
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId, userId });
+    const client = await rpc.evm(scope, chainId, { purpose: RpcPurpose.READ });
+    rpcManager = client.manager;
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -109,13 +109,14 @@ async function stepHandler(
       destinationError: true, error: getErrorMessage(error) };
   }
 
-  const adapter = getChainAdapter(chainId);
+  const adapter = getChainAdapter(chainId, scope);
 
   try {
     const uiMultiplier = await resolveForDisplay(
       (op) => adapter.executeWithFailover(rpcManager, op),
       chainId,
-      tokenAddress
+      tokenAddress,
+      rpcManager.cacheKey
     );
 
     const [allowanceRaw, decimals, symbol] = await adapter.executeWithFailover(

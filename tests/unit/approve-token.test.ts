@@ -76,16 +76,20 @@ vi.mock("drizzle-orm", () => ({
 
 // Mock RPC resolution
 const mockGetChainIdFromNetwork = vi.fn();
-const mockGetRpcProvider = vi.fn();
+const mockRpcEvm = vi.fn();
 
 vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: (...args: unknown[]) =>
     mockGetChainIdFromNetwork(...args),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: () => false,
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: (...args: unknown[]) => mockRpcEvm(...args),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 // Mock explorer
@@ -280,14 +284,15 @@ function makeInput(
 
 function setupMocks(): void {
   mockGetChainIdFromNetwork.mockReturnValue(1);
-  mockGetRpcProvider.mockResolvedValue({
-    resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
-    executeWithFailover: (fn: (p: unknown) => unknown) => fn({} as any),
+  mockRpcEvm.mockResolvedValue({
+    manager: {
+      resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
+      executeWithFailover: (fn: (p: unknown) => unknown) => fn({} as any),
+    },
   });
   mockResolveOrgContext.mockResolvedValue({
     success: true,
     organizationId: "org-1",
-    userId: undefined,
   });
   mockGetWalletAddress.mockResolvedValue("0xWalletAddress");
   mockInitializeSigner.mockResolvedValue({

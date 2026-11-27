@@ -68,3 +68,12 @@ export class Logger {
 }
 
 export const logger = new Logger(console);
+
+export type LogSink = Pick<Logger, "log" | "warn" | "error">;
+
+/** For organization routes: nothing about them may reach stdout. */
+export const silentLogger: LogSink = {
+  log: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+};

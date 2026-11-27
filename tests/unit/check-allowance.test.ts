@@ -47,16 +47,22 @@ vi.mock("drizzle-orm", () => ({
 
 // Mock RPC resolution
 const mockGetChainIdFromNetwork = vi.fn();
-const mockGetRpcProvider = vi.fn();
+const mockRpcManager = vi.fn();
 
 vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: (...args: unknown[]) =>
     mockGetChainIdFromNetwork(...args),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: () => false,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 // Mock ethers Contract methods
@@ -119,7 +125,7 @@ function makeInput(
 
 function setupMocks(): void {
   mockGetChainIdFromNetwork.mockReturnValue(1);
-  mockGetRpcProvider.mockResolvedValue({
+  mockRpcManager.mockResolvedValue({
     executeWithFailover: (fn: (provider: unknown) => unknown) =>
       fn(new (class MockProvider {})()),
   });
@@ -245,7 +251,7 @@ describe("check-allowance - error handling", () => {
 
   it("fails when RPC provider resolution fails", async () => {
     setupMocks();
-    mockGetRpcProvider.mockRejectedValue(
+    mockRpcManager.mockRejectedValue(
       new Error("RPC config for chain 1 not found or not enabled")
     );
 
@@ -281,7 +287,7 @@ describe("check-allowance - failOnError", () => {
 
   it("still hard-fails an unresolved RPC config when the toggle is off", async () => {
     setupMocks();
-    mockGetRpcProvider.mockRejectedValue(new Error("RPC config not found"));
+    mockRpcManager.mockRejectedValue(new Error("RPC config not found"));
 
     const result = (await checkAllowanceStep(
       makeInput({ failOnError: false })

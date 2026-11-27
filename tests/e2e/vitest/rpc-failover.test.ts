@@ -299,10 +299,6 @@ describe.skipIf(shouldSkip)("RPC Failover E2E", () => {
         throw new Error("Test chain not found");
       }
 
-      // These tests are skipped due to vitest ESM module transformation issues
-      // The resolveRpcConfig service works correctly (verified via tsx and unit tests)
-      // but vitest's dynamic import transforms the drizzle query builder incorrectly
-      // TODO: Investigate vitest ESM handling with drizzle-orm
       const config = await db
         .select()
         .from(chains)

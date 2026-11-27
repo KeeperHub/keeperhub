@@ -21,9 +21,14 @@ vi.mock("@/lib/rpc/network-utils", () => ({
     mockGetChainIdFromNetwork(...args),
 }));
 
-const mockGetRpcProvider = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
+const mockRpcEvm = vi.fn();
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: (...args: unknown[]) => mockRpcEvm(...args),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 const mockResolveOrganizationContext = vi.fn();
@@ -67,6 +72,7 @@ vi.mock("@/plugins/tempo/steps/tempo-tx-core", () => ({
   normalizeMemo: (...args: unknown[]) => mockNormalizeMemo(...args),
 }));
 
+import { RpcScopeKind } from "@/lib/rpc/engine";
 import {
   type TransferWithMemoInput,
   transferWithMemoStep,
@@ -96,9 +102,8 @@ beforeEach(() => {
   mockResolveOrganizationContext.mockResolvedValue({
     success: true,
     organizationId: "org1",
-    userId: "u1",
   });
-  mockGetRpcProvider.mockResolvedValue({});
+  mockRpcEvm.mockResolvedValue({ manager: {} });
   mockResolveTempoToken.mockResolvedValue({
     address: USDC,
     decimals: 6,
@@ -134,7 +139,10 @@ describe("transferWithMemoStep", () => {
     expect(mockSignAndBroadcast).toHaveBeenCalledWith(
       expect.objectContaining({
         organizationId: "org1",
-        userId: "u1",
+        rpcScope: expect.objectContaining({
+          kind: RpcScopeKind.ORG,
+          organizationId: "org1",
+        }),
         chainId: 42_431,
         calls: [{ to: USDC, data: "0xdata" }],
         feeToken: USDC,

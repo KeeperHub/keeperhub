@@ -3,6 +3,7 @@
  * Replaces server actions with API endpoints
  */
 
+import type { RpcEndpointUsageView } from "@/lib/analytics/types";
 import type { PlanName } from "@/lib/billing/plans";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import type {
@@ -11,6 +12,7 @@ import type {
 } from "@/lib/errors/execution-status";
 import type { Page } from "@/lib/pagination";
 import { refetchSidebarIfTriggerChanged } from "@/lib/refetch-sidebar";
+import type { RpcOrigin } from "@/lib/rpc/engine/types";
 import type { ActorCredential } from "@/lib/security/credential-label";
 import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
@@ -159,13 +161,43 @@ export class ApiError extends Error {
   status: number;
   // The response's own `message`, when it sent one (the `error` is a code).
   detail?: string;
+  // The response's machine-readable `code`, and its RPC coverage gaps.
+  code?: string;
+  gaps?: readonly { nodeLabel?: string; message?: string }[];
 
-  constructor(status: number, message: string, detail?: string) {
+  constructor(
+    status: number,
+    message: string,
+    detail?: string,
+    extra: Pick<ApiError, "code" | "gaps"> = {}
+  ) {
     super(message);
     this.status = status;
     this.name = "ApiError";
     this.detail = detail;
+    this.code = extra.code;
+    this.gaps = extra.gaps;
   }
+}
+
+const COVERAGE_GAPS_CODE = "COVERAGE_GAPS";
+const LISTED_GAPS = 3;
+
+// A save refused for RPC coverage names the steps it would leave without
+// an endpoint, so the person knows which nodes to change.
+function coverageRefusalMessage(error: ApiError): string {
+  const steps = (error.gaps ?? [])
+    .slice(0, LISTED_GAPS)
+    .map((gap) =>
+      gap.message
+        ? `"${gap.nodeLabel ?? "Unnamed step"}": ${gap.message}`
+        : `"${gap.nodeLabel ?? "Unnamed step"}"`
+    );
+  const more = (error.gaps?.length ?? 0) - steps.length;
+  const listed = more > 0 ? [...steps, `and ${more} more`] : steps;
+  return listed.length > 0
+    ? `${error.message} ${listed.join("; ")}`
+    : error.message;
 }
 
 // One toast for save failures, held long enough to read the reason; a later
@@ -181,6 +213,9 @@ export function workflowSaveErrorMessage(
   error: unknown,
   fallback: string
 ): string {
+  if (error instanceof ApiError && error.code === COVERAGE_GAPS_CODE) {
+    return coverageRefusalMessage(error);
+  }
   return error instanceof ApiError &&
     error.message === "INVALID_ACTION_CONFIG" &&
     error.detail
@@ -205,7 +240,11 @@ async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
     throw new ApiError(
       response.status,
       error.error || "Request failed",
-      typeof error.message === "string" ? error.message : undefined
+      typeof error.message === "string" ? error.message : undefined,
+      {
+        code: typeof error.code === "string" ? error.code : undefined,
+        gaps: Array.isArray(error.gaps) ? error.gaps : undefined,
+      }
     );
   }
 
@@ -940,6 +979,10 @@ export const workflowApi = {
         duration: string | null;
         iterationIndex: number | null;
         forEachNodeId: string | null;
+        rpcOrigin: RpcOrigin | null;
+        rpcConfigName: string | null;
+        rpcFailedOver: boolean | null;
+        rpcEndpoints: RpcEndpointUsageView[];
       }>;
     }>(`/api/workflows/executions/${executionId}/logs`),
 

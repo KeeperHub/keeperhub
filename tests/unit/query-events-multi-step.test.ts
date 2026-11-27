@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { mockGetAddressUrl, mockGetRpcProvider } = vi.hoisted(() => ({
+const { mockGetAddressUrl, mockRpcManager } = vi.hoisted(() => ({
   mockGetAddressUrl: vi.fn(),
-  mockGetRpcProvider: vi.fn(),
+  mockRpcManager: vi.fn(),
 }));
 
 vi.mock("@/lib/web3/chain-adapter", () => ({
@@ -28,9 +28,15 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   },
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: (chainId: number) => chainId === 101,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -129,7 +135,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGetAddressUrl.mockResolvedValue("");
   node = chain();
-  mockGetRpcProvider.mockResolvedValue(singleNodeRpc(node));
+  mockRpcManager.mockResolvedValue(singleNodeRpc(node));
 });
 
 describe("queryEventsStep - single event (existing configs)", () => {
@@ -286,7 +292,7 @@ describe("queryEventsStep - multiple events", () => {
     }
     expect(result.error).toContain("Event 3 (Transfer)");
     expect(result.error).toContain("'value'");
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcManager).not.toHaveBeenCalled();
   });
 });
 
@@ -366,7 +372,7 @@ describe("queryEventsStep - one event on an address list", () => {
       emitted(TOKEN, PAUSABLE, "Paused", [BOB], 160, 0),
       emitted(VAULT, PAUSABLE, "Unpaused", [BOB], 170, 0),
     ]);
-    mockGetRpcProvider.mockResolvedValue(singleNodeRpc(node));
+    mockRpcManager.mockResolvedValue(singleNodeRpc(node));
 
     const result = await queryEventsStep(listInput);
 
@@ -401,7 +407,7 @@ describe("queryEventsStep - one event on an address list", () => {
     node = new FakeLogNode(HEAD, [
       emitted(mixed, PAUSABLE, "Paused", [ALICE], 150, 1),
     ]);
-    mockGetRpcProvider.mockResolvedValue(singleNodeRpc(node));
+    mockRpcManager.mockResolvedValue(singleNodeRpc(node));
 
     const result = await queryEventsStep({
       ...listInput,
@@ -433,7 +439,7 @@ describe("queryEventsStep - one event on an address list", () => {
       success: false,
       error: "Solana is not supported for this action yet",
     });
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcManager).not.toHaveBeenCalled();
   });
 
   it("fails before any RPC call on a list that is not an array, even with failOnError off", async () => {
@@ -449,7 +455,7 @@ describe("queryEventsStep - one event on an address list", () => {
         'Contract Addresses got a single value, not a list. To give one, put it in brackets, like ["0xabc..."]. If it comes from Encode / Decode, a one-entry array comes back as a plain value; see the docs.'
       );
     }
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcManager).not.toHaveBeenCalled();
   });
 
   it("names the bad entry from 1", async () => {

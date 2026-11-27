@@ -11,6 +11,8 @@ import {
 import { validateWorkflowDeep } from "@/lib/mcp/validate-workflow-deep";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { resolveProtocolEventAddress } from "@/lib/workflow/protocol-event-address";
+import { failureResponse } from "@/lib/rpc/engine/org/http";
+import { workflowCoverageRefusal } from "@/lib/rpc/engine/org/service";
 
 export async function GET(
   request: Request,
@@ -50,6 +52,15 @@ export async function GET(
 
   if (!access.hasFullAccess) {
     return NextResponse.json({ ok: false, error: "FORBIDDEN" }, { status: 403 });
+  }
+
+  const rpcRefusal = await workflowCoverageRefusal(row.organizationId, {
+    id: row.id,
+    name: row.name,
+    nodes: row.nodes,
+  });
+  if (rpcRefusal) {
+    return failureResponse(rpcRefusal);
   }
 
   const { searchParams } = new URL(request.url);

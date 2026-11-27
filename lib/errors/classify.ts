@@ -5,6 +5,7 @@ import {
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { FUNDING_SHORTFALL_PATTERNS } from "@/lib/errors/funding-shortfall";
 import { ErrorCategory } from "@/lib/logging";
+import { ORG_RPC_FAILURE_PREFIX } from "@/lib/rpc/engine/org-rpc-error";
 
 export { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
@@ -333,6 +334,17 @@ const RULES: readonly Rule[] = [
     code: DEFAULT_SYSTEM_ERROR_CODE,
   })),
 
+  // External: an organization's own RPC endpoints are its chosen provider,
+  // so their exhaustion is not a platform fault. Must precede the rules below.
+  {
+    pattern: new RegExp(
+      `${ORG_RPC_FAILURE_PREFIX} (Solana )?RPC failed on (both endpoints|primary endpoint)`,
+      "i"
+    ),
+    errorCategory: ErrorCategory.NETWORK_RPC,
+    errorType: ExecutionErrorType.EXTERNAL,
+    code: null,
+  },
   // System: RPC endpoints are KeeperHub-managed infrastructure, so a failover
   // exhaustion is a platform fault, not a third-party dependency failure.
   {

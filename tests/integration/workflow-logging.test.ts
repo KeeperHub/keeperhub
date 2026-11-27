@@ -257,6 +257,15 @@ type FindManyOpts = {
   columns?: Record<string, boolean>;
 };
 
+const EXECUTION_ORG_ID = "org_1";
+const { findOrganizationIdMock } = vi.hoisted(() => ({
+  findOrganizationIdMock: vi.fn(),
+}));
+vi.mock("@/lib/workflow/executor/helpers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/workflow/executor/helpers")>()),
+  findOrganizationIdForExecution: findOrganizationIdMock,
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     query: {
@@ -309,6 +318,8 @@ vi.mock("@/lib/db", () => ({
 
 import { db } from "@/lib/db";
 import { logSystemError, logSystemWarn } from "@/lib/logging";
+import { orgScope, platformScope } from "@/lib/rpc/engine/scope";
+import { PlatformRpcPurpose } from "@/lib/rpc/engine/types";
 import {
   logStepCompleteDb,
   logWorkflowCompleteDb,
@@ -334,6 +345,7 @@ function getLogUpdate(): UpdateCall | undefined {
 // Tests exercising the KEEP-966 gate itself override with
 // mockResolvedValueOnce / mockImplementationOnce.
 beforeEach(() => {
+  findOrganizationIdMock.mockResolvedValue(EXECUTION_ORG_ID);
   verifyExecutionReceiptsMock.mockImplementation(
     (hashes: Array<{ hash: string; chainId: number }>) =>
       Promise.resolve({
@@ -896,10 +908,13 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
 
     // KEEP-966: verifyExecutionReceipts is called with exactly the tracked
     // hashes -- the on-chain gate ran, not a no-op.
-    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith([
-      { hash: "0xaaa", chainId: 1 },
-      { hash: "0xbbb", chainId: 1 },
-    ]);
+    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith(
+      [
+        { hash: "0xaaa", chainId: 1 },
+        { hash: "0xbbb", chainId: 1 },
+      ],
+      orgScope(EXECUTION_ORG_ID)
+    );
 
     const update = getExecUpdate();
     expect(update?.set.status).toBe("success");
@@ -929,6 +944,29 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
         verifiedAt: "2026-01-01T00:00:00.000Z",
       },
     ]);
+
+    clearExecution(executionId);
+  });
+
+  it("verifies on KeeperHub's endpoints when the run has no organization", async () => {
+    const executionId = "exec_without_organization";
+    findOrganizationIdMock.mockResolvedValueOnce(null);
+    recordTransactionHashIfPresent(
+      ctx({ executionId, nodeId: "swap-1", nodeName: "Swap" }),
+      { transactionHash: "0xccc", chainId: 1, network: "mainnet" }
+    );
+
+    await logWorkflowCompleteDb({
+      executionId,
+      status: "success",
+      startTime: Date.now() - 1000,
+    });
+
+    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith(
+      [{ hash: "0xccc", chainId: 1 }],
+      platformScope(PlatformRpcPurpose.NO_ORGANIZATION)
+    );
+    expect(getExecUpdate()?.set.status).toBe("success");
 
     clearExecution(executionId);
   });
@@ -1184,9 +1222,10 @@ describe("logWorkflowCompleteDb transactionHashes (KEEP-470)", () => {
 
     // Only the in-flight hash is verified - re-reading a hash from a step that
     // succeeded is not what decides whether this run stays open.
-    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith([
-      { hash: "0xinflight", chainId: 1 },
-    ]);
+    expect(verifyExecutionReceiptsMock).toHaveBeenCalledWith(
+      [{ hash: "0xinflight", chainId: 1 }],
+      orgScope(EXECUTION_ORG_ID)
+    );
     // ...but the approve's transaction is real and belongs on the record.
     // Storing only the failed step's hash would replace an obviously-empty
     // list with a plausible-looking partial one.

@@ -14,7 +14,7 @@ import { describe, expect, vi } from "vitest";
 // otherwise throw under vitest's Node runtime.
 vi.mock("server-only", () => ({}));
 
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
+import { createRpcProviderManager } from "@/lib/rpc/providers";
 import {
   createRpcUrlResolver,
   PUBLIC_RPCS,
@@ -48,12 +48,12 @@ const SEPOLIA_FALLBACK_URL = resolveRpcUrl(
 
 describe("Pyth Network on-chain integration (Sepolia)", () => {
   const makeProvider = () =>
-    getRpcProviderFromUrls(
-      SEPOLIA_PRIMARY_URL,
-      SEPOLIA_FALLBACK_URL,
-      CHAIN_ID_NUMBER,
-      "Sepolia (Pyth integration test)"
-    );
+    createRpcProviderManager({
+      primaryRpcUrl: SEPOLIA_PRIMARY_URL,
+      fallbackRpcUrl: SEPOLIA_FALLBACK_URL,
+      chainId: CHAIN_ID_NUMBER,
+      chainName: "Sepolia (Pyth integration test)",
+    });
 
   itOnchain(
     "get-price-unsafe: eth_call returns decodable price tuple",
@@ -65,7 +65,7 @@ describe("Pyth Network on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       const result = await provider.executeWithFailover(
         async (p) => await p.call({ to, data })
       );
@@ -102,7 +102,7 @@ describe("Pyth Network on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       const result = await provider.executeWithFailover(
         async (p) => await p.call({ to, data })
       );
@@ -139,7 +139,7 @@ describe("Pyth Network on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       const result = await provider.executeWithFailover(
         async (p) => await p.call({ to, data })
       );
@@ -176,7 +176,7 @@ describe("Pyth Network on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       const result = await provider.executeWithFailover(
         async (p) => await p.call({ to, data })
       );

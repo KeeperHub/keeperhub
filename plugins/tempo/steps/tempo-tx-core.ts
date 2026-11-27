@@ -38,7 +38,7 @@ import { checkStablecoinCalldataBatch } from "@/lib/execute/stablecoin-cap";
 import { isFundingShortfall } from "@/lib/errors/funding-shortfall";
 import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcPurpose, type RpcScope, rpc } from "@/lib/rpc/engine";
 import { resolveSignerMode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { getTurnkeySignerConfig } from "@/lib/turnkey/turnkey-client";
 import { getGasStrategy } from "@/lib/web3/gas-strategy";
@@ -104,7 +104,7 @@ type TurnkeyActivityResponse = {
 
 export type SignAndBroadcastParams = {
   organizationId: string;
-  userId?: string;
+  rpcScope: RpcScope;
   chainId: number;
   calls: TempoCall[];
   /** TIP-20 stablecoin the fee is drawn from (usually the transferred token). */
@@ -149,7 +149,7 @@ export type SignedTempoTx = {
 
 export type BroadcastStoredTempoTxParams = {
   chainId: number;
-  userId?: string;
+  rpcScope: RpcScope;
   /** The self-contained 0x76 blob from `signTempoTx` or a stored held payment. */
   serialized: string;
   /** When set, refuse to broadcast unless the blob still hashes to this value. */
@@ -405,7 +405,7 @@ async function waitForReceipt(
 export async function signTempoTx(
   params: SignTempoTxParams
 ): Promise<SignedTempoTx> {
-  const { organizationId, userId, chainId, calls, feeToken } = params;
+  const { organizationId, rpcScope, chainId, calls, feeToken } = params;
 
   if (!isTempoChain(chainId)) {
     throw new Error(`Chain ${chainId} is not a Tempo network`);
@@ -450,7 +450,9 @@ export async function signTempoTx(
   // about to consume.
   const nonceKey = deriveTempoNonceKey(params.executionId);
 
-  const rpcManager = await getRpcProvider({ chainId, userId });
+  const { manager: rpcManager } = await rpc.evm(rpcScope, chainId, {
+    purpose: RpcPurpose.WRITE,
+  });
   const [nonce, estimatedGas] = await Promise.all([
     readTempoNonce(rpcManager, from, nonceKey),
     estimateTempoGas(rpcManager, from, calls),
@@ -558,7 +560,7 @@ function isNodeEnvelopeRejection(message: string): boolean {
 export async function broadcastStoredTempoTx(
   params: BroadcastStoredTempoTxParams
 ): Promise<BroadcastStoredTempoTxResult> {
-  const { chainId, userId, serialized, expectedHash } = params;
+  const { chainId, rpcScope, serialized, expectedHash } = params;
   const waitForConfirmation = params.waitForConfirmation ?? true;
 
   if (!isTempoChain(chainId)) {
@@ -587,7 +589,9 @@ export async function broadcastStoredTempoTx(
     }
   }
 
-  const rpcManager = await getRpcProvider({ chainId, userId });
+  const { manager: rpcManager } = await rpc.evm(rpcScope, chainId, {
+    purpose: RpcPurpose.WRITE,
+  });
   let hash: string;
   try {
     hash = await rpcManager.executeWithFailover((provider) =>
@@ -672,14 +676,14 @@ export type TempoReceiptStatus = "confirmed" | "reverted" | "pending";
  */
 export async function checkTempoReceipt(params: {
   chainId: number;
-  userId?: string;
+  rpcScope: RpcScope;
   txHash: string;
 }): Promise<TempoReceiptStatus> {
-  const { chainId, userId, txHash } = params;
+  const { chainId, rpcScope, txHash } = params;
   if (!isTempoChain(chainId)) {
     throw new Error(`Chain ${chainId} is not a Tempo network`);
   }
-  const rpcManager = await getRpcProvider({ chainId, userId });
+  const { manager: rpcManager } = await rpc.evm(rpcScope, chainId);
   const receipt = await rpcManager.executeWithFailover((provider) =>
     provider.getTransactionReceipt(txHash)
   );
@@ -701,7 +705,7 @@ export async function signAndBroadcastTempoTx(
   const signed = await signTempoTx(params);
   const { hash } = await broadcastStoredTempoTx({
     chainId: params.chainId,
-    userId: params.userId,
+    rpcScope: params.rpcScope,
     serialized: signed.serialized,
     expectedHash: signed.hash,
     waitForConfirmation: true,

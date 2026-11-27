@@ -180,11 +180,9 @@ async function measureVolatility(
       coefficientOfVariation: cv,
       isVolatile: cv >= DEFAULT_CONFIG.volatilityThreshold,
     };
-  } catch (error) {
+  } catch {
     // If fee history fails (some chains don't support it), return non-volatile
-    logWarn("[GasStrategy] Failed to fetch fee history", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logWarn("[GasStrategy] Failed to fetch fee history");
     return {
       baseFees: [],
       mean: BigInt(0),
@@ -240,11 +238,9 @@ async function getPercentileFees(
     const priorityFee = rewards[Math.min(index, rewards.length - 1)];
 
     return { baseFee, priorityFee };
-  } catch (error) {
+  } catch {
     // Fallback if fee history fails
-    logWarn("[GasStrategy] Failed to get percentile fees", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logWarn("[GasStrategy] Failed to get percentile fees");
     const feeData = await runRpc(rpcManager, provider, (p) => p.getFeeData());
     return {
       baseFee: feeData.maxFeePerGas ?? parseGwei("50"),

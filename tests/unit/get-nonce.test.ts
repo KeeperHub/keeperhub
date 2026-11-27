@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const { SOLANA_CHAIN_ID, mockGetRpcProvider, mockGetTransactionCount } =
-  vi.hoisted(() => ({
+const { SOLANA_CHAIN_ID, mockRpcManager, mockGetTransactionCount } = vi.hoisted(
+  () => ({
     SOLANA_CHAIN_ID: 101,
-    mockGetRpcProvider: vi.fn(),
+    mockRpcManager: vi.fn(),
     mockGetTransactionCount: vi.fn(),
-  }));
+  })
+);
 
 vi.mock("@/lib/workflow/executor/step-handler", async () =>
   (await import("../mocks/step-mocks")).stepHandlerPassthrough()
@@ -52,9 +53,15 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   },
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: (chainId: number): boolean => chainId === SOLANA_CHAIN_ID,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 import {
@@ -77,7 +84,7 @@ function setCounts(latest: number, pending: number): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockGetRpcProvider.mockResolvedValue({
+  mockRpcManager.mockResolvedValue({
     executeWithFailover: (fn: (provider: unknown) => unknown) =>
       fn({ getTransactionCount: mockGetTransactionCount }),
   });
@@ -165,7 +172,7 @@ describe("getNonceStep - validation", () => {
         success: false,
         error: "Invalid Ethereum address: not-an-address",
       });
-      expect(mockGetRpcProvider).not.toHaveBeenCalled();
+      expect(mockRpcManager).not.toHaveBeenCalled();
       expect(mockGetTransactionCount).not.toHaveBeenCalled();
     }
   );
@@ -177,7 +184,7 @@ describe("getNonceStep - validation", () => {
       success: false,
       error: expect.stringContaining("Invalid block tag: finalized"),
     });
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcManager).not.toHaveBeenCalled();
   });
 
   it("hard-fails a Solana network even when the toggle is off", async () => {
@@ -186,7 +193,7 @@ describe("getNonceStep - validation", () => {
     );
 
     expect(result.success).toBe(false);
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcManager).not.toHaveBeenCalled();
   });
 });
 
@@ -223,7 +230,7 @@ describe("getNonceStep - failOnError", () => {
   });
 
   it("still hard-fails an unresolved RPC config when the toggle is off", async () => {
-    mockGetRpcProvider.mockRejectedValue(new Error("RPC config not found"));
+    mockRpcManager.mockRejectedValue(new Error("RPC config not found"));
 
     const result = await getNonceStep(makeInput({ failOnError: false }));
 

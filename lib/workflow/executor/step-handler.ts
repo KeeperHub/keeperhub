@@ -10,6 +10,10 @@ import { checkActionPlanGate } from "@/lib/features/plan-gate";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import { withPluginMetrics } from "@/lib/metrics/instrumentation/plugin";
 import { recordStepMetrics } from "@/lib/metrics/instrumentation/workflow";
+import {
+  readRpcAttribution,
+  runWithRpcAttribution,
+} from "@/lib/rpc/engine/step-attribution";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { redactSensitiveData } from "@/lib/utils/redact";
 import type { TriggerBlock } from "@/lib/web3/next-block-limits";
@@ -194,6 +198,7 @@ async function logStepComplete(
       outputRaw: output,
       error,
       executionId,
+      rpc: readRpcAttribution(),
     });
   } catch (err) {
     logSystemError(
@@ -285,16 +290,22 @@ export function withStepLogging<TInput extends StepInput, TOutput>(
   const context = input._context as StepContextWithWorkflow | undefined;
   const loggedInput = stripContext(input);
 
+  // The step gets its own RPC collector, read back when its log row completes.
+  const run = (): Promise<TOutput> =>
+    runWithRpcAttribution(() =>
+      withStepLoggingInner(loggedInput, context, stepLogic)
+    );
+
   // Enter ALS scope so any logUserError/logSystemError inside the plugin
   // step automatically picks up org/owner/workflow/plugin labels.
   if (context) {
     const integrationId = (input as Record<string, unknown>).integrationId;
     return runWithWorkflowErrorContext(
       errorContextFromStep(context, integrationId),
-      () => withStepLoggingInner(loggedInput, context, stepLogic)
+      run
     );
   }
-  return withStepLoggingInner(loggedInput, context, stepLogic);
+  return run();
 }
 
 /**

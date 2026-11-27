@@ -77,6 +77,11 @@ export interface RawWorkflow {
   userId?: string;
   organizationId?: string;
   enabled?: boolean;
+  /**
+   * Present only when the organization's route differs from KeeperHub's.
+   * Validated by `parseRpcRoute` in the mapper.
+   */
+  rpcRoute?: unknown;
 }
 
 export interface SyncData {

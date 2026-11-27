@@ -58,6 +58,9 @@ import {
   markRunRefused,
 } from "../lib/workflow/refused-runs";
 import { SHUTDOWN_TIMEOUT_MS } from "../lib/workflow/executor/runner-constants";
+
+/** How long shutdown waits for the last organization RPC usage write. */
+const RPC_USAGE_SHUTDOWN_FLUSH_MS = 5_000;
 import { loadWorkflowForExecution } from "../lib/workflow/load-for-execution";
 import {
   notExecutableRefusal,
@@ -1222,6 +1225,13 @@ async function listen(): Promise<void> {
   console.log(`[Executor] Runner image: ${CONFIG.runnerImage}`);
   console.log(`[Executor] K8s namespace: ${CONFIG.namespace}`);
 
+  // In-process runs count organization RPC usage here; this process never
+  // runs the Next.js instrumentation hook that starts the flusher.
+  const { flushRpcUsage, startRpcUsageFlusher } = await import(
+    "../lib/rpc/engine/usage-store"
+  );
+  startRpcUsageFlusher();
+
   // Wire up Prometheus dual-write. The Next.js app does this in
   // instrumentation.ts; the executor is a separate tsx-launched process and
   // never runs Next.js's instrumentation hook, so without this its
@@ -1439,6 +1449,14 @@ async function listen(): Promise<void> {
         `[Executor] Drain timed out with ${inFlight.size} message(s) still in flight; their rows are left for the reaper and the messages redeliver after the visibility timeout`
       );
     }
+    // Usage counted since the last periodic flush would otherwise be lost;
+    // bounded so a hung database cannot hold shutdown until the kill.
+    await Promise.race([
+      flushRpcUsage().catch(() => undefined),
+      new Promise((resolve) =>
+        setTimeout(resolve, RPC_USAGE_SHUTDOWN_FLUSH_MS).unref()
+      ),
+    ]);
     await queryClient.end();
     console.log("[Executor] Shutdown complete");
     process.exit(drained ? 0 : 1);

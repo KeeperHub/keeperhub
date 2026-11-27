@@ -20,6 +20,10 @@ import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  StepRpcEndpoint,
+  StepRpcEndpoints,
+} from "@/components/rpc/step-rpc-endpoint";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { api, type ExecutionSummary } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
@@ -35,6 +39,8 @@ import {
   OUTPUT_DISPLAY_CONFIGS,
   type OutputDisplayConfig,
 } from "@/lib/output-display-configs";
+import type { RpcEndpointUsageView } from "@/lib/analytics/types";
+import type { RpcOrigin } from "@/lib/rpc/engine/types";
 import { cn } from "@/lib/utils";
 import { startSerialPoll } from "@/lib/utils/serial-poll";
 import { getRelativeTime } from "@/lib/utils/time";
@@ -84,6 +90,10 @@ type ExecutionLog = {
   error: string | null;
   iterationIndex: number | null;
   forEachNodeId: string | null;
+  rpcOrigin: RpcOrigin | null;
+  rpcConfigName: string | null;
+  rpcFailedOver: boolean | null;
+  rpcEndpoints: RpcEndpointUsageView[];
 };
 
 type WorkflowExecution = ExecutionSummary;
@@ -880,7 +890,7 @@ function ExecutionLogEntry({
           <div className="flex items-center gap-3">
             {/* Step content */}
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {isExpanded ? (
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : (
@@ -889,6 +899,7 @@ function ExecutionLogEntry({
                 <span className="truncate font-medium text-sm transition-colors group-hover:text-foreground">
                   {log.nodeName || log.nodeType}
                 </span>
+                <StepRpcEndpoint step={log} />
                 {isSponsoredOutput(log.output) && (
                   <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 font-medium text-primary text-xs">
                     Gas sponsored
@@ -925,6 +936,7 @@ function ExecutionLogEntry({
               )
             )}
             {middleContent}
+            <StepRpcEndpoints endpoints={log.rpcEndpoints} />
             {isTruncatedOutput(log.output) ? (
               <TruncatedDataNotice
                 bytes={log.output.originalSize}
@@ -1151,6 +1163,10 @@ export function WorkflowRuns({
         duration: string | null;
         iterationIndex?: number | null;
         forEachNodeId?: string | null;
+        rpcOrigin?: RpcOrigin | null;
+        rpcConfigName?: string | null;
+        rpcFailedOver?: boolean | null;
+        rpcEndpoints?: RpcEndpointUsageView[];
       }>,
       _workflow?: {
         nodes: unknown;
@@ -1170,6 +1186,10 @@ export function WorkflowRuns({
         error: log.error,
         iterationIndex: log.iterationIndex ?? null,
         forEachNodeId: log.forEachNodeId ?? null,
+        rpcOrigin: log.rpcOrigin ?? null,
+        rpcConfigName: log.rpcConfigName ?? null,
+        rpcFailedOver: log.rpcFailedOver ?? null,
+        rpcEndpoints: log.rpcEndpoints ?? [],
       })),
     []
   );

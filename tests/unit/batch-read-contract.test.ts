@@ -37,16 +37,22 @@ vi.mock("drizzle-orm", () => ({
 
 // Mock RPC resolution
 const mockGetChainIdFromNetwork = vi.fn();
-const mockGetRpcProvider = vi.fn();
+const mockRpcManager = vi.fn();
 
 vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: (...args: unknown[]) =>
     mockGetChainIdFromNetwork(...args),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 // Mock ethers with enough fidelity for encoding/decoding tests
@@ -199,7 +205,7 @@ beforeEach(() => {
 
 function setupRpcMocks(chainId = 1): void {
   mockGetChainIdFromNetwork.mockReturnValue(chainId);
-  mockGetRpcProvider.mockResolvedValue({
+  mockRpcManager.mockResolvedValue({
     executeWithFailover: (fn: (provider: unknown) => unknown) =>
       fn(new (class MockProvider {})()),
   });
@@ -493,7 +499,7 @@ describe("batch-read-contract - uniform mode execution", () => {
 
   it("fails when RPC provider resolution fails", async () => {
     mockGetChainIdFromNetwork.mockReturnValue(99_999);
-    mockGetRpcProvider.mockRejectedValue(
+    mockRpcManager.mockRejectedValue(
       new Error("RPC config for chain 99999 not found or not enabled")
     );
 
@@ -884,7 +890,7 @@ describe("batch-read-contract - mixed mode execution", () => {
       }
       throw new Error(`Unknown network: ${network}`);
     });
-    mockGetRpcProvider.mockResolvedValue({
+    mockRpcManager.mockResolvedValue({
       executeWithFailover: (fn: (provider: unknown) => unknown) =>
         fn(new (class MockProvider {})()),
     });
@@ -1258,7 +1264,7 @@ describe("batch-read-contract - failOnError", () => {
 
   it("still hard-fails an unresolved RPC config when the toggle is off", async () => {
     mockGetChainIdFromNetwork.mockReturnValue(1);
-    mockGetRpcProvider.mockRejectedValue(new Error("RPC config not found"));
+    mockRpcManager.mockRejectedValue(new Error("RPC config not found"));
 
     const result = (await runBatch({
       ...uniformInput,

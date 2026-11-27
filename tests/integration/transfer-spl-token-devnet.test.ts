@@ -27,7 +27,6 @@ vi.mock("@/lib/web3/resolve-org-context", () => ({
   resolveOrganizationContext: vi.fn(async () => ({
     success: true,
     organizationId: "devnet-test",
-    userId: "devnet-test",
   })),
 }));
 
@@ -48,18 +47,19 @@ vi.mock("@/lib/web3/chain-adapter", async () => {
   const { SolanaChainAdapter } = await import(
     "@/lib/web3/chain-adapter/solana"
   );
-  const { getSolanaProviderFromUrls } = await import(
-    "@/lib/rpc/provider-factory"
+  const { createSolanaProviderManager } = await import(
+    "@/lib/rpc/providers/solana"
   );
   const { PUBLIC_RPCS } = await import("@/lib/rpc/rpc-config");
   return {
     getChainAdapter: vi.fn(
       () =>
         new SolanaChainAdapter(103, () =>
-          getSolanaProviderFromUrls(
-            PUBLIC_RPCS.SOLANA_DEVNET,
-            undefined,
-            "Solana Devnet"
+          Promise.resolve(
+            createSolanaProviderManager({
+              primaryRpcUrl: PUBLIC_RPCS.SOLANA_DEVNET,
+              chainName: "Solana Devnet",
+            })
           )
         )
     ),

@@ -8,7 +8,7 @@ import {
   VALIDATION_ERROR_CODES,
   type ValidationErrorCode,
 } from "@/lib/mcp/validate-workflow-codes";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { validateChainAddress } from "@/lib/web3/validate-chain-address";
 import { hasTemplateToken } from "@/lib/workflow/template-ref";
 

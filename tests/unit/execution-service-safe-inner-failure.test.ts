@@ -7,13 +7,22 @@ const mocks = vi.hoisted(() => {
   const set = vi.fn(() => ({ where }));
   const update = vi.fn(() => ({ set }));
   const verifyExecutionReceipts = vi.fn();
-  return { where, set, update, verifyExecutionReceipts };
+  const selectLimit = vi.fn();
+  const select = vi.fn(() => ({
+    from: () => ({ where: () => ({ limit: selectLimit }) }),
+  }));
+  return { where, set, update, select, selectLimit, verifyExecutionReceipts };
 });
 
 vi.mock("drizzle-orm", () => ({ eq: vi.fn(() => ({})) }));
-vi.mock("@/lib/db", () => ({ db: { update: mocks.update } }));
+vi.mock("@/lib/db", () => ({
+  db: { update: mocks.update, select: mocks.select },
+}));
 vi.mock("@/lib/db/schema", () => ({
-  directExecutions: { id: { name: "id" } },
+  directExecutions: {
+    id: { name: "id" },
+    organizationId: { name: "organization_id" },
+  },
 }));
 vi.mock("@/lib/utils/id", () => ({ generateId: vi.fn(() => "exec_test") }));
 vi.mock("@/lib/web3/verify-receipt", () => ({
@@ -27,9 +36,13 @@ import {
   completeExecution,
   failExecution,
 } from "@/app/api/execute/_lib/execution-service";
+import { orgScope } from "@/lib/rpc/engine/scope";
+
+const ORG_SCOPE = orgScope("org_1");
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.selectLimit.mockResolvedValue([{ organizationId: "org_1" }]);
   mocks.verifyExecutionReceipts.mockResolvedValue({
     results: [
       {
@@ -65,9 +78,10 @@ describe("failExecution Safe receipt handling", () => {
     });
 
     expect(outcome).toEqual({ status: "unconfirmed" });
-    expect(mocks.verifyExecutionReceipts).toHaveBeenCalledWith([
-      { hash: "0xsafe", chainId: 8453 },
-    ]);
+    expect(mocks.verifyExecutionReceipts).toHaveBeenCalledWith(
+      [{ hash: "0xsafe", chainId: 8453 }],
+      ORG_SCOPE
+    );
     expect(mocks.set).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "unconfirmed",
@@ -98,9 +112,10 @@ describe("completeExecution Safe receipt handling", () => {
     });
 
     expect(outcome.status).toBe("unconfirmed");
-    expect(mocks.verifyExecutionReceipts).toHaveBeenCalledWith([
-      { hash: "0xsafe", chainId: 8453 },
-    ]);
+    expect(mocks.verifyExecutionReceipts).toHaveBeenCalledWith(
+      [{ hash: "0xsafe", chainId: 8453 }],
+      ORG_SCOPE
+    );
     expect(mocks.set).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "unconfirmed",

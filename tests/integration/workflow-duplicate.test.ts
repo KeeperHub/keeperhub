@@ -54,6 +54,12 @@ const mockDbQuery = {
 const mockDbDelete = vi.fn().mockResolvedValue(undefined);
 const mockMemberLimit = vi.fn();
 
+// The RPC coverage check reads organization RPC tables this db stub lacks;
+// its refusals are covered in workflow-rpc-coverage-refusal.test.ts.
+vi.mock("@/lib/rpc/engine/org/http", () => ({
+  workflowCoverageResponse: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/lib/db", () => ({
   db: {
     query: mockDbQuery,

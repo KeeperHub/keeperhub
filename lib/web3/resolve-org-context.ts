@@ -5,10 +5,7 @@ import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getErrorMessage } from "@/lib/utils";
-import {
-  getOrganizationIdFromExecution,
-  rpcPreferenceUserId,
-} from "@/lib/workflow/executor/helpers";
+import { getOrganizationIdFromExecution } from "@/lib/workflow/executor/helpers";
 
 type WorkflowContext = {
   executionId?: string;
@@ -16,11 +13,10 @@ type WorkflowContext = {
 };
 
 /**
- * Resolve organizationId and userId from context.
+ * Resolve organizationId, and for a workflow run the run's user, from context.
  * When _context.organizationId is provided (direct execution), skip workflowExecutions lookup.
  * When _context.executionId is provided (workflow execution), derive org and user from execution.
- * userId is the RPC preference user (see rpcPreferenceUserId); executionUserId
- * is the run's user for attribution.
+ * executionUserId is the run's user, for attribution only.
  */
 export async function resolveOrganizationContext(
   _context: WorkflowContext,
@@ -30,7 +26,6 @@ export async function resolveOrganizationContext(
   | {
       success: true;
       organizationId: string;
-      userId: string | undefined;
       executionUserId?: string;
     }
   | { success: false; error: string }
@@ -64,12 +59,12 @@ export async function resolveOrganizationContext(
     }
   }
 
-  // Direct execution: no userId needed, use chain default RPC
+  // Direct execution: there is no run user to attribute.
   if (_context.organizationId) {
-    return { success: true, organizationId, userId: undefined };
+    return { success: true, organizationId };
   }
 
-  // Workflow execution: look up userId for RPC preferences
+  // Workflow execution: look up the run's user for attribution
   const executionId = _context.executionId;
   if (!executionId) {
     return {
@@ -90,7 +85,6 @@ export async function resolveOrganizationContext(
     return {
       success: true,
       organizationId,
-      userId: await rpcPreferenceUserId(execution.userId, organizationId),
       executionUserId: execution.userId,
     };
   } catch (error) {

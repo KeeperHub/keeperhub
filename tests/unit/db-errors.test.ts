@@ -4,6 +4,7 @@ import {
   curateDbError,
   isStatementTimeout,
   isUniqueViolation,
+  violatedConstraint,
 } from "@/lib/db/errors";
 
 /**
@@ -126,6 +127,21 @@ describe("pgErrorCode chain walk", () => {
     expect(isUniqueViolation(null)).toBe(false);
     expect(isUniqueViolation(undefined)).toBe(false);
     expect(isUniqueViolation("23505")).toBe(false);
+  });
+});
+
+describe("violatedConstraint", () => {
+  it("finds the driver's constraint name under a wrapper", () => {
+    const driver = Object.assign(new Error("duplicate"), {
+      code: "23505",
+      constraint_name: "uq_org_rpc_configs_default",
+    });
+    const wrapped = new Error("Failed query", { cause: driver });
+    expect(violatedConstraint(wrapped)).toBe("uq_org_rpc_configs_default");
+  });
+
+  it("is undefined when no link names a constraint", () => {
+    expect(violatedConstraint(new Error("plain"))).toBeUndefined();
   });
 });
 

@@ -59,9 +59,16 @@ vi.mock("@/plugins/web3/steps/batch-write-contract-core", () => ({
   buildCallsWithMeta: (...args: unknown[]) => mockBuildCallsWithMeta(...args),
 }));
 
-const mockGetRpcProvider = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
+const mockRpcManager = vi.fn();
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await mockRpcManager(...args),
+    }),
+  },
 }));
 
 const mockResolveSignerForNode = vi.fn();
@@ -72,6 +79,8 @@ vi.mock("@/lib/safe/signer-resolver", () => ({
 }));
 
 import { POST } from "@/app/api/gas/estimate/route";
+import { RpcRouteError, RpcRouteErrorCode } from "@/lib/rpc/engine/route-error";
+import { orgScope } from "@/lib/rpc/engine/scope";
 
 const WORK_ABI = JSON.stringify([
   {
@@ -133,7 +142,7 @@ function callFailureFlags(): boolean[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockGetRpcProvider.mockResolvedValue({
+  mockRpcManager.mockResolvedValue({
     executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
   });
   mockBuildCallsWithMeta.mockImplementation(defaultBuildCallsWithMeta);
@@ -168,6 +177,35 @@ describe("POST /api/gas/estimate - batch-write-contract", () => {
       [{ target: JOB_1, allowFailure: true, callData: "0xdeadbeef" }],
       { from: "0xwalletaddress1234567890123456789012345678" }
     );
+  });
+
+  it("estimates on the authenticated organization's RPC route", async () => {
+    await POST(
+      makeRequest({
+        chainId: 1,
+        actionSlug: "batch-write-contract",
+        config: { calls: JSON.stringify(SAMPLE_CALLS) },
+      })
+    );
+
+    expect(mockRpcManager).toHaveBeenCalledWith(orgScope("org-1"), 1);
+  });
+
+  it("answers 400 with the route error when the organization cannot reach the chain", async () => {
+    const routeError = new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, 1);
+    mockRpcManager.mockRejectedValueOnce(routeError);
+
+    const response = await POST(
+      makeRequest({
+        chainId: 1,
+        actionSlug: "batch-write-contract",
+        config: { calls: JSON.stringify(SAMPLE_CALLS) },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const data = (await response.json()) as { error: string };
+    expect(data.error).toBe(routeError.message);
   });
 
   it("derives allowFailure=true when isolateCallFailures is absent, matching the step's default", async () => {

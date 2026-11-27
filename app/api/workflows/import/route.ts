@@ -25,10 +25,12 @@ import {
   workflowExportV1Schema,
 } from "@/lib/workflow/export-schema";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
+import { stripOrgRpcSelection } from "@/lib/workflow/strip-org-rpc-selection";
 import {
   formatActionConfigValidationResponse,
   validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
+import { workflowCoverageResponse } from "@/lib/rpc/engine/org/http";
 
 const versionedBodySchema = z
   .object({ version: z.unknown() })
@@ -125,7 +127,11 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const exportPayload = parsed.data;
 
-    const importNodes = stripIntegrationsFromImportNodes(exportPayload.nodes);
+    // An export may come from any organization, so its pinned RPC configs
+    // are cleared along with its integrations.
+    const importNodes = stripOrgRpcSelection(
+      stripIntegrationsFromImportNodes(exportPayload.nodes)
+    );
     const sanitized = sanitizeWorkflowData(
       importNodes,
       exportPayload.edges as Record<string, unknown>[]
@@ -181,6 +187,15 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
 
     const workflowId = generateId();
+    const rpcRefusal = await workflowCoverageResponse(organizationId, {
+      id: workflowId,
+      name: exportPayload.workflow.name,
+      nodes: sanitized.nodes,
+    });
+    if (rpcRefusal) {
+      return rpcRefusal;
+    }
+
     const [newWorkflow] = await db
       .insert(workflows)
       .values({

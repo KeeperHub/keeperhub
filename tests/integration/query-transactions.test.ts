@@ -18,7 +18,7 @@ const {
   mockGetTransactionUrl,
   mockResolveExplorerUrlConfig,
   mockGetChainIdFromNetwork,
-  mockGetRpcProvider,
+  mockRpcEvm,
 } = vi.hoisted(() => ({
   mockParseResults: new Map<
     string,
@@ -37,7 +37,7 @@ const {
   mockGetTransactionUrl: vi.fn(),
   mockResolveExplorerUrlConfig: vi.fn((config: unknown) => config),
   mockGetChainIdFromNetwork: vi.fn(),
-  mockGetRpcProvider: vi.fn(),
+  mockRpcEvm: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -143,11 +143,11 @@ vi.mock("@/lib/rpc/network-utils", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Mock: @/lib/rpc/provider-factory
+// Mock: @/lib/rpc/engine
 // ---------------------------------------------------------------------------
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: mockGetRpcProvider,
-  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: { evm: mockRpcEvm, solana: vi.fn(), route: vi.fn() },
 }));
 
 // ---------------------------------------------------------------------------
@@ -259,9 +259,11 @@ function registerParseResult(
 // ---------------------------------------------------------------------------
 function setupDefaultMocks(): void {
   mockGetChainIdFromNetwork.mockReturnValue(1);
-  mockGetRpcProvider.mockResolvedValue({
-    executeWithFailover: (fn: (provider: unknown) => unknown) =>
-      fn({ getBlockNumber: mockGetBlockNumber }),
+  mockRpcEvm.mockResolvedValue({
+    manager: {
+      executeWithFailover: (fn: (provider: unknown) => unknown) =>
+        fn({ getBlockNumber: mockGetBlockNumber }),
+    },
   });
   mockFindFirstExplorer.mockResolvedValue(MOCK_EXPLORER_CONFIG);
   mockGetAddressUrl.mockReturnValue(
@@ -519,9 +521,7 @@ describe("queryTransactionsCore", () => {
   });
 
   it("returns error when RPC config is not available (chain disabled)", async () => {
-    mockGetRpcProvider.mockRejectedValue(
-      new Error("Chain 1 not found or not enabled")
-    );
+    mockRpcEvm.mockRejectedValue(new Error("Chain 1 not found or not enabled"));
 
     const result = await queryTransactionsCore(defaultInput());
 

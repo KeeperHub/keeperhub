@@ -2,7 +2,7 @@ import "server-only";
 
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcPurpose, rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
 import { getErrorMessage } from "@/lib/utils";
 import {
   runPluginStep,
@@ -83,7 +83,11 @@ async function stepHandler(
   const { token } = resolved;
 
   try {
-    const rpcManager = await getRpcProvider({ chainId });
+    const { manager: rpcManager } = await rpc.evm(
+      rpcScopeFromStep(input),
+      chainId,
+      { purpose: RpcPurpose.READ }
+    );
     // The feed directory is a third party that most tickers do not need: 35 of
     // 194 have a feed. Its being down must not take the whole guard down.
     let feed: ChainlinkFeed | undefined;

@@ -3,7 +3,7 @@ import {
   createPhantomExecution,
   failPhantomExecution,
 } from "../../lib/phantom";
-import { logger } from "../../lib/utils/logger";
+import { type LogSink, logger } from "../../lib/utils/logger";
 import {
   enqueueWorkflowBlockTrigger,
   enqueueWorkflowEventTrigger,
@@ -21,6 +21,7 @@ import {
   type ChainRegistration,
   registrationEndpoints,
 } from "../registrations";
+import type { UsageRecorder } from "../rpc-route/usage-meter";
 import type { BlockSource, ConnectionHealth, Endpoint } from "./block-source";
 import { createBlockSource } from "./source-factory";
 
@@ -35,6 +36,10 @@ export interface BlockIngestorDeps {
   sqs: SQSClient;
   sqsQueueUrl: string;
   dedup: DedupStore;
+  /** Defaults to the process logger; organization routes pass a silent one. */
+  logger?: LogSink;
+  /** Usage recorder per endpoint, aligned with the endpoint order. Organization routes only. */
+  endpointUsage?: readonly (UsageRecorder | undefined)[];
 }
 
 /**
@@ -62,10 +67,12 @@ export class BlockIngestor {
   private source: BlockSource | null = null;
   private decoders = new Map<string, AnchorEventDecoder | null>();
   private started = false;
+  private readonly log: LogSink;
 
   constructor(deps: BlockIngestorDeps) {
     this.deps = deps;
     this.registration = deps.registration;
+    this.log = deps.logger ?? logger;
   }
 
   async start(): Promise<void> {
@@ -80,6 +87,7 @@ export class BlockIngestor {
         commitment: this.registration.commitment,
         watchedProgramIds: watchedProgramIds(this.registration),
         onBlock: (block) => this.processBlock(block),
+        logger: this.log,
       },
       {
         geyser: this.registration.geyserEndpoint
@@ -94,7 +102,7 @@ export class BlockIngestor {
     );
     await this.source.start();
     this.started = true;
-    logger.log(
+    this.log.log(
       `[ingestor] chain ${this.registration.chainId} started (events=${this.registration.eventTriggers.length}, blocks=${this.registration.blockTriggers.length})`,
     );
   }
@@ -109,7 +117,7 @@ export class BlockIngestor {
     // isStarted() saying so. Clearing it first made that guard blind to the
     // exact failure it was written for.
     this.started = false;
-    logger.log(`[ingestor] chain ${this.registration.chainId} stopped`);
+    this.log.log(`[ingestor] chain ${this.registration.chainId} stopped`);
   }
 
   /**
@@ -155,7 +163,9 @@ export class BlockIngestor {
       registration.fallbackWssUrl === this.registration.fallbackWssUrl &&
       registration.commitment === this.registration.commitment &&
       registration.geyserEndpoint === this.registration.geyserEndpoint &&
-      registration.sourceMode === this.registration.sourceMode
+      registration.sourceMode === this.registration.sourceMode &&
+      JSON.stringify(registration.route ?? null) ===
+        JSON.stringify(this.registration.route ?? null)
     );
   }
 
@@ -164,7 +174,10 @@ export class BlockIngestor {
   }
 
   private endpoints(): Endpoint[] {
-    return registrationEndpoints(this.registration);
+    const usage = this.deps.endpointUsage;
+    return registrationEndpoints(this.registration).map((endpoint, index) =>
+      usage?.[index] ? { ...endpoint, usage: usage[index] } : endpoint,
+    );
   }
 
   /**
@@ -210,7 +223,7 @@ export class BlockIngestor {
         fire.signature,
       );
     } catch (err) {
-      logger.warn(
+      this.log.warn(
         `[ingestor] dedup read failed for ${fire.workflowId}/${fire.signature}, proceeding: ${formatError(err)}`,
       );
     }
@@ -233,7 +246,7 @@ export class BlockIngestor {
     // event is still marked: it is settled, and leaving it unmarked only buys
     // another admission round-trip when the block is re-processed.
     if (refused) {
-      logger.log(
+      this.log.log(
         `[ingestor] skipping refused event dispatch for ${fire.workflowId} (${refused})`,
       );
       await this.markProcessed(fire.workflowId, fire.signature);
@@ -243,7 +256,7 @@ export class BlockIngestor {
     // (the Redis dedup missed it). Enqueueing again would run it twice; the
     // fire is settled, so mark it like a refusal.
     if (alreadyExisted) {
-      logger.log(
+      this.log.log(
         `[ingestor] skipping duplicate event dispatch for ${dispatchKey} (already enqueued)`,
       );
       await this.markProcessed(fire.workflowId, fire.signature);
@@ -267,7 +280,7 @@ export class BlockIngestor {
       }
       throw err;
     }
-    logger.log(
+    this.log.log(
       `[ingestor] chain ${this.registration.chainId} enqueued event ${fire.workflowId}/${fire.signature.slice(0, 12)} (slot ${fire.payload.slot})`,
     );
     await this.markProcessed(fire.workflowId, fire.signature);
@@ -286,7 +299,7 @@ export class BlockIngestor {
         dedupKey,
       );
     } catch (err) {
-      logger.warn(
+      this.log.warn(
         `[ingestor] dedup read failed for ${fire.workflowId}/${dedupKey}, proceeding: ${formatError(err)}`,
       );
     }
@@ -303,14 +316,14 @@ export class BlockIngestor {
         dispatchKey,
       );
     if (refused) {
-      logger.log(
+      this.log.log(
         `[ingestor] skipping refused block dispatch for ${fire.workflowId} (${refused})`,
       );
       await this.markProcessed(fire.workflowId, dedupKey);
       return;
     }
     if (alreadyExisted) {
-      logger.log(
+      this.log.log(
         `[ingestor] skipping duplicate block dispatch for ${dispatchKey} (already enqueued)`,
       );
       await this.markProcessed(fire.workflowId, dedupKey);
@@ -334,7 +347,7 @@ export class BlockIngestor {
       }
       throw err;
     }
-    logger.log(
+    this.log.log(
       `[ingestor] chain ${this.registration.chainId} enqueued block ${fire.workflowId} (height ${fire.payload.blockHeight})`,
     );
     await this.markProcessed(fire.workflowId, dedupKey);
@@ -345,7 +358,7 @@ export class BlockIngestor {
     try {
       await this.deps.dedup.markProcessed(workflowId, key);
     } catch (err) {
-      logger.warn(
+      this.log.warn(
         `[ingestor] dedup mark failed for ${workflowId}/${key}: ${formatError(err)}`,
       );
     }

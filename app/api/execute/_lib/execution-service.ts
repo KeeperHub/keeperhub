@@ -7,6 +7,11 @@ import {
   directExecutions,
 } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { type RpcScope, rpcScopeForOrganization } from "@/lib/rpc/engine";
+import {
+  type RpcAttribution,
+  readRpcAttribution,
+} from "@/lib/rpc/engine/step-attribution";
 import { generateId } from "@/lib/utils/id";
 import type { RevertKind } from "@/lib/web3/decode-revert-error";
 import {
@@ -77,6 +82,24 @@ export async function markRunning(executionId: string): Promise<void> {
 }
 
 /**
+ * Which endpoints served this execution's RPC calls, read from the collector
+ * the route runs in. Empty when no RPC call was made, so nothing is written.
+ */
+function rpcAttributionColumns(): RpcAttribution | Record<string, never> {
+  return readRpcAttribution() ?? {};
+}
+
+/** Receipts are read on the routes of the organization that owns the execution. */
+async function executionRpcScope(executionId: string): Promise<RpcScope> {
+  const [row] = await db
+    .select({ organizationId: directExecutions.organizationId })
+    .from(directExecutions)
+    .where(eq(directExecutions.id, executionId))
+    .limit(1);
+  return rpcScopeForOrganization(row?.organizationId);
+}
+
+/**
  * KEEP-966: the single gate every direct-execute route must go through to
  * finalize an execution. Trusts nothing about `result` beyond the presence
  * of a transactionHash -- if one is present, it is independently
@@ -103,9 +126,10 @@ export async function completeExecution(
       status = "unconfirmed";
       error = "Unable to verify transaction: missing chainId";
     } else {
-      const { allVerified, results } = await verifyExecutionReceipts([
-        { hash: result.transactionHash, chainId: result.chainId },
-      ]);
+      const { allVerified, results } = await verifyExecutionReceipts(
+        [{ hash: result.transactionHash, chainId: result.chainId }],
+        await executionRpcScope(executionId)
+      );
       receipts = results.map((r) => ({
         hash: r.hash,
         chainId: r.chainId,
@@ -160,6 +184,7 @@ export async function completeExecution(
       // status = 'unconfirmed' (lib/execute/reconcile-executions.ts), not by a
       // null completedAt.
       completedAt: isTerminal ? new Date() : null,
+      ...rpcAttributionColumns(),
     })
     .where(eq(directExecutions.id, executionId));
 
@@ -212,9 +237,10 @@ export async function failExecution(
   // failure. Such a row remains unconfirmed until reconciliation can adjudicate
   // it with enough chain context.
   if (params.transactionHash && params.chainId !== undefined) {
-    const { results } = await verifyExecutionReceipts([
-      { hash: params.transactionHash, chainId: params.chainId },
-    ]);
+    const { results } = await verifyExecutionReceipts(
+      [{ hash: params.transactionHash, chainId: params.chainId }],
+      await executionRpcScope(executionId)
+    );
     receipts = results.map((r) => ({
       hash: r.hash,
       chainId: r.chainId,
@@ -300,6 +326,7 @@ export async function failExecution(
       // status = 'unconfirmed' (lib/execute/reconcile-executions.ts); an
       // unconfirmed row carries no completedAt because it has not finished.
       completedAt: status === "failed" ? new Date() : null,
+      ...rpcAttributionColumns(),
     })
     .where(eq(directExecutions.id, executionId));
 

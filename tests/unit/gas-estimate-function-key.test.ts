@@ -26,11 +26,18 @@ vi.mock("@/plugins/web3/steps/batch-write-contract-core", () => ({
   buildCallsWithMeta: vi.fn(),
 }));
 const estimateGas = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: vi.fn().mockResolvedValue({
-    executeWithFailover: (fn: (provider: unknown) => unknown) =>
-      fn({ estimateGas }),
-  }),
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: vi.fn().mockResolvedValue({
+      manager: {
+        executeWithFailover: (fn: (provider: unknown) => unknown) =>
+          fn({ estimateGas }),
+      },
+    }),
+  },
 }));
 
 import { POST } from "@/app/api/gas/estimate/route";

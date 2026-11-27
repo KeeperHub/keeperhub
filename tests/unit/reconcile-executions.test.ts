@@ -21,6 +21,7 @@ const {
   mockLogInfo,
   mockLogWarn,
   mockLogSystemWarn,
+  mockOrgFromExecution,
 } = vi.hoisted(() => ({
   mockVerify: vi.fn(),
   mockRecordFinished: vi.fn(),
@@ -28,6 +29,7 @@ const {
   mockLogInfo: vi.fn(),
   mockLogWarn: vi.fn(),
   mockLogSystemWarn: vi.fn(),
+  mockOrgFromExecution: vi.fn(),
 }));
 
 type Row = Record<string, unknown>;
@@ -100,6 +102,10 @@ vi.mock("@/lib/web3/verify-receipt", () => ({
     `On-chain verification failed for ${results.filter((r) => !r.verified).length} transaction`,
 }));
 
+vi.mock("@/lib/workflow/executor/helpers", () => ({
+  findOrganizationIdForExecution: mockOrgFromExecution,
+}));
+
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({
   recordWorkflowExecutionFinished: mockRecordFinished,
   recordWorkflowExecutionError: mockRecordError,
@@ -117,6 +123,8 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 import { reconcileUnconfirmedExecutions } from "@/lib/execute/reconcile-executions";
+import { orgScope, platformScope } from "@/lib/rpc/engine/scope";
+import { PlatformRpcPurpose } from "@/lib/rpc/engine/types";
 
 const dialect = new PgDialect();
 const render = (fragment: SQL | undefined) => {
@@ -134,9 +142,12 @@ const HASH = "0xabc";
 const minutesAgo = (minutes: number) =>
   new Date(NOW.getTime() - minutes * 60_000);
 
+const ORG_ID = "org_1";
+
 function directRow(overrides: Row = {}): Row {
   return {
     id: "de_1",
+    organizationId: ORG_ID,
     transactionHash: HASH,
     network: String(CHAIN_ID),
     receipts: [],
@@ -149,6 +160,7 @@ function workflowRow(overrides: Row = {}): Row {
   return {
     id: "we_1",
     workflowId: "wf_1",
+    organizationId: ORG_ID,
     transactionHashes: [
       { hash: HASH, nodeId: "n1", nodeName: "Transfer", chainId: CHAIN_ID },
     ],
@@ -233,9 +245,10 @@ describe("direct executions", () => {
       stillUnconfirmed: 0,
       deferred: 0,
     });
-    expect(mockVerify).toHaveBeenCalledWith([
-      { hash: HASH, chainId: CHAIN_ID },
-    ]);
+    expect(mockVerify).toHaveBeenCalledWith(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      orgScope(ORG_ID)
+    );
     const [update] = directUpdates();
     expect(update.values).toEqual({
       status: "completed",
@@ -385,6 +398,43 @@ describe("workflow runs", () => {
       orgSlug: "org-a",
       errorType: "na",
     });
+  });
+
+  it("reads a run's receipts on its organization's routes", async () => {
+    verifyResolves("success");
+
+    await run([], [workflowRow()]);
+
+    expect(mockVerify).toHaveBeenCalledWith(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      orgScope(ORG_ID)
+    );
+    expect(mockOrgFromExecution).not.toHaveBeenCalled();
+  });
+
+  it("resolves the organization through the workflow for a run that predates the column", async () => {
+    verifyResolves("success");
+    mockOrgFromExecution.mockResolvedValueOnce("org_legacy");
+
+    await run([], [workflowRow({ organizationId: null })]);
+
+    expect(mockOrgFromExecution).toHaveBeenCalledWith("we_1");
+    expect(mockVerify).toHaveBeenCalledWith(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      orgScope("org_legacy")
+    );
+  });
+
+  it("verifies a run with no organization on KeeperHub's endpoints", async () => {
+    verifyResolves("success");
+    mockOrgFromExecution.mockResolvedValueOnce(null);
+
+    await run([], [workflowRow({ organizationId: null })]);
+
+    expect(mockVerify).toHaveBeenCalledWith(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      platformScope(PlatformRpcPurpose.NO_ORGANIZATION)
+    );
   });
 
   it("emits no finished sample when another writer settled the row first", async () => {

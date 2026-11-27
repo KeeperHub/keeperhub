@@ -5,7 +5,13 @@ import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 import { ethers } from "ethers";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  RPC_SELECTION_CONFIG_KEY,
+  RpcPurpose,
+  rpc,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import {
   executeContractCallAsRole,
   executeContractCallAsSafe,
@@ -80,6 +86,7 @@ export type TradeStockTokenCoreInput = {
   poolHooks?: string;
   deadlineSeconds?: string;
   web3Connection?: string;
+  [RPC_SELECTION_CONFIG_KEY]?: string;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -194,6 +201,7 @@ async function tradeStockTokenCoreImpl(
     return refuse(orgCtx.error);
   }
   const { organizationId } = orgCtx;
+  const rpcScope = rpcScopeFromStep(input, organizationId);
 
   const fee = Number(input.poolFee);
   const tickSpacing = Number(input.poolTickSpacing);
@@ -211,9 +219,13 @@ async function tradeStockTokenCoreImpl(
     );
   }
 
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId });
+    const rpcClient = await rpc.evm(rpcScope, chainId, {
+      purpose: RpcPurpose.WRITE,
+    });
+    rpcManager = rpcClient.manager;
+    await rpcManager.resolveActiveRpcUrl();
   } catch (error) {
     return refuse(getErrorMessage(error));
   }
@@ -247,7 +259,12 @@ async function tradeStockTokenCoreImpl(
   // Shares convert to raw units; USDG does not scale. A sell is sized in
   // shares and a buy's minimum is expressed in shares, so both cross the
   // multiplier and both must be converted or the trade is off by it.
-  const multiplier = await resolveForWrite(runFailover, chainId, token.address);
+  const multiplier = await resolveForWrite(
+    runFailover,
+    chainId,
+    token.address,
+    rpcManager.cacheKey
+  );
   if (!multiplier.ok) {
     return refuse(getErrorMessage(multiplier.error));
   }
@@ -324,11 +341,10 @@ async function tradeStockTokenCoreImpl(
     return refuse(`Failed to resolve Web3 Connection: ${getErrorMessage(error)}`);
   }
 
-  const rpcUrl = rpcManager.getProvider()._getConnection().url;
   let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
   let signerAddress: string;
   try {
-    signer = await initializeWalletSigner(organizationId, rpcUrl, chainId);
+    signer = await initializeWalletSigner(organizationId, rpcManager);
     signerAddress = await getOrganizationWalletAddress(organizationId);
   } catch (error) {
     return refuse(
@@ -371,13 +387,12 @@ async function tradeStockTokenCoreImpl(
   }
 
   try {
-    const adapter = getChainAdapter(chainId);
+    const adapter = getChainAdapter(chainId, rpcScope);
     const txContext: TransactionContext = {
       organizationId,
       executionId: input._context?.executionId ?? "direct-trade",
       workflowId: input._context?.workflowId,
       chainId,
-      rpcUrl,
       rpcManager,
     };
 

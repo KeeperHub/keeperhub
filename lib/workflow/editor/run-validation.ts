@@ -82,6 +82,8 @@ export function mapWorkflowValidationIssues(
   });
 }
 
+const CONFLICT_STATUS = 409;
+
 async function fetchValidationResult(
   workflowId: string,
   fetcher: WorkflowValidationFetcher,
@@ -96,14 +98,20 @@ async function fetchValidationResult(
     return null;
   }
 
-  if (!response.ok) {
-    onError("Could not validate the workflow before running it");
-    return null;
-  }
-
   const payload = (await response.json().catch(() => null)) as {
     result?: WorkflowValidationResult;
+    error?: unknown;
   } | null;
+
+  if (!response.ok) {
+    // A conflict names what to fix, such as steps left without an RPC route.
+    onError(
+      response.status === CONFLICT_STATUS && typeof payload?.error === "string"
+        ? payload.error
+        : "Could not validate the workflow before running it"
+    );
+    return null;
+  }
 
   if (!payload?.result) {
     onError("Workflow validation returned an unexpected response");

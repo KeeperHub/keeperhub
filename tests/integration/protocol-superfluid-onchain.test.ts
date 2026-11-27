@@ -29,8 +29,10 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import type { ProtocolAction, ProtocolContract } from "@/lib/protocol-registry";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  createRpcProviderManager,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import {
   createRpcUrlResolver,
   PUBLIC_RPCS,
@@ -199,13 +201,13 @@ async function resolveEstimateGasError(
 describe("Superfluid on-chain integration", () => {
   let manager: RpcProviderManager;
 
-  beforeAll(async () => {
-    manager = await getRpcProviderFromUrls(
-      SEPOLIA_PRIMARY_URL,
-      SEPOLIA_FALLBACK_URL,
-      SEPOLIA_CHAIN_ID,
-      "sepolia"
-    );
+  beforeAll(() => {
+    manager = createRpcProviderManager({
+      primaryRpcUrl: SEPOLIA_PRIMARY_URL,
+      fallbackRpcUrl: SEPOLIA_FALLBACK_URL,
+      chainId: SEPOLIA_CHAIN_ID,
+      chainName: "sepolia",
+    });
   });
 
   // -- helpers -------------------------------------------------------------

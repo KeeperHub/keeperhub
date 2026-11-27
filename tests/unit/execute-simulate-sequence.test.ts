@@ -11,7 +11,7 @@ const spies = vi.hoisted(() => ({
   send: vi.fn(),
   getChainIdFromNetwork: vi.fn(),
   getOrganizationWalletAddress: vi.fn(),
-  getRpcProvider: vi.fn(),
+  rpcManager: vi.fn(),
   isSolanaChain: vi.fn(),
   chainsLookup: vi.fn(() => Promise.resolve([{ symbol: "ETH" }])),
   supportedTokensLookup: vi.fn(() => Promise.resolve([] as unknown[])),
@@ -25,8 +25,18 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   getChainIdFromNetwork: spies.getChainIdFromNetwork,
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: spies.getRpcProvider,
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: {
+    evm: async (...args: unknown[]) => ({
+      manager: await spies.rpcManager(...args),
+    }),
+  },
+}));
+
+vi.mock("@/lib/rpc/solana-chains", () => ({
   isSolanaChain: spies.isSolanaChain,
 }));
 
@@ -149,7 +159,7 @@ beforeEach(() => {
   spies.getChainIdFromNetwork.mockReturnValue(84_532);
   spies.isSolanaChain.mockReturnValue(false);
   spies.supportedTokensLookup.mockResolvedValue([]);
-  spies.getRpcProvider.mockResolvedValue({
+  spies.rpcManager.mockResolvedValue({
     executeWithFailover: (operation: (p: unknown) => unknown) =>
       operation({ send: spies.send }),
   });

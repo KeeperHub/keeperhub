@@ -19,6 +19,7 @@ import {
 import { SCOPE_MCP_READ, SCOPE_MCP_WRITE } from "@/lib/mcp/oauth-scopes";
 import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
+import { runWithRpcAttribution } from "@/lib/rpc/engine/step-attribution";
 import { transferFundsCore } from "@/plugins/web3/steps/transfer-funds-core";
 import { transferTokenCore } from "@/plugins/web3/steps/transfer-token-core";
 import { validateApiKey } from "../_lib/auth";
@@ -44,7 +45,7 @@ import type { ExecuteResponse } from "../_lib/types";
 import { validateTokenFields, validateTransferInput } from "../_lib/validate";
 import { requireWallet } from "../_lib/wallet-check";
 
-export async function POST(request: Request): Promise<NextResponse> {
+async function handlePost(request: Request): Promise<NextResponse> {
   // 1. Auth
   const apiKeyCtx = await validateApiKey(request);
   if ("error" in apiKeyCtx) {
@@ -364,4 +365,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     ),
     rateLimit
   );
+}
+
+/** Runs in an RPC collector so the execution row records its endpoints. */
+export function POST(request: Request): Promise<NextResponse> {
+  return runWithRpcAttribution(() => handlePost(request));
 }

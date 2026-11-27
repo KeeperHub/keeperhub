@@ -69,10 +69,15 @@ export function createBlockSource(
       // between themselves, so serialize here rather than relying on the
       // members never producing the same transaction.
       const onBlock = serializeBlocks(opts.onBlock);
-      return new CompositeSource(opts.chainId, opts.endpoints, [
-        new SignaturesSource({ ...opts, onBlock }),
-        new GetBlockSource({ ...opts, watchedProgramIds: [], onBlock }),
-      ]);
+      return new CompositeSource(
+        opts.chainId,
+        opts.endpoints,
+        [
+          new SignaturesSource({ ...opts, onBlock }),
+          new GetBlockSource({ ...opts, watchedProgramIds: [], onBlock }),
+        ],
+        opts.logger,
+      );
     }
     return new SignaturesSource(opts);
   }

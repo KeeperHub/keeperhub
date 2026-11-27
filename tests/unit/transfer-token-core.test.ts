@@ -78,13 +78,22 @@ vi.mock("@/lib/rpc/network-utils", () => ({
 }));
 
 const mockExecuteWithFailover = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: vi.fn().mockImplementation(() =>
-    Promise.resolve({
-      resolveActiveRpcUrl: vi.fn().mockResolvedValue("https://rpc.example.com"),
-      executeWithFailover: mockExecuteWithFailover,
-    })
-  ),
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        manager: {
+          resolveActiveRpcUrl: vi
+            .fn()
+            .mockResolvedValue("https://rpc.example.com"),
+          executeWithFailover: mockExecuteWithFailover,
+        },
+      })
+    ),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/explorer", () => ({
@@ -108,7 +117,6 @@ vi.mock("@/lib/web3/resolve-org-context", () => ({
   resolveOrganizationContext: vi.fn().mockResolvedValue({
     success: true,
     organizationId: "org-1",
-    userId: undefined,
   }),
 }));
 

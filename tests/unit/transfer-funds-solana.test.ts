@@ -52,7 +52,6 @@ describe("transferFundsCore - Solana early branch", () => {
     vi.mocked(resolveOrganizationContext).mockResolvedValue({
       success: true,
       organizationId: "mock-org-id",
-      userId: "mock-user-id",
     } as any);
 
     const mockSigner = { getPublicKey: vi.fn(), signTransaction: vi.fn() };

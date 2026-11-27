@@ -9,7 +9,7 @@
  * only a value that actually is a SQLSTATE -- see `isSqlState`.
  */
 
-import { MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
+import { findInErrorChain, MAX_CAUSE_DEPTH } from "@/lib/errors/cause-chain";
 
 export type CuratedDbError = { message: string; status: number };
 
@@ -117,10 +117,33 @@ export function isUniqueViolation(err: unknown): boolean {
   return pgErrorCode(err) === UNIQUE_VIOLATION;
 }
 
+/**
+ * The constraint a unique violation hit, for a table with more than one
+ * unique rule. postgres-js reports it as `constraint_name` on the driver
+ * error, somewhere down the cause chain.
+ */
+export function violatedConstraint(err: unknown): string | undefined {
+  const named = findInErrorChain(
+    err,
+    (candidate) =>
+      typeof (candidate as { constraint_name?: unknown }).constraint_name ===
+      "string"
+  );
+  return (named as { constraint_name?: string } | undefined)?.constraint_name;
+}
+
+/** Postgres `foreign_key_violation`. */
+const FOREIGN_KEY_VIOLATION = "23503";
+
+/** True when a caught DB error is a Postgres foreign key violation. */
+export function isForeignKeyViolation(err: unknown): boolean {
+  return pgErrorCode(err) === FOREIGN_KEY_VIOLATION;
+}
+
 /** Default curated response per Postgres SQLSTATE code. */
 const PG_CODE_DEFAULTS: Record<string, CuratedDbError> = {
   [UNIQUE_VIOLATION]: { message: "This record already exists.", status: 409 },
-  "23503": {
+  [FOREIGN_KEY_VIOLATION]: {
     message: "A related record is missing or still in use.",
     status: 409,
   },

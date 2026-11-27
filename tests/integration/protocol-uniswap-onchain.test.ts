@@ -10,7 +10,7 @@
  *   2. Individual CHAIN_SEPOLIA_*_RPC env vars (dev override)
  *   3. Public Sepolia RPC default (last resort)
  *
- * Uses getRpcProviderFromUrls + executeWithFailover so primary RPC failures
+ * Uses createRpcProviderManager + executeWithFailover so primary RPC failures
  * transparently fail over to the fallback URL - same failover machinery
  * deployed services use.
  *
@@ -32,7 +32,7 @@ import { describe, expect, vi } from "vitest";
 // otherwise throw under vitest's Node runtime.
 vi.mock("server-only", () => ({}));
 
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
+import { createRpcProviderManager } from "@/lib/rpc/providers";
 import {
   createRpcUrlResolver,
   PUBLIC_RPCS,
@@ -75,12 +75,12 @@ const SEPOLIA_FALLBACK_URL = resolveRpcUrl(
 
 describe("Uniswap V3 on-chain integration (Sepolia)", () => {
   const makeProvider = () =>
-    getRpcProviderFromUrls(
-      SEPOLIA_PRIMARY_URL,
-      SEPOLIA_FALLBACK_URL,
-      CHAIN_ID_NUMBER,
-      "Sepolia (Uniswap V3 integration test)"
-    );
+    createRpcProviderManager({
+      primaryRpcUrl: SEPOLIA_PRIMARY_URL,
+      fallbackRpcUrl: SEPOLIA_FALLBACK_URL,
+      chainId: CHAIN_ID_NUMBER,
+      chainName: "Sepolia (Uniswap V3 integration test)",
+    });
 
   // -- factory ---------------------------------------------------------------
 
@@ -98,7 +98,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       const result = await provider.executeWithFailover(
         async (p) => await p.call({ to, data })
       );
@@ -123,7 +123,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       const result = await provider.executeWithFailover(
         async (p) => await p.call({ to, data })
       );
@@ -145,7 +145,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.call({ to, data })
@@ -170,7 +170,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.call({ to, data })
@@ -195,7 +195,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.estimateGas({ to, data, from: TEST_ADDRESS })
@@ -220,7 +220,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.estimateGas({ to, data, from: TEST_ADDRESS })
@@ -245,7 +245,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.estimateGas({ to, data, from: TEST_ADDRESS })
@@ -313,7 +313,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
           chainId: CHAIN_ID,
         });
 
-        const provider = await makeProvider();
+        const provider = makeProvider();
         try {
           const gas = await provider.executeWithFailover(
             async (p) => await p.estimateGas({ to, data, from: TEST_ADDRESS })
@@ -348,7 +348,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.call({ to, data })
@@ -379,7 +379,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.call({ to, data })
@@ -414,7 +414,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.estimateGas({ to, data, from: TEST_ADDRESS })
@@ -447,7 +447,7 @@ describe("Uniswap V3 on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.estimateGas({ to, data, from: TEST_ADDRESS })

@@ -7,7 +7,12 @@ import {
 } from "@solana/web3.js";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
+import {
+  RPC_SELECTION_CONFIG_KEY,
+  RpcRouteError,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import type { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
@@ -55,6 +60,7 @@ export type SendRawSolanaInstructionCoreInput = {
    * so the value moved is not derivable from the instruction data.
    */
   maxSol?: string;
+  [RPC_SELECTION_CONFIG_KEY]?: string;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -356,7 +362,10 @@ async function sendRawSolanaInstructionCoreImpl(
 
   try {
     const submitted = await submitSolanaInstructionTx({
-      adapter: getChainAdapter(chainId) as SolanaChainAdapter,
+      adapter: getChainAdapter(
+        chainId,
+        rpcScopeFromStep(input, orgCtx.organizationId)
+      ) as SolanaChainAdapter,
       solanaSigner: wallet.signer,
       feePayer: walletPk,
       data,
@@ -385,7 +394,8 @@ async function sendRawSolanaInstructionCoreImpl(
     return {
       success: false,
       error: getErrorMessage(error),
-      broadcastAttempted: true,
+      // No route means nothing was sent.
+      broadcastAttempted: !(error instanceof RpcRouteError),
     };
   }
 }

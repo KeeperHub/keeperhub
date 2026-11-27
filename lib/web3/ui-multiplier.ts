@@ -128,8 +128,14 @@ export type MultiplierResult =
   | { ok: true; multiplier: bigint }
   | { ok: false; error: unknown };
 
-function cacheKey(chainId: number, tokenAddress: string): string {
-  return `${chainId}:${tokenAddress.toLowerCase()}`;
+// Keyed by the route that read it too: an organization's own endpoint could
+// answer anything, and its answer must not reach another route's caller.
+function cacheKey(
+  chainId: number,
+  tokenAddress: string,
+  source: string
+): string {
+  return `${source}:${chainId}:${tokenAddress.toLowerCase()}`;
 }
 
 /**
@@ -209,13 +215,15 @@ function readMultiplierDeduped(
 export async function resolveForDisplay(
   run: ProviderRunner,
   chainId: number,
-  tokenAddress: string
+  tokenAddress: string,
+  /** The route `run` reads through, as its manager's `cacheKey`. */
+  source: string
 ): Promise<bigint> {
   if (!chainMayScaleTokens(chainId)) {
     return UI_MULTIPLIER_UNIT;
   }
 
-  const key = cacheKey(chainId, tokenAddress);
+  const key = cacheKey(chainId, tokenAddress, source);
   const cached = cache.get(key);
   if (
     cached &&
@@ -245,13 +253,15 @@ export async function resolveForDisplay(
 export async function resolveForWrite(
   run: ProviderRunner,
   chainId: number,
-  tokenAddress: string
+  tokenAddress: string,
+  /** The route `run` reads through, as its manager's `cacheKey`. */
+  source: string
 ): Promise<MultiplierResult> {
   if (!chainMayScaleTokens(chainId)) {
     return { ok: true, multiplier: UI_MULTIPLIER_UNIT };
   }
 
-  const key = cacheKey(chainId, tokenAddress);
+  const key = cacheKey(chainId, tokenAddress, source);
   const cached = cache.get(key);
   if (cached?.fetchedAt === null) {
     return { ok: true, multiplier: cached.multiplier };

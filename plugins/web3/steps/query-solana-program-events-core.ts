@@ -1,6 +1,5 @@
 import "server-only";
 import { sleep } from "@/lib/sleep";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 
 import type {
   ConfirmedSignatureInfo,
@@ -8,7 +7,7 @@ import type {
 } from "@solana/web3.js";
 import { PublicKey } from "@solana/web3.js";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getSolanaProvider } from "@/lib/rpc/provider-factory";
+import { rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
 import type { SolanaProviderManager } from "@/lib/rpc/providers/solana";
 import { getErrorMessage } from "@/lib/utils";
 import {
@@ -49,6 +48,7 @@ export type QuerySolanaProgramEventsCoreInput = ReadFailOnErrorInput & {
   untilSignature?: string;
   _context?: {
     executionId?: string;
+    organizationId?: string;
   };
 };
 
@@ -454,11 +454,10 @@ async function queryProgramEventsInner(
   const { programKey, decoder, lookback, chainId } = resolved.value;
   const eventName = input.eventName;
 
-  const userId = await getRpcPreferenceUserId(input._context?.executionId);
-
   let rpcManager: SolanaProviderManager;
   try {
-    rpcManager = await getSolanaProvider({ chainId, userId });
+    const client = await rpc.solana(rpcScopeFromStep(input), chainId);
+    rpcManager = client.manager;
   } catch (error) {
     return {
       success: false,

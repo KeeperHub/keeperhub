@@ -36,7 +36,12 @@ import {
   stablecoinDailyLimitDenial,
 } from "@/lib/execute/value-ledger";
 import { ErrorCategory, logSystemWarn } from "@/lib/logging";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  type EvmRpcClient,
+  RpcPurpose,
+  rpc,
+  rpcScopeForOrganization,
+} from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { resolveSignerForNode } from "@/lib/safe/signer-resolver";
 import { sleep } from "@/lib/sleep";
@@ -128,7 +133,6 @@ export function minimumOracleWethOut(
  */
 async function oracleCheck(
   plan: GasTopUpPlan,
-  rpcUrl: string,
   quotedOut: bigint
 ): Promise<string | null> {
   if (isTestnetChain(plan.chainId)) {
@@ -136,7 +140,10 @@ async function oracleCheck(
   }
   let ethPriceUsd: number;
   try {
-    ethPriceUsd = await getFreshGasTokenPriceUsd(rpcUrl, plan.chainId);
+    ethPriceUsd = await getFreshGasTokenPriceUsd(
+      plan.chainId,
+      rpcScopeForOrganization(plan.organizationId)
+    );
   } catch (error) {
     return `No fresh Chainlink ETH/USD price (${getErrorMessage(error)}); refusing to swap without an independent price check`;
   }
@@ -503,7 +510,7 @@ async function transactionLinkFor(
 async function sendSponsored(params: {
   plan: GasTopUpPlan;
   executionId: string;
-  rpcUrl: string;
+  rpc: EvmRpcClient;
   to: Address;
   abi: Abi;
   functionName: string;
@@ -515,7 +522,7 @@ async function sendSponsored(params: {
       organizationId: plan.organizationId,
       executionId: params.executionId,
       chainId: plan.chainId,
-      rpcUrl: params.rpcUrl,
+      rpc: params.rpc,
       walletAddress: plan.wallet,
       to: params.to,
       abi: params.abi,
@@ -803,14 +810,18 @@ export async function executeGasTopUp(params: {
     failure: { step: "preflight", error, broadcastAttempted: false },
   });
 
-  let rpcManager: RpcProviderManager;
-  let rpcUrl: string;
+  let rpcClient: EvmRpcClient;
   try {
-    rpcManager = await getRpcProvider({ chainId: plan.chainId });
-    rpcUrl = await rpcManager.resolveActiveRpcUrl();
+    rpcClient = await rpc.evm(
+      rpcScopeForOrganization(plan.organizationId),
+      plan.chainId,
+      { purpose: RpcPurpose.WRITE }
+    );
   } catch (error) {
     return refuse(`RPC unavailable: ${getErrorMessage(error)}`);
   }
+
+  const rpcManager = rpcClient.manager;
 
   let usdcBalance: bigint;
   try {
@@ -836,7 +847,7 @@ export async function executeGasTopUp(params: {
   if (quotedOut <= BigInt(0) || amountOutMinimum <= BigInt(0)) {
     return refuse("Quote returned no WETH for this amount; refusing to swap");
   }
-  const preflightOracleRefusal = await oracleCheck(plan, rpcUrl, quotedOut);
+  const preflightOracleRefusal = await oracleCheck(plan, quotedOut);
   if (preflightOracleRefusal) {
     return refuse(preflightOracleRefusal);
   }
@@ -903,7 +914,7 @@ export async function executeGasTopUp(params: {
   const approve = await sendSponsored({
     plan,
     executionId,
-    rpcUrl,
+    rpc: rpcClient,
     to: plan.usdc.address,
     abi: erc20Abi,
     functionName: "approve",
@@ -933,7 +944,7 @@ export async function executeGasTopUp(params: {
     const revoke = await sendSponsored({
       plan,
       executionId,
-      rpcUrl,
+      rpc: rpcClient,
       to: plan.usdc.address,
       abi: erc20Abi,
       functionName: "approve",
@@ -991,7 +1002,7 @@ export async function executeGasTopUp(params: {
       "Re-quote before the swap returned no WETH for this amount; refusing to swap"
     );
   }
-  const swapOracleRefusal = await oracleCheck(plan, rpcUrl, quotedOut);
+  const swapOracleRefusal = await oracleCheck(plan, quotedOut);
   if (swapOracleRefusal) {
     return await swapQuoteFailed(
       `Re-quote before the swap: ${swapOracleRefusal}`
@@ -1023,7 +1034,7 @@ export async function executeGasTopUp(params: {
   const swap = await sendSponsored({
     plan,
     executionId,
-    rpcUrl,
+    rpc: rpcClient,
     to: plan.contracts.router,
     abi: swapRouterMulticallAbi as unknown as Abi,
     functionName: "multicall",
@@ -1080,7 +1091,7 @@ export async function executeGasTopUp(params: {
   const unwrap = await sendSponsored({
     plan,
     executionId,
-    rpcUrl,
+    rpc: rpcClient,
     to: plan.contracts.weth,
     abi: wethAbi,
     functionName: "withdraw",

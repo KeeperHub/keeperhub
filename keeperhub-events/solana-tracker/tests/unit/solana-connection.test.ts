@@ -20,6 +20,7 @@ interface ConnRecord {
 // any network.
 const hooks = vi.hoisted(() => ({
   slot: 100,
+  getSlotCalls: 0,
   instances: [] as ConnRecord[],
   lastGetBlock: null as {
     slot: number;
@@ -78,6 +79,7 @@ vi.mock("@solana/web3.js", async (importActual) => {
       return Promise.resolve();
     }
     getSlot(_commitment: string): Promise<number> {
+      hooks.getSlotCalls += 1;
       return Promise.resolve(hooks.slot);
     }
     getBlock(slot: number, config: Record<string, unknown>): Promise<unknown> {
@@ -106,6 +108,7 @@ const PROGRAM = "So11111111111111111111111111111111111111112";
 beforeEach(() => {
   hooks.instances.length = 0;
   hooks.slot = 100;
+  hooks.getSlotCalls = 0;
   hooks.lastGetBlock = null;
   hooks.lastSigs = null;
   hooks.subscribeThrows = false;
@@ -134,6 +137,75 @@ describe("SolanaConnection", () => {
     expect(health.activeEndpoint).toBe("ws://ws1");
 
     void conn.stop();
+  });
+
+  it("ticks from the HTTP endpoint while an organization route's socket delivers nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      const slots: number[] = [];
+      const conn = new SolanaConnection({
+        chainId: 101,
+        source: "getblock",
+        endpoints: [{ rpcUrl: "https://org.example/key", pollSlots: true }],
+        commitment: "confirmed",
+        onSlot: (slot) => slots.push(slot),
+      });
+      conn.start();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(slots).toEqual([100]);
+
+      hooks.instances[0]?.fireSlot(101);
+      slots.length = 0;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(slots).toEqual([]);
+      await conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a route the poll is serving instead of rebuilding its socket", async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = new SolanaConnection({
+        chainId: 101,
+        source: "getblock",
+        endpoints: [
+          { rpcUrl: "https://org-a.example/key", pollSlots: true },
+          { rpcUrl: "https://org-b.example/key", pollSlots: true },
+        ],
+        commitment: "confirmed",
+        onSlot: () => void conn.getCurrentSlot(),
+      });
+      conn.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(hooks.instances).toHaveLength(1);
+      expect(hooks.getSlotCalls).toBe(60);
+      await conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never polls an endpoint that does not ask for it", async () => {
+    vi.useFakeTimers();
+    try {
+      const slots: number[] = [];
+      const conn = new SolanaConnection({
+        chainId: 101,
+        source: "getblock",
+        endpoints: [{ rpcUrl: "https://kh.example/key" }],
+        commitment: "confirmed",
+        onSlot: (slot) => slots.push(slot),
+      });
+      conn.start();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(slots).toEqual([]);
+      await conn.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("passes the resolved finality through to reads", async () => {

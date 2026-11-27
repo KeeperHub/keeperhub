@@ -134,7 +134,6 @@ export async function POST(
     const result = await releaseHeldPaymentNow({
       paymentId: id,
       organizationId: resolved.organizationId,
-      userId: resolved.userId,
     });
     if (!result.ok) {
       const status = mapReleaseFailureStatus(result.reason);

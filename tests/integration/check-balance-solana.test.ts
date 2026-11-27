@@ -11,13 +11,11 @@ vi.mock("ethers", () => ({
   },
 }));
 
-const { mockGetBalance, mockGetAddressUrl, mockGetRpcProvider } = vi.hoisted(
-  () => ({
-    mockGetBalance: vi.fn(),
-    mockGetAddressUrl: vi.fn(),
-    mockGetRpcProvider: vi.fn(),
-  })
-);
+const { mockGetBalance, mockGetAddressUrl, mockRpcEvm } = vi.hoisted(() => ({
+  mockGetBalance: vi.fn(),
+  mockGetAddressUrl: vi.fn(),
+  mockRpcEvm: vi.fn(),
+}));
 
 // Fake Solana adapter: the real one would resolve an on-chain RPC provider.
 vi.mock("@/lib/web3/chain-adapter", () => ({
@@ -39,9 +37,13 @@ vi.mock("@/lib/rpc/network-utils", () => ({
   }),
 }));
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-  isSolanaChain: (chainId: number) => chainId === 101 || chainId === 103,
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: (...args: unknown[]) => mockRpcEvm(...args),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -106,8 +108,8 @@ describe("checkBalanceStep - Solana", () => {
       expect(result.balanceWei).toBe("2500000000");
       expect(result.address).toBe(VALID_SOL);
     }
-    // The Solana path must not resolve an EVM RPC provider...
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    // The Solana path must not resolve an EVM RPC route...
+    expect(mockRpcEvm).not.toHaveBeenCalled();
     // ...and fetches the balance with an undefined rpcManager.
     expect(mockGetBalance).toHaveBeenCalledWith(undefined, VALID_SOL);
   });

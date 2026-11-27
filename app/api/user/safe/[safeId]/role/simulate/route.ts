@@ -9,9 +9,7 @@ import {
   safeRoleProtocols,
   safeRoles,
 } from "@/lib/db/schema";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
-import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
+import { rpc, rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { getSafeForOrg, validateSafeAdmin } from "@/lib/safe/auth";
 import { TEMPLATE_SPECS } from "@/lib/safe/condition-templates";
 import { formatPeriod, formatTokenAmount } from "@/lib/safe/format-allowance";
@@ -490,10 +488,8 @@ export async function POST(
 
     let maxFeePerGasWei = BigInt(25_000_000_000);
     try {
-      const rpcUrl = getRpcUrlByChainId(safe.chainId, RPC_ENDPOINT.PRIMARY);
-      const manager = await getRpcProviderFromUrls(
-        rpcUrl,
-        undefined,
+      const { manager } = await rpc.evm(
+        rpcScopeForOrganization(safe.organizationId),
         safe.chainId
       );
       const feeData = await manager.getProvider().getFeeData();
@@ -508,9 +504,14 @@ export async function POST(
 
     const totalCostWei = totalGas * maxFeePerGasWei;
     const totalCostNative = ethers.formatEther(totalCostWei);
+    const priceScope = rpcScopeForOrganization(safe.organizationId);
     const [totalCostUsd, nativePriceUsd] = await Promise.all([
-      weiToUsd({ chainId: safe.chainId, amountWei: totalCostWei }),
-      getNativeUsdPrice(safe.chainId),
+      weiToUsd({
+        chainId: safe.chainId,
+        amountWei: totalCostWei,
+        forScope: priceScope,
+      }),
+      getNativeUsdPrice(safe.chainId, priceScope),
     ]);
 
     return NextResponse.json({

@@ -8,7 +8,15 @@ import {
   fetchEtherscanSourceCode,
 } from "@/lib/explorer/etherscan";
 import { detectProxyViaRpc } from "@/lib/explorer/proxy-detection";
+import {
+  ownEndpointsScope,
+  PlatformRpcPurpose,
+  platformScope,
+  type RpcScope,
+  RpcScopeKind,
+} from "@/lib/rpc/engine";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
+import { BoundedCache } from "@/lib/rpc/providers/bounded-cache";
 import { DAY_MS } from "@/lib/utils/duration";
 
 type AbiCacheEntry = {
@@ -20,14 +28,49 @@ type ResolveAbiInput = {
   contractAddress: string;
   network: string;
   abi?: string;
+  /** Who the lookup is for; decides which endpoints the proxy probe uses. */
+  rpcScope?: RpcScope;
 };
+
+// The resolved ABI is cached for every organization, so the proxy probe that
+// picks it must not take any one organization's endpoint's word for it.
+const SHARED_ABI_SCOPE = platformScope(PlatformRpcPurpose.SHARED_CACHE);
+
+type AbiLookup = {
+  /** Where the proxy probe runs. */
+  probeScope: RpcScope;
+  /** Prefix that keeps an organization's own result out of the shared cache. */
+  cachePrefix: string;
+};
+
+const SHARED_LOOKUP: AbiLookup = {
+  probeScope: SHARED_ABI_SCOPE,
+  cachePrefix: "",
+};
+
+/**
+ * A chain on which the organization uses its own endpoints only is probed on
+ * those endpoints and cached for that organization alone; everything else
+ * shares one probe on KeeperHub's endpoints.
+ */
+async function abiLookupFor(
+  scope: RpcScope | undefined,
+  chainId: number
+): Promise<AbiLookup> {
+  const own = await ownEndpointsScope(scope, chainId);
+  return own?.kind === RpcScopeKind.ORG
+    ? { probeScope: own, cachePrefix: `${own.organizationId}:` }
+    : SHARED_LOOKUP;
+}
 
 type ResolveAbiResult = {
   abi: string;
   source: "definition" | "cache" | "explorer";
 };
 
-const abiCache = new Map<string, AbiCacheEntry>();
+// Bounded: own-RPC-only organizations keep their own entries per contract.
+const ABI_CACHE_LIMIT = 5000;
+const abiCache = new BoundedCache<AbiCacheEntry>(ABI_CACHE_LIMIT);
 const CACHE_TTL_MS = DAY_MS;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY ?? "";
 
@@ -37,7 +80,8 @@ function buildCacheKey(chainId: number, contractAddress: string): string {
 
 async function fetchAbiFromExplorer(
   chainId: number,
-  contractAddress: string
+  contractAddress: string,
+  probeScope: RpcScope
 ): Promise<string> {
   const explorerResults = await db
     .select()
@@ -93,7 +137,11 @@ async function fetchAbiFromExplorer(
     }
   }
 
-  const proxyResult = await detectProxyViaRpc(contractAddress, chainId);
+  const proxyResult = await detectProxyViaRpc(
+    contractAddress,
+    chainId,
+    probeScope
+  );
   if (proxyResult.isProxy && proxyResult.implementationAddress) {
     const implResult = await fetchEtherscanAbi(
       explorer.explorerApiUrl,
@@ -119,14 +167,19 @@ export async function resolveAbi(
   }
 
   const chainId = getChainIdFromNetwork(input.network);
-  const cacheKey = buildCacheKey(chainId, input.contractAddress);
+  const lookup = await abiLookupFor(input.rpcScope, chainId);
+  const cacheKey = `${lookup.cachePrefix}${buildCacheKey(chainId, input.contractAddress)}`;
 
   const cached = abiCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
     return { abi: cached.abi, source: "cache" };
   }
 
-  const abi = await fetchAbiFromExplorer(chainId, input.contractAddress);
+  const abi = await fetchAbiFromExplorer(
+    chainId,
+    input.contractAddress,
+    lookup.probeScope
+  );
   abiCache.set(cacheKey, { abi, fetchedAt: Date.now() });
 
   return { abi, source: "explorer" };

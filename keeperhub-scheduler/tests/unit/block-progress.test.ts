@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   parseBlockProgress,
+  parseRouteBlockProgress,
   serializeBlockProgress,
 } from "../../block-dispatcher/block-progress.js";
 
@@ -43,5 +44,13 @@ describe("block progress annotation", () => {
     });
 
     expect(parseBlockProgress(raw)).toEqual(new Map([[1, 100]]));
+  });
+
+  it("round-trips progress per organization route key", () => {
+    const progress = new Map([["route-key", 42]]);
+    expect(parseRouteBlockProgress(serializeBlockProgress(progress))).toEqual(
+      progress,
+    );
+    expect(parseRouteBlockProgress('{"":1,"k":-1}').size).toBe(0);
   });
 });

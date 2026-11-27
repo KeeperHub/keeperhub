@@ -11,7 +11,7 @@ The Analytics API provides insights into workflow and direct execution performan
 
 All analytics routes accept either a session cookie or an organization API key (`Authorization: Bearer $KEEPERHUB_API_KEY`) except the two that are session-only:
 
-- **`GET /api/analytics/summary`**, **`GET /api/analytics/time-series`**, **`GET /api/analytics/networks`**, **`GET /api/analytics/runs`**, and **`GET /api/analytics/spend-cap`** accept a `kh_` organization key with the `mcp:read` scope. A legacy key with no scope is admitted (an unscoped key means full access). A session caller carries no scope and is unaffected - the scope gate applies to key callers only.
+- **`GET /api/analytics/summary`**, **`GET /api/analytics/time-series`**, **`GET /api/analytics/networks`**, **`GET /api/analytics/rpc-usage`**, **`GET /api/analytics/runs`**, and **`GET /api/analytics/spend-cap`** accept a `kh_` organization key with the `mcp:read` scope. A legacy key with no scope is admitted (an unscoped key means full access). A session caller carries no scope and is unaffected - the scope gate applies to key callers only.
 - **`GET /api/analytics/stream`** is session-only: it is a server-sent-events feed consumed by a browser `EventSource`, which cannot send an `Authorization` header, so a key has no way to use it.
 - **`GET /api/analytics/runs/{executionId}/steps`** is session-only: it reads the caller's organization from the session.
 
@@ -149,6 +149,86 @@ Same as the summary endpoint, including `projectId`: it excludes direct executio
 
 `executionCount` is not a run count on the workflow half. The direct half counts direct executions that reached `completed` or `failed`, but the workflow half has no run-status predicate: it counts every `workflow_execution_logs` row that recorded gas, which is one per gas-bearing step, including steps of a run that is still in progress. `successCount` and `errorCount` on that half are step statuses for the same reason. Summing `executionCount` across networks therefore gives settled direct executions plus gas-bearing workflow steps, which is what this Gas Breakdown table shows, rather than run volume.
 
+## Get RPC Usage
+
+```http
+GET /api/analytics/rpc-usage
+```
+
+Returns the RPC requests made on behalf of the organization, split between the organization's own endpoints and KeeperHub endpoints.
+
+Usage covers the whole organization; it is not split by project.
+
+Usage is recorded per hour, so buckets are never narrower than one hour, and a window that starts part way through an hour includes that whole hour. Otherwise buckets follow the same widths as the time series endpoint, and every bucket in the window is returned.
+
+### Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `range` | string | Time range: `1h`, `24h`, `7d`, `30d`, `custom` (default: `24h`) |
+| `customStart` | string | ISO timestamp for custom range start |
+| `customEnd` | string | ISO timestamp for custom range end |
+| `tz` | string | IANA time zone the buckets are truncated in (default: `UTC`) |
+
+### Response
+
+```json
+{
+  "summary": {
+    "requests": 1200,
+    "ownRequests": 1150,
+    "platformRequests": 50,
+    "errors": 4,
+    "timeouts": 1,
+    "rateLimited": 0,
+    "failovers": 2,
+    "avgLatencyMs": 85,
+    "maxLatencyMs": 940,
+    "wsConnects": 3,
+    "wsReconnects": 1,
+    "eventsReceived": 420
+  },
+  "ownRpcOnlyChains": [
+    {
+      "chainId": 8453,
+      "chainName": "Base",
+      "platformRequests": 0
+    }
+  ],
+  "intervalMs": 3600000,
+  "buckets": [
+    {
+      "timestamp": "2024-01-01T00:00:00Z",
+      "ownRequests": 48,
+      "platformRequests": 2,
+      "errors": 0
+    }
+  ],
+  "breakdown": [
+    {
+      "origin": "org",
+      "configId": "cfg_8bq2k1",
+      "configName": "Primary Base node",
+      "configRemoved": false,
+      "chainId": 8453,
+      "chainName": "Base",
+      "requests": 1150,
+      "errors": 3,
+      "timeouts": 1,
+      "rateLimited": 0,
+      "failovers": 2,
+      "avgLatencyMs": 80,
+      "maxLatencyMs": 940,
+      "wsConnects": 3,
+      "wsReconnects": 1,
+      "eventsReceived": 420
+    }
+  ]
+}
+```
+
+`origin` is `org` for the organization's own endpoints and `platform` for KeeperHub endpoints, which carry `configId: null`. A breakdown row whose endpoint was removed keeps its usage with `configName: null` and `configRemoved: true`. `avgLatencyMs` and `maxLatencyMs` are `null` when there were no requests. `ownRpcOnlyChains` lists each chain on which the organization currently uses its own endpoints only, with the requests KeeperHub endpoints served on that chain in the range; `platformRequests` is expected to be `0` for each of them.
+
 ## List Runs
 
 ```http
@@ -167,6 +247,7 @@ Returns a unified list of both workflow executions and direct executions with pa
 | `status` | string | Filter by status. Repeatable. One of `pending`, `running`, `success`, `error`, `system_error`, `external_error`, `skipped`, `cancelled` |
 | `source` | string | Filter by source: `workflow`, `direct`. Repeatable |
 | `network` | string | Restrict to these networks. Repeatable |
+| `rpcEndpoint` | string | Which endpoints served the run's RPC calls: `org` for any of the organization's own endpoints, `platform` for KeeperHub, or one endpoint's `rpcConfigId`. Repeatable. A run that used several endpoints matches each of them |
 | `gas` | string | How the run's gas was paid: `sponsored`, `wallet` or `free`. Repeatable. Any other value is dropped rather than refused, so `?gas=8453` returns the unfiltered list with no error: filter by chain with `network` above |
 | `durationMin` | number | Only runs at or above this duration, in milliseconds |
 | `durationMax` | number | Only runs strictly below this duration, in milliseconds. The bound is exclusive: a run of exactly this duration is not returned |
@@ -308,10 +389,19 @@ A bare array, with no envelope:
     "forEachNodeId": null,
     "network": null,
     "gasCostWei": null,
-    "sponsored": false
+    "sponsored": false,
+    "rpcOrigin": null,
+    "rpcConfigId": null,
+    "rpcConfigName": null,
+    "rpcFailedOver": false,
+    "rpcEndpoints": []
   }
 ]
 ```
+
+`rpcOrigin` says which endpoint served the step's RPC calls: `org` for one of the organization's own endpoints, named by `rpcConfigId` and `rpcConfigName`, or `platform` for KeeperHub. It is `null` for steps that made no RPC call. `rpcConfigName` is `null` when the endpoint has since been removed. `rpcFailedOver` is `true` when one of the step's own calls moved from the primary endpoint to the fallback.
+
+`rpcEndpoints` lists every endpoint the step's calls reached, the busiest first. Each entry has `origin`, `configId` and `configName` as above, `position` (`primary` or `fallback` in the step's route), `requests` and `errors`. A step that failed over from its own endpoint to KeeperHub lists both. Reads KeeperHub makes for its own purposes during the step, such as checking the gas it sponsored, are not listed. Steps recorded before this field existed return an empty list.
 
 A step's input and output are not part of this response: the log carries what the
 run did (`nodeName`, `nodeType`, `status`, timings, `error`) and the on-chain

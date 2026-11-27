@@ -230,15 +230,23 @@ const fakeProvider = {
   },
 };
 
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: () =>
-    Promise.resolve({
-      resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
-      executeWithFailover: <T>(op: (p: typeof fakeProvider) => Promise<T>) =>
-        op(fakeProvider),
-    }),
+const rpcClient = {
+  manager: {
+    executeWithFailover: <T>(op: (p: typeof fakeProvider) => Promise<T>) =>
+      op(fakeProvider),
+  },
+};
+const mockRpcEvm = vi.fn((..._args: unknown[]) => Promise.resolve(rpcClient));
+
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: { evm: (...args: unknown[]) => mockRpcEvm(...args) },
 }));
 
+const { orgScope } = await import("@/lib/rpc/engine/scope");
+const { RpcPurpose } = await import("@/lib/rpc/engine/types");
 const {
   executeGasTopUp,
   minimumOracleWethOut,
@@ -746,6 +754,19 @@ describe("executeGasTopUp", () => {
     );
   });
 
+  it("sends every step on the organization's write route", async () => {
+    const plan = await preparedPlan("5");
+
+    await executeGasTopUp({ plan, executionId: "exec-1" });
+
+    expect(mockRpcEvm).toHaveBeenCalledWith(orgScope("org-1"), BASE, {
+      purpose: RpcPurpose.WRITE,
+    });
+    for (const [params] of mockSponsoredSend.mock.calls) {
+      expect(params).toMatchObject({ rpc: rpcClient });
+    }
+  });
+
   it("unwraps only the WETH the swap delivered, not WETH already held", async () => {
     chain.balances.set(balanceKey(WETH, WALLET), ONE_WETH);
     const plan = await preparedPlan();
@@ -847,8 +868,8 @@ describe("executeGasTopUp", () => {
     });
     expect(result.error).toContain("more than 2% worse than the Chainlink");
     expect(mockOraclePrice).toHaveBeenCalledWith(
-      "https://rpc.example.com",
-      BASE
+      BASE,
+      expect.objectContaining({ organizationId: expect.any(String) })
     );
   });
 

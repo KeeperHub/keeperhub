@@ -41,10 +41,6 @@ export interface PaymentRail {
   readonly domain: { readonly name: string; readonly version: string };
   /** Protocols this rail is advertised and settled under. */
   readonly protocols: readonly PaymentProtocol[];
-  /** Env var carrying the RPC URL used for on-chain reconcile reads. */
-  readonly rpcUrlEnvVar: string;
-  /** Public RPC used when the env var is unset. */
-  readonly defaultRpcUrl: string;
 }
 
 export const BASE_RAIL: PaymentRail = {
@@ -54,8 +50,6 @@ export const BASE_RAIL: PaymentRail = {
   assetDecimals: 6,
   domain: { name: "USD Coin", version: "2" },
   protocols: ["x402"],
-  rpcUrlEnvVar: "BASE_RPC_URL",
-  defaultRpcUrl: "https://mainnet.base.org",
 } as const;
 
 export const TEMPO_RAIL: PaymentRail = {
@@ -65,8 +59,6 @@ export const TEMPO_RAIL: PaymentRail = {
   assetDecimals: 6,
   domain: { name: "USD Coin", version: "2" },
   protocols: ["mpp"],
-  rpcUrlEnvVar: "TEMPO_RPC_URL",
-  defaultRpcUrl: "https://rpc.tempo.xyz",
 } as const;
 
 /**

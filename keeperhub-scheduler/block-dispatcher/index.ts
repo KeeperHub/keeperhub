@@ -33,7 +33,9 @@ import {
 import { metrics, registry } from "../lib/metrics.js";
 import {
   BLOCK_PROGRESS_ANNOTATION,
+  ROUTE_BLOCK_PROGRESS_ANNOTATION,
   parseBlockProgress,
+  parseRouteBlockProgress,
   serializeBlockProgress,
 } from "./block-progress.js";
 import { BlockMonitorService } from "./monitor-service.js";
@@ -122,6 +124,7 @@ async function main(): Promise<void> {
       console.log("[BlockDispatcher] Became leader — starting monitors");
       await service.start(
         parseBlockProgress(annotations[BLOCK_PROGRESS_ANNOTATION]),
+        parseRouteBlockProgress(annotations[ROUTE_BLOCK_PROGRESS_ANNOTATION]),
       );
     },
     onStoppedLeading: async () => {
@@ -131,6 +134,9 @@ async function main(): Promise<void> {
     getAnnotations: () => ({
       [BLOCK_PROGRESS_ANNOTATION]: serializeBlockProgress(
         service.getResumeBlocks(),
+      ),
+      [ROUTE_BLOCK_PROGRESS_ANNOTATION]: serializeBlockProgress(
+        service.getRouteResumeBlocks(),
       ),
     }),
   });

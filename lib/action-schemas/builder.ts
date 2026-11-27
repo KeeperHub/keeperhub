@@ -15,6 +15,7 @@ import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
 } from "@/lib/workflow/editor/builtin-variables";
+import { RPC_SELECTION_TYPE_TEXT } from "@/lib/workflow/rpc-selection-field";
 import { isDirectExecutionSupported } from "@/plugins/protocol/steps/resolve-protocol-meta";
 import {
   type ActionConfigFieldBase,
@@ -128,6 +129,8 @@ function mapFieldType(field: ActionConfigFieldBase): string {
   switch (field.type) {
     case "chain-select":
       return "string (chain ID)";
+    case "rpc-config-select":
+      return RPC_SELECTION_TYPE_TEXT;
     case "token-select":
       return 'string (JSON) - Token selection config. Use: {"mode":"custom","customToken":{"address":"0x...","symbol":"USDC"}} for a known token address. On Solana actions the address is the base58 mint, not a 0x address';
     case "abi-function-select":

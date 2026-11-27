@@ -60,11 +60,12 @@ vi.mock("@/lib/address-utils", () => ({
 // fallback. Tests want to stay DB-only so we stub them to "no modules on
 // chain" and a no-op reconcile -- the routing behaviour we're asserting
 // here is purely the DB-based decision.
-vi.mock("@/lib/rpc/rpc-config", () => ({
-  getRpcUrlByChainId: () => "http://stub",
-}));
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProviderFromUrls: async () => ({ getProvider: () => ({}) }),
+const rpcEvmMock = vi.fn();
+vi.mock("@/lib/rpc/engine", async () => ({
+  ...(await vi.importActual("@/lib/rpc/engine/types")),
+  ...(await vi.importActual("@/lib/rpc/engine/scope")),
+  ...(await vi.importActual("@/lib/rpc/engine/route-error")),
+  rpc: { evm: rpcEvmMock },
 }));
 vi.mock("@/lib/safe/zodiac-roles", () => ({
   readEnabledSafeModules: async () => [],
@@ -80,21 +81,41 @@ vi.mock("@/lib/safe/roles-orchestrator", () => ({
     reason: "no-roles-modifier",
   }),
 }));
+const logSystemErrorMock = vi.fn();
+const logUserErrorMock = vi.fn();
 vi.mock("@/lib/logging", () => ({
   ErrorCategory: { TRANSACTION: "transaction" },
-  logSystemError: () => {
-    // swallow logs in tests
-  },
+  logSystemError: logSystemErrorMock,
+  logUserError: logUserErrorMock,
 }));
 
 // Import after mocks
 const { resolveSignerMode, resolveSignerForNode, parseWeb3Connection } =
   await import("@/lib/safe/signer-resolver");
 
+const { RpcRouteError, RpcRouteErrorCode } = await import(
+  "@/lib/rpc/engine/route-error"
+);
+const { orgScope } = await import("@/lib/rpc/engine/scope");
+const { RpcSelectionMode } = await import("@/lib/rpc/engine/types");
+
+const PROBE_CLIENT = {
+  manager: {
+    executeWithFailover: (op: (provider: unknown) => unknown) => op({}),
+  },
+};
+
 const ORG_ID = "org_test";
 const CHAIN_ID = 8453;
 const OWNER = "0xAAAA000000000000000000000000000000000000";
 const SAFE = "0xBBBB000000000000000000000000000000000000";
+
+beforeEach(() => {
+  rpcEvmMock.mockReset();
+  rpcEvmMock.mockResolvedValue(PROBE_CLIENT);
+  logSystemErrorMock.mockReset();
+  logUserErrorMock.mockReset();
+});
 
 describe("resolveSignerMode", () => {
   beforeEach(() => {
@@ -160,6 +181,76 @@ describe("resolveSignerMode", () => {
       expect(mode.safeAddress).toBe(SAFE);
       expect(mode.safeWalletId).toBe("safe-1");
     }
+  });
+
+  it("probes for a modifier on KeeperHub's endpoints for the organization", async () => {
+    selectLimitMock
+      .mockResolvedValueOnce([
+        {
+          id: "safe-1",
+          safeAddress: SAFE,
+          status: "deployed",
+          isSigningActive: true,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await resolveSignerMode(ORG_ID, CHAIN_ID);
+
+    expect(rpcEvmMock).toHaveBeenCalledTimes(1);
+    expect(rpcEvmMock).toHaveBeenCalledWith(
+      orgScope(ORG_ID, { mode: RpcSelectionMode.PLATFORM }),
+      CHAIN_ID
+    );
+  });
+
+  it("falls back to the organization's own route when it allows only its own RPC", async () => {
+    selectLimitMock
+      .mockResolvedValueOnce([
+        {
+          id: "safe-1",
+          safeAddress: SAFE,
+          status: "deployed",
+          isSigningActive: true,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    rpcEvmMock.mockRejectedValueOnce(
+      new RpcRouteError(RpcRouteErrorCode.PLATFORM_FORBIDDEN, CHAIN_ID)
+    );
+
+    const mode = await resolveSignerMode(ORG_ID, CHAIN_ID);
+
+    expect(mode.kind).toBe("safe");
+    expect(rpcEvmMock).toHaveBeenLastCalledWith(orgScope(ORG_ID), CHAIN_ID);
+    expect(logSystemErrorMock).not.toHaveBeenCalled();
+    expect(logUserErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("logs a route the organization cannot use as a user error, not a system one", async () => {
+    selectLimitMock
+      .mockResolvedValueOnce([
+        {
+          id: "safe-1",
+          safeAddress: SAFE,
+          status: "deployed",
+          isSigningActive: true,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    rpcEvmMock
+      .mockRejectedValueOnce(
+        new RpcRouteError(RpcRouteErrorCode.PLATFORM_FORBIDDEN, CHAIN_ID)
+      )
+      .mockRejectedValueOnce(
+        new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, CHAIN_ID)
+      );
+
+    const mode = await resolveSignerMode(ORG_ID, CHAIN_ID);
+
+    expect(mode.kind).toBe("safe");
+    expect(logUserErrorMock).toHaveBeenCalledTimes(1);
+    expect(logSystemErrorMock).not.toHaveBeenCalled();
   });
 
   it("returns safe-role mode when DB has the role row", async () => {

@@ -422,7 +422,10 @@ export async function simulateCallSequence(
   }
   const from = fromOrFailure;
 
-  const rpcResolution = await getRpcManagerForChain(input.network);
+  const rpcResolution = await getRpcManagerForChain(
+    input.network,
+    input.organizationId
+  );
   if (!rpcResolution.success) {
     const asResult =
       rpcResolution.failureKind === "validation"

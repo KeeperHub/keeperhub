@@ -60,17 +60,17 @@ vi.mock("@/lib/rpc/network-utils", () => ({
     mockGetChainIdFromNetwork(...args),
 }));
 
-const mockGetRpcProvider = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
-}));
-
-const { mockGetChainBuilderRpcUrls } = vi.hoisted(() => ({
-  mockGetChainBuilderRpcUrls: vi.fn(),
-}));
-vi.mock("@/lib/rpc/config-service", () => ({
-  getChainBuilderRpcUrls: (...args: unknown[]) =>
+const mockRpcEvm = vi.fn();
+const mockGetChainBuilderRpcUrls = vi.fn();
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  builderRpcUrlsFor: (...args: unknown[]) =>
     mockGetChainBuilderRpcUrls(...args),
+  rpc: {
+    evm: (...args: unknown[]) => mockRpcEvm(...args),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 const mockRpcRelayErrorClass = vi.fn();
@@ -279,9 +279,12 @@ function revertReturn(): [boolean, string] {
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetChainIdFromNetwork.mockReturnValue(1);
-  mockGetRpcProvider.mockResolvedValue({
-    resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
-    executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
+  mockRpcEvm.mockResolvedValue({
+    manager: {
+      resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
+      executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
+    },
+    route: { chain: { chainId: 1 }, ownRpcOnly: false },
   });
   mockResolveSignerForNode.mockResolvedValue({
     kind: "eoa",
@@ -652,7 +655,7 @@ describe("batch-write-contract - MAX_TOTAL_CALLS", () => {
     }
     expect(result.error).toContain("Too many calls");
     expect(result.errorClass).toBe(ExecutionErrorType.USER);
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcEvm).not.toHaveBeenCalled();
   });
 
   it("accepts a batch of exactly 200 calls", async () => {
@@ -857,7 +860,7 @@ describe("batch-write-contract - per-call ABI/function validation", () => {
     if (!result.success) {
       expect(result.error).toContain("index 1");
     }
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcEvm).not.toHaveBeenCalled();
   });
 });
 
@@ -873,7 +876,7 @@ describe("batch-write-contract - per-call argument validation", () => {
     if (!result.success) {
       expect(result.error).toContain("index 1");
     }
-    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockRpcEvm).not.toHaveBeenCalled();
   });
 });
 
@@ -1289,7 +1292,9 @@ describe("batch-write-contract - simulateAt next-block", () => {
       baseInput({ simulateAt: "next-block" })
     );
 
-    expect(mockGetChainBuilderRpcUrls).toHaveBeenCalledWith(1);
+    expect(mockGetChainBuilderRpcUrls).toHaveBeenCalledWith(
+      expect.objectContaining({ chain: { chainId: 1 } })
+    );
     const adapterOptions = mockExecuteContractCall.mock.calls[0]?.[3] as {
       builderRpcUrls?: unknown;
     };

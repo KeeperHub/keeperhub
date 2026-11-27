@@ -29,6 +29,10 @@ import {
   workflowRegexIssue,
 } from "@/lib/workflow/nodes/condition/validator";
 import {
+  isRpcSelectionValue,
+  RPC_SELECTION_EXPECTED,
+} from "@/lib/workflow/rpc-selection-field";
+import {
   sanitizeNodeId,
   valueContainsTemplate,
 } from "@/lib/workflow/template-ref";
@@ -782,6 +786,10 @@ function validateFieldValue(
         };
       }
       return { valid: true };
+    case "rpc-config-select":
+      return isRpcSelectionValue(value)
+        ? { valid: true }
+        : { valid: false, expected: RPC_SELECTION_EXPECTED, received: value };
     case "protocol-address":
       return typeof value === "string" &&
         (valueContainsTemplate(value) || EVM_ADDRESS_RE.test(value))

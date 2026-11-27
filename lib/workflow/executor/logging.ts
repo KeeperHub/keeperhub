@@ -48,6 +48,8 @@ import {
 } from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
+import { type RpcScope, rpcScopeForOrganization } from "@/lib/rpc/engine";
+import type { RpcAttribution } from "@/lib/rpc/engine/step-attribution";
 import { toJsonSafe } from "@/lib/utils/json-safe";
 import {
   describeVerificationFailure,
@@ -55,6 +57,7 @@ import {
   type ReceiptVerificationResult,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
+import { findOrganizationIdForExecution } from "@/lib/workflow/executor/helpers";
 import { pollForCompletedOutput } from "@/lib/workflow/executor/poll-for-output";
 import {
   EXCEEDED_MAX_RETRIES_REGEX,
@@ -374,6 +377,16 @@ type ReconcileTransactionHashesResult =
     };
 
 /**
+ * Receipts are read on the routes of the organization that owns the run, or
+ * on KeeperHub's when the run has none.
+ */
+async function executionRpcScope(executionId: string): Promise<RpcScope> {
+  return rpcScopeForOrganization(
+    await findOrganizationIdForExecution(executionId)
+  );
+}
+
+/**
  * KEEP-966: independently re-verify every claimed transaction hash against
  * the chain before a workflow execution is allowed to finalize as success.
  * Shared by logWorkflowCompleteDb and selfHealWorkflowAfterLateStepCommit --
@@ -383,6 +396,7 @@ type ReconcileTransactionHashesResult =
  * fails the whole batch, same as a hash that positively fails verification.
  */
 async function reconcileTransactionHashes(
+  executionId: string,
   hashes: TransactionHashEntry[]
 ): Promise<ReconcileTransactionHashesResult> {
   if (hashes.length === 0) {
@@ -406,7 +420,8 @@ async function reconcileTransactionHashes(
   }
 
   const { allVerified, results } = await verifyExecutionReceipts(
-    verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId }))
+    verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId })),
+    await executionRpcScope(executionId)
   );
   const merged = mergeReceiptResults(hashes, results);
 
@@ -455,6 +470,7 @@ function mergeEnrichedEntries(
 }
 
 async function inspectFailureBroadcasts(
+  executionId: string,
   entries: TransactionHashEntry[]
 ): Promise<{ hashes: TransactionHashEntry[]; unreadable: boolean }> {
   const verifiable = entries.filter(
@@ -466,7 +482,8 @@ async function inspectFailureBroadcasts(
   }
   try {
     const { results } = await verifyExecutionReceipts(
-      verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId }))
+      verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId })),
+      await executionRpcScope(executionId)
     );
     return {
       hashes: mergeReceiptResults(entries, results),
@@ -625,7 +642,10 @@ async function selfHealWorkflowAfterLateStepCommit(
   // allowed to write "success". A failure here means simply not flipping --
   // the row stays in whatever error state it was already finalized to; no
   // new write is needed on this branch.
-  const reconciled = await reconcileTransactionHashes(resolvedHashes);
+  const reconciled = await reconcileTransactionHashes(
+    executionId,
+    resolvedHashes
+  );
   if (resolvedHashes.length > 0 && !reconciled.ok) {
     emitEarlyExit("receipt_verification_failed");
     return;
@@ -788,6 +808,8 @@ export type LogStepCompleteParams = {
   outputRaw?: unknown;
   error?: string;
   executionId?: string;
+  /** Which RPC endpoints served the step; null leaves the columns empty. */
+  rpc?: RpcAttribution | null;
 };
 
 /**
@@ -852,6 +874,14 @@ export async function logStepCompleteDb(
       error: errorValue,
       completedAt: new Date(),
       duration: duration.toString(),
+      ...(params.rpc
+        ? {
+            rpcOrigin: params.rpc.rpcOrigin,
+            rpcConfigId: params.rpc.rpcConfigId,
+            rpcFailedOver: params.rpc.rpcFailedOver,
+            rpcEndpoints: params.rpc.rpcEndpoints,
+          }
+        : {}),
     })
     .where(eq(workflowExecutionLogs.id, params.logId));
 
@@ -1156,7 +1186,10 @@ export async function logWorkflowCompleteDb(
   // already failing, not for a success demoted by its own reconciliation.
   const finalizingAsFailure = resolvedStatus !== "success";
   if (resolvedStatus === "success" && transactionHashes.length > 0) {
-    const reconciled = await reconcileTransactionHashes(transactionHashes);
+    const reconciled = await reconcileTransactionHashes(
+      params.executionId,
+      transactionHashes
+    );
     verifiedTransactionHashes = reconciled.hashes;
     if (!reconciled.ok) {
       unreadableReceipts = !reconciled.conclusive;
@@ -1185,7 +1218,10 @@ export async function logWorkflowCompleteDb(
       // Only the in-flight subset is verified: a hash from a step that
       // succeeded is not what is holding this run open, and re-reading it
       // would add an RPC round trip to every failed run for nothing.
-      const inspected = await inspectFailureBroadcasts(inFlight);
+      const inspected = await inspectFailureBroadcasts(
+        params.executionId,
+        inFlight
+      );
       verifiedTransactionHashes = mergeEnrichedEntries(
         record,
         inspected.hashes

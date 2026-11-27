@@ -30,8 +30,10 @@ vi.mock("server-only", () => ({}));
 
 import { reshapeArgsForAbi } from "@/lib/abi/struct-args";
 import { validateArgsForAbi } from "@/lib/abi/validate-args";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  createRpcProviderManager,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import {
   createRpcUrlResolver,
   PUBLIC_RPCS,
@@ -162,13 +164,13 @@ describe("Web3 write-contract on-chain integration", () => {
   // hiccup falls back to the secondary instead of failing the test.
   let manager: RpcProviderManager;
 
-  beforeAll(async () => {
-    manager = await getRpcProviderFromUrls(
-      SEPOLIA_PRIMARY_URL,
-      SEPOLIA_FALLBACK_URL,
-      SEPOLIA_CHAIN_ID,
-      "sepolia"
-    );
+  beforeAll(() => {
+    manager = createRpcProviderManager({
+      primaryRpcUrl: SEPOLIA_PRIMARY_URL,
+      fallbackRpcUrl: SEPOLIA_FALLBACK_URL,
+      chainId: SEPOLIA_CHAIN_ID,
+      chainName: "sepolia",
+    });
   });
 
   itOnchain(

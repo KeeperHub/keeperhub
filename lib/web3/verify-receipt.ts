@@ -16,10 +16,17 @@
 import "server-only";
 import type { Connection, SignatureStatus } from "@solana/web3.js";
 import { ethers } from "ethers";
-import { resolveRpcConfig } from "@/lib/rpc/config-service";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
-import { RpcProviderManager } from "@/lib/rpc/providers";
-import { SolanaProviderManager } from "@/lib/rpc/providers/solana";
+import {
+  orgRpcSource,
+  RpcRouteError,
+  type RpcScope,
+  RpcScopeKind,
+  RpcSelectionMode,
+  rpc,
+} from "@/lib/rpc/engine";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
+import type { SolanaProviderManager } from "@/lib/rpc/providers/solana";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { sleep } from "@/lib/sleep";
 
 export type ReceiptStatus =
@@ -131,46 +138,79 @@ function hasSafeExecutionFailureLog(
   );
 }
 
-async function buildVerificationManager(
+const VERIFY_REQUEST = {
+  tuning: { maxRetries: VERIFY_MAX_RETRIES, timeoutMs: VERIFY_TIMEOUT_MS },
+  // Reading a receipt is not what the step used to send it.
+  unattributed: true,
+} as const;
+
+/**
+ * The scope's own route first, then each enabled config the organization
+ * holds on the chain. A receipt is public, so any endpoint the organization
+ * trusts can read it, even when the step that sent it pinned a config the
+ * scope here does not name.
+ */
+async function verificationScopes(
+  scope: RpcScope,
   chainId: number
-): Promise<RpcProviderManager | null> {
-  const config = await resolveRpcConfig(chainId);
-  if (!config) {
-    return null;
+): Promise<RpcScope[]> {
+  if (scope.kind !== RpcScopeKind.ORG) {
+    return [scope];
   }
-  return new RpcProviderManager({
-    config: {
-      primaryRpcUrl: config.primaryRpcUrl,
-      fallbackRpcUrl: config.fallbackRpcUrl,
-      chainName: config.chainName,
-      chainId,
-      maxRetries: VERIFY_MAX_RETRIES,
-      timeoutMs: VERIFY_TIMEOUT_MS,
-    },
-  });
+  const { configs } = await orgRpcSource.load(scope.organizationId, chainId);
+  const pinned =
+    scope.selection.mode === RpcSelectionMode.CONFIG
+      ? scope.selection.configId
+      : null;
+  const others = configs
+    .filter((config) => config.enabled && config.id !== pinned)
+    .map(
+      (config): RpcScope => ({
+        ...scope,
+        selection: { mode: RpcSelectionMode.CONFIG, configId: config.id },
+      })
+    );
+  return [scope, ...others];
 }
 
 /**
- * Constructed directly rather than through createSolanaProviderManager: that
- * cache is keyed by URL alone, so it would hand back the adapter's manager with
- * its own retry count and 30s timeout in place of the budget above.
+ * A manager with the verification budget above on the first scope that can
+ * route the chain. A chain none can route (unknown chain, not covered under
+ * own RPC only) yields null, which reads as unreadable rather than failed.
  */
-async function buildSolanaVerificationManager(
+async function firstRoutableManager<TManager>(
+  scope: RpcScope,
+  chainId: number,
+  open: (candidate: RpcScope) => Promise<{ manager: TManager }>
+): Promise<TManager | null> {
+  for (const candidate of await verificationScopes(scope, chainId)) {
+    try {
+      return (await open(candidate)).manager;
+    } catch (error) {
+      if (!(error instanceof RpcRouteError)) {
+        throw error;
+      }
+    }
+  }
+  return null;
+}
+
+function buildVerificationManager(
+  scope: RpcScope,
+  chainId: number
+): Promise<RpcProviderManager | null> {
+  return firstRoutableManager(scope, chainId, (candidate) =>
+    rpc.evm(candidate, chainId, VERIFY_REQUEST)
+  );
+}
+
+function buildSolanaVerificationManager(
+  scope: RpcScope,
   chainId: number
 ): Promise<SolanaProviderManager | null> {
-  const config = await resolveRpcConfig(chainId);
-  if (!config) {
-    return null;
-  }
-  return new SolanaProviderManager({
-    config: {
-      primaryRpcUrl: config.primaryRpcUrl,
-      fallbackRpcUrl: config.fallbackRpcUrl,
-      chainName: config.chainName,
-      maxRetries: VERIFY_MAX_RETRIES,
-      timeoutMs: VERIFY_TIMEOUT_MS,
-    },
-  });
+  return firstRoutableManager(scope, chainId, (candidate) =>
+    rpc.solana(candidate, chainId, VERIFY_REQUEST)
+  );
 }
 
 type ReceiptLookup = {
@@ -522,6 +562,7 @@ function unreadableChainResults(
  */
 export async function verifyExecutionReceipts(
   hashes: { hash: string; chainId: number }[],
+  scope: RpcScope,
   options: ReceiptLookupOptions = {}
 ): Promise<{ allVerified: boolean; results: ReceiptVerificationResult[] }> {
   if (hashes.length === 0) {
@@ -539,7 +580,10 @@ export async function verifyExecutionReceipts(
 
   for (const [chainId, group] of groups) {
     if (isSolanaChain(chainId)) {
-      const solanaManager = await buildSolanaVerificationManager(chainId);
+      const solanaManager = await buildSolanaVerificationManager(
+        scope,
+        chainId
+      );
       if (!solanaManager) {
         allResults.push(...unreadableChainResults(chainId, group));
         continue;
@@ -554,7 +598,7 @@ export async function verifyExecutionReceipts(
       continue;
     }
 
-    const manager = await buildVerificationManager(chainId);
+    const manager = await buildVerificationManager(scope, chainId);
     if (!manager) {
       allResults.push(...unreadableChainResults(chainId, group));
       continue;

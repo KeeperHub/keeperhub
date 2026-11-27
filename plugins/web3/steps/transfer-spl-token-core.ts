@@ -23,7 +23,8 @@ import { PublicKey, Transaction } from "@solana/web3.js";
 import { ethers } from "ethers";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { isSolanaChain } from "@/lib/rpc/provider-factory";
+import { RPC_SELECTION_CONFIG_KEY, rpcScopeFromStep } from "@/lib/rpc/engine";
+import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { getErrorMessage } from "@/lib/utils";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import type { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
@@ -73,6 +74,7 @@ export type TransferSplTokenCoreInput = {
   mint: string;
   recipientAddress: string;
   amount: string;
+  [RPC_SELECTION_CONFIG_KEY]?: string;
   _context?: { executionId?: string; organizationId?: string };
 };
 
@@ -614,7 +616,10 @@ async function transferSplTokenCoreImpl(
   }
 
   return await executeTransfer({
-    adapter: getChainAdapter(chainId) as SolanaChainAdapter,
+    adapter: getChainAdapter(
+      chainId,
+      rpcScopeFromStep(input, orgCtx.organizationId)
+    ) as SolanaChainAdapter,
     chainId,
     ownerPk,
     recipientPk,

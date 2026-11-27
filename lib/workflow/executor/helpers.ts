@@ -3,8 +3,28 @@ import "server-only";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { isViewerRole } from "@/lib/organization/role-label";
-import { getOrgRole } from "@/lib/security/org-role";
+
+type ExecutionOrganization = { organizationId: string | null };
+
+async function loadExecutionOrganization(
+  executionId: string
+): Promise<ExecutionOrganization | null> {
+  const [row] = await db
+    .select({
+      executionOrganizationId: workflowExecutions.organizationId,
+      workflowOrganizationId: workflows.organizationId,
+    })
+    .from(workflowExecutions)
+    .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+    .where(eq(workflowExecutions.id, executionId))
+    .limit(1);
+  if (!row) {
+    return null;
+  }
+  return {
+    organizationId: row.executionOrganizationId ?? row.workflowOrganizationId,
+  };
+}
 
 /**
  * Get organizationId from executionId
@@ -24,132 +44,22 @@ export async function getOrganizationIdFromExecution(
     throw new Error("Execution ID is required to get organization ID");
   }
 
-  const result = await db
-    .select({
-      executionOrganizationId: workflowExecutions.organizationId,
-      workflowOrganizationId: workflows.organizationId,
-    })
-    .from(workflowExecutions)
-    .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-    .where(eq(workflowExecutions.id, executionId))
-    .limit(1);
-
-  if (result.length === 0) {
+  const found = await loadExecutionOrganization(executionId);
+  if (!found) {
     throw new Error(`Execution not found: ${executionId}`);
   }
-
-  const { executionOrganizationId, workflowOrganizationId } = result[0];
-  const organizationId = executionOrganizationId ?? workflowOrganizationId;
-
-  if (!organizationId) {
+  if (!found.organizationId) {
     throw new Error(
       "Workflow has no organization. This workflow may be from an anonymous user or migration is incomplete."
     );
   }
 
-  return organizationId;
+  return found.organizationId;
 }
 
-/**
- * Resolve the execution's audit userId (the workflow's createdBy). Live use:
- * the generated web3 read steps (plugins/web3/steps/*, emitted into
- * lib/workflow/codegen/registry.ts) look up that user's RPC preferences.
- * This is NOT an authority signal - quotas, billing, and credentials key on
- * the owning org via getOrganizationIdFromExecution. Follow-up: move RPC
- * preferences to the org so this helper can be retired.
- */
-export async function getUserIdFromExecution(
-  executionId: string | undefined
-): Promise<string> {
-  if (!executionId) {
-    throw new Error("Execution ID is required to get user ID");
-  }
-
-  const execution = await db
-    .select({ userId: workflowExecutions.userId })
-    .from(workflowExecutions)
-    .where(eq(workflowExecutions.id, executionId))
-    .limit(1);
-
-  if (execution.length === 0) {
-    throw new Error(`Execution not found: ${executionId}`);
-  }
-
-  return execution[0].userId;
-}
-
-// A run's steps share one role answer instead of a lookup per step.
-const RPC_PREFERENCE_CACHE_TTL_MS = 30_000;
-const RPC_PREFERENCE_CACHE_MAX = 5000;
-const rpcPreferenceCache = new Map<
-  string,
-  { value: boolean; expiresAt: number }
->();
-
-/**
- * The user whose RPC preferences a run in this org may use: the run's user,
- * only while they are an active non-viewer member of the org. Anyone else
- * could steer the org's reads and writes through their own preferences.
- */
-export async function rpcPreferenceUserId(
-  userId: string | undefined,
-  organizationId: string | undefined
-): Promise<string | undefined> {
-  if (!(userId && organizationId)) {
-    return;
-  }
-  const key = `${userId}|${organizationId}`;
-  const now = Date.now();
-  let allowed = rpcPreferenceCache.get(key);
-  if (!allowed || allowed.expiresAt <= now) {
-    const role = await getOrgRole(userId, organizationId);
-    allowed = {
-      value: role !== null && !isViewerRole(role),
-      expiresAt: now + RPC_PREFERENCE_CACHE_TTL_MS,
-    };
-    if (rpcPreferenceCache.size >= RPC_PREFERENCE_CACHE_MAX) {
-      rpcPreferenceCache.clear();
-    }
-    rpcPreferenceCache.set(key, allowed);
-  }
-  return allowed.value ? userId : undefined;
-}
-
-/**
- * Lenient variant of getUserIdFromExecution for per-user RPC preference
- * lookups in read steps. RPC preferences are a per-user convenience, not an
- * authority signal, so a missing context, an unknown execution, or a
- * transient DB failure all resolve to undefined and the step falls back to
- * the chain's default RPC config rather than failing. Same retirement note
- * as above: once RPC preferences move to the org this helper goes with them.
- */
-export async function getRpcPreferenceUserId(
-  executionId: string | undefined
-): Promise<string | undefined> {
-  if (!executionId) {
-    return;
-  }
-  try {
-    const [execution] = await db
-      .select({
-        userId: workflowExecutions.userId,
-        executionOrganizationId: workflowExecutions.organizationId,
-        workflowOrganizationId: workflows.organizationId,
-      })
-      .from(workflowExecutions)
-      .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-      .where(eq(workflowExecutions.id, executionId))
-      .limit(1);
-    if (!execution) {
-      return;
-    }
-    return await rpcPreferenceUserId(
-      execution.userId,
-      execution.executionOrganizationId ??
-        execution.workflowOrganizationId ??
-        undefined
-    );
-  } catch {
-    return;
-  }
+/** The organization that owns a run, or null when it has none or is missing. */
+export async function findOrganizationIdForExecution(
+  executionId: string
+): Promise<string | null> {
+  return (await loadExecutionOrganization(executionId))?.organizationId ?? null;
 }

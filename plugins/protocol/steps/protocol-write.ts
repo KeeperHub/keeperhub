@@ -18,6 +18,7 @@ import { checkProtocolInputGuards } from "@/lib/protocol-input-guards";
 import { checkProtocolOnchainGuards } from "@/lib/protocol-input-guards-onchain";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getProtocol, resolveContractAddress } from "@/lib/protocol-registry";
+import { RPC_SELECTION_CONFIG_KEY } from "@/lib/rpc/engine";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
 import { applyEncodeTransformsNamed } from "@/lib/protocol-encode-transforms";
 import {
@@ -33,6 +34,7 @@ import {
   type ProtocolMeta,
   resolveProtocolMeta,
 } from "./resolve-protocol-meta";
+import { rpcScopeFromStep } from "@/lib/rpc/engine";
 
 type ProtocolWriteInput = StepInput & {
   network: string;
@@ -316,6 +318,7 @@ export async function protocolWriteStep(
         contractAddress,
         network: input.network,
         abi: contract.abi,
+        rpcScope: rpcScopeFromStep(input),
       });
       resolvedAbi = abiResult.abi;
     } catch (error) {
@@ -343,6 +346,9 @@ export async function protocolWriteStep(
       network: input.network,
       organizationId: input._context?.organizationId,
       executionId: input._context?.executionId,
+      [RPC_SELECTION_CONFIG_KEY]: (input as Record<string, unknown>)[
+        RPC_SELECTION_CONFIG_KEY
+      ],
     });
     if (!onchainGuard.ok) {
       return { success: false, error: onchainGuard.error };
@@ -363,6 +369,7 @@ export async function protocolWriteStep(
       meta.protocolSlug
     );
 
+    const rpcSelection = input[RPC_SELECTION_CONFIG_KEY];
     const coreInput: WriteContractCoreInput = {
       contractAddress,
       network: input.network,
@@ -375,6 +382,8 @@ export async function protocolWriteStep(
       sponsorGas: input.sponsorGas,
       usePrivateMempool: input.usePrivateMempool,
       strict: input.strict,
+      [RPC_SELECTION_CONFIG_KEY]:
+        typeof rpcSelection === "string" ? rpcSelection : undefined,
       _context: input._context
         ? {
             executionId: input._context.executionId,

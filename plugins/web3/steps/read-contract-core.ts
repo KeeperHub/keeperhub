@@ -6,7 +6,6 @@
  * exporting functions from "use step" files (which breaks the workflow bundler).
  */
 import "server-only";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { ethers } from "ethers";
@@ -18,7 +17,14 @@ import {
 import { validateArgsForAbi } from "@/lib/abi/validate-args";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  isOrgSettingRouteError,
+  rpc,
+  RPC_SELECTION_CONFIG_KEY,
+  RpcPurpose,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 import {
   describeAmbiguousKey,
   resolveAbiFunction,
@@ -80,6 +86,7 @@ export type ReadContractCoreInput = {
     organizationId?: string;
     triggerBlock?: TriggerBlock;
   };
+  [RPC_SELECTION_CONFIG_KEY]?: unknown;
 };
 
 export type ReadContractResult =
@@ -151,10 +158,6 @@ async function readContractInner(
       errorClass: ExecutionErrorType.USER,
     };
   }
-
-  const userId = _context?.organizationId
-    ? undefined
-    : await getRpcPreferenceUserId(_context?.executionId);
 
   // Validate contract address
   if (!ethers.isAddress(contractAddress)) {
@@ -364,9 +367,11 @@ async function readContractInner(
   }
 
   // Resolve RPC provider
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  const scope = rpcScopeFromStep(input);
+  let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId, userId });
+    const client = await rpc.evm(scope, chainId, { purpose: RpcPurpose.READ });
+    rpcManager = client.manager;
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -382,11 +387,14 @@ async function readContractInner(
       success: false,
       destinationError: true,
       error: getErrorMessage(error),
-      errorClass: ExecutionErrorType.SYSTEM,
+      errorClass:
+        isOrgSettingRouteError(error)
+          ? ExecutionErrorType.USER
+          : ExecutionErrorType.SYSTEM,
     };
   }
 
-  const adapter = getChainAdapter(chainId);
+  const adapter = getChainAdapter(chainId, scope);
   const isView =
     functionAbi.stateMutability === "view" ||
     functionAbi.stateMutability === "pure";

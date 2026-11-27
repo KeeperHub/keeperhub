@@ -21,9 +21,14 @@ vi.mock("@/lib/rpc/network-utils", () => ({
     mockGetChainIdFromNetwork(...args),
 }));
 
-const mockGetRpcProvider = vi.fn();
-vi.mock("@/lib/rpc/provider-factory", () => ({
-  getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
+const mockRpcEvm = vi.fn();
+vi.mock("@/lib/rpc/engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/engine")>()),
+  rpc: {
+    evm: (...args: unknown[]) => mockRpcEvm(...args),
+    solana: vi.fn(),
+    route: vi.fn(),
+  },
 }));
 
 const mockResolveOrganizationContext = vi.fn();
@@ -75,9 +80,8 @@ beforeEach(() => {
   mockResolveOrganizationContext.mockResolvedValue({
     success: true,
     organizationId: "org1",
-    userId: "u1",
   });
-  mockGetRpcProvider.mockResolvedValue({});
+  mockRpcEvm.mockResolvedValue({ manager: {} });
   mockResolveTempoToken.mockImplementation(
     (config: { supportedTokenId?: string }) =>
       config?.supportedTokenId === "usdc"

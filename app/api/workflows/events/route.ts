@@ -8,6 +8,10 @@ import type { WorkflowNode } from "@/lib/workflow/store";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
 import { resolveProtocolEventAddress } from "@/lib/workflow/protocol-event-address";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
+import {
+  attachTriggerRoutes,
+  triggerChainId,
+} from "@/lib/rpc/engine/trigger-routes";
 
 // The Transfer trigger always watches the fixed TIP-20
 // TransferWithMemo event. The event-tracker's mapper needs an ABI + event name
@@ -27,16 +31,6 @@ const TEMPO_TRANSFER_WITH_MEMO_ABI = JSON.stringify([
     ],
   },
 ]);
-
-/** The chainId a trigger node targets (config.network), or null if absent/unparseable. */
-function triggerChainId(node: WorkflowNode | undefined): number | null {
-  const raw = node?.data?.config?.network;
-  if (typeof raw !== "string" && typeof raw !== "number") {
-    return null;
-  }
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
-}
 
 /**
  * Internal endpoint for workers to fetch active Event-type workflows.
@@ -196,7 +190,7 @@ export async function GET(request: Request) {
     });
 
     const response = {
-      workflows: filteredWorkflows,
+      workflows: await attachTriggerRoutes(filteredWorkflows),
       networks: networkMap,
     };
 

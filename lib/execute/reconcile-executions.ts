@@ -21,12 +21,14 @@ import {
 } from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
+import { rpcScopeForOrganization } from "@/lib/rpc/engine";
 import { DAY_MS } from "@/lib/utils/duration";
 import {
   describeVerificationFailure,
   hasUnreadableReceipt,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
+import { findOrganizationIdForExecution } from "@/lib/workflow/executor/helpers";
 
 /**
  * Settles executions left in `unconfirmed`: a transaction was broadcast but
@@ -82,12 +84,18 @@ type SettleOutcome = "completed" | "failed" | "unconfirmed";
 
 type UnconfirmedDirectExecution = Pick<
   DirectExecution,
-  "id" | "transactionHash" | "network" | "receipts" | "createdAt"
+  | "id"
+  | "organizationId"
+  | "transactionHash"
+  | "network"
+  | "receipts"
+  | "createdAt"
 >;
 
 type UnconfirmedWorkflowExecution = {
   id: string;
   workflowId: string;
+  organizationId: string | null;
   transactionHashes: TransactionHashEntry[] | null;
   startedAt: Date;
   // KEEP-1281: which way this row entered `unconfirmed`.
@@ -200,9 +208,10 @@ async function reconcileOne(
     return settledOutcome(settled, "failed");
   }
 
-  const { allVerified, results } = await verifyExecutionReceipts([
-    { hash, chainId },
-  ]);
+  const { allVerified, results } = await verifyExecutionReceipts(
+    [{ hash, chainId }],
+    rpcScopeForOrganization(execution.organizationId)
+  );
   const receipts = toReceiptEntries(results);
 
   if (allVerified) {
@@ -360,8 +369,12 @@ async function reconcileWorkflow(
     return "failed";
   }
 
+  const organizationId =
+    execution.organizationId ??
+    (await findOrganizationIdForExecution(execution.id));
   const { allVerified, results } = await verifyExecutionReceipts(
-    verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId }))
+    verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId })),
+    rpcScopeForOrganization(organizationId)
   );
 
   if (allVerified && !failureOrigin) {
@@ -464,6 +477,7 @@ export async function reconcileUnconfirmedExecutions(
 
   const directColumns = {
     id: directExecutions.id,
+    organizationId: directExecutions.organizationId,
     transactionHash: directExecutions.transactionHash,
     network: directExecutions.network,
     receipts: directExecutions.receipts,
@@ -499,6 +513,7 @@ export async function reconcileUnconfirmedExecutions(
   const workflowColumns = {
     id: workflowExecutions.id,
     workflowId: workflowExecutions.workflowId,
+    organizationId: workflowExecutions.organizationId,
     transactionHashes: workflowExecutions.transactionHashes,
     startedAt: workflowExecutions.startedAt,
     errorType: workflowExecutions.errorType,

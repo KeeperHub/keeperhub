@@ -22,14 +22,21 @@ import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
 import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
 import { getTransactionUrl } from "@/lib/explorer";
 import { ErrorCategory, logUserError } from "@/lib/logging";
-import { getChainBuilderRpcUrls } from "@/lib/rpc/config-service";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import {
   getOrganizationWalletAddress,
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  builderRpcUrlsFor,
+  type EvmRpcClient,
+  isOrgSettingRouteError,
+  rpc,
+  RPC_SELECTION_CONFIG_KEY,
+  RpcPurpose,
+  rpcScopeFromStep,
+} from "@/lib/rpc/engine";
 import { rpcRelayErrorClass } from "@/lib/rpc/providers";
 import {
   describeAmbiguousKey,
@@ -131,6 +138,7 @@ export type WriteContractCoreInput = {
   simulateAt?: SimulateAt;
   // Block time (slot length) in seconds; unset = the chain's measured one.
   simulateTimestampOffsetSec?: string | number;
+  [RPC_SELECTION_CONFIG_KEY]?: string;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -434,22 +442,21 @@ async function writeContractCoreImpl(
   if (!orgCtx.success) {
     return { success: false, error: orgCtx.error, errorClass: ExecutionErrorType.SYSTEM };
   }
-  const { organizationId, userId } = orgCtx;
+  const { organizationId } = orgCtx;
+  const rpcScope = rpcScopeFromStep(input, organizationId);
 
-  // Get chain ID and resolve RPC config (with user preferences + failover)
   let chainId: number;
-  let rpcUrl: string;
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  let rpcClient: EvmRpcClient;
   try {
     chainId = getChainIdFromNetwork(network);
 
-    rpcManager = await getRpcProvider({
-      chainId,
-      userId,
-      usePrivateMempool,
-      strict,
+    rpcClient = await rpc.evm(rpcScope, chainId, {
+      purpose: RpcPurpose.WRITE,
+      privateMempool: usePrivateMempool
+        ? { strict: strict ?? true }
+        : undefined,
     });
-    rpcUrl = await rpcManager.resolveActiveRpcUrl();
+    await rpcClient.manager.resolveActiveRpcUrl();
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -463,12 +470,15 @@ async function writeContractCoreImpl(
     return {
       success: false,
       error: getErrorMessage(error),
-      // A private-mempool relay that never answered is not our platform
-      // failing; everything else here (unknown chain, disabled chain, our own
-      // endpoints) is.
-      errorClass: rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM,
+      // A route the step's RPC settings rule out, or a private-mempool relay
+      // that never answered, is not our platform failing; the rest is.
+      errorClass:
+        isOrgSettingRouteError(error)
+          ? ExecutionErrorType.USER
+          : (rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM),
     };
   }
+  const rpcManager = rpcClient.manager;
 
   if (maxFeeOverride !== undefined) {
     const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
@@ -637,7 +647,6 @@ async function writeContractCoreImpl(
     executionId: _context?.executionId ?? `direct-${generateId()}`,
     workflowId,
     chainId,
-    rpcUrl,
     rpcManager,
   };
 
@@ -659,7 +668,7 @@ async function writeContractCoreImpl(
         organizationId,
         executionId: _context?.executionId ?? "direct-execution",
         chainId,
-        rpcUrl,
+        rpc: rpcClient,
         walletAddress,
         to: contractAddress,
         // biome-ignore lint/suspicious/noExplicitAny: ABI parsed from user-provided JSON string, type is unknown[]
@@ -750,7 +759,7 @@ async function writeContractCoreImpl(
   }
 
   // Fall back to direct signing with nonce management and RPC failover
-  const adapter = getChainAdapter(chainId);
+  const adapter = getChainAdapter(chainId, rpcScope);
 
   // Answer affordability before queueing on the wallet's nonce lock. A holder
   // that cannot pay would otherwise take the lock, spend a full failover round
@@ -771,14 +780,14 @@ async function writeContractCoreImpl(
     simulation !== undefined &&
     !usePrivateMempool &&
     signerMode.kind === SIGNER_MODE.EOA
-      ? await getChainBuilderRpcUrls(chainId)
+      ? await builderRpcUrlsFor(rpcClient.route)
       : undefined;
 
   const sent = await withNonceSession(txContext, walletAddress, async (session): Promise<WriteContractResult | MinedSend<Extract<WriteContractResult, { success: true }>>> => {
     // Initialize wallet signer
     let signer: Awaited<ReturnType<typeof initializeWalletSigner>>;
     try {
-      signer = await initializeWalletSigner(organizationId, rpcUrl, chainId);
+      signer = await initializeWalletSigner(organizationId, rpcManager);
     } catch (error) {
       return {
         success: false,

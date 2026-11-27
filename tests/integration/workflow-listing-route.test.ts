@@ -115,6 +115,12 @@ vi.mock("@/lib/schedule-service", async () => {
   };
 });
 
+// The RPC coverage check reads organization RPC tables this db stub lacks;
+// its refusals are covered in workflow-rpc-coverage-refusal.test.ts.
+vi.mock("@/lib/rpc/engine/org/service", () => ({
+  workflowCoverageRefusal: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("@/lib/sanitize-description", () => ({
   sanitizeDescription: vi.fn((raw: string) => `SANITIZED:${raw}`),
 }));

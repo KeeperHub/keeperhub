@@ -2,7 +2,11 @@ import type { NetworksMap, RawWorkflow } from "../lib/types";
 import { fetchActiveWorkflows } from "../lib/utils/fetch-utils";
 import { logger } from "../lib/utils/logger";
 import { chainProviderManager } from "./chains/provider-manager";
-import { createRegistry } from "./listener/factory";
+import {
+  type RouteRuntime,
+  createRegistry,
+  createRouteRuntime,
+} from "./listener/factory";
 import type { ListenerRegistry } from "./listener/registry";
 import { buildRegistration } from "./listener/workflow-mapper";
 import { describePythMismatch } from "./pyth/availability";
@@ -13,6 +17,7 @@ import { PythRegistry } from "./pyth/registry";
 // construction until the first reconcile so unit tests that import this
 // module without env wiring do not connect on import.
 let registry: ListenerRegistry | null = null;
+let routeRuntime: RouteRuntime | null = null;
 let pythRegistry: PythRegistry | null = null;
 let pythSyncing = false;
 let pythMismatch: string | null = null;
@@ -60,7 +65,9 @@ async function synchronizePyth(): Promise<void> {
 
 function getRegistry(): ListenerRegistry {
   if (!registry) {
-    registry = createRegistry();
+    routeRuntime = createRouteRuntime();
+    routeRuntime.usage.start();
+    registry = createRegistry(routeRuntime.pool);
   }
   return registry;
 }
@@ -79,7 +86,11 @@ function getRegistry(): ListenerRegistry {
 async function shutdownRegistry(): Promise<void> {
   shuttingDown = true;
   await Promise.all([pythRegistry?.stopAll(), registry?.stopAll()]);
-  await chainProviderManager.destroy();
+  await Promise.all([
+    chainProviderManager.destroy(),
+    routeRuntime?.pool.destroyAll(),
+  ]);
+  await routeRuntime?.usage.stop();
 }
 
 async function reconcile(
@@ -87,6 +98,7 @@ async function reconcile(
   networks: NetworksMap,
 ): Promise<void> {
   const reg = getRegistry();
+  reg.evictFailedRoutes();
 
   const activeIds = new Set<string>(
     workflows

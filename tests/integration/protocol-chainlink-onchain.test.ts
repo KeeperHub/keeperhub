@@ -11,7 +11,7 @@
  *   2. Individual CHAIN_SEPOLIA_*_RPC env vars (dev override)
  *   3. Public Sepolia RPC default (last resort)
  *
- * Uses getRpcProviderFromUrls + executeWithFailover so primary RPC failures
+ * Uses createRpcProviderManager + executeWithFailover so primary RPC failures
  * transparently fail over to the fallback URL - same failover machinery
  * deployed services use.
  *
@@ -28,7 +28,7 @@ import { describe, expect, vi } from "vitest";
 // otherwise throw under vitest's Node runtime.
 vi.mock("server-only", () => ({}));
 
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
+import { createRpcProviderManager } from "@/lib/rpc/providers";
 import {
   createRpcUrlResolver,
   PUBLIC_RPCS,
@@ -78,12 +78,12 @@ const CCIP_MESSAGE_SAMPLE: Record<string, string> = {
 
 describe("Chainlink CCIP on-chain integration (Sepolia)", () => {
   const makeProvider = () =>
-    getRpcProviderFromUrls(
-      SEPOLIA_PRIMARY_URL,
-      SEPOLIA_FALLBACK_URL,
-      CHAIN_ID_NUMBER,
-      "Sepolia (CCIP integration test)"
-    );
+    createRpcProviderManager({
+      primaryRpcUrl: SEPOLIA_PRIMARY_URL,
+      fallbackRpcUrl: SEPOLIA_FALLBACK_URL,
+      chainId: CHAIN_ID_NUMBER,
+      chainName: "Sepolia (CCIP integration test)",
+    });
 
   itOnchain(
     "ccip-get-fee: eth_call returns decodable uint256",
@@ -95,7 +95,7 @@ describe("Chainlink CCIP on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         const result = await provider.executeWithFailover(
           async (p) => await p.call({ to, data })
@@ -128,7 +128,7 @@ describe("Chainlink CCIP on-chain integration (Sepolia)", () => {
         toOverride: CCIP_BNM_SEPOLIA,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       const result = await provider.executeWithFailover(
         async (p) => await p.call({ to, data })
       );
@@ -152,7 +152,7 @@ describe("Chainlink CCIP on-chain integration (Sepolia)", () => {
         toOverride: CCIP_BNM_SEPOLIA,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       const result = await provider.executeWithFailover(
         async (p) => await p.call({ to, data })
       );
@@ -179,7 +179,7 @@ describe("Chainlink CCIP on-chain integration (Sepolia)", () => {
         toOverride: CCIP_BNM_SEPOLIA,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.estimateGas({ to, data, from: TEST_ADDRESS })
@@ -204,7 +204,7 @@ describe("Chainlink CCIP on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) =>
@@ -238,7 +238,7 @@ describe("Chainlink CCIP on-chain integration (Sepolia)", () => {
         chainId: CHAIN_ID,
       });
 
-      const provider = await makeProvider();
+      const provider = makeProvider();
       try {
         await provider.executeWithFailover(
           async (p) => await p.estimateGas({ to, data, from: TEST_ADDRESS })

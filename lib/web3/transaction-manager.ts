@@ -21,7 +21,6 @@ import { db } from "@/lib/db";
 import { explorerConfigs } from "@/lib/db/schema";
 import { getTransactionUrl } from "@/lib/explorer";
 import { ErrorCategory, logUserError, logWarn } from "@/lib/logging";
-import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { initializeWalletSigner } from "@/lib/web3/wallet-helpers";
 import { getGasStrategy } from "./gas-strategy";
@@ -37,7 +36,6 @@ export type TransactionContext = {
   executionId: string;
   workflowId?: string;
   chainId: number;
-  rpcUrl: string;
   rpcManager: RpcProviderManager;
 };
 
@@ -198,8 +196,7 @@ export async function executeTransaction(
 
     const signer = await initializeWalletSigner(
       context.organizationId,
-      context.rpcUrl,
-      context.chainId
+      context.rpcManager
     );
     const provider = signer.provider;
 
@@ -417,20 +414,4 @@ export async function withNonceSession<T>(
   } finally {
     await nonceManager.endSession(session);
   }
-}
-
-/**
- * Get the current nonce from the chain for a wallet.
- * Useful for checking state without acquiring a lock.
- */
-export async function getCurrentNonce(
-  walletAddress: string,
-  rpcUrl: string,
-  chainId: number
-): Promise<number> {
-  const rpcManager = await getRpcProviderFromUrls(rpcUrl, undefined, chainId);
-  return await rpcManager.executeWithFailover(
-    (provider) => provider.getTransactionCount(walletAddress, "pending"),
-    "read"
-  );
 }

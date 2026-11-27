@@ -10,6 +10,7 @@ import {
   getLiveness,
   refreshMetrics,
   shutdownAll,
+  startUsageReporting,
   synchronizeData,
 } from "./main";
 
@@ -43,6 +44,7 @@ const initialize = async (): Promise<(signal: string) => Promise<void>> => {
 
   await synchronizeData();
   const interval = setInterval(synchronizeData, 30_000);
+  startUsageReporting();
 
   async function shutdown(signal: string): Promise<void> {
     logger.log(`[Shutdown] received ${signal}; stopping ingestors`);

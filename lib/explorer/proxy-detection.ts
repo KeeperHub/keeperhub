@@ -11,7 +11,8 @@
 
 import { ethers } from "ethers";
 import { logWarn } from "@/lib/logging";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { type RpcScope, rpc } from "@/lib/rpc/engine";
+import type { RpcProviderManager } from "@/lib/rpc/providers";
 
 export type ProxyDetectionResult = {
   isProxy: boolean;
@@ -232,19 +233,21 @@ async function checkEip1167Proxy(
  *
  * @param contractAddress - The contract address to check
  * @param chainId - The chain ID
+ * @param scope - Whose RPC route the reads go through
  * @returns Proxy detection result with implementation address if found
  */
 export async function detectProxyViaRpc(
   contractAddress: string,
-  chainId: number
+  chainId: number,
+  scope: RpcScope
 ): Promise<ProxyDetectionResult> {
   console.log(
     `[Proxy Detection] Starting RPC-based proxy detection for ${contractAddress} on chain ${chainId}`
   );
 
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
+  let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId });
+    ({ manager: rpcManager } = await rpc.evm(scope, chainId));
   } catch {
     logWarn(
       `[Proxy Detection] No RPC config found for chain ${chainId}, skipping detection`,

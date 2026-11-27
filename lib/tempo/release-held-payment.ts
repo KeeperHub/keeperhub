@@ -10,6 +10,7 @@
  */
 import "server-only";
 
+import { onHeldPaymentRoute } from "@/lib/tempo/held-payment-route";
 import {
   claimHeldPayment,
   getHeldPaymentForOrg,
@@ -47,9 +48,8 @@ export type ReleaseHeldPaymentResult =
 export async function releaseHeldPaymentNow(params: {
   paymentId: string;
   organizationId: string;
-  userId?: string;
 }): Promise<ReleaseHeldPaymentResult> {
-  const { paymentId, organizationId, userId } = params;
+  const { paymentId, organizationId } = params;
 
   const existing = await getHeldPaymentForOrg(paymentId, organizationId);
   if (!existing) {
@@ -81,13 +81,18 @@ export async function releaseHeldPaymentNow(params: {
   }
 
   try {
-    const { hash } = await broadcastStoredTempoTx({
-      chainId: claimed.chainId,
-      userId,
-      serialized: claimed.serializedTx,
-      expectedHash: claimed.precomputedHash,
-      waitForConfirmation: true,
-    });
+    const { hash } = await onHeldPaymentRoute(
+      organizationId,
+      claimed.rpcSelection,
+      (rpcScope) =>
+        broadcastStoredTempoTx({
+          chainId: claimed.chainId,
+          rpcScope,
+          serialized: claimed.serializedTx,
+          expectedHash: claimed.precomputedHash,
+          waitForConfirmation: true,
+        })
+    );
     await markConfirmed(claimed.id, hash);
     return {
       ok: true,

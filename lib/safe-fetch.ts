@@ -12,6 +12,7 @@ import { captureException } from "@sentry/nextjs";
 import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 import { logWarn } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
+import { isOrganizationHost } from "@/lib/rpc/engine/organization-url-check";
 import {
   SSRF_BLOCKED_HOST_EXACT,
   SSRF_BLOCKED_HOST_SUFFIXES,
@@ -347,8 +348,12 @@ function recordBlock(ctx: BlockContext, shadow: boolean): void {
   // hostname/resolved_ip with "Added label not included in initial labelset"
   // and turns shadow mode into a synchronous throw.
   const modeSuffix = shadow ? " (shadow mode)" : "";
+  const organization = isOrganizationHost(ctx.hostname);
+  const target = organization ? "an organization RPC endpoint" : ctx.hostname;
   const resolvedSuffix =
-    ctx.resolvedIp !== undefined && ctx.resolvedIp !== ctx.hostname
+    !organization &&
+    ctx.resolvedIp !== undefined &&
+    ctx.resolvedIp !== ctx.hostname
       ? ` -> ${ctx.resolvedIp}`
       : "";
   const pluginSuffix =
@@ -359,7 +364,7 @@ function recordBlock(ctx: BlockContext, shadow: boolean): void {
   // initial labelset rejects hostname/resolved_ip and turns shadow mode into
   // a synchronous throw.
   logWarn(
-    `[safe-fetch] Blocked outbound request${modeSuffix}: ${ctx.hostname}${resolvedSuffix} (reason=${ctx.reason})${pluginSuffix}`
+    `[safe-fetch] Blocked outbound request${modeSuffix}: ${target}${resolvedSuffix} (reason=${ctx.reason})${pluginSuffix}`
   );
 
   captureException(new Error(`safe-fetch block: ${ctx.reason}`), {
@@ -368,15 +373,18 @@ function recordBlock(ctx: BlockContext, shadow: boolean): void {
       safe_fetch_reason: ctx.reason,
       safe_fetch_shadow: shadow ? "true" : "false",
       plugin_name: ctx.plugin ?? "unknown",
+      safe_fetch_target: organization ? "organization" : "other",
     },
-    extra: {
-      hostname: ctx.hostname,
-      resolved_ip: ctx.resolvedIp,
-    },
+    extra: organization
+      ? {}
+      : { hostname: ctx.hostname, resolved_ip: ctx.resolvedIp },
   });
 }
 
 function blockedMessage(ctx: BlockContext): string {
+  if (isOrganizationHost(ctx.hostname)) {
+    return `Outbound request to an organization RPC endpoint blocked by SSRF policy (${ctx.reason}).`;
+  }
   const ipPart = ctx.resolvedIp ? ` (resolved to ${ctx.resolvedIp})` : "";
   return `Outbound request to ${ctx.hostname}${ipPart} blocked by SSRF policy (${ctx.reason}).`;
 }
@@ -673,9 +681,22 @@ export async function safeFetch(
  * Caveat: this is a write-time check. An attacker-controlled domain that
  * resolves to a public IP at validation time and re-binds to a private IP
  * before the fetch (DNS rebinding) is not blocked here. Pair this with the
- * runtime `safeFetch` guard wherever the URL is later used.
+ * runtime `safeFetch` guard wherever the URL is later used, or connect only
+ * to the addresses `resolvePublicAddresses` returns.
  */
 export async function assertUrlIsPublic(rawUrl: string): Promise<void> {
+  await resolvePublicAddresses(rawUrl);
+}
+
+/**
+ * The addresses a URL's host resolves to, every one of them checked against
+ * the SSRF denylist; an IP-literal host is its own single address. Throws
+ * exactly as `assertUrlIsPublic` does. A client that connects only to these
+ * addresses cannot be re-bound to a private one after the check.
+ */
+export async function resolvePublicAddresses(
+  rawUrl: string
+): Promise<string[]> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -710,14 +731,18 @@ export async function assertUrlIsPublic(rawUrl: string): Promise<void> {
         reason: verdict.reason,
       });
     }
-    return;
+    return [hostname];
   }
 
   let addresses: LookupAddress[];
   try {
     addresses = await dnsPromises.lookup(hostname, { all: true });
   } catch {
-    throw new Error(`Cannot resolve host: ${hostname}`);
+    throw new Error(
+      isOrganizationHost(hostname)
+        ? "Cannot resolve the organization RPC endpoint's host"
+        : `Cannot resolve host: ${hostname}`
+    );
   }
 
   for (const addr of addresses) {
@@ -730,4 +755,5 @@ export async function assertUrlIsPublic(rawUrl: string): Promise<void> {
       });
     }
   }
+  return addresses.map((addr) => addr.address);
 }

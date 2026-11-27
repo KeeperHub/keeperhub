@@ -151,11 +151,14 @@ async function probeSolana(url: string): Promise<void> {
   await withTimeout(connection.getSlot(), PROBE_TIMEOUT_MS);
 }
 
+/** Metric label for a URL whose host cannot be parsed; never the URL itself. */
+const UNPARSEABLE_ENDPOINT = "unparseable";
+
 function extractHostname(url: string): string {
   try {
     return new URL(url).hostname;
   } catch {
-    return url;
+    return UNPARSEABLE_ENDPOINT;
   }
 }
 

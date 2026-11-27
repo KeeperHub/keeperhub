@@ -1,4 +1,5 @@
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { isOrgRpcError } from "../engine/org-rpc-error";
 
 /**
  * Failover exhausted against the chain's private-mempool relay (Flashbots
@@ -20,11 +21,15 @@ export class RpcRelayTransportError extends Error {
 }
 
 /**
- * The fault domain an RPC failure declares, or undefined for anything that is
- * not a relay transport failure (the caller keeps its own classification).
+ * The fault domain an RPC failure declares, or undefined when it declares
+ * none (the caller keeps its own classification). A relay transport failure
+ * and a failure on an organization's own endpoints are both external.
  */
 export function rpcRelayErrorClass(
   error: unknown
 ): ExecutionErrorType | undefined {
-  return error instanceof RpcRelayTransportError ? error.errorClass : undefined;
+  if (error instanceof RpcRelayTransportError) {
+    return error.errorClass;
+  }
+  return isOrgRpcError(error) ? ExecutionErrorType.EXTERNAL : undefined;
 }

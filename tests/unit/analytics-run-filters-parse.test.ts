@@ -47,6 +47,15 @@ describe("parseRunFilters", () => {
     expect(parse("gas=maybe").gas).toBeUndefined();
   });
 
+  it("reads the rpc endpoint dimension and drops oversized values", () => {
+    expect(
+      parse("rpcEndpoint=org&rpcEndpoint=cfg_1&rpcEndpoint=org").rpcEndpoints
+    ).toEqual(["org", "cfg_1"]);
+    expect(
+      parse(`rpcEndpoint=${"a".repeat(65)}&rpcEndpoint=`).rpcEndpoints
+    ).toBeUndefined();
+  });
+
   it("trims search and caps its length", () => {
     expect(parse("search=%20%20nightly%20%20").search).toBe("nightly");
     expect(parse(`search=${"a".repeat(500)}`).search).toHaveLength(128);
@@ -60,6 +69,7 @@ describe("buildRunsQuery", () => {
       statuses: ["error", "system_error"],
       sources: ["workflow"],
       networks: ["8453", "42161"],
+      rpcEndpoints: ["platform", "cfg_1"],
       duration: "over30s",
       gas: ["wallet"],
       search: "nightly",
@@ -70,6 +80,7 @@ describe("buildRunsQuery", () => {
     expect(parsed.statuses).toEqual(["error", "system_error"]);
     expect(parsed.sources).toEqual(["workflow"]);
     expect(parsed.networks).toEqual(["8453", "42161"]);
+    expect(parsed.rpcEndpoints).toEqual(["platform", "cfg_1"]);
     expect(parsed.durationMinMs).toBe(30_000);
     expect(parsed.durationMaxMs).toBeUndefined();
     expect(parsed.search).toBe("nightly");

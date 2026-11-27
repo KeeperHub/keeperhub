@@ -4,7 +4,7 @@ import { broadcastTransactionHash } from "@/lib/web3/onchain-revert";
 import { ethers } from "ethers";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
 import { getErrorMessage } from "@/lib/utils";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import {
@@ -106,13 +106,11 @@ async function stepHandlerImpl(input: DexSwapInput): Promise<DexSwapResult> {
     return orgCtx;
   }
 
+  const rpcScope = rpcScopeFromStep(input, orgCtx.organizationId);
   let broadcastHash: string | undefined;
 
   try {
-    const rpcManager = await getRpcProvider({
-      chainId,
-      userId: orgCtx.userId,
-    });
+    const { manager: rpcManager } = await rpc.evm(rpcScope, chainId);
     const [tokenIn, tokenOut] = await Promise.all([
       resolveTempoToken(tokenInConfig, chainId, rpcManager),
       resolveTempoToken(tokenOutConfig, chainId, rpcManager),
@@ -157,7 +155,7 @@ async function stepHandlerImpl(input: DexSwapInput): Promise<DexSwapResult> {
     );
     const { hash, from } = await signAndBroadcastTempoTx({
       organizationId: orgCtx.organizationId,
-      userId: orgCtx.userId,
+      rpcScope,
       chainId,
       calls: [call],
       feeToken: tokenIn.address,

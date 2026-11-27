@@ -5,7 +5,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn() }));
 
 import { Keypair } from "@solana/web3.js";
-import { getSolanaProviderFromUrls } from "@/lib/rpc/provider-factory";
+import { createSolanaProviderManager } from "@/lib/rpc/providers/solana";
 import { PUBLIC_RPCS } from "@/lib/rpc/rpc-config";
 import { SolanaChainAdapter } from "@/lib/web3/chain-adapter/solana";
 import { SolanaKeypairSigner } from "@/lib/web3/solana-signer";
@@ -16,10 +16,11 @@ describe.skipIf(!process.env.SOLANA_DEVNET_TEST_KEYPAIR)(
     it("performs a live native SOL transfer on devnet and maps TransactionReceipt fields", async () => {
       // Set up connection factory
       const adapter = new SolanaChainAdapter(103, () =>
-        getSolanaProviderFromUrls(
-          PUBLIC_RPCS.SOLANA_DEVNET,
-          undefined,
-          "Solana Devnet"
+        Promise.resolve(
+          createSolanaProviderManager({
+            primaryRpcUrl: PUBLIC_RPCS.SOLANA_DEVNET,
+            chainName: "Solana Devnet",
+          })
         )
       );
 

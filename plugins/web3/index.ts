@@ -1306,6 +1306,8 @@ const web3Plugin: IntegrationPlugin = {
           type: "chain-select",
           chainTypeFilter: "evm",
           placeholder: "Select network",
+          // Picks the explorer that decodes the calldata; no RPC call is made.
+          rpcRouted: false,
         },
         {
           key: "senderAddress",

@@ -2,7 +2,7 @@ import "server-only";
 
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import { RpcPurpose, rpc, rpcScopeFromStep } from "@/lib/rpc/engine";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
@@ -10,7 +10,6 @@ import {
   evmOnlyGuard,
   validateChainAddress,
 } from "@/lib/web3/validate-chain-address";
-import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import {
   runPluginStep,
   type StepInput,
@@ -58,7 +57,7 @@ function isNonceBlockTag(value: string): value is NonceBlockTag {
 }
 
 async function stepHandler(input: GetNonceInput): Promise<GetNonceResult> {
-  const { network, address, _context } = input;
+  const { network, address } = input;
 
   let chainId: number;
   try {
@@ -110,11 +109,12 @@ async function stepHandler(input: GetNonceInput): Promise<GetNonceResult> {
     };
   }
 
-  const userId = await getRpcPreferenceUserId(_context?.executionId);
-
   let rpcManager: RpcProviderManager;
   try {
-    rpcManager = await getRpcProvider({ chainId, userId });
+    const client = await rpc.evm(rpcScopeFromStep(input), chainId, {
+      purpose: RpcPurpose.READ,
+    });
+    rpcManager = client.manager;
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,

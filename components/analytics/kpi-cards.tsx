@@ -31,7 +31,7 @@ import {
 } from "@/lib/atoms/analytics";
 import { cn } from "@/lib/utils";
 
-function formatDuration(ms: number | null): string {
+export function formatDuration(ms: number | null): string {
   if (ms === null) {
     return "-";
   }
@@ -126,7 +126,7 @@ const COMPARISON_LABELS: Record<TimeRange, string> = {
   custom: "the preceding period of equal length",
 };
 
-function SkeletonCard(): ReactNode {
+export function SkeletonCard(): ReactNode {
   return (
     <Card>
       <CardContent className="pt-0">
@@ -183,7 +183,7 @@ function BreakdownLine({ line }: { line: KpiBreakdownLine }): ReactNode {
   );
 }
 
-type KpiCardProps = {
+export type KpiCardProps = {
   cardKey: string;
   icon: ReactNode;
   label: string;
@@ -198,7 +198,7 @@ type KpiCardProps = {
   exactValue?: string;
 };
 
-function KpiCard({
+export function KpiCard({
   cardKey,
   icon,
   label,

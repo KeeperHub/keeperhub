@@ -9,11 +9,13 @@
 
 import { PLANS } from "@/lib/billing/plans";
 import { FEATURES } from "@/lib/features/registry";
+import { RPC_SELECTION_CONFIG_KEY } from "@/lib/rpc/engine/scope";
 import {
   BUILTIN_NODE_ID,
   BUILTIN_NODE_LABEL,
 } from "@/lib/workflow/editor/builtin-variables";
 import { OPERATOR_METADATA } from "@/lib/workflow/nodes/condition/operator-metadata";
+import { RPC_SELECTION_TYPE_TEXT } from "@/lib/workflow/rpc-selection-field";
 
 // Shared by every trigger whose runs the executor dispatches; see
 // lib/workflow/execution-priority.ts.
@@ -322,6 +324,7 @@ export const TRIGGERS = {
     },
     optionalFields: {
       executionPriority: EXECUTION_PRIORITY_DOC,
+      [RPC_SELECTION_CONFIG_KEY]: RPC_SELECTION_TYPE_TEXT,
     },
     outputFields: {
       eventName: "string - Name of the event that was emitted",
@@ -346,6 +349,7 @@ export const TRIGGERS = {
     },
     optionalFields: {
       executionPriority: EXECUTION_PRIORITY_DOC,
+      [RPC_SELECTION_CONFIG_KEY]: RPC_SELECTION_TYPE_TEXT,
     },
     outputFields: {
       // EVM chains
