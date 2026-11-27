@@ -14,7 +14,7 @@
 import "server-only";
 
 import { ErrorCategory, logInfo, logSystemWarn } from "@/lib/logging";
-import { parseRpcSelection, rpcScopeForOrganization } from "@/lib/rpc/engine";
+import { onHeldPaymentRoute } from "@/lib/tempo/held-payment-route";
 import {
   claimHeldPayment,
   deferBroadcastReconcile,
@@ -56,16 +56,18 @@ async function broadcastDueRows(limit: number): Promise<{
       continue;
     }
     try {
-      const { hash } = await broadcastStoredTempoTx({
-        chainId: claimed.chainId,
-        rpcScope: rpcScopeForOrganization(
-          claimed.organizationId,
-          parseRpcSelection(claimed.rpcSelection)
-        ),
-        serialized: claimed.serializedTx,
-        expectedHash: claimed.precomputedHash,
-        waitForConfirmation: false,
-      });
+      const { hash } = await onHeldPaymentRoute(
+        claimed.organizationId,
+        claimed.rpcSelection,
+        (rpcScope) =>
+          broadcastStoredTempoTx({
+            chainId: claimed.chainId,
+            rpcScope,
+            serialized: claimed.serializedTx,
+            expectedHash: claimed.precomputedHash,
+            waitForConfirmation: false,
+          })
+      );
       await markBroadcast(claimed.id, hash);
       broadcast += 1;
     } catch (error) {
@@ -101,14 +103,13 @@ async function reconcileBroadcastRows(limit: number): Promise<{
       continue;
     }
     try {
-      const status = await checkTempoReceipt({
-        chainId: row.chainId,
-        rpcScope: rpcScopeForOrganization(
-          row.organizationId,
-          parseRpcSelection(row.rpcSelection)
-        ),
-        txHash: row.broadcastTxHash,
-      });
+      const txHash = row.broadcastTxHash;
+      const status = await onHeldPaymentRoute(
+        row.organizationId,
+        row.rpcSelection,
+        (rpcScope) =>
+          checkTempoReceipt({ chainId: row.chainId, rpcScope, txHash })
+      );
       if (status === "confirmed") {
         await markConfirmed(row.id, row.broadcastTxHash);
         confirmed += 1;

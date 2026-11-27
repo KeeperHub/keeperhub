@@ -10,7 +10,7 @@
  */
 import "server-only";
 
-import { parseRpcSelection, rpcScopeForOrganization } from "@/lib/rpc/engine";
+import { onHeldPaymentRoute } from "@/lib/tempo/held-payment-route";
 import {
   claimHeldPayment,
   getHeldPaymentForOrg,
@@ -81,16 +81,18 @@ export async function releaseHeldPaymentNow(params: {
   }
 
   try {
-    const { hash } = await broadcastStoredTempoTx({
-      chainId: claimed.chainId,
-      rpcScope: rpcScopeForOrganization(
-        organizationId,
-        parseRpcSelection(claimed.rpcSelection)
-      ),
-      serialized: claimed.serializedTx,
-      expectedHash: claimed.precomputedHash,
-      waitForConfirmation: true,
-    });
+    const { hash } = await onHeldPaymentRoute(
+      organizationId,
+      claimed.rpcSelection,
+      (rpcScope) =>
+        broadcastStoredTempoTx({
+          chainId: claimed.chainId,
+          rpcScope,
+          serialized: claimed.serializedTx,
+          expectedHash: claimed.precomputedHash,
+          waitForConfirmation: true,
+        })
+    );
     await markConfirmed(claimed.id, hash);
     return {
       ok: true,
