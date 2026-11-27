@@ -226,6 +226,38 @@ describe("RoutePool", () => {
     await pool.stopAll();
   });
 
+  it("keeps a connection's hosts pinned while it is still stopping", async () => {
+    let started = false;
+    const stuck = {
+      start: () => {
+        started = true;
+        return Promise.resolve();
+      },
+      stop: () => new Promise<void>(() => undefined),
+      isStarted: () => started,
+      hasConfigChanged: () => false,
+      canUpdateInPlace: () => false,
+      updateRegistration: () => undefined,
+      getHealth: () => undefined,
+    };
+    const pool = new RoutePool(() => stuck, new UsageMeter(), 5);
+    await pool.reconcile(
+      buildRouteRegistrations(
+        discovery([blockWorkflow("wf-a", route("key-a"))]),
+      ),
+    );
+
+    await pool.reconcile(buildRouteRegistrations(discovery([])));
+
+    const { default: dns } = await import("node:dns");
+    const address = await new Promise<string>((resolve, reject) => {
+      dns.lookup("org-primary.example", {}, (error, found) =>
+        error ? reject(error) : resolve(String(found)),
+      );
+    });
+    expect(VETTED).toContain(address);
+  });
+
   it("tears down a failed route without logging or exiting, then rebuilds it next poll", async () => {
     const out = [
       vi.spyOn(console, "log"),

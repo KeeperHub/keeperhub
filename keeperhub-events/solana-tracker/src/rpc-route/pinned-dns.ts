@@ -53,13 +53,25 @@ function install(): void {
   dns.lookup = guarded as typeof dns.lookup;
 }
 
-/** Replace the pinned hosts with those of the organization endpoints in use. */
+/**
+ * Replace the pinned hosts with those of the organization endpoints in use.
+ * A host listed more than once answers with every address vetted for it.
+ */
 export function pinEndpointHosts(endpoints: readonly PinnedEndpoint[]): void {
   install();
-  pins.clear();
+  const addressesByHost = new Map<string, Set<string>>();
   for (const endpoint of endpoints) {
     if (endpoint.addresses) {
-      pins.set(hostOf(endpoint.url), pinnedLookup(endpoint.addresses));
+      const host = hostOf(endpoint.url);
+      const addresses = addressesByHost.get(host) ?? new Set<string>();
+      for (const address of endpoint.addresses) {
+        addresses.add(address);
+      }
+      addressesByHost.set(host, addresses);
     }
+  }
+  pins.clear();
+  for (const [host, addresses] of addressesByHost) {
+    pins.set(host, pinnedLookup([...addresses]));
   }
 }

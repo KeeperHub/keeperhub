@@ -5,7 +5,7 @@ import type {
   RouteSpec,
 } from "../registrations";
 import { ROUTE_START_TIMEOUT_MS } from "./constants";
-import { pinEndpointHosts } from "./pinned-dns";
+import { type PinnedEndpoint, pinEndpointHosts } from "./pinned-dns";
 import type { UsageMeter, UsageRecorder } from "./usage-meter";
 
 /** The slice of BlockIngestor the pool drives. */
@@ -48,6 +48,10 @@ export function routeEndpointUsage(
   );
 }
 
+function endpointsOf(route: RouteSpec): PinnedEndpoint[] {
+  return route.fallback ? [route.primary, route.fallback] : [route.primary];
+}
+
 async function withTimeout(work: Promise<void>, ms: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -67,6 +71,8 @@ async function withTimeout(work: Promise<void>, ms: number): Promise<void> {
 /** One connection per organization route key, kept out of health and metrics; never throws or logs. */
 export class RoutePool {
   private readonly ingestors = new Map<string, RouteIngestor>();
+  /** The endpoints each running connection dials, kept pinned until it stops. */
+  private readonly dialled = new Map<RouteIngestor, PinnedEndpoint[]>();
   private reconciling = false;
 
   constructor(
@@ -105,11 +111,12 @@ export class RoutePool {
     for (const registration of registrations) {
       wanted.set(registration.route.key, registration);
     }
-    pinEndpointHosts(
-      [...wanted.values()].flatMap(({ route }) =>
-        route.fallback ? [route.primary, route.fallback] : [route.primary],
-      ),
+    const wantedEndpoints = [...wanted.values()].flatMap(({ route }) =>
+      endpointsOf(route),
     );
+    // A connection still stopping keeps its pins, so it never reconnects
+    // through ordinary DNS on its way out.
+    this.pin(wantedEndpoints);
     const tornDown = new Set<string>();
     for (const [key, ingestor] of [...this.ingestors]) {
       if (!wanted.has(key)) {
@@ -127,6 +134,11 @@ export class RoutePool {
         await this.apply(key, registration);
       }
     }
+    this.pin(wantedEndpoints);
+  }
+
+  private pin(wanted: readonly PinnedEndpoint[]): void {
+    pinEndpointHosts([...wanted, ...[...this.dialled.values()].flat()]);
   }
 
   private async apply(
@@ -140,6 +152,7 @@ export class RoutePool {
       }
       if (existing?.canUpdateInPlace(registration)) {
         existing.updateRegistration(registration);
+        this.dialled.set(existing, endpointsOf(registration.route));
         return;
       }
       if (existing) {
@@ -153,6 +166,7 @@ export class RoutePool {
         routeEndpointUsage(registration.route, this.meter),
       );
       this.ingestors.set(key, ingestor);
+      this.dialled.set(ingestor, endpointsOf(registration.route));
       await withTimeout(ingestor.start(), this.startTimeoutMs);
     } catch {
       const failed = this.ingestors.get(key);
@@ -168,8 +182,11 @@ export class RoutePool {
     } catch {
       // Kept below while still running, so the next pass retries the stop.
     }
-    if (!ingestor.isStarted() && this.ingestors.get(key) === ingestor) {
-      this.ingestors.delete(key);
+    if (!ingestor.isStarted()) {
+      this.dialled.delete(ingestor);
+      if (this.ingestors.get(key) === ingestor) {
+        this.ingestors.delete(key);
+      }
     }
   }
 }

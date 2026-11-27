@@ -25,6 +25,20 @@ describe("pinEndpointHosts", () => {
     await expect(lookup("ORG-NODE.example")).resolves.toBe("203.0.113.10");
   });
 
+  it("answers a host listed twice with every address vetted for it", async () => {
+    pinEndpointHosts([
+      { url: "https://org-node.example/a", addresses: ["203.0.113.10"] },
+      { url: "https://org-node.example/b", addresses: ["203.0.113.11"] },
+    ]);
+
+    const all = await new Promise<string[]>((resolve, reject) => {
+      dns.lookup("org-node.example", { all: true }, (error, found) =>
+        error ? reject(error) : resolve(found.map((entry) => entry.address)),
+      );
+    });
+    expect(all).toEqual(["203.0.113.10", "203.0.113.11"]);
+  });
+
   it("leaves other hosts to ordinary resolution", async () => {
     pinEndpointHosts([
       { url: "https://org-node.example/key", addresses: ["203.0.113.10"] },
