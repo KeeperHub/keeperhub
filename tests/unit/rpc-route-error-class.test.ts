@@ -25,4 +25,13 @@ describe("isOrgSettingRouteError", () => {
   it("is false for any other error", () => {
     expect(isOrgSettingRouteError(new Error("down"))).toBe(false);
   });
+
+  it("recognises a refusal from another copy of the module", async () => {
+    const original = new RpcRouteError(RpcRouteErrorCode.NOT_COVERED, 1);
+    const copy = Object.assign(new Error(original.message), {
+      code: original.code,
+      [Symbol.for("keeperhub.rpc.routeError")]: true,
+    });
+    expect(isOrgSettingRouteError(copy)).toBe(true);
+  });
 });

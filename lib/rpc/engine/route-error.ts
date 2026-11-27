@@ -54,7 +54,11 @@ const MESSAGES: Record<RpcRouteErrorCode, (chainId: number) => string> = {
  * Why a route could not be resolved. The message is written for the person
  * running the workflow and never names an endpoint.
  */
+/** Survives duplicated module copies, unlike an instanceof check. */
+const ROUTE_ERROR_BRAND = Symbol.for("keeperhub.rpc.routeError");
+
 export class RpcRouteError extends Error {
+  readonly [ROUTE_ERROR_BRAND] = true;
   readonly code: RpcRouteErrorCode;
   readonly chainId: number;
 
@@ -72,7 +76,12 @@ export class RpcRouteError extends Error {
  * a route refused by KeeperHub's own chain setup.
  */
 export function isOrgSettingRouteError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const candidate = error as Record<symbol | string, unknown>;
   return (
-    error instanceof RpcRouteError && ORG_SETTING_ROUTE_ERRORS.has(error.code)
+    candidate[ROUTE_ERROR_BRAND] === true &&
+    ORG_SETTING_ROUTE_ERRORS.has(candidate.code as RpcRouteErrorCode)
   );
 }
