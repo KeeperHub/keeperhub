@@ -778,9 +778,29 @@ export const newTriggerWait = (): TriggerWait => ({
   readsLeft: TRIGGER_WAIT_READS,
 });
 
+const TRIGGER_NOT_REACHED_NAME = "TriggerBlockNotReachedError";
+
 /** The RPC stayed below the block that triggered the run for the whole wait. */
 export class TriggerBlockNotReachedError extends Error {
-  override readonly name = "TriggerBlockNotReachedError" as const;
+  override readonly name = TRIGGER_NOT_REACHED_NAME;
+  // The node answered but is behind: the failover reports lag, not an outage.
+  readonly rpcLagging = true;
+}
+
+/**
+ * Whether the error is, or wraps, a trigger-block wait that ran out. Follows
+ * `cause` and the RPC failover's last endpoint error; duck-typed across module copies.
+ */
+export function isTriggerBlockNotReached(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current; depth++) {
+    if ((current as { name?: unknown }).name === TRIGGER_NOT_REACHED_NAME) {
+      return true;
+    }
+    const next = current as { cause?: unknown; lastEndpointError?: unknown };
+    current = next.lastEndpointError ?? next.cause;
+  }
+  return false;
 }
 
 // The RPC's latest block, once it has reached the block that triggered the run.

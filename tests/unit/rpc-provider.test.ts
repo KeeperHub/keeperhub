@@ -22,11 +22,13 @@ import {
   consoleMetricsCollector,
   createRpcProviderManager,
   getAllFailoverStates,
+  lastEndpointErrorOf,
   noopMetricsCollector,
   type RpcMetricsCollector,
   RpcProviderManager,
   RpcRelayTransportError,
 } from "@/lib/rpc/providers";
+import { getErrorMessage } from "@/lib/utils";
 
 // Mock ethers
 vi.mock("ethers", () => {
@@ -310,6 +312,70 @@ describe("RpcProviderManager", () => {
         })
       );
       expect(context).not.toHaveProperty("level");
+    });
+
+    it("keeps the last endpoint error on the failover error, hidden from its message and JSON", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://primary.example.com",
+          fallbackRpcUrl: "https://fallback.example.com",
+          maxRetries: 1,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+        },
+        metricsCollector,
+      });
+      const last = new Error("fallback down");
+      const operation = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("primary down"))
+        .mockRejectedValueOnce(last);
+      const thrown = await manager
+        .executeWithFailover(operation)
+        .catch((error: unknown) => error);
+      expect(lastEndpointErrorOf(thrown)).toBe(last);
+      expect((thrown as Error).message).toBe(
+        "RPC failed on both endpoints. Primary: primary down. Fallback: fallback down"
+      );
+      expect((thrown as Error).cause).toBeUndefined();
+      expect(getErrorMessage(thrown)).toBe((thrown as Error).message);
+      expect(JSON.stringify(thrown)).not.toContain("fallback down");
+    });
+
+    it("reports both endpoints behind the chain as lag (a warning), not an outage", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://primary.example.com",
+          fallbackRpcUrl: "https://fallback.example.com",
+          maxRetries: 1,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+        },
+        metricsCollector,
+      });
+      const behind = () =>
+        Object.assign(new Error("not at the trigger block"), {
+          rpcLagging: true,
+        });
+      await expect(
+        manager.executeWithFailover(
+          vi
+            .fn()
+            .mockRejectedValueOnce(behind())
+            .mockRejectedValueOnce(behind())
+        )
+      ).rejects.toThrow("RPC failed on both endpoints");
+      expect(metricsCollector.recordBothFailed).not.toHaveBeenCalled();
+      expect(recordErrorMock).not.toHaveBeenCalled();
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(captureException).mock.calls[0][1]).toEqual(
+        expect.objectContaining({
+          level: "warning",
+          extra: expect.objectContaining({
+            event: "RPC_BOTH_ENDPOINTS_LAGGING",
+          }),
+        })
+      );
     });
 
     it("records a failover that served the call as a warning, not an error", async () => {

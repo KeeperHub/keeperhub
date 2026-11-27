@@ -229,6 +229,8 @@ type EndpointFailure = {
   transport?: boolean;
   allAttemptsConnectionRefused?: boolean;
   allAttemptsRedirected?: boolean;
+  // The endpoint's last error as thrown: never rendered, only kept on the failover error.
+  lastError?: Error;
 };
 
 /** Only the flags the failover summary reads, not the attempt's result or text. */
@@ -241,7 +243,27 @@ function endpointFailure(
     transport: attempt.transport,
     allAttemptsConnectionRefused: attempt.allAttemptsConnectionRefused,
     allAttemptsRedirected: attempt.allAttemptsRedirected,
+    lastError: attempt.lastError,
   };
+}
+
+// An endpoint error that marks the node as answering but behind the chain, not down.
+const laggedOnly = (failures: readonly EndpointFailure[]): boolean =>
+  failures.length > 0 &&
+  failures.every(
+    (failure) =>
+      (failure.lastError as { rpcLagging?: unknown } | undefined)
+        ?.rpcLagging === true
+  );
+
+/**
+ * The last endpoint error behind a failover error, if any. Kept off `cause`:
+ * getErrorMessage and connection-refusal checks read `cause`, so it would change them.
+ */
+export function lastEndpointErrorOf(error: unknown): Error | undefined {
+  const kept = (error as { lastEndpointError?: unknown } | null)
+    ?.lastEndpointError;
+  return kept instanceof Error ? kept : undefined;
 }
 
 export type RpcProviderManagerOptions = {
@@ -603,6 +625,16 @@ export class RpcProviderManager {
       );
       return;
     }
+    // Both answered but stayed behind the block a run waits for: lag, not an outage.
+    if (laggedOnly(failures)) {
+      logSystemWarn(
+        ErrorCategory.NETWORK_RPC,
+        `[RPC] Both primary and fallback RPC are behind for ${this.config.chainName}`,
+        detail,
+        { event: "RPC_BOTH_ENDPOINTS_LAGGING", chain: this.config.chainName }
+      );
+      return;
+    }
     this.metricsCollector.recordBothFailed(this.config.chainName);
     logSystemError(
       ErrorCategory.NETWORK_RPC,
@@ -658,6 +690,10 @@ export class RpcProviderManager {
     // error, so text alone can turn "timeout, then refused" into "never sent".
     // Duck-typed by submit-signed.ts to avoid coupling callers to this class.
     Object.assign(result, { allAttemptsConnectionRefused });
+    // Non-enumerable, so logs and JSON never carry the unscrubbed endpoint error.
+    Object.defineProperty(result, "lastEndpointError", {
+      value: failures.at(-1)?.lastError,
+    });
     return result;
   }
 
@@ -769,6 +805,7 @@ export class RpcProviderManager {
     /** True only when every retry attempt ended in a connection refusal. */
     allAttemptsConnectionRefused?: boolean;
     allAttemptsRedirected?: boolean;
+    lastError?: Error;
   }> {
     let lastError: Error | undefined;
     let attemptCount = 0;
@@ -840,6 +877,7 @@ export class RpcProviderManager {
       allAttemptsConnectionRefused:
         attemptCount > 0 && allAttemptsConnectionRefused,
       allAttemptsRedirected: attemptCount > 0 && allAttemptsRedirected,
+      lastError,
     };
   }
 

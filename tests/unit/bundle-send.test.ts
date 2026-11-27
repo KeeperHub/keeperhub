@@ -110,6 +110,7 @@ vi.mock("@/lib/web3/bundles/client", () => ({
 }));
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { RpcProviderManager } from "@/lib/rpc/providers";
 import { BUNDLE_PRE_RECORD_MS } from "@/lib/web3/bundles/bundle-history";
 import type { BuilderAnswer } from "@/lib/web3/bundles/client";
 import {
@@ -179,8 +180,8 @@ const blockWithTxs = async (block: number) => ({
 let chain: Chain;
 let signed: string[];
 
-function manager() {
-  const provider = {
+function stubProvider() {
+  return {
     getBlock: async (tag?: unknown, prefetch?: boolean) => {
       if (prefetch) {
         return await blockWithTxs(tag as number);
@@ -244,12 +245,43 @@ function manager() {
       return "0x";
     },
   };
+}
+
+function manager() {
+  const provider = stubProvider();
   return {
     executeWithFailover: <T>(operation: (p: typeof provider) => Promise<T>) =>
       operation(provider),
     getFallbackProvider: () => chain.fallback,
   };
 }
+
+// The real failover manager over two stub endpoints, one try each.
+function failoverManager(
+  primary: unknown,
+  fallback: unknown
+): BundleSendInput["rpcManager"] {
+  const real = new RpcProviderManager({
+    config: {
+      primaryRpcUrl: "https://primary.example",
+      fallbackRpcUrl: "https://fallback.example",
+      chainId: 1,
+      maxRetries: 1,
+    },
+  });
+  Object.assign(real, { primaryProvider: primary, fallbackProvider: fallback });
+  return real;
+}
+
+// An endpoint whose latest block stays at `block`.
+const behindAt = (block: number) => ({
+  getBlock: async () => ({
+    number: block,
+    baseFeePerGas: gwei("10"),
+    gasUsed: BigInt(15_000_000),
+    gasLimit: BigInt(30_000_000),
+  }),
+});
 
 const signer = {
   provider: {},
@@ -979,6 +1011,42 @@ describe("sendBundleInSession", () => {
       errorClass: ExecutionErrorType.EXTERNAL,
     });
     nothingSigned(progress);
+  });
+
+  it("through the RPC failover: both endpoints behind the trigger block is the trigger refusal, nothing sent", async () => {
+    const progress = { sent: false };
+    const outcome = await sendBundleInSession(
+      input({
+        progress,
+        rpcManager: failoverManager(behindAt(LATEST - 1), behindAt(LATEST - 1)),
+        triggerBlock: { chainId: 1, number: LATEST },
+      })
+    );
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      errorClass: ExecutionErrorType.EXTERNAL,
+      error: expect.stringContaining(
+        "has not reached the block that triggered the run, so nothing was sent"
+      ),
+    });
+    expect(h.events).not.toContain("nonce");
+    nothingSigned(progress);
+    // Lag on both endpoints is not reported as an RPC outage.
+    expect(logs.logSystemError).not.toHaveBeenCalled();
+  });
+
+  it("through the RPC failover: a fallback that reached the trigger block is used", async () => {
+    const outcome = await sendBundleInSession(
+      input({
+        rpcManager: failoverManager(behindAt(LATEST - 1), stubProvider()),
+        triggerBlock: { chainId: 1, number: LATEST },
+      })
+    );
+    expect(outcome.kind).not.toBe("refused");
+    expect(outcome.report).toMatchObject({
+      targetBlocks: [LATEST + 1, LATEST + 2, LATEST + 3],
+    });
+    expect(h.events).toContain("sign");
   });
 
   it("does not wait for a trigger block on another chain", async () => {

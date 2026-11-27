@@ -17,11 +17,11 @@ import { getGasStrategy } from "@/lib/web3/gas-strategy";
 import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   isNextBlockSimulationUnsupported,
+  isTriggerBlockNotReached,
   latestReaching,
   newTriggerWait,
   simulateSendAtNextBlock,
   TargetBlockPassedError,
-  TriggerBlockNotReachedError,
 } from "@/lib/web3/next-block-simulation";
 import { getNonceManager, type NonceSession } from "@/lib/web3/nonce-manager";
 import type { BuilderEndpoint } from "./builders";
@@ -184,7 +184,7 @@ async function simulateTargets(
     }
     if (
       isNextBlockSimulationUnsupported(result.reason) ||
-      result.reason instanceof TriggerBlockNotReachedError
+      isTriggerBlockNotReached(result.reason)
     ) {
       throw result.reason;
     }
@@ -435,7 +435,7 @@ export async function sendBundleInSession(
     if (error instanceof DeadlinePassedError) {
       return TOO_SLOW;
     }
-    if (error instanceof TriggerBlockNotReachedError) {
+    if (isTriggerBlockNotReached(error)) {
       return TRIGGER_NOT_REACHED;
     }
     throw error;
