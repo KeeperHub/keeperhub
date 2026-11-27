@@ -86,6 +86,7 @@ export type NestedForEachHandler = (params: {
 export type SpuriousRecoveryResolver = (params: {
   nodeId: string;
   iterationMeta: IterationMeta;
+  errorMessage: string;
 }) => Promise<{ output: unknown } | null>;
 
 export type RunBodyContext = {
@@ -274,6 +275,7 @@ async function attemptSpuriousRecovery(params: {
   const recovered = await ctx.resolveSpuriousRecovery({
     nodeId,
     iterationMeta: ctx.iterationMeta,
+    errorMessage,
   });
   if (recovered === null) {
     return false;
