@@ -103,7 +103,7 @@ vi.mock("@/lib/web3/verify-receipt", () => ({
 }));
 
 vi.mock("@/lib/workflow/executor/helpers", () => ({
-  getOrganizationIdFromExecution: mockOrgFromExecution,
+  findOrganizationIdForExecution: mockOrgFromExecution,
 }));
 
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({
@@ -123,7 +123,8 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 import { reconcileUnconfirmedExecutions } from "@/lib/execute/reconcile-executions";
-import { orgScope } from "@/lib/rpc/engine/scope";
+import { orgScope, platformScope } from "@/lib/rpc/engine/scope";
+import { PlatformRpcPurpose } from "@/lib/rpc/engine/types";
 
 const dialect = new PgDialect();
 const render = (fragment: SQL | undefined) => {
@@ -421,6 +422,18 @@ describe("workflow runs", () => {
     expect(mockVerify).toHaveBeenCalledWith(
       [{ hash: HASH, chainId: CHAIN_ID }],
       orgScope("org_legacy")
+    );
+  });
+
+  it("verifies a run with no organization on KeeperHub's endpoints", async () => {
+    verifyResolves("success");
+    mockOrgFromExecution.mockResolvedValueOnce(null);
+
+    await run([], [workflowRow({ organizationId: null })]);
+
+    expect(mockVerify).toHaveBeenCalledWith(
+      [{ hash: HASH, chainId: CHAIN_ID }],
+      platformScope(PlatformRpcPurpose.NO_ORGANIZATION)
     );
   });
 

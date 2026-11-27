@@ -28,7 +28,7 @@ import {
   hasUnreadableReceipt,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
-import { getOrganizationIdFromExecution } from "@/lib/workflow/executor/helpers";
+import { findOrganizationIdForExecution } from "@/lib/workflow/executor/helpers";
 
 /**
  * Settles executions left in `unconfirmed`: a transaction was broadcast but
@@ -371,7 +371,7 @@ async function reconcileWorkflow(
 
   const organizationId =
     execution.organizationId ??
-    (await getOrganizationIdFromExecution(execution.id));
+    (await findOrganizationIdForExecution(execution.id));
   const { allVerified, results } = await verifyExecutionReceipts(
     verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId })),
     rpcScopeForOrganization(organizationId)
