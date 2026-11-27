@@ -10,7 +10,8 @@ import {
 import { flashbotsSignature } from "@/lib/web3/bundles/signature";
 
 const KEY = `0x${"11".repeat(32)}`;
-const ADDRESS = "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A";
+// Derived, not written out: the key's address is an EOA, not a contract.
+const ADDRESS = new ethers.Wallet(KEY).address;
 const BODY =
   '{"jsonrpc":"2.0","id":1,"method":"eth_sendBundle","params":[{"txs":["0x02f8"],"blockNumber":"0x10","revertingTxHashes":[]}]}';
 
