@@ -266,7 +266,7 @@ export type StepLog = {
   rpcConfigId: string | null;
   /** Name of that config; null once the config has been removed. */
   rpcConfigName: string | null;
-  /** True when the step finished on a fallback endpoint. */
+  /** True when one of the step's own calls moved from primary to fallback. */
   rpcFailedOver: boolean;
 };
 

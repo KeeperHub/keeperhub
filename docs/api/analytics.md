@@ -186,7 +186,13 @@ Usage is recorded per hour, so buckets are never narrower than one hour, and a w
     "wsReconnects": 1,
     "eventsReceived": 420
   },
-  "ownRpcOnly": false,
+  "ownRpcOnlyChains": [
+    {
+      "chainId": 8453,
+      "chainName": "Base",
+      "platformRequests": 0
+    }
+  ],
   "intervalMs": 3600000,
   "buckets": [
     {
@@ -219,7 +225,7 @@ Usage is recorded per hour, so buckets are never narrower than one hour, and a w
 }
 ```
 
-`origin` is `org` for the organization's own endpoints and `platform` for KeeperHub endpoints, which carry `configId: null`. A breakdown row whose endpoint was removed keeps its usage with `configName: null` and `configRemoved: true`. `avgLatencyMs` and `maxLatencyMs` are `null` when there were no requests. `ownRpcOnly` reports the organization's current policy: when it is `true`, `platformRequests` is expected to be `0`.
+`origin` is `org` for the organization's own endpoints and `platform` for KeeperHub endpoints, which carry `configId: null`. A breakdown row whose endpoint was removed keeps its usage with `configName: null` and `configRemoved: true`. `avgLatencyMs` and `maxLatencyMs` are `null` when there were no requests. `ownRpcOnlyChains` lists each chain on which the organization currently uses its own endpoints only, with the requests KeeperHub endpoints served on that chain in the range; `platformRequests` is expected to be `0` for each of them.
 
 ## List Runs
 
@@ -389,7 +395,7 @@ A bare array, with no envelope:
 ]
 ```
 
-`rpcOrigin` says which endpoint served the step's RPC calls: `org` for one of the organization's own endpoints, named by `rpcConfigId` and `rpcConfigName`, or `platform` for KeeperHub. It is `null` for steps that made no RPC call. `rpcConfigName` is `null` when the endpoint has since been removed. `rpcFailedOver` is `true` when the step finished on a fallback endpoint.
+`rpcOrigin` says which endpoint served the step's RPC calls: `org` for one of the organization's own endpoints, named by `rpcConfigId` and `rpcConfigName`, or `platform` for KeeperHub. It is `null` for steps that made no RPC call. `rpcConfigName` is `null` when the endpoint has since been removed. `rpcFailedOver` is `true` when one of the step's own calls moved from the primary endpoint to the fallback.
 
 A step's input and output are not part of this response: the log carries what the
 run did (`nodeName`, `nodeType`, `status`, timings, `error`) and the on-chain
