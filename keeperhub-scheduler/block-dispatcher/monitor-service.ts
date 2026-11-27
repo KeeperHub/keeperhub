@@ -252,6 +252,10 @@ export class BlockMonitorService {
     grouped: Map<number, { chain: ChainConfig; workflows: BlockWorkflow[] }>,
   ): Promise<void> {
     for (const [chainId, { chain, workflows }] of grouped) {
+      // Leadership can be lost while the workflow fetch or a stop was awaited.
+      if (this.isShuttingDown) {
+        return;
+      }
       const existing = this.monitors.get(chainId);
 
       // A replacement monitor resumes after the last block the old one fully
@@ -301,6 +305,9 @@ export class BlockMonitorService {
     chain: ChainConfig,
     workflows: BlockWorkflow[],
   ): Promise<void> {
+    if (this.isShuttingDown) {
+      return;
+    }
     // Kept across a failed start so the next attempt still backfills.
     const resumeFromBlock = this.resumeBlocks.get(chainId) ?? null;
     console.log(
@@ -310,6 +317,12 @@ export class BlockMonitorService {
     this.monitors.set(chainId, monitor);
     try {
       await monitor.start();
+      // stop() ran while this start was awaited and may have missed it.
+      if (this.isShuttingDown) {
+        this.recordProgress(chainId, monitor);
+        this.monitors.delete(chainId);
+        await monitor.stop();
+      }
     } catch (error) {
       console.error(
         `[BlockMonitorService] Failed to start monitor for ${chain.name}:`,

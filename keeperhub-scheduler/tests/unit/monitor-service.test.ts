@@ -187,6 +187,35 @@ describe("BlockMonitorService reconcile", () => {
     expect(monitors[0].config.resumeFromBlock).toBeNull();
   });
 
+  it("starts no monitor once leadership is lost during a reconcile", async () => {
+    vi.mocked(fetchBlockWorkflows).mockResolvedValue({
+      platform: new Map(),
+      routed: new Map(),
+    });
+    await service.start();
+    let answer: (
+      value: Awaited<ReturnType<typeof fetchBlockWorkflows>>,
+    ) => void = () => undefined;
+    vi.mocked(fetchBlockWorkflows).mockReturnValueOnce(
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    await nextReconcile();
+
+    await service.stop();
+    const chain = makeChain();
+    answer({
+      platform: new Map([
+        [chain.chainId, { chain, workflows: [makeWorkflow()] }],
+      ]),
+      routed: new Map(),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(monitors).toHaveLength(0);
+  });
+
   it("recreates a dead monitor and resumes after its last processed block", async () => {
     serveChain(makeChain());
     await service.start();
