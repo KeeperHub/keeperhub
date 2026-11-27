@@ -1,0 +1,53 @@
+-- @requires-db-prep
+-- Index for the runs table total and the status facet counts.
+--
+-- /api/analytics/runs and /api/analytics/facets returned 500 with "canceling
+-- statement due to statement timeout" for any window on a large organization.
+-- The statements are getWorkflowRunsTotal and the status arm of
+-- computeRunFacets in lib/analytics/queries.ts. Both count every run in the
+-- window: workflow_id IN (the org's workflows) AND started_at within the window
+-- AND deleted_at IS NULL, and the facet also reads status and error_type.
+--
+-- No index carries deleted_at or error_type. 0150's covering index serves the
+-- summary aggregates index-only because they carry no deleted_at predicate (its
+-- header says so), but these two do, so the per-workflow path needs a heap fetch
+-- per row. The planner then prefers idx_workflow_executions_started_at and walks
+-- every organization's runs in the window, keeping only this org's rows after a
+-- hash join to workflows. Measured with EXPLAIN ANALYZE on prod for a 31-day
+-- window: 3.58M rows read to keep 457k, 3.1M buffers, 15 s warm, past the 30 s
+-- app statement_timeout cold or under the concurrent requests the page sends.
+--
+-- Partial on deleted_at IS NULL so the planner can drop that filter, and
+-- carrying status and error_type so the facet's CASE is answered from the index
+-- too. Both counts become a nested loop over the org's workflows with an
+-- index-only scan per workflow and no heap fetches, the same shape the summary
+-- already gets from 0150. Checked locally with custom and generic plans. The
+-- runs page query (ORDER BY started_at DESC LIMIT n) keeps its current plan,
+-- which stops early on the started_at index, so id is deliberately left out.
+--
+-- Cost: one more B-tree entry per insert and per non-HOT update. status and
+-- error_type are already written by the finalize UPDATE that touches indexed
+-- columns, so no update becomes non-HOT because of them. deleted_at is set
+-- only by a purge, which removes the entry.
+--
+-- On staging and prod apply out-of-band before merge (see the
+-- @requires-db-prep runbook). The build exceeds the role-level
+-- statement_timeout, so that session needs SET statement_timeout = 0:
+--
+--   SET statement_timeout = 0;
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_workflow_executions_workflow_started_live
+--     ON workflow_executions USING btree (workflow_id, started_at DESC)
+--     INCLUDE (status, error_type)
+--     WHERE deleted_at IS NULL;
+--
+-- Confirm it is present and valid before setting the db-prepped label:
+--   SELECT indexrelid::regclass::text, indisvalid FROM pg_index
+--   WHERE indexrelid::regclass::text = 'idx_workflow_executions_workflow_started_live';
+--
+-- No meta snapshot, matching 0150 and 0154: the index lives in raw SQL only and
+-- is not declared on the pgTable in lib/db/schema.ts.
+
+CREATE INDEX IF NOT EXISTS "idx_workflow_executions_workflow_started_live"
+  ON "workflow_executions" USING btree ("workflow_id", "started_at" DESC)
+  INCLUDE ("status", "error_type")
+  WHERE "deleted_at" IS NULL;

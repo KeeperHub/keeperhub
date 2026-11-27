@@ -23,6 +23,7 @@ import { ethers } from "ethers";
 import ERC20_ABI from "../lib/contracts/abis/erc20.json";
 import { getRpcUrlByChainId } from "../lib/rpc/rpc-config";
 import { formatSanitizedRpcError } from "../lib/rpc/sanitize-rpc-error";
+import { RPC_ENDPOINT } from "../lib/rpc/rpc-endpoint";
 
 type TokenMetadata = {
   symbol: string;
@@ -66,7 +67,7 @@ async function main(): Promise<void> {
   }
 
   const lower = tokenAddress.toLowerCase();
-  const primaryUrl = getRpcUrlByChainId(chainId, "primary");
+  const primaryUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.PRIMARY);
 
   console.log(`Verifying ${lower} on chain ${chainId}`);
   console.log(`  primary RPC: ${primaryUrl}`);
@@ -75,7 +76,7 @@ async function main(): Promise<void> {
   try {
     metadata = await fetchMetadata(primaryUrl, lower);
   } catch (primaryError) {
-    const fallbackUrl = getRpcUrlByChainId(chainId, "fallback");
+    const fallbackUrl = getRpcUrlByChainId(chainId, RPC_ENDPOINT.FALLBACK);
     if (fallbackUrl === primaryUrl) {
       console.error(
         `  primary RPC failed and no distinct fallback is configured: ${formatSanitizedRpcError(primaryError)}`

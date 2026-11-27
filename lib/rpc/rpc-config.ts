@@ -23,6 +23,7 @@
 
 import { gunzipSync } from "node:zlib";
 import { ErrorCategory, logSystemError, logWarn } from "@/lib/logging";
+import { RPC_ENDPOINT, type RpcEndpoint } from "./rpc-endpoint";
 
 /**
  * Public RPC defaults (no API keys required)
@@ -509,13 +510,13 @@ function getRpcConfigSingleton(): RpcConfig {
  * Uses CHAIN_RPC_CONFIG from environment if available, falls back to public RPCs.
  *
  * @param chainId - The chain ID (e.g., 1 for Ethereum mainnet)
- * @param type - "primary" or "fallback"
+ * @param type - RPC_ENDPOINT.PRIMARY or RPC_ENDPOINT.FALLBACK
  * @returns The resolved RPC URL
  * @throws Error if chain ID is not configured
  */
 export function getRpcUrlByChainId(
   chainId: number,
-  type: "primary" | "fallback" = "primary"
+  type: RpcEndpoint = RPC_ENDPOINT.PRIMARY
 ): string {
   const config = CHAIN_CONFIG[chainId];
   if (!config) {
@@ -523,9 +524,10 @@ export function getRpcUrlByChainId(
   }
 
   const rpcConfig = getRpcConfigSingleton();
-  const envKey = type === "primary" ? config.envKey : config.fallbackEnvKey;
+  const envKey =
+    type === RPC_ENDPOINT.PRIMARY ? config.envKey : config.fallbackEnvKey;
   const publicDefault =
-    type === "fallback" && config.publicFallback
+    type === RPC_ENDPOINT.FALLBACK && config.publicFallback
       ? config.publicFallback
       : config.publicDefault;
 
@@ -577,7 +579,7 @@ export type GetRpcUrlOptions = {
   jsonKey: string;
   envValue: string | undefined;
   publicDefault: string;
-  type: "primary" | "fallback";
+  type: RpcEndpoint;
 };
 
 /**
@@ -680,10 +682,10 @@ export function getRpcUrl(options: GetRpcUrlOptions): string {
     return envValue || publicDefault;
   }
 
-  if (type === "primary" && entry.primaryRpcUrl) {
+  if (type === RPC_ENDPOINT.PRIMARY && entry.primaryRpcUrl) {
     return entry.primaryRpcUrl;
   }
-  if (type === "fallback" && entry.fallbackRpcUrl) {
+  if (type === RPC_ENDPOINT.FALLBACK && entry.fallbackRpcUrl) {
     return entry.fallbackRpcUrl;
   }
 
@@ -696,7 +698,7 @@ export function getRpcUrl(options: GetRpcUrlOptions): string {
 export type GetWssUrlOptions = {
   rpcConfig: RpcConfig;
   jsonKey: string;
-  type: "primary" | "fallback";
+  type: RpcEndpoint;
 };
 
 /**
@@ -710,7 +712,9 @@ export function getWssUrl(options: GetWssUrlOptions): string | undefined {
   const entry = findRpcConfigEntry(rpcConfig, jsonKey);
 
   const fromJson =
-    type === "primary" ? entry?.primaryWssUrl : entry?.fallbackWssUrl;
+    type === RPC_ENDPOINT.PRIMARY
+      ? entry?.primaryWssUrl
+      : entry?.fallbackWssUrl;
   if (fromJson) {
     return fromJson;
   }
@@ -720,7 +724,7 @@ export function getWssUrl(options: GetWssUrlOptions): string | undefined {
   const chainEntry = Object.values(CHAIN_CONFIG).find(
     (c) => c.jsonKey === jsonKey
   );
-  return type === "primary"
+  return type === RPC_ENDPOINT.PRIMARY
     ? chainEntry?.publicWssDefault
     : chainEntry?.publicWssFallback;
 }
@@ -765,6 +769,7 @@ export function getUsePrivateMempoolRpc(
 export type BuilderRpcUrls = Record<string, string>;
 
 const BUILDER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const HTTPS_PROTOCOL = "https:";
 
 // Keeps lowercase labels mapped to https URLs; undefined when none remain.
 export function normalizeBuilderRpcUrls(
@@ -779,7 +784,7 @@ export function normalizeBuilderRpcUrls(
       continue;
     }
     try {
-      if (new URL(url).protocol === "https:") {
+      if (new URL(url).protocol === HTTPS_PROTOCOL) {
         result[label] = url;
       }
     } catch {
@@ -834,7 +839,7 @@ export function createRpcUrlResolver(rpcConfig: RpcConfig) {
     jsonKey: string,
     envKey: string,
     publicDefault: string,
-    type: "primary" | "fallback"
+    type: RpcEndpoint
   ): string {
     return getRpcUrl({
       rpcConfig,

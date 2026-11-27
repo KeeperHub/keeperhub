@@ -12,6 +12,7 @@ import {
 } from "@/lib/metrics/instrumentation/safe";
 import { getRpcProviderFromUrls } from "@/lib/rpc/provider-factory";
 import { getRpcUrlByChainId } from "@/lib/rpc/rpc-config";
+import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
 // reconcileSafeRoleFromChain is dynamically imported below to keep the
 // roles-orchestrator (and its defi-kit transitive dep, which proxies the
 // entire SDK at module load) out of the import graph for routes that only
@@ -105,8 +106,14 @@ async function probeRolesModifierFromChain(
     // workflow's resolver-time RPC traffic into the user's private channel.
     // Reads always go to the public/configured chain RPC; user RPC prefs
     // apply only to the broadcast side. See KEEP-566.
-    const primaryRpcUrl = getRpcUrlByChainId(safe.chainId, "primary");
-    const fallbackRpcUrl = getRpcUrlByChainId(safe.chainId, "fallback");
+    const primaryRpcUrl = getRpcUrlByChainId(
+      safe.chainId,
+      RPC_ENDPOINT.PRIMARY
+    );
+    const fallbackRpcUrl = getRpcUrlByChainId(
+      safe.chainId,
+      RPC_ENDPOINT.FALLBACK
+    );
     const rpcManager = await getRpcProviderFromUrls(
       primaryRpcUrl,
       fallbackRpcUrl === primaryRpcUrl ? undefined : fallbackRpcUrl,
