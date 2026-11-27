@@ -20,6 +20,7 @@ import { isFailureAlertsRolloutActive } from "./rollout";
 /** The triggers alerts depend on; a dropped or disabled one stops alerts silently. */
 const ALERT_TRIGGERS = [
   { table: "workflow_executions", name: "queue_alert_check" },
+  { table: "workflow_executions", name: "queue_alert_check_not_landed" },
   { table: "workflows", name: "mark_alert_incident_reenabled" },
 ] as const;
 

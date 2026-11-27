@@ -3664,6 +3664,63 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(after.triggersOff).toEqual([]);
     });
 
+    it("queues the alert check on a not landed run through its own trigger", async () => {
+      const org = await makeOrg("notlandedtrigger");
+      const inserted = await makeWorkflow(org, "notlandedtrigger-insert");
+      const updated = await makeWorkflow(org, "notlandedtrigger-update");
+      const queued = async (workflowId: string): Promise<boolean> => {
+        const [row] = await db
+          .select({ fedAt: workflowFailureAlertQueue.fedAt })
+          .from(workflowFailureAlertQueue)
+          .where(eq(workflowFailureAlertQueue.workflowId, workflowId));
+        return row?.fedAt != null;
+      };
+      // The original trigger keeps its old condition; the new one has only not_landed.
+      const defs = [
+        ...(await db.execute<{ name: string; def: string }>(
+          sql`SELECT tgname AS name, pg_get_triggerdef(oid) AS def FROM pg_trigger
+            WHERE tgrelid = 'public.workflow_executions'::regclass
+              AND tgname IN ('queue_alert_check', 'queue_alert_check_not_landed')
+            ORDER BY tgname`
+        )),
+      ];
+      expect(defs.map((d) => d.name)).toEqual([
+        "queue_alert_check",
+        "queue_alert_check_not_landed",
+      ]);
+      expect(defs[0]?.def).toContain(
+        "WHEN ((new.status = ANY (ARRAY['success'::text, 'error'::text, 'skipped'::text])))"
+      );
+      expect(defs[1]?.def).toContain(
+        "WHEN ((new.status = 'not_landed'::text))"
+      );
+
+      await addRun(org, inserted, "not_landed");
+      expect(await queued(inserted)).toBe(true);
+
+      await addRun(org, updated, "pending");
+      expect(await queued(updated)).toBe(false);
+      await db
+        .update(workflowExecutions)
+        .set({ status: "not_landed" })
+        .where(eq(workflowExecutions.workflowId, updated));
+      expect(await queued(updated)).toBe(true);
+
+      await db.execute(
+        sql`ALTER TABLE workflow_executions DISABLE TRIGGER queue_alert_check_not_landed`
+      );
+      try {
+        const report = await watchdog.checkFailureAlertsRunning();
+        expect(report.triggersOff).toEqual([
+          "workflow_executions.queue_alert_check_not_landed",
+        ]);
+      } finally {
+        await db.execute(
+          sql`ALTER TABLE workflow_executions ENABLE TRIGGER queue_alert_check_not_landed`
+        );
+      }
+    });
+
     it("sees a run trigger that stopped feeding the queue, even while other rows are claimed", async () => {
       const org = await makeOrg("heartbeat");
       const workflowId = await makeWorkflow(org, "heartbeat");

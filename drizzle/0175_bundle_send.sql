@@ -2,15 +2,14 @@
 -- so this timeout covers only this file's statements.
 SET LOCAL lock_timeout = '3s';
 --> statement-breakpoint
--- Lock workflow_executions first (deployed with 0173/0174, their ShareLock on it is
--- already held). A not_landed run also queues the alert check (it proves the workflow
--- runs). Drop and create in one transaction: no gap without the trigger, and no PG 14+ syntax.
-DROP TRIGGER IF EXISTS queue_alert_check ON workflow_executions;
---> statement-breakpoint
-CREATE TRIGGER queue_alert_check
+-- A not_landed run also queues the alert check (it proves the workflow runs). A
+-- second trigger, so queue_alert_check is left as it is: CREATE TRIGGER takes
+-- SHARE ROW EXCLUSIVE, which readers do not block (DROP TRIGGER would take
+-- ACCESS EXCLUSIVE). Lock workflow_executions first, as 0173/0174 already do.
+CREATE TRIGGER queue_alert_check_not_landed
   AFTER INSERT OR UPDATE OF status ON workflow_executions
   FOR EACH ROW
-  WHEN (NEW.status IN ('success', 'error', 'skipped', 'not_landed'))
+  WHEN (NEW.status = 'not_landed')
   EXECUTE FUNCTION public.queue_alert_check();
 --> statement-breakpoint
 ALTER TABLE "pending_transactions" ADD COLUMN "last_target_block" bigint;--> statement-breakpoint

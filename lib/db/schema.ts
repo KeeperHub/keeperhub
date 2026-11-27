@@ -868,6 +868,13 @@ export const workflowExecutions = pgTable(
         sql`(CASE WHEN ${table.status} <> 'skipped' THEN ${table.startedAt} END) DESC`
       )
       .where(countedRunSql(table)),
+    // The failure streak (loadStreakRuns without notLanded): same key, not landed runs left out.
+    index("idx_workflow_executions_workflow_started_landed")
+      .on(
+        table.workflowId,
+        sql`(CASE WHEN ${table.status} <> 'skipped' THEN ${table.startedAt} END) DESC`
+      )
+      .where(sql`${countedRunSql(table)} AND ${table.status} <> 'not_landed'`),
     index("idx_workflow_executions_status").on(table.status),
     index("idx_workflow_executions_user_id").on(table.userId),
     // Backs the FK to organization: without it the RI check on an organization

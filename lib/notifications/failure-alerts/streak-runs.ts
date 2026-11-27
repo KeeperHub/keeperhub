@@ -206,6 +206,7 @@ export async function loadStreakRuns(
           OR ${workflowExecutions.errorType} IS DISTINCT FROM ${ExecutionErrorType.SYSTEM})`,
         sql`NOT ${REFUSED_RUN_SQL}`,
         // Stepped over by summarizeStreak; filtered here so it takes no window slot.
+        // A literal, in the predicate of idx_..._started_landed (0176): no heap filter.
         options.notLanded
           ? undefined
           : sql`${workflowExecutions.status} <> 'not_landed'`,
