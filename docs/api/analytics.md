@@ -157,6 +157,8 @@ GET /api/analytics/rpc-usage
 
 Returns the RPC requests made on behalf of the organization, split between the organization's own endpoints and KeeperHub endpoints.
 
+Usage covers the whole organization; it is not split by project.
+
 Usage is recorded per hour, so buckets are never narrower than one hour, and a window that starts part way through an hour includes that whole hour. Otherwise buckets follow the same widths as the time series endpoint, and every bucket in the window is returned.
 
 ### Query Parameters

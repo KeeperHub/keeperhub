@@ -34,6 +34,7 @@ import type {
 } from "@/lib/analytics/types";
 import {
   analyticsLoadingAtom,
+  analyticsProjectIdAtom,
   analyticsRpcUsageAtom,
 } from "@/lib/atoms/analytics";
 import { cn } from "@/lib/utils";
@@ -350,6 +351,7 @@ function RpcUsageSkeleton(): ReactNode {
 export function RpcUsageSection(): ReactNode {
   const usage = useAtomValue(analyticsRpcUsageAtom);
   const loading = useAtomValue(analyticsLoadingAtom);
+  const projectId = useAtomValue(analyticsProjectIdAtom);
 
   if (!(usage || loading)) {
     return null;
@@ -366,6 +368,9 @@ export function RpcUsageSection(): ReactNode {
         <p className="text-sm text-muted-foreground">
           Requests made for your workflows and executions, by the endpoint that
           served them.
+          {projectId
+            ? " These figures cover the whole organization: RPC usage is not split by project."
+            : null}
         </p>
         {usage && usage.ownRpcOnlyChains.length > 0 ? (
           <ul className="space-y-1">
