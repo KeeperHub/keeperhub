@@ -14,6 +14,8 @@ import {
   recordAuditEvent,
 } from "@/lib/security/audit-log";
 import { getWorkflowAccess } from "@/lib/workflow/access";
+import { formatActionConfigValidationResponse } from "@/lib/workflow/validation/action-config";
+import { validateEoaExposureLock } from "@/lib/workflow/validation/eoa-workflow-lock";
 import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 
 export async function PUT(
@@ -74,6 +76,20 @@ export async function PUT(
     }
     if (!access.canEdit) {
       return viewerReadOnlyResponse();
+    }
+
+    // Listing a workflow with an EOA step widens who can trigger it.
+    if (authContext.authMethod !== "session") {
+      const eoaLock = validateEoaExposureLock(
+        { nodes: workflow.nodes },
+        { isListed: true }
+      );
+      if (!eoaLock.valid) {
+        return NextResponse.json(
+          formatActionConfigValidationResponse(eoaLock),
+          { status: 422 }
+        );
+      }
     }
 
     const body = await request.json().catch(() => ({}));

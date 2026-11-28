@@ -16,6 +16,7 @@ import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
 import type { WorkflowExportV1 } from "@/lib/workflow/export-schema";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
+import { withoutIgnoredWeb3Connections } from "@/lib/workflow/web3-connection";
 import type { IntegrationConfig, IntegrationType } from "./types/integration";
 
 // Workflow data types
@@ -708,6 +709,16 @@ export const userApi = {
     }),
 };
 
+// The server refuses a new Web3 Connection on a step that ignores it, so an
+// editor save never sends a stale one.
+function withoutIgnoredSenders<T extends { nodes?: WorkflowNode[] }>(
+  workflow: T
+): T {
+  return workflow.nodes
+    ? { ...workflow, nodes: withoutIgnoredWeb3Connections(workflow.nodes) }
+    : workflow;
+}
+
 // Workflow API
 export const workflowApi = {
   // Get all workflows, optionally scoped server-side to a project or tag.
@@ -783,7 +794,7 @@ export const workflowApi = {
   create: (workflow: Omit<WorkflowData, "id">) =>
     apiCall<SavedWorkflow>("/api/workflows/create", {
       method: "POST",
-      body: JSON.stringify(workflow),
+      body: JSON.stringify(withoutIgnoredSenders(workflow)),
     }),
 
   // Update a workflow. The editor's saves of the nodes (autosave, Save, AI
@@ -795,7 +806,7 @@ export const workflowApi = {
   ): Promise<SavedWorkflow> => {
     const saved = await apiCall<SavedWorkflow>(`/api/workflows/${id}`, {
       method: "PATCH",
-      body: JSON.stringify(workflow),
+      body: JSON.stringify(withoutIgnoredSenders(workflow)),
     });
     if (workflow.nodes) {
       refetchSidebarIfTriggerChanged(id, workflow.nodes);
@@ -842,7 +853,7 @@ export const workflowApi = {
   saveCurrent: (nodes: WorkflowNode[], edges: WorkflowEdge[]) =>
     apiCall<WorkflowData>("/api/workflows/current", {
       method: "POST",
-      body: JSON.stringify({ nodes, edges }),
+      body: JSON.stringify(withoutIgnoredSenders({ nodes, edges })),
     }),
 
   // Execute workflow

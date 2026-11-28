@@ -8,8 +8,15 @@
  * then seeds defaults for the new action's fields so showWhen conditions and
  * validation evaluate immediately. `_protocolMeta` is always refreshed since
  * stale metadata would call the wrong contract function at runtime.
+ * `web3Connection` survives only onto an action that reads it, and a Safe one
+ * only onto an action that can send from a Safe.
  */
 import { isKnownConfigKeyForAction } from "@/lib/workflow/validation/action-config";
+import {
+  actionTakesSafeSender,
+  isSafeWeb3Connection,
+  WEB3_CONNECTION_KEY,
+} from "@/lib/workflow/web3-connection";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 
 const PROTOCOL_META_KEY = "_protocolMeta";
@@ -21,6 +28,13 @@ export function buildConfigForActionTypeChange(
   const pruned: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(config)) {
     if (key === "integrationId") {
+      continue;
+    }
+    if (
+      key === WEB3_CONNECTION_KEY &&
+      isSafeWeb3Connection(value) &&
+      !actionTakesSafeSender(actionType)
+    ) {
       continue;
     }
     if (isKnownConfigKeyForAction(actionType, key)) {

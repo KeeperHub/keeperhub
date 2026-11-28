@@ -29,7 +29,10 @@ import {
   syncPersistedWorkflowSchedule,
 } from "@/lib/schedule-service";
 import { generateId } from "@/lib/utils/id";
-import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
+import {
+  sanitizeNodesKeepingWeb3Connection,
+  sanitizeWorkflowData,
+} from "@/lib/workflow/editor/sanitize-nodes";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
 import {
   formatActionConfigValidationResponse,
@@ -158,6 +161,7 @@ export async function POST(request: Request) {
     }
 
     // Sanitize nodes/edges: strip React Flow UI state and normalize MCP-generated formats
+    const sentNodes = sanitizeNodesKeepingWeb3Connection(nodes);
     const sanitized = sanitizeWorkflowData(nodes, edges);
     nodes = sanitized.nodes;
     edges = sanitized.edges;
@@ -241,7 +245,13 @@ export async function POST(request: Request) {
       return featureGuard.response;
     }
 
-    const actionConfigValidation = validateWorkflowActionConfigs(nodes);
+    // On create every Web3 Connection is new.
+    const actionConfigValidation = validateWorkflowActionConfigs(nodes, {
+      web3Connections: {
+        incomingNodes: sentNodes,
+        editorSession: authContext.authMethod === "session",
+      },
+    });
     if (!actionConfigValidation.valid) {
       return NextResponse.json(
         formatActionConfigValidationResponse(actionConfigValidation),

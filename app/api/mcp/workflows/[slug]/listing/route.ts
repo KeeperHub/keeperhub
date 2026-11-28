@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { logAnonymousExecutionBlock } from "@/lib/auth-anonymous-guard";
 import { HttpStatus } from "@/lib/http-status";
 import {
+  getWorkflowExposure,
   getWorkflowListingPublic,
   type ListingErrorDetails,
   type ListWorkflowMetadata,
@@ -17,11 +18,36 @@ import { requireScope } from "@/lib/middleware/require-scope";
 import { applyRateLimitHeaders } from "@/lib/rate-limit-headers";
 import { sanitizeDescription } from "@/lib/sanitize-description";
 import { buildAuditMetadata, recordAuditEvent } from "@/lib/security/audit-log";
+import { formatActionConfigValidationResponse } from "@/lib/workflow/validation/action-config";
+import { validateEoaExposureLock } from "@/lib/workflow/validation/eoa-workflow-lock";
 
 const LISTING_RATE_LIMIT = 60;
 const LISTING_RATE_WINDOW_MS = 60_000;
 
 type RouteContext = { params: Promise<{ slug: string }> };
+
+// An API key or OAuth caller cannot list, or widen the listing of, a workflow
+// with a step that sends from the EOA.
+async function eoaListingRefusal(
+  authMethod: string,
+  workflowId: string,
+  organizationId: string,
+  change: Record<string, unknown>
+): Promise<NextResponse | null> {
+  if (authMethod === "session") {
+    return null;
+  }
+  const stored = await getWorkflowExposure(workflowId, organizationId);
+  if (!stored) {
+    return null;
+  }
+  const lock = validateEoaExposureLock(stored, change);
+  return lock.valid
+    ? null
+    : NextResponse.json(formatActionConfigValidationResponse(lock), {
+        status: HttpStatus.UNPROCESSABLE_ENTITY,
+      });
+}
 
 function mapListingError(
   error: string,
@@ -252,6 +278,20 @@ export async function POST(
         : undefined,
   };
 
+  const eoaRefusal = await eoaListingRefusal(
+    authContext.authMethod,
+    workflowId,
+    organizationId,
+    {
+      isListed: true,
+      inputSchema: metadata.inputSchema,
+      outputMapping: metadata.outputMapping,
+    }
+  );
+  if (eoaRefusal) {
+    return eoaRefusal;
+  }
+
   const result = await listWorkflow(workflowId, organizationId, metadata);
   if (!result.ok) {
     return mapListingError(result.error, result.details);
@@ -344,6 +384,16 @@ export async function PATCH(
         ? rawBody.priceUsdcPerCall
         : undefined,
   };
+
+  const eoaRefusal = await eoaListingRefusal(
+    authContext.authMethod,
+    workflowId,
+    organizationId,
+    { ...patch }
+  );
+  if (eoaRefusal) {
+    return eoaRefusal;
+  }
 
   const result = await updateWorkflowListing(workflowId, organizationId, patch);
   if (!result.ok) {

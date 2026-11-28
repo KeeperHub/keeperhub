@@ -29,6 +29,10 @@ import {
   isGasSponsorshipEnabled,
   resolveSponsorGas,
 } from "@/lib/web3/sponsorship-feature-flag";
+import {
+  actionTakesWeb3Connection,
+  isSafeWeb3Connection,
+} from "@/lib/workflow/web3-connection";
 
 export type ShowWhen =
   | { field: string; equals: string }
@@ -95,7 +99,10 @@ export function wouldBeSponsored(
 ): boolean {
   const privateMempool =
     config.usePrivateMempool === true || config.usePrivateMempool === "true";
-  const viaSafe = String(config.web3Connection ?? "").startsWith("safe:");
+  // A stale value on a step that ignores it changes nothing at run time.
+  const viaSafe =
+    actionTakesWeb3Connection(config.actionType) &&
+    isSafeWeb3Connection(config.web3Connection);
   return (
     isGasSponsorshipEnabled() &&
     resolveSponsorGas(config.sponsorGas) &&

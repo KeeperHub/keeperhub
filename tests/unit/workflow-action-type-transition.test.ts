@@ -138,6 +138,50 @@ describe("buildConfigForActionTypeChange", () => {
     expect(next.integrationId).toBeUndefined();
   });
 
+  it("keeps the Web3 Connection between actions that read it", () => {
+    for (const [from, to] of [
+      ["web3/write-contract", "web3/transfer-funds"],
+      ["web3/transfer-token", "web3/approve-token"],
+      ["web3/approve-token", "robinhood/trade-stock-token"],
+      ["robinhood/trade-stock-token", "Write Contract"],
+    ]) {
+      const next = buildConfigForActionTypeChange(to, {
+        actionType: from,
+        web3Connection: "safe:safe-1",
+      });
+      expect(next.web3Connection).toBe("safe:safe-1");
+    }
+  });
+
+  it("drops a Safe, but keeps the EOA, on a switch to Batch Write Contract", () => {
+    const toBatch = (web3Connection: string) =>
+      buildConfigForActionTypeChange("web3/batch-write-contract", {
+        actionType: "web3/write-contract",
+        web3Connection,
+      }).web3Connection;
+    expect(toBatch("safe:safe-1")).toBeUndefined();
+    expect(toBatch("eoa")).toBe("eoa");
+    expect(toBatch("default")).toBe("default");
+  });
+
+  it("drops the Web3 Connection on a switch to an action that ignores it", () => {
+    for (const to of [
+      "aave-v3/supply",
+      "lido/wrap",
+      "web3/sign-typed-data",
+      "web3/transfer-spl-token",
+      "web3/read-contract",
+      "discord/send-message",
+      "robinhood/get-stock-price",
+    ]) {
+      const next = buildConfigForActionTypeChange(to, {
+        actionType: "web3/write-contract",
+        web3Connection: "eoa",
+      });
+      expect(next.web3Connection).toBeUndefined();
+    }
+  });
+
   it("produces a config that passes validation with no UNKNOWN_FIELD errors", () => {
     // Switching from a fully-configured read-contract to write-contract: the
     // shared address/abi survive, the leftover-free result must not raise

@@ -396,7 +396,8 @@ type ResolveSignerForNodeInput = {
  *   - "default" / missing -> delegates to `resolveSignerMode` (org-policy path).
  *   - "eoa"               -> short-circuits to EOA mode. The org Safe (and its
  *                             Zodiac Role, if any) is intentionally bypassed.
- *   - "safe:<id>"         -> validates the Safe (same org, same chain, deployed),
+ *   - "safe:<id>"         -> validates the Safe (same org, same chain, deployed,
+ *                             Sender toggle on),
  *                             then resolves its role state the same way the
  *                             policy path does. If a Roles modifier is active
  *                             (DB row or chain probe) the resolver upgrades to
@@ -442,14 +443,10 @@ export async function resolveSignerForNode(
     .limit(1);
 
   const safe = rows[0];
-  if (!safe) {
+  // One message for both, so the error never reveals another org's Safe ids.
+  if (!safe || safe.organizationId !== input.organizationId) {
     throw new Error(
       `web3Connection refers to unknown Safe '${parsed.safeWalletId}'`
-    );
-  }
-  if (safe.organizationId !== input.organizationId) {
-    throw new Error(
-      `web3Connection refers to a Safe '${parsed.safeWalletId}' that does not belong to this organization`
     );
   }
   if (safe.chainId !== input.chainId) {
@@ -460,6 +457,12 @@ export async function resolveSignerForNode(
   if (safe.status !== "deployed") {
     throw new Error(
       `web3Connection Safe '${parsed.safeWalletId}' is not deployed yet (status=${safe.status})`
+    );
+  }
+  // The policy path never routes through a Safe whose Sender toggle is off.
+  if (!safe.isSigningActive) {
+    throw new Error(
+      `web3Connection Safe '${parsed.safeWalletId}' has its Sender toggle off in Wallet settings. Turn it on, or pick another Web3 Connection.`
     );
   }
 

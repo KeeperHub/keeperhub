@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
+import { withOnlySafeWeb3Connections } from "@/lib/workflow/web3-connection";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 
 // SEC: Webhook URLs must use https only. Rejects http://, file://, javascript:, etc.
@@ -241,12 +242,13 @@ export function buildWorkflowExportV1(workflow: {
 /**
  * Sanitize node payload from an import: strip any `integrationId` that may
  * have leaked in, since they are not portable across instances/orgs. The
- * importing user re-binds integrations in the editor.
+ * importing user re-binds integrations in the editor. A Web3 Connection is
+ * dropped too, except a Safe, which fails closed at run if it is not theirs.
  */
 export function stripIntegrationsFromImportNodes(
   nodes: WorkflowExportV1["nodes"]
 ): Record<string, unknown>[] {
-  return nodes.map((node) => {
+  const stripped = nodes.map((node) => {
     const data = node.data as Record<string, unknown>;
     const config = data.config as Record<string, unknown> | undefined;
     const { config: cleanedConfig } = stripIntegrationFromConfig(config);
@@ -259,4 +261,5 @@ export function stripIntegrationsFromImportNodes(
       },
     };
   });
+  return withOnlySafeWeb3Connections(stripped);
 }

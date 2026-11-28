@@ -84,6 +84,7 @@ vi.mock("@/lib/security/audit-log", () => ({
 import { NextResponse } from "next/server";
 import { POST } from "@/app/api/workflows/create/route";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
+import { EOA_NEEDS_EDITOR_MESSAGE } from "@/lib/workflow/validation/action-config";
 
 function request(body: Record<string, unknown>): Request {
   return new Request("http://localhost:3000/api/workflows/create", {
@@ -276,6 +277,177 @@ describe("POST /api/workflows/create action config validation", () => {
 
     expect(response.status).not.toBe(422);
     expect(mockInsert).toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/workflows/create Web3 Connection", () => {
+  const TARGET = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+  const mockValues = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-123",
+      organizationId: "org-123",
+      authMethod: "session",
+    });
+    mockValidateWorkflowIntegrations.mockResolvedValue({ valid: true });
+    mockValues.mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        {
+          id: "wf-1",
+          name: "wf",
+          enabled: false,
+          createdAt: new Date("2024-01-01"),
+          updatedAt: new Date("2024-01-01"),
+        },
+      ]),
+    });
+    mockInsert.mockReturnValue({ values: mockValues });
+  });
+
+  function storedConfig(): Record<string, unknown> {
+    const { nodes } = mockValues.mock.calls[0][0] as {
+      nodes: { data: { config: Record<string, unknown> } }[];
+    };
+    return nodes[0].data.config;
+  }
+
+  it("saves a Safe picked on a Write Contract step", async () => {
+    const response = await POST(
+      request(
+        workflowBody([
+          baseActionNode({
+            actionType: "web3/write-contract",
+            network: "1",
+            contractAddress: TARGET,
+            abi: JSON.stringify([
+              {
+                inputs: [],
+                name: "run",
+                outputs: [],
+                stateMutability: "nonpayable",
+                type: "function",
+              },
+            ]),
+            abiFunction: "run",
+            web3Connection: "safe:safe-1",
+          }),
+        ])
+      )
+    );
+    expect(response.status).toBe(200);
+    expect(storedConfig().web3Connection).toBe("safe:safe-1");
+  });
+
+  const AAVE = {
+    actionType: "aave-v3/supply",
+    network: "1",
+    asset: TARGET,
+    amount: "1",
+    onBehalfOf: TARGET,
+  };
+  const WRITE = {
+    actionType: "web3/write-contract",
+    network: "1",
+    contractAddress: TARGET,
+    abi: JSON.stringify([
+      {
+        inputs: [],
+        name: "run",
+        outputs: [],
+        stateMutability: "nonpayable",
+        type: "function",
+      },
+    ]),
+    abiFunction: "run",
+  };
+
+  it("refuses one on an Aave step from an API key, and drops it from the editor", async () => {
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-123",
+      organizationId: "org-123",
+      authMethod: "api-key",
+      apiKeyId: "key-1",
+    });
+    const response = await POST(
+      request(
+        workflowBody([
+          baseActionNode({ ...AAVE, web3Connection: "safe:safe-1" }),
+        ])
+      )
+    );
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { invalidFields: unknown[] };
+    expect(body.invalidFields).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_VALUE",
+        field: "web3Connection",
+      }),
+    ]);
+    expect(mockValues).not.toHaveBeenCalled();
+
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-123",
+      organizationId: "org-123",
+      authMethod: "session",
+    });
+    const saved = await POST(
+      request(
+        workflowBody([
+          baseActionNode({ ...AAVE, web3Connection: "safe:safe-1" }),
+        ])
+      )
+    );
+    expect(saved.status).toBe(200);
+    expect(storedConfig()).not.toHaveProperty("web3Connection");
+  });
+
+  it("saves an Aave step with default, without the key", async () => {
+    const response = await POST(
+      request(
+        workflowBody([baseActionNode({ ...AAVE, web3Connection: "default" })])
+      )
+    );
+    expect(response.status).toBe(200);
+    expect(storedConfig()).not.toHaveProperty("web3Connection");
+  });
+
+  it("refuses eoa from an API key, and saves it from the editor", async () => {
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-123",
+      organizationId: "org-123",
+      authMethod: "api-key",
+      apiKeyId: "key-1",
+    });
+    const refused = await POST(
+      request(
+        workflowBody([baseActionNode({ ...WRITE, web3Connection: "eoa" })])
+      )
+    );
+    expect(refused.status).toBe(422);
+    const body = (await refused.json()) as { invalidFields: unknown[] };
+    expect(body.invalidFields).toEqual([
+      expect.objectContaining({
+        code: "INVALID_FIELD_VALUE",
+        field: "web3Connection",
+        message: EOA_NEEDS_EDITOR_MESSAGE,
+      }),
+    ]);
+    expect(mockValues).not.toHaveBeenCalled();
+
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-123",
+      organizationId: "org-123",
+      authMethod: "session",
+    });
+    const saved = await POST(
+      request(
+        workflowBody([baseActionNode({ ...WRITE, web3Connection: "eoa" })])
+      )
+    );
+    expect(saved.status).toBe(200);
+    expect(storedConfig().web3Connection).toBe("eoa");
   });
 });
 

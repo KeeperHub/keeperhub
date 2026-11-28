@@ -5,7 +5,7 @@ description: "Read prices, positions, and trading status for the tokenised equit
 
 # Robinhood Plugin
 
-Read and trade the tokenised equities on Robinhood Chain from a workflow. The three read actions need no credentials. Trading moves funds and needs a connected wallet with Permit2 allowances in place.
+Read and trade the tokenised equities on Robinhood Chain from a workflow. The three read actions need no credentials. Trading moves funds and needs a connected wallet with Permit2 allowances in place. Trade Stock Token has a **Web3 Connection** picker, and the Permit2 allowances must be on the wallet the step sends from: when you pick a Safe, they must be on the Safe.
 
 These actions exist because the assets are equities rather than ordinary tokens, and the generic Web3 actions cannot express that:
 

@@ -992,3 +992,98 @@ describe("sanitizeWorkflowData", () => {
     });
   });
 });
+
+describe("sanitizeWorkflowData Web3 Connection", () => {
+  function storedConfig(
+    node: Record<string, unknown>
+  ): Record<string, unknown> {
+    const { nodes } = sanitizeWorkflowData([node], []);
+    return (nodes[0].data as Record<string, unknown>).config as Record<
+      string,
+      unknown
+    >;
+  }
+
+  it("keeps it on an action that reads it", () => {
+    expect(
+      storedConfig({
+        id: "n1",
+        type: "action",
+        data: {
+          type: "action",
+          config: { actionType: "web3/write-contract", web3Connection: "eoa" },
+        },
+      }).web3Connection
+    ).toBe("eoa");
+  });
+
+  it("drops it on an action that ignores it, misplaced at the data root too", () => {
+    expect(
+      storedConfig({
+        id: "n1",
+        type: "action",
+        data: {
+          type: "action",
+          config: { actionType: "aave-v3/supply", amount: "1" },
+          web3Connection: "safe:s1",
+        },
+      })
+    ).toEqual({ actionType: "aave-v3/supply", amount: "1" });
+  });
+
+  it("keeps it on the legacy Write Contract id, which runs the same step", () => {
+    expect(
+      storedConfig({
+        id: "n1",
+        type: "action",
+        data: {
+          type: "action",
+          config: { actionType: "Write Contract", web3Connection: "eoa" },
+        },
+      }).web3Connection
+    ).toBe("eoa");
+  });
+
+  it("drops it on Transfer Native Token on a Solana network, keeps it on EVM", () => {
+    const transfer = (network: string) => ({
+      id: "n1",
+      type: "action",
+      data: {
+        type: "action",
+        config: {
+          actionType: "web3/transfer-funds",
+          network,
+          web3Connection: "safe:x",
+        },
+      },
+    });
+    expect(storedConfig(transfer("101"))).not.toHaveProperty("web3Connection");
+    expect(storedConfig(transfer("1")).web3Connection).toBe("safe:x");
+  });
+
+  it("drops a null one, so unset has one stored form", () => {
+    expect(
+      storedConfig({
+        id: "n1",
+        type: "action",
+        data: {
+          type: "action",
+          config: { actionType: "web3/write-contract", web3Connection: null },
+        },
+      })
+    ).toEqual({ actionType: "web3/write-contract" });
+  });
+
+  it("leaves a trigger's config alone", () => {
+    expect(
+      storedConfig({
+        id: "t1",
+        type: "trigger",
+        data: {
+          type: "trigger",
+          config: { triggerType: "Manual", web3Connection: "x" },
+        },
+      }).web3Connection
+    ).toBe("x");
+  });
+});

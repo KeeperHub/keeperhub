@@ -53,6 +53,8 @@ type Web3ConnectionSelectProps = {
   value: string | undefined;
   onChange: (value: string) => void;
   disabled?: boolean;
+  /** False on a step that sends only from the EOA (Batch Write Contract). */
+  safesAllowed?: boolean;
 };
 
 /**
@@ -95,13 +97,13 @@ function parseChainHint(network: string | undefined): number | null {
  *     is explicit.
  *
  *   - A persisted Safe id that isn't in the API's current option set (Safe
- *     deleted, signing toggled off, different chain) renders as "Unavailable"
- *     so the user can see the mismatch and pick a valid value. The server
- *     rejects this at execution time with a clear error.
+ *     deleted, signing toggled off, another org's, different chain) renders
+ *     as "Unavailable" so the user can pick a valid value. The run refuses it.
  */
 function buildRenderOptions(
   data: Web3ConnectionsResponse,
-  effectiveValue: string
+  effectiveValue: string,
+  safesAllowed: boolean
 ): RenderOption[] {
   const safes = data.options.filter((opt) => opt.kind === "safe");
   const eoaOption = data.options.find((opt) => opt.kind === "eoa");
@@ -113,7 +115,7 @@ function buildRenderOptions(
     const collapsed: RenderOption[] = [
       { value: "default", title: "EOA", kind: "eoa" },
     ];
-    return appendStaleIfNeeded(collapsed, effectiveValue);
+    return appendStaleIfNeeded(collapsed, effectiveValue, safesAllowed);
   }
 
   // Otherwise we have a real choice. Spell out what each option does so the
@@ -152,12 +154,13 @@ function buildRenderOptions(
       kind: "safe",
     });
   }
-  return appendStaleIfNeeded(out, effectiveValue);
+  return appendStaleIfNeeded(out, effectiveValue, safesAllowed);
 }
 
 function appendStaleIfNeeded(
   rendered: RenderOption[],
-  effectiveValue: string
+  effectiveValue: string,
+  safesAllowed: boolean
 ): RenderOption[] {
   if (effectiveValue === "default" || effectiveValue === "eoa") {
     return rendered;
@@ -165,12 +168,18 @@ function appendStaleIfNeeded(
   if (rendered.some((opt) => opt.value === effectiveValue)) {
     return rendered;
   }
+  let subtitle = "Not a valid sender. Pick one.";
+  if (effectiveValue.startsWith("safe:")) {
+    subtitle = safesAllowed
+      ? "This Safe is not available here. Pick a sender."
+      : "Batch Write Contract cannot send from a Safe.";
+  }
   return [
     ...rendered,
     {
       value: effectiveValue,
       title: `Unavailable (${effectiveValue})`,
-      subtitle: "This Safe is no longer available on this chain.",
+      subtitle,
       kind: "stale",
     },
   ];
@@ -181,6 +190,7 @@ export function Web3ConnectionSelect({
   value,
   onChange,
   disabled,
+  safesAllowed = true,
 }: Web3ConnectionSelectProps): ReactElement {
   const chainHint = useMemo(() => parseChainHint(network), [network]);
   const [data, setData] = useState<Web3ConnectionsResponse | null>(null);
@@ -213,17 +223,32 @@ export function Web3ConnectionSelect({
     fetchOptions();
   }, [fetchOptions]);
 
-  const renderOptions = useMemo<RenderOption[]>(
-    () => (data ? buildRenderOptions(data, effectiveValue) : []),
-    [data, effectiveValue]
-  );
+  const renderOptions = useMemo<RenderOption[]>(() => {
+    if (!data) {
+      return [];
+    }
+    const offered = safesAllowed
+      ? data
+      : { ...data, options: data.options.filter((o) => o.kind !== "safe") };
+    return buildRenderOptions(offered, effectiveValue, safesAllowed);
+  }, [data, effectiveValue, safesAllowed]);
 
   const selectedOption = renderOptions.find(
     (opt) => opt.value === effectiveValue
   );
 
-  const showBypassWarning =
-    data?.defaultKind === "safe" && effectiveValue === "eoa";
+  // Batch sends from the EOA only, so until EOA is picked it warns about a
+  // Safe default instead of the EOA bypass. The value is never switched.
+  let warning: string | null = null;
+  if (!safesAllowed) {
+    warning =
+      data?.defaultKind === "safe" && effectiveValue !== "eoa"
+        ? "Batch Write Contract sends from your EOA. Your Default Sender here is a Safe, so this step fails unless you pick EOA. Use Write Contract steps to send from the Safe."
+        : null;
+  } else if (data?.defaultKind === "safe" && effectiveValue === "eoa") {
+    warning =
+      "Selecting EOA bypasses the org Safe Wallet including any policy gating.";
+  }
 
   return (
     <div className="space-y-2">
@@ -263,13 +288,10 @@ export function Web3ConnectionSelect({
           ))}
         </SelectContent>
       </Select>
-      {showBypassWarning && (
+      {warning && (
         <div className="flex items-start gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-xs text-yellow-700 dark:text-yellow-300">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          <span>
-            Selecting EOA bypasses the org Safe Wallet including any policy
-            gating.
-          </span>
+          <span>{warning}</span>
         </div>
       )}
     </div>
