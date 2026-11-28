@@ -50,6 +50,23 @@ describe("extractLogGasUsedWei", () => {
     expect(extractLogGasUsedWei({ gasUsed: "not-a-number" })).toBeNull();
   });
 
+  it("returns null for a value that is not a decimal integer, like the SQL read", () => {
+    expect(extractLogGasUsedWei({ gasUsed: "1.5" })).toBeNull();
+    expect(extractLogGasUsedWei({ gasUsed: -2 })).toBeNull();
+    expect(extractLogGasUsedWei({ gasUsed: "1e3" })).toBeNull();
+    expect(extractLogGasUsedWei({ gasUsed: "123456789012" })).toBe(
+      "123456789012"
+    );
+  });
+
+  it("caps gasUsed at 78 digits, the width of a uint256", () => {
+    expect(extractLogGasUsedWei({ gasUsed: "9".repeat(78) })).toBe(
+      "9".repeat(78)
+    );
+    expect(extractLogGasUsedWei({ gasUsed: "1".repeat(79) })).toBeNull();
+    expect(extractLogGasUsedWei({ gasUsed: "1".repeat(131_073) })).toBeNull();
+  });
+
   it("returns null for null / array / primitive sources", () => {
     expect(extractLogGasUsedWei(null)).toBeNull();
     expect(extractLogGasUsedWei([21_000])).toBeNull();

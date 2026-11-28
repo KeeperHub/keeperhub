@@ -24,7 +24,7 @@
  * backfill is what retires the JSONB arm, not what makes it right.
  *
  * Approach: keyset batches, each re-extracting network/gasUsed from the JSONB
- * via the shared logInputField/logOutputField builders - the same expressions
+ * via the shared logInputField/logOutputWei builders - the same expressions
  * the executor writer mirrors in JS and the /analytics reads use as their
  * fallback arm, so all paths agree value-for-value. COALESCE preserves any value
  * the live writer already set (no clobber race on hot recent rows).

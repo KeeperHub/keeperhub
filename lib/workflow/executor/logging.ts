@@ -20,7 +20,7 @@ import { db } from "@/lib/db";
 import {
   extractLogGasUsedWei,
   extractLogNetwork,
-  logOutputField,
+  logOutputWei,
 } from "@/lib/db/execution-log-fields";
 import {
   type TransactionHashEntry,
@@ -507,15 +507,13 @@ async function resolveGasTotal(executionId: string): Promise<string | null> {
   try {
     const rows = await db
       .select({
-        gasUsedWei: sql<
-          string | null
-        >`SUM(CAST(${logOutputField("gasUsed")} AS NUMERIC))`,
+        gasUsedWei: sql<string | null>`SUM(${logOutputWei("gasUsed")})`,
       })
       .from(workflowExecutionLogs)
       .where(
         and(
           eq(workflowExecutionLogs.executionId, executionId),
-          sql`${logOutputField("gasUsed")} IS NOT NULL`
+          sql`${logOutputWei("gasUsed")} IS NOT NULL`
         )
       );
     return rows[0]?.gasUsedWei ?? null;

@@ -14,7 +14,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { logInputField, logOutputField } from "@/lib/db/execution-log-fields";
+import { logInputField, logOutputWei } from "@/lib/db/execution-log-fields";
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import {
   workflowExecutionLogs,
@@ -1596,8 +1596,9 @@ async function fetchWorkflowRuns(
   // restricted to one page of executions (see pagedExecutionIds above), which is
   // why it could afford the JSONB extract before this change.
   const logStepNetwork = sql`COALESCE(${workflowExecutionLogs.network}, ${logInputField("network")})`;
-  const logStepHasGas = sql`(${workflowExecutionLogs.gasUsedWei} IS NOT NULL OR ${logOutputField("gasUsed")} IS NOT NULL)`;
-  const logStepGasWei = sql`COALESCE(${workflowExecutionLogs.gasUsedWei}, CAST(${logOutputField("gasUsed")} AS NUMERIC))`;
+  // logOutputWei, not a raw CAST: one step's non-numeric gasUsed failed the whole runs list.
+  const logStepHasGas = sql`(${workflowExecutionLogs.gasUsedWei} IS NOT NULL OR ${logOutputWei("gasUsed")} IS NOT NULL)`;
+  const logStepGasWei = sql`COALESCE(${workflowExecutionLogs.gasUsedWei}, ${logOutputWei("gasUsed")})`;
 
   const logSummary = db
     .select({
@@ -2217,8 +2218,8 @@ export async function getStepLogs(
   // what that transaction cost. See lib/workflow/nodes/trigger-gas.
   const stepOwnGasWei = sql`COALESCE(
     ${workflowExecutionLogs.gasUsedWei},
-    CAST(${logOutputField("gasUsed")} AS NUMERIC),
-    CAST(${logOutputField("triggerGasUsed")} AS NUMERIC)
+    ${logOutputWei("gasUsed")},
+    ${logOutputWei("triggerGasUsed")}
   )`;
 
   const result = await db

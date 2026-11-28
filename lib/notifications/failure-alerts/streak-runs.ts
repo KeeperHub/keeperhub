@@ -45,9 +45,14 @@ const SPANS_ACCEPTED_SQL = acceptedRunBetween(
   false
 );
 
+/** output.refusals as a bigint when it is a whole JSON number of at most 18 digits, else NULL: a run's own output can hold anything. */
+const STORED_REFUSALS_SQL = sql`CASE WHEN jsonb_typeof(${workflowExecutions.output}->'refusals') = 'number'
+  AND ${workflowExecutions.output}->>'refusals' ~ '^[0-9]{1,18}$'
+  THEN (${workflowExecutions.output}->>'refusals')::bigint END`;
+
 /** Refusals a row stands for: one if an accepted run split it (only the later one counts); old rows hold one. */
 const REFUSALS_SQL = sql<number>`CASE WHEN ${SPANS_ACCEPTED_SQL} THEN 1
-  ELSE greatest(coalesce((${workflowExecutions.output}->>'refusals')::int, 1), 1) END`;
+  ELSE greatest(coalesce(${STORED_REFUSALS_SQL}, 1), 1) END`;
 
 /** Finished automated attempts, platform errors and expired signals left out. */
 export function attemptConditions(workflowId: string, since: Date | null) {
