@@ -384,6 +384,11 @@ export class RpcProviderManager {
     return this.config.primaryIsPrivateRelay;
   }
 
+  /** True when the endpoints are the user's own RPC preference, not the platform's. */
+  usesUserRpc(): boolean {
+    return this.config.userRpc;
+  }
+
   // Relay URL and chain pairs seen to match, and mismatches already alerted on.
   private static readonly verifiedRelayChains = new Set<string>();
   private static readonly reportedRelayChains = new Set<string>();

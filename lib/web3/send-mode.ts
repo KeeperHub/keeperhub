@@ -7,12 +7,16 @@ export const SEND_MODE = {
   TRANSACTION: "transaction",
   PRIVATE_RELAY: "private-relay",
   BUNDLE: "bundle",
+  BUNDLE_AND_PUBLIC: "bundle-and-public",
 } as const;
 
 export type SendMode = (typeof SEND_MODE)[keyof typeof SEND_MODE];
 
 /** The Send as modes that send a bundle to block builders. */
-export const BUNDLE_SEND_MODES = [SEND_MODE.BUNDLE] as const;
+export const BUNDLE_SEND_MODES = [
+  SEND_MODE.BUNDLE,
+  SEND_MODE.BUNDLE_AND_PUBLIC,
+] as const;
 
 export type BundleSendMode = (typeof BUNDLE_SEND_MODES)[number];
 
@@ -75,6 +79,22 @@ type SendModeOption = {
   ) => string;
 };
 
+// Where both bundle modes are offered, and what the editor says about them.
+const BUNDLE_OPTION_FIELDS: Pick<
+  SendModeOption,
+  "availableOn" | "sponsorOffNotice" | "unavailableNotice"
+> = {
+  // Also needs the organization in the rollout; unknown counts as no.
+  availableOn: (chain) =>
+    chain?.bundlesEnabled === true && chainHasBuilders(chain),
+  sponsorOffNotice:
+    "Sponsor gas turned off: bundles are paid from your wallet.",
+  unavailableNotice: (chainName, _fallsBack, chain) =>
+    chain?.bundlesEnabled === false
+      ? "Bundles are not turned on for this organization, so this step fails before sending."
+      : `${chainName} has no block builders that take bundles, so this step fails before sending.`,
+};
+
 // Listed in menu order. A new mode is one more entry here.
 export const SEND_MODE_OPTIONS: readonly SendModeOption[] = [
   {
@@ -109,15 +129,16 @@ export const SEND_MODE_OPTIONS: readonly SendModeOption[] = [
       "Sent only to the builders on the list, for the next few blocks. Never included if it would revert, so a send that fails or misses those blocks costs no gas, unless its signed transaction is mined later.",
     hint: "Sent only to the builders on the list, for the next few blocks. Never included if it would revert, so a send that fails or misses those blocks costs no gas, unless its signed transaction is mined later.",
     badge: "BUNDLE",
-    // Also needs the organization in the rollout; unknown counts as no.
-    availableOn: (chain) =>
-      chain?.bundlesEnabled === true && chainHasBuilders(chain),
-    sponsorOffNotice:
-      "Sponsor gas turned off: bundles are paid from your wallet.",
-    unavailableNotice: (chainName, _fallsBack, chain) =>
-      chain?.bundlesEnabled === false
-        ? "Bundles are not turned on for this organization, so this step fails before sending."
-        : `${chainName} has no block builders that take bundles, so this step fails before sending.`,
+    ...BUNDLE_OPTION_FIELDS,
+  },
+  {
+    value: SEND_MODE.BUNDLE_AND_PUBLIC,
+    label: "Bundle and public",
+    shortLabel: "Bundle and public",
+    description:
+      "Sent to the block builders and to the public mempool too, from the first target block (or Not before, when set). Only one copy can be mined. If the public copy is mined and reverts, your wallet pays its gas. Anyone can see the public copy, and it stays valid until the wallet's next transaction.",
+    badge: "BUNDLE + PUBLIC",
+    ...BUNDLE_OPTION_FIELDS,
   },
 ];
 
@@ -135,10 +156,30 @@ const UNSUPPORTED_SEND_MODES: Readonly<
   },
 };
 
-/** Why a bundle step with a Safe connection will not send: the editor, save and run time say it alike. */
-export const BUNDLE_SAFE_REFUSAL = `Send as Bundle cannot send through a Safe or Roles connection yet. Use your wallet (EOA) connection, or set Send as to Normal transaction (sendMode: "transaction").`;
+/** A bundle mode as messages name it: its label and its API value. */
+export function bundleModeName(mode: BundleSendMode): string {
+  return `${sendModeOption(mode).shortLabel} (sendMode: "${mode}")`;
+}
 
-const BUNDLE_WRITE_CONTRACT_ONLY = `Bundle (sendMode: "bundle") is only available on Write Contract steps. Set Send as to Normal transaction (sendMode: "transaction").`;
+/** A refusal's subject: "Send as: <mode>". */
+export function sendAsSubject(mode: BundleSendMode): string {
+  return `Send as: ${bundleModeName(mode)}`;
+}
+
+/** A config's bundle mode; Bundle when it resolves to no bundle mode. */
+export function bundleModeOf(config: SendModeConfig): BundleSendMode {
+  const mode = resolveSendMode(config);
+  return isBundleMode(mode) ? mode : SEND_MODE.BUNDLE;
+}
+
+/** Why a bundle step with a Safe connection will not send: the editor, save and run time say it alike. */
+export function bundleSafeRefusal(mode: BundleSendMode): string {
+  return `${sendAsSubject(mode)} cannot send through a Safe or Roles connection yet. Use your wallet (EOA) connection, or set Send as to Normal transaction (sendMode: "transaction").`;
+}
+
+function bundleWriteContractOnly(mode: BundleSendMode): string {
+  return `${bundleModeName(mode)} is only available on Write Contract steps. Set Send as to Normal transaction (sendMode: "transaction").`;
+}
 
 /** Why `actionType` cannot send as `mode`, or nothing when it can. */
 export function unsupportedSendMode(
@@ -149,7 +190,7 @@ export function unsupportedSendMode(
     return typeof actionType === "string" &&
       BUNDLE_STEP_ACTION_TYPES.includes(actionType)
       ? undefined
-      : BUNDLE_WRITE_CONTRACT_ONLY;
+      : bundleWriteContractOnly(mode);
   }
   return typeof actionType === "string"
     ? UNSUPPORTED_SEND_MODES[actionType]?.[mode]
@@ -265,7 +306,7 @@ export function sendModeConflict(config: SendModeConfig): string | undefined {
   if (legacy === (config.sendMode === SEND_MODE.PRIVATE_RELAY)) {
     return;
   }
-  return `sendMode "${config.sendMode}" and usePrivateMempool ${JSON.stringify(config.usePrivateMempool)} disagree. Send sendMode alone, or pair usePrivateMempool: true with "${SEND_MODE.PRIVATE_RELAY}" and usePrivateMempool: false with "${SEND_MODE.TRANSACTION}" or "${SEND_MODE.BUNDLE}".`;
+  return `sendMode "${config.sendMode}" and usePrivateMempool ${JSON.stringify(config.usePrivateMempool)} disagree. Send sendMode alone, or pair usePrivateMempool: true with "${SEND_MODE.PRIVATE_RELAY}" and usePrivateMempool: false with "${SEND_MODE.TRANSACTION}", "${SEND_MODE.BUNDLE}" or "${SEND_MODE.BUNDLE_AND_PUBLIC}".`;
 }
 
 /** New values of the legacy key must be booleans; older stored ones are read as before. */

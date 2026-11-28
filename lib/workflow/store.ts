@@ -80,6 +80,7 @@ export type NodeRunStatus =
   | "skipped"
   | "landed-late"
   | "landed-late-reverted"
+  | "public-pending"
   | "waiting";
 
 const OUTCOME_STATUS: Record<NodeOutcome, NodeRunStatus> = {
@@ -87,6 +88,7 @@ const OUTCOME_STATUS: Record<NodeOutcome, NodeRunStatus> = {
   "skipped-in-flight": "skipped",
   "landed-late": "landed-late",
   "landed-late-reverted": "landed-late-reverted",
+  "public-pending": "public-pending",
   waiting: "waiting",
 };
 

@@ -161,6 +161,7 @@ export async function GET(
       extras: {
         route: keys.route.as("route"),
         notIncludedReason: keys.notIncludedReason.as("not_included_reason"),
+        pending: keys.pending.as("pending"),
       },
     });
 
@@ -171,6 +172,7 @@ export async function GET(
           output: {
             [RUN_OUTCOME_OUTPUT.routeKey]: log.route,
             [RUN_OUTCOME_OUTPUT.notIncludedReasonKey]: log.notIncludedReason,
+            [RUN_OUTCOME_OUTPUT.pendingKey]: log.pending === true,
           },
         },
         execution

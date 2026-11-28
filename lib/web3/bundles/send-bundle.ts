@@ -25,6 +25,8 @@ import {
   TargetBlockPassedError,
 } from "@/lib/web3/next-block-simulation";
 import { getNonceManager, type NonceSession } from "@/lib/web3/nonce-manager";
+import { type BundleSendMode, SEND_MODE } from "@/lib/web3/send-mode";
+import type { FallbackNotSentReason } from "@/lib/workflow/executor/run-outcome-keys";
 import type { BuilderEndpoint } from "./builders";
 import {
   BUNDLE_PRE_RECORD_MS,
@@ -42,6 +44,9 @@ import {
   DeadlinePassedError,
   type InclusionReads,
   type InclusionResult,
+  pollMsOf,
+  sleepFor,
+  slotMsOf,
   watchInclusion,
 } from "./inclusion";
 import {
@@ -53,7 +58,19 @@ import {
   type SkippedTarget,
   toGwei,
 } from "./plan";
-import { NOT_BEFORE_UNSUPPORTED_ERROR, type SendAhead } from "./settings";
+import {
+  feeCoversNextBlock,
+  lostRace,
+  type StillNeeded,
+  sendPublicCopy,
+  stillNeeded,
+} from "./public-copy";
+import {
+  BUNDLE_FALLBACK,
+  type BundleFallback,
+  NOT_BEFORE_UNSUPPORTED_ERROR,
+  type SendAhead,
+} from "./settings";
 
 // The most a user may set as Max Fee; a raised cap never goes above it.
 const MAX_FEE_WEI = BigInt(MAX_FEE_GWEI) * BigInt(1_000_000_000);
@@ -75,12 +92,24 @@ export type BuilderReport = {
   error?: string;
 };
 
+/** A signed transaction sent publicly: accepted null when unclear, false when not sent (error says why). */
+export type PublicCopyReport = {
+  hash: string;
+  sentAtBlock?: number;
+  accepted: boolean | null;
+  error?: string;
+};
+
 /** What a bundle send reports in the step output. */
 export type BundleReport = {
   targetBlocks: number[];
   targetTipsGwei: string[];
   builders: BuilderReport[];
   bundleTargetsSkipped?: SkippedTarget[];
+  publicCopy?: PublicCopyReport;
+  // Bundle with the public fallback only: true once it reached a public endpoint.
+  fallbackSent?: boolean;
+  fallbackNotSentReason?: FallbackNotSentReason;
 } & Partial<SendAheadReport>;
 
 /** With Not before set: the time, the first block that cannot precede it, the latest block read, and Send ahead. */
@@ -97,7 +126,13 @@ export type BundleSendOutcome =
       mined: MinedHash;
       gasLimit: bigint;
       report: BundleReport;
+      // A public copy was mined and reverted (the wallet paid); lostRace: the call now reverts at that block.
+      paidRevert?: { lostRace: boolean };
     }
+  // A public copy is out and not mined by the window's end: the run is unconfirmed.
+  | { kind: "public-pending"; hash: string; report: BundleReport }
+  // No public RPC could be reached for the fallback: the nonce is released.
+  | { kind: "fallback-refused"; report: BundleReport }
   // Only "not-checked" leaves the row pending: the bundle may still land.
   | { kind: "not-included"; reason: NotIncludedReason; report: BundleReport }
   | { kind: "no-builder-accepted"; report: BundleReport }
@@ -113,7 +148,7 @@ export type BundleSendOutcome =
       report: Partial<BundleReport>;
     };
 
-type BundleSendInput = {
+export type BundleSendInput = {
   session: NonceSession;
   signer: ethers.Signer;
   rpcManager: RpcProviderManager;
@@ -127,6 +162,10 @@ type BundleSendInput = {
   tipIncreasePercent: number;
   // With Not before set: targets start at its first allowed block.
   sendAhead?: SendAhead;
+  // Default Bundle; Bundle and public also sends the first target's transaction publicly.
+  sendMode?: BundleSendMode;
+  // Bundle only: "public" sends the last target's transaction publicly on a real not-picked.
+  fallback?: BundleFallback;
   builders: readonly BuilderEndpoint[];
   // Picked names this network has no builder for, reported as refused.
   unknownBuilders: readonly string[];
@@ -139,7 +178,7 @@ type BundleSendInput = {
   runDeadline?: number;
   // Set once signed bytes may leave the platform, with what was sent.
   progress: { sent: boolean; report?: BundleReport };
-  timing?: { pollMs?: number; windowMs?: number };
+  timing?: { pollMs?: number; windowMs?: number; slotMs?: number };
 };
 
 /** Signing failed (Turnkey or the local key): nothing was sent. */
@@ -171,8 +210,6 @@ const TRIGGER_NOT_REACHED: Extract<BundleSendOutcome, { kind: "refused" }> = {
   errorClass: ExecutionErrorType.EXTERNAL,
   report: {},
 };
-
-const POLL_MS = 1000;
 
 /** A stretch a bundle step holds the wallet for, and what it does in it (for the refusal). */
 export type BundleHold = { ms: number; doing: string };
@@ -436,9 +473,12 @@ async function refusalBeforeSigning(
     provider.getTransactionCount(call.from, "latest")
   );
   if (nonce > mined) {
+    const stuck = await stuckPublicCopy(input, mined);
     return {
       kind: "refused",
-      error: `An earlier transaction from this wallet (nonce ${mined}) is still waiting to be mined, and a bundle cannot land behind it, so nothing was sent. Run it again once that transaction is mined.`,
+      error: stuck
+        ? `A public copy of an earlier bundle from this wallet (transaction ${stuck}, nonce ${mined}) is still waiting to be mined, and a bundle cannot land behind it, so nothing was sent. Run it again once that transaction is mined. While it is still in the public pool this can take up to a day: KeeperHub checks it every few minutes and stops waiting for it after a day.`
+        : `An earlier transaction from this wallet (nonce ${mined}) is still waiting to be mined, and a bundle cannot land behind it, so nothing was sent. Run it again once that transaction is mined.`,
       errorClass: ExecutionErrorType.EXTERNAL,
       report: {},
     };
@@ -454,6 +494,23 @@ async function refusalBeforeSigning(
     };
   }
   return;
+}
+
+/** The hash of a bundle's public copy pending at `nonce`, so a refusal can name it; undefined when none or unreadable. */
+async function stuckPublicCopy(
+  input: BundleSendInput,
+  nonce: number
+): Promise<string | undefined> {
+  try {
+    return await getNonceManager().pendingPublicCopyHash(
+      input.call.from,
+      input.chainId,
+      nonce
+    );
+  } catch {
+    // The plain message still says what to do.
+    return;
+  }
 }
 
 /** Targets mined while signing are moved to the skipped list. */
@@ -486,9 +543,6 @@ async function dropPassedTargets(
       .map((target) => ({ block: target.block, reason: "target-passed" })),
   };
 }
-
-const sleepFor = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
 /** The latest block's parent, read by hash so it is that block's own parent. */
 async function parentOf(
@@ -796,24 +850,25 @@ async function sendInBudget(
   input.progress.sent = true;
   input.progress.report = report;
 
+  const recorded: Recorded = {
+    nonce,
+    hashes,
+    stepHashes: [...new Set([...hashes, ...stepHashes])],
+    scanFrom: Math.max(0, latest - BUNDLE_WINDOW_MARGIN_BLOCKS),
+    lastTarget,
+    windowEnd,
+    targets: live.targets,
+    signed: live.signed,
+    gasLimit: gasConfig.gasLimit,
+    report,
+    // Only a Not before still ahead of the chain; 0 or a past time adds nothing.
+    ...(input.sendAhead &&
+      input.sendAhead.notBefore > latestBlock.timestamp && {
+        minTimestamp: input.sendAhead.notBefore,
+      }),
+  };
   try {
-    return await afterRecord(input, {
-      nonce,
-      hashes,
-      stepHashes: [...new Set([...hashes, ...stepHashes])],
-      scanFrom: Math.max(0, latest - BUNDLE_WINDOW_MARGIN_BLOCKS),
-      lastTarget,
-      windowEnd,
-      targets: live.targets,
-      signed: live.signed,
-      gasLimit: gasConfig.gasLimit,
-      report,
-      // Only a Not before still ahead of the chain; 0 or a past time adds nothing.
-      ...(input.sendAhead &&
-        input.sendAhead.notBefore > latestBlock.timestamp && {
-          minTimestamp: input.sendAhead.notBefore,
-        }),
-    });
+    return await afterRecord(input, recorded);
   } catch (error) {
     // Never release the lock while a target can land; the row stays pending.
     logAfterSend(
@@ -823,8 +878,24 @@ async function sendInBudget(
       ErrorCategory.WORKFLOW_ENGINE
     );
     await waitPastTargets(input, lastTarget, windowEnd);
-    return { kind: "not-included", reason: "not-checked", report };
+    return undecidedOutcome(recorded);
   }
+}
+
+/** The window passed undecided: pending with the public copy's hash once one is out, else not-checked. */
+function undecidedOutcome(recorded: Recorded): BundleSendOutcome {
+  if (recorded.publicHash) {
+    return {
+      kind: "public-pending",
+      hash: recorded.publicHash,
+      report: recorded.report,
+    };
+  }
+  return {
+    kind: "not-included",
+    reason: "not-checked",
+    report: recorded.report,
+  };
 }
 
 /** Hold the lock until the chain passes the targets (healthy chain) or the window ends. */
@@ -833,7 +904,7 @@ async function waitPastTargets(
   lastTarget: number,
   windowEnd: number
 ): Promise<void> {
-  const pollMs = input.timing?.pollMs ?? POLL_MS;
+  const pollMs = pollMsOf(input);
   while (Date.now() < windowEnd) {
     try {
       const latest = await beforeDeadline(
@@ -885,7 +956,7 @@ function sortedSkips(skipped: SkippedTarget[]): SkippedTarget[] {
   return [...skipped].sort((a, b) => a.block - b.block);
 }
 
-type Recorded = {
+export type Recorded = {
   nonce: number;
   hashes: string[];
   // This send's hashes first, then the ones this step signed at this nonce before.
@@ -899,7 +970,17 @@ type Recorded = {
   gasLimit: bigint;
   report: BundleReport;
   minTimestamp?: number;
+  // Set once a public copy went out (accepted or unclear): the watch then runs to the window end.
+  publicHash?: string;
 };
+
+function isPublicMode(input: BundleSendInput): boolean {
+  return input.sendMode === SEND_MODE.BUNDLE_AND_PUBLIC;
+}
+
+function fallbackOn(input: BundleSendInput): boolean {
+  return !isPublicMode(input) && input.fallback === BUNDLE_FALLBACK.PUBLIC;
+}
 
 async function afterRecord(
   input: BundleSendInput,
@@ -941,22 +1022,51 @@ async function afterRecord(
     });
   }
   report.builders = aggregateBuilders(answers ?? [], input.unknownBuilders);
-  if (
+  const noneAccepted =
     answers !== undefined &&
     answers.length > 0 &&
-    answers.every((answer) => answer.delivery === "refused")
-  ) {
+    answers.every((answer) => answer.delivery === "refused");
+
+  if (isPublicMode(input)) {
+    // The first target's transaction, once its block is next; its result decides even with no builder.
+    const copy = await sendPublicCopy(input, recorded, "with-bundle", 0);
+    // Another pooled transaction may hold the nonce while builders still hold the bundle: the watch decides.
+    if (copy.kind === "out" || copy.kind === "nonce-used") {
+      return await watchAndSettle(input, recorded);
+    }
+    // Nothing can land: the call now reverts and no builder holds the bundle.
+    if (
+      noneAccepted &&
+      copy.kind === "not-sent" &&
+      copy.reason === "no-longer-needed"
+    ) {
+      await dropNonce(input, nonce, "no-longer-needed");
+      return { kind: "not-included", reason: "no-longer-needed", report };
+    }
+  }
+  if (noneAccepted) {
+    if (fallbackOn(input)) {
+      report.fallbackSent = false;
+      report.fallbackNotSentReason = "no-builder-accepted";
+    }
     await dropNonce(input, nonce, "no-builder-accepted");
     return { kind: "no-builder-accepted", report };
   }
+  return await watchAndSettle(input, recorded);
+}
 
+async function watchAndSettle(
+  input: BundleSendInput,
+  recorded: Recorded
+): Promise<BundleSendOutcome> {
   const watched = await watchInclusion(
     {
-      nonce,
+      nonce: recorded.nonce,
       hashes: recorded.hashes,
       lastTarget: recorded.lastTarget,
-      pollMs: input.timing?.pollMs ?? POLL_MS,
+      pollMs: pollMsOf(input),
       windowEnd: recorded.windowEnd,
+      publicOut: recorded.publicHash !== undefined,
     },
     inclusionReads(input)
   );
@@ -970,7 +1080,7 @@ async function settleWatch(
 ): Promise<BundleSendOutcome> {
   const { nonce, report } = recorded;
   switch (watched.kind) {
-    case "included":
+    case "included": {
       try {
         // Only a receipt-backed hash confirms the nonce.
         await getNonceManager().confirmNonce(
@@ -986,23 +1096,120 @@ async function settleWatch(
           input.chainId
         );
       }
+      // A builder never includes a revert: a mined revert is the public copy, paid for.
+      const paid =
+        recorded.publicHash !== undefined && !watched.mined.succeeded;
       return {
         kind: "included",
         mined: watched.mined,
         gasLimit: recorded.gasLimit,
         report,
+        ...(paid && {
+          paidRevert: { lostRace: await lostRace(input, watched.mined) },
+        }),
       };
+    }
     case "not-included": {
+      if (fallbackOn(input)) {
+        return await missWithFallback(input, recorded);
+      }
       // The window end on purpose: a miss decided in the last poll skips the re-check (not-picked).
       const reason = await missReason(input, recorded.windowEnd);
       await dropNonce(input, nonce, reason);
       return { kind: "not-included", reason, report };
     }
     case "used-elsewhere":
-      return await recheckUsedElsewhere(input, recorded);
+      return await settleUsedElsewhere(input, recorded);
     default:
       // The window passed undecided: the row stays pending for reconcile.
+      if (fallbackOn(input) && recorded.publicHash === undefined) {
+        report.fallbackSent = false;
+        report.fallbackNotSentReason = "not-checked";
+      }
+      return undecidedOutcome(recorded);
+  }
+}
+
+/** Used elsewhere only on proof; undecided with a public copy out stays pending on it. */
+async function settleUsedElsewhere(
+  input: BundleSendInput,
+  recorded: Recorded
+): Promise<BundleSendOutcome> {
+  const outcome = await recheckUsedElsewhere(input, recorded);
+  return outcome.kind === "not-included" && outcome.reason === "not-checked"
+    ? undecidedOutcome(recorded)
+    : outcome;
+}
+
+/**
+ * Bundle with "Send publicly if still needed", once the chain passed the targets: one send check at the next
+ * block decides the miss; the last target's transaction goes out only on a pass, with two slots left and its fee cap covering the next base fee.
+ */
+async function missWithFallback(
+  input: BundleSendInput,
+  recorded: Recorded
+): Promise<BundleSendOutcome> {
+  const { nonce, report } = recorded;
+  let check: StillNeeded = "unchecked";
+  try {
+    const head = await beforeDeadline(
+      input.rpcManager.executeWithFailover((provider) =>
+        provider.getBlockNumber()
+      ),
+      recorded.windowEnd
+    );
+    check = await stillNeeded(input, recorded, head, recorded.windowEnd);
+  } catch {
+    // Unreadable: not checked, nothing sent.
+  }
+  const endNotSent = async (
+    why: FallbackNotSentReason
+  ): Promise<BundleSendOutcome> => {
+    report.fallbackSent = false;
+    report.fallbackNotSentReason = why;
+    // Unchecked: never "would still have worked"; the dropped row is still watched for a late landing.
+    if (why === "check-failed") {
+      await dropNonce(input, nonce);
       return { kind: "not-included", reason: "not-checked", report };
+    }
+    const reason =
+      check === "no-longer-needed" ? "no-longer-needed" : "not-picked";
+    await dropNonce(input, nonce, reason);
+    return { kind: "not-included", reason, report };
+  };
+  if (check !== "pass") {
+    return await endNotSent(
+      check === "no-longer-needed" ? "no-longer-needed" : "check-failed"
+    );
+  }
+  if (recorded.windowEnd - Date.now() < 2 * slotMsOf(input)) {
+    return await endNotSent("window-ending");
+  }
+  const last = recorded.signed.length - 1;
+  const fee = await feeCoversNextBlock(input, recorded.signed[last]);
+  if (fee !== "covers") {
+    return await endNotSent(
+      fee === "below" ? "max-fee-below-base-fee" : "check-failed"
+    );
+  }
+  const copy = await sendPublicCopy(input, recorded, "fallback", last, {
+    checked: true,
+  });
+  switch (copy.kind) {
+    case "out":
+      report.fallbackSent = true;
+      return await watchAndSettle(input, recorded);
+    case "refused":
+      report.fallbackSent = false;
+      report.fallbackNotSentReason = "refused";
+      await dropNonce(input, nonce, "fallback-refused");
+      return { kind: "fallback-refused", report };
+    case "nonce-used":
+      report.fallbackSent = false;
+      report.fallbackNotSentReason = "nonce-used";
+      return await settleUsedElsewhere(input, recorded);
+    default:
+      return await endNotSent(copy.reason);
   }
 }
 
@@ -1140,7 +1347,7 @@ async function recheckUsedElsewhere(
 async function dropNonce(
   input: BundleSendInput,
   nonce: number,
-  missed: BundleMiss
+  missed?: BundleMiss
 ): Promise<void> {
   try {
     await getNonceManager().markNonceDropped(input.session, nonce, missed);

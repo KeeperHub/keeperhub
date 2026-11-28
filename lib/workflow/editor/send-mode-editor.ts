@@ -6,7 +6,7 @@ import {
 import { simulatesNextBlock } from "@/lib/web3/next-block-limits";
 import {
   availableSendModes,
-  BUNDLE_SAFE_REFUSAL,
+  bundleSafeRefusal,
   chainHasBuilders,
   isBundleMode,
   isLegacyPrivateRelayConfig,
@@ -273,20 +273,45 @@ function changeOf(
 }
 
 // Bundle-only keys a save refuses under any other Send as, with their editor names.
-const SEND_AHEAD_KEYS: Readonly<Record<string, string>> = {
+const BUNDLE_ONLY_KEYS: Readonly<Record<string, string>> = {
   [BUNDLE_SETTING_KEYS.notBefore]: BUNDLE_SETTING_LABELS.notBefore,
   [BUNDLE_SETTING_KEYS.sendAheadBlocks]: "Send ahead",
+  [BUNDLE_SETTING_KEYS.fallback]: BUNDLE_SETTING_LABELS.fallback,
 };
 
-/** Names the keys cleared: "Not before was cleared: ...", or both. */
-function sendAheadClearedNotice(cleared: ConfigWrites): string | undefined {
-  const names = cleared.map(([key]) => SEND_AHEAD_KEYS[key]);
+/** "A", "A and B", "A, B and C". */
+function listNames(names: string[]): string {
+  return names.length < 2
+    ? names.join("")
+    : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+/** "Not before was cleared: it only applies to ...", or "A and B were cleared: they only apply to ...". */
+function clearedSentence(names: string[], modes: string): string | undefined {
   if (names.length === 0) {
     return;
   }
   return names.length === 1
-    ? `${names[0]} was cleared: it only applies to Send as Bundle.`
-    : `${names.join(" and ")} were cleared: they only apply to Send as Bundle.`;
+    ? `${names[0]} was cleared: it only applies to ${modes}.`
+    : `${listNames(names)} were cleared: they only apply to ${modes}.`;
+}
+
+/** Names the keys cleared: Not before and Send ahead serve both bundle modes, If not included Bundle alone. */
+function bundleOnlyClearedNotice(cleared: ConfigWrites): string | undefined {
+  const keys = cleared.map(([key]) => key);
+  const bundleOnly = keys.filter((key) => key === BUNDLE_SETTING_KEYS.fallback);
+  const bothModes = keys.filter((key) => key !== BUNDLE_SETTING_KEYS.fallback);
+  const sentences = [
+    clearedSentence(
+      bothModes.map((key) => BUNDLE_ONLY_KEYS[key]),
+      "Send as Bundle or Bundle and public"
+    ),
+    clearedSentence(
+      bundleOnly.map((key) => BUNDLE_ONLY_KEYS[key]),
+      "Send as Bundle"
+    ),
+  ].filter((text): text is string => text !== undefined);
+  return sentences.length > 0 ? sentences.join(" ") : undefined;
 }
 
 /** The notices of one change, in order, as one text. */
@@ -295,9 +320,9 @@ function joinNotices(...notices: (string | undefined)[]): string | undefined {
   return text === "" ? undefined : text;
 }
 
-/** Clears Not before and Send ahead when set, for a Send as other than Bundle. */
-function sendAheadClears(config: Record<string, unknown>): ConfigWrites {
-  return Object.keys(SEND_AHEAD_KEYS)
+/** Clears Not before, Send ahead and If not included when set, for a Send as that is not a bundle. */
+function bundleOnlyClears(config: Record<string, unknown>): ConfigWrites {
+  return Object.keys(BUNDLE_ONLY_KEYS)
     .filter((key) => isConfigValueSet(config[key]))
     .map((key) => [key, undefined]);
 }
@@ -309,7 +334,7 @@ function sendAheadClears(config: Record<string, unknown>): ConfigWrites {
 function toNormalWrites(config: Record<string, unknown>): ConfigWrites {
   const writes = [
     ...sendModeUpdates(SEND_MODE.TRANSACTION),
-    ...sendAheadClears(config),
+    ...bundleOnlyClears(config),
   ];
   if (
     notNormal(config) &&
@@ -326,8 +351,9 @@ export function pickSendMode(
   config: Record<string, unknown>,
   mode: SendMode
 ): SendModeChange {
-  const cleared = isBundleMode(mode) ? [] : sendAheadClears(config);
-  const clearNotice = sendAheadClearedNotice(cleared);
+  // Between the bundle modes nothing is cleared; Bundle and public ignores If not included.
+  const cleared = isBundleMode(mode) ? [] : bundleOnlyClears(config);
+  const clearNotice = bundleOnlyClearedNotice(cleared);
   if (mode === SEND_MODE.TRANSACTION) {
     return changeOf(config, toNormalWrites(config), clearNotice);
   }
@@ -353,12 +379,12 @@ export function switchSponsorGas(
   if (next !== true || !notNormal(config)) {
     return changeOf(config, writes);
   }
-  const cleared = sendAheadClears(config);
+  const cleared = bundleOnlyClears(config);
   writes.push(...sendModeUpdates(SEND_MODE.TRANSACTION), ...cleared);
   return changeOf(
     config,
     writes,
-    joinNotices(SPONSOR_ON_NOTICE, sendAheadClearedNotice(cleared))
+    joinNotices(SPONSOR_ON_NOTICE, bundleOnlyClearedNotice(cleared))
   );
 }
 
@@ -390,7 +416,7 @@ export function chooseNetwork(
     writes,
     joinNotices(
       networkChangeNotice(shown, target),
-      sendAheadClearedNotice(sendAheadClears(config))
+      bundleOnlyClearedNotice(bundleOnlyClears(config))
     )
   );
   return {
@@ -479,9 +505,12 @@ function bundleWarning(
   if (unsupportedSendMode(config.actionType, mode)) {
     return;
   }
-  if (String(config.web3Connection ?? "").startsWith("safe:")) {
+  if (
+    isBundleMode(mode) &&
+    String(config.web3Connection ?? "").startsWith("safe:")
+  ) {
     return {
-      text: BUNDLE_SAFE_REFUSAL,
+      text: bundleSafeRefusal(mode),
       unsupported: true,
       fails: true,
     };

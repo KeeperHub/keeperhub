@@ -8,6 +8,8 @@ export const RUN_OUTCOME_OUTPUT = {
   // Not before is still too far ahead: the step sent nothing.
   waitingRoute: "waiting",
   notIncludedReasonKey: "notIncludedReason",
+  // A public copy was sent and is not mined yet.
+  pendingKey: "pending",
 } as const;
 
 /** Only Write Contract (and its legacy name) sends bundles, so only it may set the outcome. */
@@ -16,11 +18,14 @@ export const BUNDLE_STEP_ACTION_TYPES: readonly string[] = [
   "Write Contract",
 ];
 
-/** Where a bundle step's write went: sent as a bundle. */
-export const BUNDLE_ROUTE = "bundle" as const;
+// Where a bundle step's write went: sent as a bundle.
+const BUNDLE_ROUTE = "bundle" as const;
+
+// Sent as a bundle and publicly too: the route equals the mode.
+const BUNDLE_AND_PUBLIC_ROUTE = "bundle-and-public" as const;
 
 /** Every route a bundle step reports after sending; quote-free, the SQL reads them as literals. */
-export const BUNDLE_ROUTES = [BUNDLE_ROUTE] as const;
+export const BUNDLE_ROUTES = [BUNDLE_ROUTE, BUNDLE_AND_PUBLIC_ROUTE] as const;
 
 export type BundleSendRoute = (typeof BUNDLE_ROUTES)[number];
 
@@ -40,7 +45,8 @@ export const SENT_OUTPUT_KEYS = ["transactionHash", "gasUsed"] as const;
  * can still be mined until the nonce is used, and the cap counts it by its
  * recorded nonce (value-ledger). A nonce used elsewhere is held too, but its
  * row is confirmed with the other transaction, so it counts 0. Every other
- * success keeps its charge.
+ * success keeps its charge, a public copy not mined yet included: the cap
+ * counts its linked row by nonce, once (value-ledger), so no change is needed.
  */
 export function bundleReservationEnd(result: {
   success: boolean;
@@ -72,6 +78,8 @@ export function bundleReservationEnd(result: {
 /** What the run's steps said, merged over every successful step. */
 export type RunOutcomeSignals = {
   skippedInFlight: boolean;
+  // A skip in flight behind an earlier run's public copy (inFlightHash); set only when true.
+  skippedPublicCopy?: boolean;
   notIncluded: boolean;
   // A bundle step sent nothing because Not before was still too far ahead.
   waiting: boolean;
@@ -132,8 +140,11 @@ export function bundleSignalsOfStep(
   }
   const reason = fields[RUN_OUTCOME_OUTPUT.notIncludedReasonKey];
   const route = fields[RUN_OUTCOME_OUTPUT.routeKey];
+  const skippedInFlight = route === RUN_OUTCOME_OUTPUT.skippedInFlightRoute;
   return {
-    skippedInFlight: route === RUN_OUTCOME_OUTPUT.skippedInFlightRoute,
+    skippedInFlight,
+    ...(skippedInFlight &&
+      typeof fields.inFlightHash === "string" && { skippedPublicCopy: true }),
     notIncluded: typeof reason === "string" && hasVisibleText(reason),
     waiting: route === RUN_OUTCOME_OUTPUT.waitingRoute,
     bundleSent: isBundleRoute(route),
@@ -145,7 +156,21 @@ export type StepOutcome =
   | "not-included"
   | "skipped-in-flight"
   | "landed-late"
-  | "landed-late-reverted";
+  | "landed-late-reverted"
+  | "public-pending";
+
+/** A bundle step that ended with its public copy sent and not mined yet. */
+export function isPublicPendingStep(
+  nodeType: string,
+  output: unknown
+): boolean {
+  const fields = fieldsOf(output);
+  return (
+    BUNDLE_STEP_ACTION_TYPES.includes(nodeType) &&
+    fields?.[RUN_OUTCOME_OUTPUT.pendingKey] === true &&
+    isBundleRoute(fields[RUN_OUTCOME_OUTPUT.routeKey])
+  );
+}
 
 type HashEntry = {
   nodeId?: string;
@@ -155,8 +180,7 @@ type HashEntry = {
 
 /**
  * The one rule for a step's shown outcome, as the finalizer reads its output.
- * A missed step whose run re-settled (a late hash names it, or the run is
- * success, which a miss alone never is) landed late; reverted if that hash did.
+ * A missed or pending step whose run re-settled landed late (reverted if that hash did).
  */
 export function stepOutcomeOf(
   step: {
@@ -178,7 +202,8 @@ export function stepOutcomeOf(
   if (signals.skippedInFlight) {
     return "skipped-in-flight";
   }
-  if (!signals.notIncluded) {
+  const pending = isPublicPendingStep(step.nodeType, step.output);
+  if (!(signals.notIncluded || pending)) {
     return;
   }
   const iteration = step.iterationIndex ?? null;
@@ -190,7 +215,16 @@ export function stepOutcomeOf(
   if (lateHash?.receiptStatus === "reverted") {
     return "landed-late-reverted";
   }
-  return lateHash || run?.status === "success" ? "landed-late" : "not-included";
+  // A pending step's own hash is listed from the start, unread until it is mined.
+  const landed = pending
+    ? lateHash?.receiptStatus === "success"
+    : lateHash !== undefined;
+  if (landed || run?.status === "success") {
+    return "landed-late";
+  }
+  return pending && (run === undefined || run.status === "unconfirmed")
+    ? "public-pending"
+    : "not-included";
 }
 
 /** A node's outcome in the status endpoint: a step outcome, or waiting for Not before. */
@@ -209,6 +243,10 @@ export function nodeOutcomeOf(
     ? "waiting"
     : undefined;
 }
+
+/** What every not-mined-yet text ends with: how the run settles, and that a mined copy is paid for. */
+export const NOT_MINED_YET_TEXT =
+  "is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts.";
 
 /** Each outcome's label and sentence, shared by the canvas and the Runs panel. */
 export const STEP_OUTCOME_TEXT: Readonly<
@@ -233,7 +271,69 @@ export const STEP_OUTCOME_TEXT: Readonly<
     sentence:
       "this step's bundle was not seen in its target blocks; its transaction was mined later, reverted, and still paid gas.",
   },
+  "public-pending": {
+    label: "Unconfirmed",
+    sentence: `this step's transaction was sent publicly and ${NOT_MINED_YET_TEXT}`,
+  },
 };
+
+/** Where no RPC answered clearly when the public copy was sent (accepted null). */
+const NO_RPC_CONFIRMED = " (no RPC confirmed taking it)";
+
+function publicCopyUnclear(output: unknown): boolean {
+  const copy = fieldsOf(fieldsOf(output)?.publicCopy);
+  return copy !== undefined && copy.accepted === null;
+}
+
+/** A pending step's sentence; it says so when no RPC confirmed taking the copy. */
+export function publicPendingSentence(output: unknown): string {
+  return publicCopyUnclear(output)
+    ? `this step's transaction was sent publicly${NO_RPC_CONFIRMED} and ${NOT_MINED_YET_TEXT}`
+    : STEP_OUTCOME_TEXT["public-pending"].sentence;
+}
+
+/** An unconfirmed run's note, naming the pending copy's hash when a step output carries one. */
+export function unconfirmedRunNote(outputs: readonly unknown[]): string {
+  const pending = outputs
+    .map(fieldsOf)
+    .find(
+      (fields) =>
+        fields?.[RUN_OUTCOME_OUTPUT.pendingKey] === true &&
+        typeof fields.transactionHash === "string"
+    );
+  if (!pending) {
+    return `A transaction was sent and ${NOT_MINED_YET_TEXT}`;
+  }
+  const unclear = publicCopyUnclear(pending) ? NO_RPC_CONFIRMED : "";
+  return `A transaction (${String(pending.transactionHash)}) was sent${unclear} and ${NOT_MINED_YET_TEXT}`;
+}
+
+/** A skipped step's sentence; behind a public copy (inFlightHash) it names the copy. */
+export function skippedStepSentence(output: unknown): string {
+  const hash = fieldsOf(output)?.inFlightHash;
+  return typeof hash === "string"
+    ? `an earlier run's public copy (${hash}) is not mined yet, so this step sent nothing; no gas was paid. KeeperHub checks it every few minutes and stops waiting after a day.`
+    : STEP_OUTCOME_TEXT["skipped-in-flight"].sentence;
+}
+
+/** A skipped step's tooltip: its label and sentence. */
+export function skippedStepTitle(output: unknown): string {
+  return `${STEP_OUTCOME_TEXT["skipped-in-flight"].label}: ${skippedStepSentence(output)}`;
+}
+
+/** The skipped-in-flight output that names a public copy, if a step has one. */
+export function skippedBehindPublicCopy(
+  outputs: readonly unknown[]
+): unknown | undefined {
+  return outputs.find((output) => {
+    const fields = fieldsOf(output);
+    return (
+      fields?.[RUN_OUTCOME_OUTPUT.routeKey] ===
+        RUN_OUTCOME_OUTPUT.skippedInFlightRoute &&
+      typeof fields.inFlightHash === "string"
+    );
+  });
+}
 
 /** A step outcome's tooltip: label, sentence, then the extra words a view adds. */
 export function stepOutcomeTitle(
@@ -256,6 +356,9 @@ export const RUN_OUTCOME_REASON = {
   // Other steps ran too, so the run is billed; this names the waiting step only.
   waitingWithOtherSteps:
     "Waiting: a bundle step's Not before time is still too far ahead, so that step sent no transaction. It counts as a run because other steps did work.",
+  // Behind an earlier run's public copy; grouped and billed as skipped above (skipReasonOf).
+  skippedPublicCopy:
+    "Skipped: an earlier run's public copy is not mined yet, so the bundle step sent no transaction.",
   not_landed: `Not landed: a bundle in this run was not seen in any of the blocks it was sent for (or could not be checked). No gas is paid for a bundle that does not land${NOT_LANDED_STEP_POINTER}`,
 } as const;
 
@@ -270,7 +373,121 @@ export const NOT_INCLUDED_REASON_TEXT: Readonly<Record<string, string>> = {
     "The call would now fail, most likely because someone else made it first; no gas was paid.",
   "not-checked":
     "It could not be checked yet, and it may still land within about a day.",
+  "public-copy-dropped":
+    "Its public copy was not found on any RPC for three checks, so KeeperHub treats it as dropped; nothing was mined and the nonce is used again. Most often its fee cap was below the base fee, or an RPC rejected it (for example for too little balance): raise Max Fee or leave it empty, and check the wallet's balance.",
+  "public-copy-replaced":
+    "Another transaction from the wallet used its nonce first, so its public copy can no longer be mined; no gas was paid for it.",
 };
+
+/** A public copy's publicCopy.error values, all lower-case fragments. */
+export const PUBLIC_COPY_ERRORS = {
+  relay: "this step sends through a private relay",
+  gate: "first allowed block not reached in the window",
+  needed: "no longer needed",
+  record: "it could not be recorded, so it was not sent",
+  refused: "no public RPC could be reached or every RPC rejected it",
+  nonceUsed: "another transaction holds this nonce",
+} as const;
+
+/** How a public copy that will not be mined ends its run: found on no RPC, or its nonce used by another transaction. */
+export type PublicCopyEnd = "public-copy-dropped" | "public-copy-replaced";
+
+/** A not landed run's reason when its public copy was dropped or replaced. */
+export function publicCopyNotLandedReason(end: PublicCopyEnd): string {
+  return `Not landed: a bundle in this run was not seen in any of the blocks it was sent for. ${NOT_INCLUDED_REASON_TEXT[end]}`;
+}
+
+/** A not landed run's reason when the sweep found its public copy on no RPC and dropped it. */
+export const PUBLIC_COPY_DROPPED_REASON = publicCopyNotLandedReason(
+  "public-copy-dropped"
+);
+
+/** For a public copy dropped from the mempools: the usual causes and what to change. */
+export const PUBLIC_COPY_DROPPED_NEXT_STEP =
+  "A public copy that no RPC knows any more ends Not landed too: most often its fee cap was below the base fee, or an RPC rejected it, so raise Max Fee or leave it empty, and check the wallet's balance.";
+
+/** How the reconciler's error starts for a run whose transactions never appeared within a day. */
+export const NEVER_MINED_RUN_ERROR =
+  "Transactions were broadcast but never appeared on chain";
+
+/** A pending step's line once its run gave up on it after a day. */
+export const PUBLIC_COPY_EXPIRED_TEXT =
+  "Its public copy was not mined within a day; it stays valid until the wallet's next transaction, and KeeperHub no longer watches it.";
+
+/** Why a pending step's run settled without it: dropped, replaced, or a day passed; undefined otherwise. */
+export function settledPendingReason(
+  output: unknown,
+  run: { status: string; error?: string | null }
+): string | undefined {
+  if (fieldsOf(output)?.[RUN_OUTCOME_OUTPUT.pendingKey] !== true) {
+    return;
+  }
+  if (run.status === "not_landed") {
+    const end: PublicCopyEnd = run.error?.includes(
+      NOT_INCLUDED_REASON_TEXT["public-copy-replaced"]
+    )
+      ? "public-copy-replaced"
+      : "public-copy-dropped";
+    return NOT_INCLUDED_REASON_TEXT[end];
+  }
+  return run.status === "error" && run.error?.startsWith(NEVER_MINED_RUN_ERROR)
+    ? PUBLIC_COPY_EXPIRED_TEXT
+    : undefined;
+}
+
+/** Why a Bundle step's "Send publicly if still needed" fallback was not sent: the one list. */
+export const FALLBACK_NOT_SENT_REASONS = [
+  "no-longer-needed",
+  "check-failed",
+  "window-ending",
+  "max-fee-below-base-fee",
+  "not-checked",
+  "no-builder-accepted",
+  "first-allowed-block-not-reached",
+  "no-public-rpc",
+  "not-recorded",
+  "refused",
+  "nonce-used",
+] as const;
+
+export type FallbackNotSentReason = (typeof FALLBACK_NOT_SENT_REASONS)[number];
+
+/** Each fallbackNotSentReason in plain words, added to a not landed run's reasons. */
+export const FALLBACK_NOT_SENT_TEXT: Readonly<
+  Record<FallbackNotSentReason, string>
+> = {
+  "no-longer-needed":
+    "The public fallback was not sent: the call would now fail.",
+  "check-failed":
+    "The public fallback was not sent: the call could not be checked.",
+  "window-ending":
+    "The public fallback was not sent: too little of the bundle's window was left.",
+  "max-fee-below-base-fee":
+    "The public fallback was not sent: its fee cap was below the next block's base fee. Raise Max Fee or leave it empty.",
+  "not-checked":
+    "The public fallback was not sent: the bundle's outcome was still open.",
+  "no-builder-accepted":
+    "The public fallback was not sent: no builder accepted the bundle.",
+  "first-allowed-block-not-reached":
+    "The public fallback was not sent: the first allowed block was not reached in time.",
+  "no-public-rpc":
+    "The public fallback was not sent: the network's RPC for this step is a private relay, so there is nowhere public to send it.",
+  "not-recorded":
+    "The public fallback was not sent: it could not be recorded first.",
+  refused:
+    "The public fallback was not sent: no public RPC could be reached or every RPC rejected it (for example for too little balance).",
+  "nonce-used":
+    "The public fallback was not sent: another transaction holds this nonce.",
+};
+
+/** The plain sentence for a step output's fallbackNotSentReason, if it has a known one. */
+export function fallbackNotSentText(output: unknown): string | undefined {
+  const reason = fieldsOf(output)?.fallbackNotSentReason;
+  return typeof reason === "string" &&
+    Object.hasOwn(FALLBACK_NOT_SENT_TEXT, reason)
+    ? FALLBACK_NOT_SENT_TEXT[reason as FallbackNotSentReason]
+    : undefined;
+}
 
 /** The plain sentence for a step output's notIncludedReason, if it has a known one. */
 export function notIncludedReasonText(output: unknown): string | undefined {
@@ -346,7 +563,10 @@ export function skipReasonOf(run: SkippedRow): SkipReason | null {
       ? SKIP_REASON.bundleWaiting
       : null;
   }
-  if (run.error === RUN_OUTCOME_REASON.skipped) {
+  if (
+    run.error === RUN_OUTCOME_REASON.skipped ||
+    run.error === RUN_OUTCOME_REASON.skippedPublicCopy
+  ) {
     return SKIP_REASON.bundleInFlight;
   }
   return run.error === SKIPPED_WHILE_RUNNING_REASON

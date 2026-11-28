@@ -10,10 +10,12 @@ import {
 import { readRpcFor } from "@/lib/rpc/read-provider";
 import { getErrorMessage } from "@/lib/utils";
 import {
+  type BundleSendMode,
   isBundleMode,
   noPrivateRelayMessage,
   relayUseOf,
   resolveSendMode,
+  sendAsSubject,
   USE_NORMAL_HINT,
   unknownSendModeIssue,
 } from "@/lib/web3/send-mode";
@@ -32,16 +34,19 @@ type SendRpc = {
   bundleRequested: boolean;
 };
 
-/** Send as Bundle on a step that cannot send one; never sent publicly instead. */
-const BUNDLE_REFUSAL = `This step is set to Send as: Bundle (sendMode: "bundle"), but bundles are only available on Write Contract steps. ${USE_NORMAL_HINT}`;
+/** A bundle mode on a step that cannot send one; never sent publicly instead. */
+function bundleRefusal(mode: BundleSendMode): string {
+  return `This step is set to ${sendAsSubject(mode)}, but bundles are only available on Write Contract steps. ${USE_NORMAL_HINT}`;
+}
 
 function refuseUnknownOrBundle(input: SendAsInput, allowBundle: boolean): void {
   const invalid = unknownSendModeIssue(input.sendMode);
   if (invalid) {
     throw new InvalidSendModeError(invalid);
   }
-  if (!allowBundle && isBundleMode(resolveSendMode(input))) {
-    throw new InvalidSendModeError(BUNDLE_REFUSAL);
+  const mode = resolveSendMode(input);
+  if (!allowBundle && isBundleMode(mode)) {
+    throw new InvalidSendModeError(bundleRefusal(mode));
   }
 }
 

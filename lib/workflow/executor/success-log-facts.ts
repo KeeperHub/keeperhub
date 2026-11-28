@@ -16,6 +16,7 @@ import {
   runOutcomeSignalSql,
   signalsOfStep,
 } from "./run-outcome";
+import { isPublicPendingStep } from "./run-outcome-keys";
 import { isRecordableTransactionHash } from "./step-success-tracker";
 
 /**
@@ -89,7 +90,7 @@ export function toHashEntry(row: HashLogRow): TransactionHashEntry | null {
 export type SuccessLogFacts = {
   hashes: TransactionHashEntry[];
   signals: RunOutcomeSignals;
-  /** Steps that reported a not-included send, as stepKey values. */
+  /** Steps that reported a not-included send or a public copy not mined yet, as stepKey values. */
   notIncludedSteps: string[];
 };
 
@@ -135,7 +136,8 @@ export async function loadSuccessLogFacts(
   for (const row of rows) {
     const step = signalsOfStep(row.nodeType, row.outputRaw);
     signals = mergeSignals(signals, step);
-    if (step.notIncluded) {
+    // A public copy not mined in time can still land late, as a miss can.
+    if (step.notIncluded || isPublicPendingStep(row.nodeType, row.outputRaw)) {
       notIncluded.add(stepKey(row.nodeId, row.iterationIndex));
     }
     const entry = withHashes ? toHashEntry(row) : null;
@@ -186,6 +188,9 @@ export async function loadFinishLogFacts(
       skippedInFlight: sql<
         boolean | null
       >`bool_or(${succeeded} AND ${signal.skippedInFlight})`,
+      skippedPublicCopy: sql<
+        boolean | null
+      >`bool_or(${succeeded} AND ${signal.skippedPublicCopy})`,
       notIncluded: sql<
         boolean | null
       >`bool_or(${succeeded} AND ${signal.notIncluded})`,
@@ -207,6 +212,7 @@ export async function loadFinishLogFacts(
     gasUsedWei: row?.gasUsedWei ?? null,
     signals: {
       skippedInFlight: row?.skippedInFlight === true,
+      ...(row?.skippedPublicCopy === true && { skippedPublicCopy: true }),
       notIncluded: row?.notIncluded === true,
       waiting: row?.waiting === true,
       bundleSent: row?.bundleSent === true,

@@ -220,6 +220,10 @@ export type Miner = {
   // Seconds between a block and the one before it; 12 unless a test misses a slot.
   secondsBefore?: (block: number) => number;
   included: { block: number; hash: string }[];
+  // Past every target, keep mining one block per tick while anvil's pool holds a transaction. Off by default.
+  minePool: boolean;
+  // The base fee every next block gets (anvil_setNextBlockBaseFeePerGas); anvil's own when unset.
+  baseFee?: bigint;
   // Mine `count` empty blocks now.
   mine: (count?: number) => Promise<void>;
   stop: () => Promise<void>;
@@ -231,9 +235,14 @@ const BLOCKS_PAST_TARGET = 4;
 
 type Header = { timestamp: string };
 
+// Anvil's answers when the pool already holds the transaction, or one at its nonce it will not replace.
+const IN_POOL_ERROR =
+  /already known|already imported|replacement transaction underpriced|replacement underpriced/i;
+
 /**
  * Drive anvil (automine and interval mining off): while any builder holds a
- * bundle for a block not yet past, mine one block per tick, 12 s apart.
+ * bundle for a block not yet past, mine one block per tick, 12 s apart; past
+ * the targets, only while anvil's pool holds a transaction (minePool).
  */
 export function startMiner(
   anvilUrl: string,
@@ -247,12 +256,24 @@ export function startMiner(
   const gapBefore = (block: number): number =>
     miner.secondsBefore?.(block) ?? BLOCK_SECONDS;
 
+  const poolHasTransactions = async (): Promise<boolean> => {
+    const status = await call<{ pending: string; queued: string }>(
+      "txpool_status"
+    );
+    return Number(status.pending) > 0;
+  };
+
   const mineOne = async (): Promise<number> => {
     const latest = await call<{ timestamp: string; number: string }>(
       "eth_getBlockByNumber",
       ["latest", false]
     );
     const next = Number(latest.number) + 1;
+    if (miner.baseFee !== undefined) {
+      await call("anvil_setNextBlockBaseFeePerGas", [
+        ethers.toQuantity(miner.baseFee),
+      ]);
+    }
     await call("evm_mine", [Number(latest.timestamp) + gapBefore(next)]);
     return Number(await call<string>("eth_blockNumber"));
   };
@@ -316,6 +337,7 @@ export function startMiner(
     errors: [],
     tickMs: 300,
     included: [],
+    minePool: false,
     mine: async (count = 1) => {
       await running;
       for (let i = 0; i < count; i += 1) {
@@ -336,6 +358,11 @@ export function startMiner(
     const live = builders.flatMap((builder) => builder.received);
     const lastTarget = Math.max(0, ...live.map((bundle) => bundle.target));
     if (latest >= lastTarget + BLOCKS_PAST_TARGET) {
+      // A public copy (or any pooled transaction) is mined from the pool, as on a real chain.
+      if (miner.minePool && (await poolHasTransactions())) {
+        await miner.beforeBlock?.(latest + 1);
+        await mineOne();
+      }
       return;
     }
     const next = latest + 1;
@@ -351,7 +378,15 @@ export function startMiner(
         miner.rejected.push({ hash: bundle.hash, reason });
         continue;
       }
-      await call("eth_sendRawTransaction", [bundle.raw]);
+      try {
+        await call("eth_sendRawTransaction", [bundle.raw]);
+      } catch (error) {
+        // Already known: the pool's same bytes are mined. Replacement underpriced: the pool's other bytes at this
+        // nonce are mined, not the bundle's, though the bundle is logged as sent.
+        if (!IN_POOL_ERROR.test(String(error))) {
+          throw error;
+        }
+      }
       sent = bundle.hash;
       break;
     }

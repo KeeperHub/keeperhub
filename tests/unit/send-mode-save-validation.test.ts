@@ -445,7 +445,7 @@ describe("sendMode must be a known value", () => {
     expect(direct.issues).toHaveLength(1);
     expect(direct.issues[0]).toMatchObject({ field: "sendMode" });
     expect(direct.issues[0].message).toContain(
-      'sendMode must be "transaction" (Normal transaction), "private-relay" (Private relay) or "bundle" (Bundle)'
+      'sendMode must be "transaction" (Normal transaction), "private-relay" (Private relay), "bundle" (Bundle) or "bundle-and-public" (Bundle and public)'
     );
     for (const options of [{ keepLegacy: true }, { savedNodes: [] }, {}]) {
       const all = await validateWorkflowNodesForSave(
@@ -697,7 +697,7 @@ describe("Send as Bundle at save", () => {
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]).toMatchObject({ field: "sendMode" });
     expect(result.issues[0].message).toBe(
-      'Send as: Bundle (sendMode "bundle") is not turned on for this organization yet. Set Send as to Normal transaction (sendMode: "transaction").'
+      'Send as: Bundle (sendMode: "bundle") is not turned on for this organization yet. Set Send as to Normal transaction (sendMode: "transaction").'
     );
   });
 
@@ -776,7 +776,7 @@ describe("Send as Bundle at save", () => {
     const result = await check([bundle({ web3Connection: "safe:abc" })]);
     expect(result.issues[0]).toMatchObject({ field: "web3Connection" });
     expect(result.issues[0].message).toBe(
-      'web3Connection "safe:...": Send as Bundle cannot send through a Safe or Roles connection yet. Use your wallet (EOA) connection, or set Send as to Normal transaction (sendMode: "transaction").'
+      'web3Connection "safe:...": Send as: Bundle (sendMode: "bundle") cannot send through a Safe or Roles connection yet. Use your wallet (EOA) connection, or set Send as to Normal transaction (sendMode: "transaction").'
     );
   });
 
@@ -914,10 +914,120 @@ describe("Send as Bundle at save", () => {
       expect(result.issues).toHaveLength(1);
       expect(result.issues[0]).toMatchObject({ field });
       expect(result.issues[0].message).toContain(
-        'only works with Send as: Bundle (sendMode "bundle")'
+        'only works with Send as: Bundle (sendMode: "bundle")'
       );
     }
   );
+
+  it("names Bundle and public in its refusals, from the step's own mode", async () => {
+    const both = (config: Record<string, unknown> = {}, action?: string) =>
+      write(
+        "a",
+        { network: "1", sendMode: "bundle-and-public", ...config },
+        action
+      );
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:someone-else");
+    expect((await check([both()])).issues[0].message).toBe(
+      'Send as: Bundle and public (sendMode: "bundle-and-public") is not turned on for this organization yet. Set Send as to Normal transaction (sendMode: "transaction").'
+    );
+    enable();
+    expect((await check([both()])).issues).toEqual([]);
+    expect((await check([both({ network: "8453" })])).issues[0].message).toBe(
+      'Send as: Bundle and public (sendMode: "bundle-and-public") is not available on chain 8453: it has no block builders that take bundles. Set Send as to Normal transaction (sendMode: "transaction").'
+    );
+    expect(
+      (await check([both({}, "web3/transfer-funds")])).issues[0].message
+    ).toBe(
+      'Bundle and public (sendMode: "bundle-and-public") is only available on Write Contract steps. Set Send as to Normal transaction (sendMode: "transaction").'
+    );
+    expect(
+      (await check([both()], { direct: true })).issues[0].message
+    ).toContain('Send as: Bundle and public (sendMode: "bundle-and-public")');
+    expect(
+      (await check([both({ web3Connection: "safe:0xabc" })])).issues[0]
+    ).toMatchObject({ field: "web3Connection" });
+    expect((await check([both({ bundleBlocks: 9 })])).issues[0]).toMatchObject({
+      field: "bundleBlocks",
+    });
+  });
+
+  it.each([
+    ["bundle", "stop"],
+    ["bundle", "public"],
+    ["bundle", ""],
+    ["bundle-and-public", "public"],
+    ["bundle-and-public", "stop"],
+  ])("accepts %s with bundleFallback %j", async (sendMode, bundleFallback) => {
+    enable();
+    const result = await check([
+      write("a", { network: "1", sendMode, bundleFallback }),
+    ]);
+    expect(result.issues).toEqual([]);
+  });
+
+  it.each([
+    ["bundle", "Public"],
+    ["bundle", "{{@r:Read.result}}"],
+    ["bundle", true],
+    ["bundle-and-public", "later"],
+  ])("refuses %s with bundleFallback %j", async (sendMode, bundleFallback) => {
+    enable();
+    const result = await check([
+      write("a", { network: "1", sendMode, bundleFallback }),
+    ]);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({ field: "bundleFallback" });
+    expect(result.issues[0].message).toContain(
+      'If not included (bundleFallback) must be "stop" or "public"'
+    );
+  });
+
+  it.each([
+    [{ sendMode: "transaction", bundleFallback: "public" }],
+    [{ sendMode: "private-relay", bundleFallback: "stop" }],
+    [{ bundleFallback: "public" }],
+  ])(
+    "refuses If not included on a step not sent as a bundle: %j",
+    async (config) => {
+      const result = await check([write("a", { network: "1", ...config })]);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0]).toMatchObject({ field: "bundleFallback" });
+      expect(result.issues[0].message).toBe(
+        'If not included (bundleFallback) only works with Send as: Bundle (sendMode: "bundle"). Clear it, or set Send as to Bundle.'
+      );
+    }
+  );
+
+  it("checks a bundle step again when only If not included changed", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
+    const saved = write("a", {
+      network: "1",
+      sendMode: "bundle",
+      usePrivateMempool: false,
+      web3Connection: "safe:0xabc",
+    });
+    const changed = write("a", {
+      network: "1",
+      sendMode: "bundle",
+      usePrivateMempool: false,
+      web3Connection: "safe:0xabc",
+      bundleFallback: "public",
+    });
+    expect(
+      (await check([changed], { savedNodes: [saved] })).issues[0]
+    ).toMatchObject({ field: "web3Connection" });
+    // An unchanged stored stray fallback on a normal step saves; validate_workflow flags it.
+    const stray = write("a", {
+      network: "1",
+      sendMode: "transaction",
+      bundleFallback: "public",
+    });
+    expect((await check([stray], { savedNodes: [stray] })).issues).toEqual([]);
+    expect(
+      (await check([stray], { savedNodes: [stray], recheckBundles: true }))
+        .issues[0]
+    ).toMatchObject({ field: "bundleFallback" });
+  });
 
   it("lets an unchanged stored stray Not before save, flags it in validate_workflow, keeps a copy", async () => {
     const stored = write("a", {
@@ -973,7 +1083,7 @@ describe("Send as Bundle at save", () => {
     enable();
     const result = await check([bundle({ network: "8453" })]);
     expect(result.issues[0].message).toBe(
-      'Send as: Bundle (sendMode "bundle") is not available on chain 8453: it has no block builders that take bundles. Set Send as to Normal transaction (sendMode: "transaction").'
+      'Send as: Bundle (sendMode: "bundle") is not available on chain 8453: it has no block builders that take bundles. Set Send as to Normal transaction (sendMode: "transaction").'
     );
   });
 
@@ -1054,14 +1164,14 @@ describe("Send as Bundle at save", () => {
       ).issues.map((issue) => issue.message);
     vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
     expect(await copy([bundle()])).toEqual([
-      'Send as: Bundle (sendMode "bundle") cannot run in your organization: bundles are not turned on for it yet.',
+      'Send as: Bundle (sendMode: "bundle") cannot run in your organization: bundles are not turned on for it yet.',
     ]);
     enable();
     expect(await copy([bundle({ network: "8453" })])).toEqual([
-      'Send as: Bundle (sendMode "bundle") cannot run on chain 8453: it has no block builders that take bundles.',
+      'Send as: Bundle (sendMode: "bundle") cannot run on chain 8453: it has no block builders that take bundles.',
     ]);
     expect(await copy([bundle({ bundleBuilders: ["gone"] })])).toEqual([
-      'Send as: Bundle (sendMode "bundle") cannot run: chain 1 lists none of its builders ("gone").',
+      'Send as: Bundle (sendMode: "bundle") cannot run: chain 1 lists none of its builders ("gone").',
     ]);
     for (const message of [
       ...(await copy([bundle({ network: "8453" })])),

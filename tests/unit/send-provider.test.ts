@@ -301,7 +301,7 @@ describe("getSendRpcProvider: every step's route", () => {
     );
     const unknown = await outcome(ETHEREUM, { sendMode: "Bundle" });
     expect((unknown.error as Error).message).toBe(
-      'sendMode must be "transaction" (Normal transaction), "private-relay" (Private relay) or "bundle" (Bundle), not "Bundle".'
+      'sendMode must be "transaction" (Normal transaction), "private-relay" (Private relay), "bundle" (Bundle) or "bundle-and-public" (Bundle and public), not "Bundle".'
     );
     const batch = await outcome(
       ETHEREUM,

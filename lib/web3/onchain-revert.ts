@@ -90,11 +90,22 @@ export function revertedTransactionHash(error: unknown): string | undefined {
 export class OnChainPendingError extends Error {
   readonly kind = "onchain-pending" as const;
   readonly transactionHash: string;
+  // False only when no attempt can have sent it and no node knows the hash; `sendError` is that send's error.
+  declare readonly mayHaveSent?: false;
+  declare readonly sendError?: unknown;
 
-  constructor(opts: { message: string; transactionHash: string }) {
+  constructor(opts: {
+    message: string;
+    transactionHash: string;
+    notSent?: { sendError: unknown };
+  }) {
     super(opts.message);
     this.name = "OnChainPendingError";
     this.transactionHash = opts.transactionHash;
+    if (opts.notSent) {
+      this.mayHaveSent = false;
+      this.sendError = opts.notSent.sendError;
+    }
   }
 }
 

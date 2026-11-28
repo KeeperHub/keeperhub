@@ -33,6 +33,9 @@ export function mergeSignals(
 ): RunOutcomeSignals {
   return {
     skippedInFlight: a.skippedInFlight || b.skippedInFlight,
+    ...((a.skippedPublicCopy === true || b.skippedPublicCopy === true) && {
+      skippedPublicCopy: true,
+    }),
     notIncluded: a.notIncluded || b.notIncluded,
     waiting: a.waiting || b.waiting,
     bundleSent: a.bundleSent || b.bundleSent,
@@ -90,6 +93,10 @@ export function runOutcomeReason(
   signals: RunOutcomeSignals
 ): string {
   const code = runOutcomeCode(outcome, signals);
+  // Same skip key and billing as a skip behind a bundle (skipReasonOf); only the words differ.
+  if (outcome === "skipped" && signals.skippedPublicCopy === true) {
+    return RUN_OUTCOME_REASON.skippedPublicCopy;
+  }
   if (code === RUN_OUTCOME_CODE.waiting) {
     return RUN_OUTCOME_REASON.waiting;
   }
@@ -173,6 +180,9 @@ export function runOutcomeSignalSql(
   return {
     skippedInFlight: sql`(${writeContract}
       AND ${log.outputRaw}->>${route} = ${literal(RUN_OUTCOME_OUTPUT.skippedInFlightRoute)})`,
+    skippedPublicCopy: sql`(${writeContract}
+      AND ${log.outputRaw}->>${route} = ${literal(RUN_OUTCOME_OUTPUT.skippedInFlightRoute)}
+      AND coalesce(jsonb_typeof(${log.outputRaw}->'inFlightHash') = 'string', false))`,
     notIncluded: sql`(${writeContract}
       AND jsonb_typeof(${log.outputRaw}->${reason}) = 'string'
       AND btrim(${log.outputRaw}->>${reason}, ${BLANK_CHARS_SQL}) <> '')`,
@@ -202,6 +212,7 @@ export function stepOutcomeKeysSql(log: {
 }): {
   route: SQL<string | null>;
   notIncludedReason: SQL<string | null>;
+  pending: SQL<boolean | null>;
 } {
   const { nodeType, output } = log;
   const types = sql.join(BUNDLE_STEP_ACTION_TYPES.map(literal), sql`, `);
@@ -213,5 +224,8 @@ export function stepOutcomeKeysSql(log: {
   return {
     route: stringAt(RUN_OUTCOME_OUTPUT.routeKey),
     notIncludedReason: stringAt(RUN_OUTCOME_OUTPUT.notIncludedReasonKey),
+    // Only a JSON true, as stepOutcomeOf reads it.
+    pending: sql<boolean | null>`CASE WHEN ${nodeType} IN (${types})
+      THEN ${output}->${literal(RUN_OUTCOME_OUTPUT.pendingKey)} = 'true'::jsonb END`,
   };
 }

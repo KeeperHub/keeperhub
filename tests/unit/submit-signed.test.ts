@@ -574,6 +574,131 @@ describe("submitRawSignedWithFailover", () => {
     });
   });
 
+  it("keeps the hash as pending on a node's insufficient-funds answer (never tagged pre-broadcast)", async () => {
+    const { rpcManager } = makeMockRpcManager({
+      sendRawTransaction: vi
+        .fn()
+        .mockRejectedValue(
+          makeError(
+            "insufficient funds for gas * price + value",
+            "INSUFFICIENT_FUNDS"
+          )
+        ),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    const thrown = await submitRawSignedWithFailover(
+      SIGNED_HEX,
+      rpcManager
+    ).catch((caught: unknown) => caught);
+
+    expect(isPreBroadcastNetworkError(thrown)).toBe(false);
+    expect(thrown).toMatchObject({
+      name: "OnChainPendingError",
+      transactionHash: EXPECTED_HASH,
+    });
+  });
+
+  it("flags a node's definite rejection on every attempt as not sent, keeping the node's answer", async () => {
+    // As ethers throws it: the JSON-RPC error under info.error.
+    const rejection = makeError(
+      "insufficient funds for intrinsic transaction cost",
+      "INSUFFICIENT_FUNDS",
+      {
+        transaction: { from: "0x", to: "0x" },
+        info: {
+          error: {
+            code: -32_000,
+            message: "insufficient funds for gas * price + value",
+          },
+        },
+      }
+    );
+    const { rpcManager } = makeMockRpcManager({
+      sendRawTransaction: vi.fn().mockRejectedValue(rejection),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    const thrown = await submitRawSignedWithFailover(
+      SIGNED_HEX,
+      rpcManager
+    ).catch((caught: unknown) => caught);
+
+    // The same throw as before, with a read-only flag on it.
+    expect(isPreBroadcastNetworkError(thrown)).toBe(false);
+    expect(broadcastTransactionHash(thrown)).toBe(EXPECTED_HASH);
+    expect(thrown).toMatchObject({
+      name: "OnChainPendingError",
+      mayHaveSent: false,
+      sendError: rejection,
+    });
+  });
+
+  it.each([
+    [
+      "a timeout (it may have reached the node)",
+      new Error("request timed out"),
+    ],
+    [
+      "a node error whose outcome is unknown",
+      makeError("server error", "UNKNOWN_ERROR", {
+        info: { error: { code: -32_603, message: "internal error" } },
+      }),
+    ],
+  ])("never flags %s", async (_name, sendError) => {
+    const { rpcManager } = makeMockRpcManager({
+      sendRawTransaction: vi.fn().mockRejectedValue(sendError),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    const thrown = await submitRawSignedWithFailover(
+      SIGNED_HEX,
+      rpcManager
+    ).catch((caught: unknown) => caught);
+
+    expect(broadcastTransactionHash(thrown)).toBe(EXPECTED_HASH);
+    expect(thrown).not.toHaveProperty("mayHaveSent");
+    expect(thrown).not.toHaveProperty("sendError");
+  });
+
+  it("never flags a send an earlier attempt may have delivered (a timeout, then a rejection)", async () => {
+    const rejection = makeError("insufficient funds", "INSUFFICIENT_FUNDS", {
+      transaction: { from: "0x", to: "0x" },
+      info: { error: { code: -32_000, message: "insufficient funds" } },
+    });
+    const { rpcManager, executeWithFailover } = makeMockRpcManager({
+      sendRawTransaction: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("request timed out"))
+        .mockRejectedValueOnce(rejection),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+    // Failover: the first endpoint's attempt, then the second's.
+    const inner = executeWithFailover.getMockImplementation();
+    executeWithFailover.mockImplementation(async (op, type) => {
+      if (type !== "write-broadcast") {
+        return await inner?.(op, type);
+      }
+      try {
+        return await inner?.(op, type);
+      } catch {
+        return await inner?.(op, type);
+      }
+    });
+
+    const thrown = await submitRawSignedWithFailover(
+      SIGNED_HEX,
+      rpcManager
+    ).catch((caught: unknown) => caught);
+
+    expect(broadcastTransactionHash(thrown)).toBe(EXPECTED_HASH);
+    expect(thrown).not.toHaveProperty("mayHaveSent");
+  });
+
   it("reads the nonce of a conflict from the signed bytes", async () => {
     const { rpcManager } = makeMockRpcManager({
       sendRawTransaction: vi.fn().mockRejectedValue(

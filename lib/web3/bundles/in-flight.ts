@@ -10,12 +10,18 @@ import {
 } from "@/lib/db/schema-extensions";
 import {
   BUNDLE_WINDOW_MARGIN_BLOCKS,
+  LATE_BUNDLE_CHECK_MS,
+  livePublicCopy,
   MAX_BUNDLE_WINDOW_MS,
 } from "./bundle-history";
 
 type InFlightRow = {
   executionId: string;
+  nonce: number;
+  txHash: string;
   lastTargetBlock: number | null;
+  bundleRuns: BundleRun[];
+  submittedAt: Date | null;
 };
 
 /** The step sending now: its run, and the node and loop iteration in it. */
@@ -28,9 +34,17 @@ type BundleStep = {
 /** Another run's bundle may land (skip), or this very step sent one already (a replay). */
 export type InFlight =
   | { kind: "none" }
+  // Behind a public copy: no last block, its hash instead.
   | { kind: "other"; untilBlock: number }
-  // landedHash: mined with it; missed: the step decided the miss; else it may still land.
-  | { kind: "replay"; nonce: number; landedHash?: string; missed?: BundleMiss };
+  | { kind: "other"; publicHash: string }
+  // landedHash: mined with it; missed: the step decided the miss; publicHash: a public copy went out; else it may still land.
+  | {
+      kind: "replay";
+      nonce: number;
+      landedHash?: string;
+      missed?: BundleMiss;
+      publicHash?: string;
+    };
 
 function isStep(run: BundleRun | undefined, step: BundleStep): boolean {
   return (
@@ -110,11 +124,20 @@ async function replayOf(options: {
     if (!isCurrentSend) {
       continue;
     }
+    const copy = livePublicCopy(row);
     if (row.status === "pending") {
-      return { kind: "replay", nonce: row.nonce };
+      return {
+        kind: "replay",
+        nonce: row.nonce,
+        ...(copy && { publicHash: copy.hash }),
+      };
     }
     if (current?.missed) {
       return { kind: "replay", nonce: row.nonce, missed: current.missed };
+    }
+    // A dropped row whose copy went public: that copy may still be mined.
+    if (copy) {
+      return { kind: "replay", nonce: row.nonce, publicHash: copy.hash };
     }
     // Dropped: decided under the lock only, where the session nonce is known.
     if (
@@ -131,8 +154,9 @@ async function replayOf(options: {
  * Whether this step already sent a bundle (a replay), else whether an earlier
  * bundle of this workflow on this chain may still land: a pending row of
  * another run whose window is open by the nonce manager's rule (latest within
- * BUNDLE_WINDOW_MARGIN_BLOCKS of its last target). An unreadable block counts
- * as in flight, so a second bundle is never signed blind.
+ * BUNDLE_WINDOW_MARGIN_BLOCKS of its last target), or whose public copy is not
+ * mined yet (the wallet's mined count not past its nonce), for up to a day.
+ * An unreadable read counts as in flight, so a second bundle is never signed blind.
  */
 export async function bundleInFlight(options: {
   workflowId: string;
@@ -140,6 +164,8 @@ export async function bundleInFlight(options: {
   walletAddress: string;
   step: BundleStep;
   readLatestBlock: () => Promise<number>;
+  // The wallet's mined transaction count, read once when a public copy row blocks.
+  readMinedCount?: () => Promise<number>;
   // The session's next nonce, under the lock: a dropped row below it may have landed.
   sessionNonce?: number;
 }): Promise<InFlight> {
@@ -152,10 +178,15 @@ export async function bundleInFlight(options: {
   if (replay) {
     return replay;
   }
+  const now = Date.now();
   const rows: InFlightRow[] = await db
     .select({
       executionId: pendingTransactions.executionId,
+      nonce: pendingTransactions.nonce,
+      txHash: pendingTransactions.txHash,
       lastTargetBlock: pendingTransactions.lastTargetBlock,
+      bundleRuns: pendingTransactions.bundleRuns,
+      submittedAt: pendingTransactions.submittedAt,
     })
     .from(pendingTransactions)
     .where(
@@ -166,13 +197,22 @@ export async function bundleInFlight(options: {
         isNotNull(pendingTransactions.lastTargetBlock),
         gt(
           pendingTransactions.submittedAt,
-          new Date(Date.now() - MAX_BUNDLE_WINDOW_MS)
+          new Date(now - LATE_BUNDLE_CHECK_MS)
         )
       )
     );
   // Another step of the same run waits for its own bundle under the lock instead.
-  const blocking = rows.filter(
+  const others = rows.filter(
     (row) => row.executionId !== options.step.executionId
+  );
+  const publicHash = await publicCopyBlocking(others, options.readMinedCount);
+  if (publicHash) {
+    return { kind: "other", publicHash };
+  }
+  const blocking = others.filter(
+    (row) =>
+      !livePublicCopy(row) &&
+      (row.submittedAt?.getTime() ?? 0) > now - MAX_BUNDLE_WINDOW_MS
   );
   if (blocking.length === 0) {
     return { kind: "none" };
@@ -197,4 +237,27 @@ export async function bundleInFlight(options: {
       Math.max(...open.map((row) => row.lastTargetBlock ?? 0)) +
       BUNDLE_WINDOW_MARGIN_BLOCKS,
   };
+}
+
+/** The hash of a public copy whose nonce the wallet has not mined yet; an unreadable count blocks. */
+async function publicCopyBlocking(
+  rows: readonly InFlightRow[],
+  readMinedCount: (() => Promise<number>) | undefined
+): Promise<string | undefined> {
+  const copies = rows.flatMap((row) => {
+    const copy = livePublicCopy(row);
+    return copy ? [{ nonce: row.nonce, hash: copy.hash }] : [];
+  });
+  if (copies.length === 0) {
+    return;
+  }
+  let mined: number | undefined;
+  try {
+    mined = await readMinedCount?.();
+  } catch {
+    // Unreadable: every copy counts as in flight.
+  }
+  // A mined nonce is not in flight: the next session confirms its row.
+  return copies.find((copy) => mined === undefined || copy.nonce >= mined)
+    ?.hash;
 }

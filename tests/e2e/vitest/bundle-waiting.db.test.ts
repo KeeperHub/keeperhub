@@ -11,22 +11,33 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 // tests/setup.ts stubs @/lib/db; these tests must read Postgres.
 vi.unmock("@/lib/db");
-// Every hash a run reports reads back as mined and successful (no RPC here).
+// Every hash a run reports reads back as mined and successful (no RPC here), unless a test says otherwise.
+const receipts = vi.hoisted(() => ({
+  status: {} as Record<string, "success" | "reverted" | "not_found">,
+}));
 vi.mock("@/lib/web3/verify-receipt", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/web3/verify-receipt")>()),
   verifyExecutionReceipts: async (
     hashes: { hash: string; chainId: number }[]
-  ) => ({
-    allVerified: true,
-    results: hashes.map((entry) => ({
-      ...entry,
-      verified: true,
-      status: "success",
-      blockNumber: 21_400_500,
-      gasUsed: "50000",
-      verifiedAt: new Date().toISOString(),
-    })),
-  }),
+  ) => {
+    const results = hashes.map((entry) => {
+      const status = receipts.status[entry.hash] ?? "success";
+      return {
+        ...entry,
+        verified: status === "success",
+        status,
+        ...(status !== "not_found" && {
+          blockNumber: 21_400_500,
+          gasUsed: "50000",
+        }),
+        verifiedAt: new Date().toISOString(),
+      };
+    });
+    return {
+      allVerified: results.every((result) => result.verified),
+      results,
+    };
+  },
 }));
 
 // The executions list route reads Postgres; only its auth and access checks are stubbed.
@@ -74,9 +85,12 @@ const WAITING_OUTPUT = {
   sendAheadBlocks: 2,
 };
 
+const PUBLIC_WALLET = `0x${"5e".repeat(20)}`;
+
 async function cleanup(): Promise<void> {
   const client = postgres(DATABASE_URL, { max: 1 });
   try {
+    await client`DELETE FROM pending_transactions WHERE wallet_address = ${PUBLIC_WALLET}`;
     await client`DELETE FROM workflow_execution_logs WHERE execution_id LIKE ${`${PREFIX}%`}`;
     await client`DELETE FROM workflow_executions WHERE workflow_id LIKE ${`${PREFIX}%`}`;
     await client`DELETE FROM workflows WHERE id LIKE ${`${PREFIX}%`}`;
@@ -452,7 +466,12 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
       await logStep(run, `r${index}`, { route });
     }
     // Another step type never carries the signal.
-    await logStep(run, "http", { route: keys.BUNDLE_ROUTE }, "HTTP Request");
+    await logStep(
+      run,
+      "http",
+      { route: keys.BUNDLE_ROUTES[0] },
+      "HTTP Request"
+    );
     const rows = await db
       .select({
         nodeType: schema.workflowExecutionLogs.nodeType,
@@ -602,6 +621,59 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     expect(keys.skipReasonOf(row)).toBe("bundle-in-flight");
   });
 
+  it("a skip behind an earlier run's public copy finalizes with its own reason, grouped and billed as a bundle skip", async () => {
+    const run = await newRun();
+    await logStep(run, "write-1", {
+      success: true,
+      route: "skipped-in-flight",
+      included: false,
+      inFlightHash: HASH,
+    });
+    await logStep(run, "http", { status: 200 }, "HTTP Request");
+    const row = await finalize(run);
+    expect(row.status).toBe("skipped");
+    expect(row.error).toBe(keys.RUN_OUTCOME_REASON.skippedPublicCopy);
+    expect(row.errorCode).toBeNull();
+    expect(row.billable).toBe(true);
+    expect(keys.skipReasonOf(row)).toBe("bundle-in-flight");
+  });
+
+  it("the SQL skippedPublicCopy signal agrees with bundleSignalsOfStep", async () => {
+    const { runOutcomeSignalSql } = await import(
+      "@/lib/workflow/executor/run-outcome"
+    );
+    const outputs = [
+      { route: "skipped-in-flight", inFlightHash: HASH },
+      { route: "skipped-in-flight", inFlightHash: 7 },
+      { route: "skipped-in-flight", inFlightUntilBlock: 9 },
+      { route: "bundle", inFlightHash: HASH },
+    ];
+    const run = await newRun();
+    for (const [index, output] of outputs.entries()) {
+      await logStep(run, `s${index}`, output);
+    }
+    await logStep(run, "http", outputs[0], "HTTP Request");
+    const rows = await db
+      .select({
+        nodeType: schema.workflowExecutionLogs.nodeType,
+        outputRaw: schema.workflowExecutionLogs.outputRaw,
+        sql: runOutcomeSignalSql(
+          schema.workflowExecutionLogs
+        ).skippedPublicCopy.mapWith(Boolean),
+      })
+      .from(schema.workflowExecutionLogs)
+      .where(eq(schema.workflowExecutionLogs.executionId, run));
+    expect(rows).toHaveLength(outputs.length + 1);
+    for (const row of rows) {
+      const ts = keys.bundleSignalsOfStep(row.nodeType, row.outputRaw);
+      expect({ output: row.outputRaw, behind: row.sql }).toEqual({
+        output: row.outputRaw,
+        behind: ts.skippedPublicCopy === true,
+      });
+    }
+    expect(rows.filter((row) => row.sql)).toHaveLength(1);
+  });
+
   it("a bundle that missed beside a waiting step ends Not landed, billed", async () => {
     const run = await newRun();
     await logStep(run, "write-1", WAITING_OUTPUT);
@@ -699,5 +771,107 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
       expect(listed.get(id)).toBeNull();
     }
     expect(listed.get(counted)).toBe(7);
+  });
+
+  describe("a public copy not mined by the window's end", () => {
+    const PUBLIC_HASH = `0x${"c1".repeat(32)}`;
+    const PENDING_OUTPUT = {
+      success: true,
+      route: "bundle-and-public",
+      included: false,
+      pending: true,
+      transactionHash: PUBLIC_HASH,
+      chainId: 1,
+    };
+    const reconcile = async (): Promise<void> => {
+      const { reconcileUnconfirmedExecutions } = await import(
+        "@/lib/execute/reconcile-executions"
+      );
+      await reconcileUnconfirmedExecutions(new Date(), 500, 30_000);
+    };
+    // The finalizer reads the copy's receipt as missing: the run stays open.
+    const pendingRun = async (): Promise<string> => {
+      receipts.status[PUBLIC_HASH] = "not_found";
+      const run = await newRun({
+        startedAt: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      await logStep(run, "write-1", PENDING_OUTPUT);
+      expect((await finalize(run)).status).toBe("unconfirmed");
+      return run;
+    };
+
+    it("ends unconfirmed, then Success once the reconciler finds it mined", async () => {
+      const run = await pendingRun();
+      receipts.status[PUBLIC_HASH] = "success";
+      await reconcile();
+      expect(await rowOf(run)).toMatchObject({
+        status: "success",
+        error: null,
+      });
+    });
+
+    it("ends unconfirmed, then Error when the copy was mined and reverted", async () => {
+      const run = await pendingRun();
+      receipts.status[PUBLIC_HASH] = "reverted";
+      await reconcile();
+      const row = await rowOf(run);
+      expect(row.status).toBe("error");
+      expect(row.error).toContain("reverted on-chain");
+    });
+
+    it("verifies the hash the run's bundle row was confirmed with when its own is not found", async () => {
+      const run = await pendingRun();
+      const minedHash = `0x${"c2".repeat(32)}`;
+      const ext = await import("@/lib/db/schema-extensions");
+      await db.insert(ext.pendingTransactions).values({
+        walletAddress: PUBLIC_WALLET,
+        chainId: 1,
+        nonce: 3,
+        txHash: minedHash,
+        executionId: run,
+        status: "confirmed",
+        lastTargetBlock: 100,
+        bundleRuns: [
+          {
+            executionId: run,
+            hashes: [PUBLIC_HASH, minedHash],
+            signedAt: Date.now(),
+          },
+        ],
+      });
+      receipts.status[minedHash] = "success";
+      await reconcile();
+      const row = await rowOf(run);
+      expect(row.status).toBe("success");
+      expect(row.transactionHashes?.map((entry) => entry.hash)).toEqual([
+        minedHash,
+      ]);
+    });
+
+    it("does not swap to a confirmed row of another run, or a hash the run never signed", async () => {
+      const { minedBundleHashFor } = await import(
+        "@/lib/web3/bundles/bundle-history"
+      );
+      const other = await newRun();
+      const ext = await import("@/lib/db/schema-extensions");
+      const elsewhere = `0x${"c3".repeat(32)}`;
+      await db.insert(ext.pendingTransactions).values({
+        walletAddress: PUBLIC_WALLET,
+        chainId: 1,
+        nonce: 4,
+        txHash: elsewhere,
+        executionId: other,
+        status: "confirmed",
+        lastTargetBlock: 100,
+        bundleRuns: [
+          { executionId: other, hashes: [PUBLIC_HASH], signedAt: Date.now() },
+        ],
+      });
+      expect(await minedBundleHashFor("no-such-run", 1, PUBLIC_HASH)).toBe(
+        undefined
+      );
+      // The row's hash is not among that run's signed hashes.
+      expect(await minedBundleHashFor(other, 1, PUBLIC_HASH)).toBe(undefined);
+    });
   });
 });

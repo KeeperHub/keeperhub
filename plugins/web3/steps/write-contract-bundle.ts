@@ -6,6 +6,7 @@ import "server-only";
 
 import { ethers } from "ethers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { getNativeSymbol } from "@/lib/execute/native-balance";
 import {
   ErrorCategory,
   logInfo,
@@ -68,8 +69,11 @@ import {
 } from "@/lib/web3/next-block-simulation";
 import { minedRevertError } from "@/lib/web3/onchain-revert";
 import {
-  BUNDLE_SAFE_REFUSAL,
+  type BundleSendMode,
+  bundleModeOf,
+  bundleSafeRefusal,
   SEND_MODE,
+  sendAsSubject,
   USE_NORMAL_HINT,
 } from "@/lib/web3/send-mode";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -84,7 +88,6 @@ import {
 } from "@/lib/web3/transaction-manager";
 import { initializeWalletSigner } from "@/lib/web3/wallet-helpers";
 import {
-  BUNDLE_ROUTE,
   BUNDLE_STEP_ACTION_TYPES,
   RUN_OUTCOME_OUTPUT,
 } from "@/lib/workflow/executor/run-outcome-keys";
@@ -96,13 +99,18 @@ import type {
 
 type Failure = Extract<WriteContractResult, { success: false }>;
 
-const SET_TO_BUNDLE = 'This step is set to Send as: Bundle (sendMode: "bundle"), but';
+/** The start of a refusal, naming the step's own bundle mode. */
+function setTo(mode: BundleSendMode): string {
+  return `This step is set to ${sendAsSubject(mode)}, but`;
+}
 
 /** The step context a bundle needs: a workflow run of a Write Contract node. */
 type BundleStepContext = NonNullable<WriteContractCoreInput["_context"]>;
 
 /** Everything checked before the wallet is touched. */
 export type BundleRoute = {
+  // The step's mode, which is also its route output.
+  mode: BundleSendMode;
   settings: BundleSettings;
   builders: BuilderEndpoint[];
   unknownBuilders: string[];
@@ -128,13 +136,15 @@ export async function prepareBundleRoute(options: {
   organizationId: string;
   chainId: number;
   context: BundleStepContext | undefined;
-  config: BundleSettingsInput;
+  config: BundleSettingsInput & { sendMode?: unknown; usePrivateMempool?: unknown };
 }): Promise<
   { ok: true; route: BundleRoute } | { ok: false; failure: Failure }
 > {
+  const mode = bundleModeOf(options.config);
+  const setToBundle = setTo(mode);
   if (!isBundleSendEnabledForOrg(options.organizationId)) {
     return userFailure(
-      `${SET_TO_BUNDLE} bundles are not enabled for this organization. ${USE_NORMAL_HINT}`
+      `${setToBundle} bundles are not enabled for this organization. ${USE_NORMAL_HINT}`
     );
   }
   const { context } = options;
@@ -148,7 +158,7 @@ export async function prepareBundleRoute(options: {
     )
   ) {
     return userFailure(
-      `${SET_TO_BUNDLE} bundles only run in a Write Contract step of a workflow, not from a direct API or MCP call. ${USE_NORMAL_HINT}`
+      `${setToBundle} bundles only run in a Write Contract step of a workflow, not from a direct API or MCP call. ${USE_NORMAL_HINT}`
     );
   }
   // A nested body's iteration index repeats under every outer iteration, so a replay could not be told apart.
@@ -171,7 +181,7 @@ export async function prepareBundleRoute(options: {
   const available = await loadChainBuilders(options.chainId);
   if (available.length === 0) {
     return userFailure(
-      `${SET_TO_BUNDLE} this network has no block builders to send bundles to. ${USE_NORMAL_HINT}`
+      `${setToBundle} this network has no block builders to send bundles to. ${USE_NORMAL_HINT}`
     );
   }
   const { endpoints, unknown } = selectBuilders(
@@ -197,7 +207,7 @@ export async function prepareBundleRoute(options: {
       ok: false,
       failure: {
         success: false,
-        error: `${SET_TO_BUNDLE} bundles are not set up on this server, so nothing was sent. ${USE_NORMAL_HINT}`,
+        error: `${setToBundle} bundles are not set up on this server, so nothing was sent. ${USE_NORMAL_HINT}`,
         errorClass: ExecutionErrorType.SYSTEM,
       },
     };
@@ -205,6 +215,7 @@ export async function prepareBundleRoute(options: {
   return {
     ok: true,
     route: {
+      mode,
       settings: read.settings,
       builders: endpoints,
       unknownBuilders: unknown,
@@ -227,14 +238,15 @@ export async function prepareBundleRoute(options: {
 
 /** Safe and Roles connections send through their own path, which cannot bundle yet. */
 export function bundleSignerRefusal(
-  signerMode: SignerMode
+  signerMode: SignerMode,
+  mode: BundleSendMode
 ): Failure | undefined {
   if (signerMode.kind === SIGNER_MODE.EOA) {
     return;
   }
   return {
     success: false,
-    error: BUNDLE_SAFE_REFUSAL,
+    error: bundleSafeRefusal(mode),
     errorClass: ExecutionErrorType.USER,
   };
 }
@@ -252,8 +264,14 @@ export function bundleOutputsOf(
     firstAllowedBlock,
     latestBlock,
     sendAheadBlocks,
+    publicCopy,
+    fallbackSent,
+    fallbackNotSentReason,
   } = result;
   return {
+    ...(publicCopy && { publicCopy }),
+    ...(fallbackSent !== undefined && { fallbackSent }),
+    ...(fallbackNotSentReason && { fallbackNotSentReason }),
     ...(targetBlocks && { targetBlocks }),
     ...(targetTipsGwei && { targetTipsGwei }),
     ...(builders && { builders }),
@@ -338,19 +356,52 @@ async function traceWithinRun(
   }
 }
 
+/** What a mined, reverted public copy cost: the fee in the native token, and the gas units. */
+async function paidGasText(
+  chainId: number,
+  mined: MinedHash
+): Promise<string> {
+  const units = mined.gasUnits?.toString() ?? "unknown";
+  if (mined.feeWei === null) {
+    return `${units} gas units`;
+  }
+  let symbol = "of the native token";
+  try {
+    symbol = await getNativeSymbol(chainId);
+  } catch {
+    // The amount alone is still right.
+  }
+  return `${ethers.formatEther(mined.feeWei)} ${symbol} (${units} gas units)`;
+}
+
+/** The failure text of a public copy mined and reverted; lostRace: the call reverts after its block too. */
+async function paidRevertText(
+  write: BundleWrite,
+  mined: MinedHash,
+  revert: string,
+  lostRace: boolean
+): Promise<string> {
+  const paid = await paidGasText(write.chainId, mined);
+  if (lostRace) {
+    return `Most likely another transaction made the call first: your public copy (${mined.hash}) was mined in block ${mined.blockNumber ?? "unknown"} and reverted (${revert}), and the wallet paid ${paid} in gas.`;
+  }
+  return `${revert}. The public copy was mined and reverted, so the wallet paid its gas: ${paid}.`;
+}
+
 async function includedResult(
   write: BundleWrite,
   outcome: {
     mined: MinedHash;
     gasLimit: bigint | null;
     report: Partial<BundleReport>;
+    paidRevert?: { lostRace: boolean };
   },
   contractInterface: ethers.Interface | undefined
 ): Promise<WriteContractResult> {
   const { mined, report } = outcome;
   const transactionLink = await linkOf(write.chainId, mined.hash);
   const sent = {
-    route: BUNDLE_ROUTE,
+    route: write.route.mode,
     included: true,
     ...(mined.blockNumber !== null && { includedBlock: mined.blockNumber }),
     transactionHash: mined.hash,
@@ -368,14 +419,27 @@ async function includedResult(
       outcome.gasLimit,
       write.gas.gasLimitOverride !== undefined
     );
+    const revert = formatContractError(
+      error,
+      buildErrorDecodeInterface(contractInterface, write.errorAbis)
+    );
+    if (!outcome.paidRevert) {
+      return { success: false, error: revert, broadcastAttempted: true, ...sent };
+    }
     return {
       success: false,
-      error: formatContractError(
-        error,
-        buildErrorDecodeInterface(contractInterface, write.errorAbis)
+      error: await paidRevertText(
+        write,
+        mined,
+        revert,
+        outcome.paidRevert.lostRace
       ),
       broadcastAttempted: true,
       ...sent,
+      ...(mined.feeWei !== null && { gasUsed: mined.feeWei.toString() }),
+      ...(mined.gasUnits !== null && {
+        gasUsedUnits: mined.gasUnits.toString(),
+      }),
     };
   }
   const gasUnits = mined.gasUnits ?? BigInt(0);
@@ -398,6 +462,10 @@ async function includedResult(
 const NO_BUILDER_ACCEPTED =
   "No block builder accepted the bundle, so it is not expected to be included.";
 
+// Bundle and public: no builder took it and its public copy did not go out either.
+const NO_BUILDER_NO_COPY =
+  "No block builder accepted the bundle, and its public copy was not sent (see publicCopy.error), so it is not expected to be included. See this step's builders output for each builder's answer.";
+
 const OUTCOME_ERRORS = {
   "no-builder-accepted": {
     error: `${NO_BUILDER_ACCEPTED} See this step's builders output for each builder's answer.`,
@@ -412,14 +480,53 @@ const OUTCOME_ERRORS = {
 
 /** Not included, no transactionHash: the finalizer would verify an unmined hash. */
 function notIncludedResult(
+  mode: BundleSendMode,
   reason: NotIncludedReason,
   report: Partial<BundleReport>
 ): WriteContractResult {
   return {
     success: true,
-    route: BUNDLE_ROUTE,
+    route: mode,
     included: false,
     [RUN_OUTCOME_OUTPUT.notIncludedReasonKey]: reason,
+    ...report,
+  };
+}
+
+/** A public copy out and not mined yet: the one miss with a transactionHash, so the run ends unconfirmed. */
+async function publicPendingResult(
+  write: BundleWrite,
+  hash: string,
+  report: Partial<BundleReport>
+): Promise<WriteContractResult> {
+  const transactionLink = await linkOf(write.chainId, hash);
+  return {
+    success: true,
+    route: write.route.mode,
+    included: false,
+    pending: true,
+    transactionHash: hash,
+    chainId: write.chainId,
+    ...(transactionLink && { transactionLink }),
+    ...report,
+  };
+}
+
+const FALLBACK_REFUSED =
+  "No public RPC could be reached or every RPC rejected it, so the fallback copy was not sent; nothing was mined and the nonce was released.";
+
+function fallbackRefusedResult(
+  mode: BundleSendMode,
+  report: Partial<BundleReport>
+): WriteContractResult {
+  return {
+    success: false,
+    error: `${FALLBACK_REFUSED} Check the network's RPC and the wallet's balance.`,
+    errorClass: ExecutionErrorType.EXTERNAL,
+    route: mode,
+    included: false,
+    broadcastAttempted: true,
+    fallbackSent: false,
     ...report,
   };
 }
@@ -433,7 +540,11 @@ async function resultOf(
     case "included":
       return await includedResult(write, outcome, contractInterface);
     case "not-included":
-      return notIncludedResult(outcome.reason, outcome.report);
+      return notIncludedResult(write.route.mode, outcome.reason, outcome.report);
+    case "public-pending":
+      return await publicPendingResult(write, outcome.hash, outcome.report);
+    case "fallback-refused":
+      return fallbackRefusedResult(write.route.mode, outcome.report);
     case "waiting":
       return waitingResult(outcome.report);
     case "refused":
@@ -448,7 +559,11 @@ async function resultOf(
       return {
         success: false,
         ...OUTCOME_ERRORS[outcome.kind],
-        route: BUNDLE_ROUTE,
+        ...(outcome.kind === "no-builder-accepted" &&
+          write.route.mode === SEND_MODE.BUNDLE_AND_PUBLIC && {
+            error: NO_BUILDER_NO_COPY,
+          }),
+        route: write.route.mode,
         included: false,
         broadcastAttempted: true,
         ...outcome.report,
@@ -479,7 +594,7 @@ function failureOf(
     );
     return {
       success: false,
-      error: `${SET_TO_BUNDLE} this network's RPC cannot simulate the target blocks, which a bundle needs. Use an RPC that supports it, or set Send as to Normal transaction (sendMode: "${SEND_MODE.TRANSACTION}").`,
+      error: `${setTo(write.route.mode)} this network's RPC cannot simulate the target blocks, which a bundle needs. Use an RPC that supports it, or set Send as to Normal transaction (sendMode: "${SEND_MODE.TRANSACTION}").`,
       errorClass: ExecutionErrorType.USER,
       broadcastAttempted: false,
     };
@@ -606,13 +721,17 @@ async function waitingCheck(write: BundleWrite): Promise<AheadCheck> {
   };
 }
 
-/** Skipped behind another run's bundle: nothing signed, the run goes on. */
-function skippedResult(untilBlock: number): WriteContractResult {
+/** Skipped behind another run's bundle (its last block) or public copy (its hash): nothing signed, the run goes on. */
+function skippedResult(
+  behind: Extract<InFlight, { kind: "other" }>
+): WriteContractResult {
   return {
     success: true,
     route: RUN_OUTCOME_OUTPUT.skippedInFlightRoute,
     included: false,
-    inFlightUntilBlock: untilBlock,
+    ...("untilBlock" in behind
+      ? { inFlightUntilBlock: behind.untilBlock }
+      : { inFlightHash: behind.publicHash }),
   };
 }
 
@@ -647,9 +766,10 @@ async function linkReplayReservation(
 
 /**
  * A replay of a step that already sent its bundle signs nothing: the landed
- * result when it was mined, the miss the step decided, else not-checked (a
- * later check settles the run). Its reservation joins the crashed attempt's
- * at the same nonce, which counts it once whatever the result.
+ * result when it was mined, the miss the step decided, its public copy
+ * (landed, else pending with its hash), else not-checked (a later check
+ * settles the run). Its reservation joins the crashed attempt's at the same
+ * nonce, which counts it once whatever the result.
  */
 async function replayResult(
   write: BundleWrite,
@@ -657,20 +777,27 @@ async function replayResult(
   contractInterface: ethers.Interface
 ): Promise<WriteContractResult> {
   await linkReplayReservation(write, replay.nonce);
-  const { landedHash, missed } = replay;
+  const { landedHash, missed, publicHash } = replay;
+  const { mode } = write.route;
   if (missed === "no-builder-accepted") {
     // A replay keeps no builders output: say so instead of pointing to it.
     return {
       success: false,
       error: `${NO_BUILDER_ACCEPTED} This step ran again after a crash and sent nothing new; the first attempt's builder answers are not kept.`,
       errorClass: OUTCOME_ERRORS[missed].errorClass,
-      route: BUNDLE_ROUTE,
+      route: mode,
       included: false,
       broadcastAttempted: true,
     };
   }
+  if (missed === "fallback-refused") {
+    return fallbackRefusedResult(mode, {});
+  }
   if (missed) {
-    return notIncludedResult(missed, {});
+    return notIncludedResult(mode, missed, {});
+  }
+  if (publicHash && !landedHash) {
+    return await replayPublicCopy(write, publicHash, contractInterface);
   }
   if (landedHash) {
     try {
@@ -688,7 +815,36 @@ async function replayResult(
       // The row is confirmed: the sweep settles the run from it.
     }
   }
-  return notIncludedResult("not-checked", {});
+  return notIncludedResult(mode, "not-checked", {});
+}
+
+/** A replay whose public copy went out: landed when mined (a revert was paid), else pending on its hash. */
+async function replayPublicCopy(
+  write: BundleWrite,
+  hash: string,
+  contractInterface: ethers.Interface
+): Promise<WriteContractResult> {
+  try {
+    const receipt = await write.rpcManager.executeWithFailover((provider) =>
+      provider.getTransactionReceipt(hash)
+    );
+    if (receipt) {
+      const mined = minedOf(hash, receipt);
+      return await includedResult(
+        write,
+        {
+          mined,
+          gasLimit: null,
+          report: {},
+          ...(!mined.succeeded && { paidRevert: { lostRace: false } }),
+        },
+        contractInterface
+      );
+    }
+  } catch {
+    // Unreadable: pending, so the reconciler settles it from the hash.
+  }
+  return await publicPendingResult(write, hash, {});
 }
 
 async function inFlightResult(
@@ -709,7 +865,7 @@ async function inFlightResult(
     }
   );
   return inFlight.kind === "other"
-    ? skippedResult(inFlight.untilBlock)
+    ? skippedResult(inFlight)
     : await replayResult(write, inFlight, contractInterface);
 }
 
@@ -729,6 +885,10 @@ function checkInFlight(
     },
     readLatestBlock: () =>
       rpcManager.executeWithFailover((provider) => provider.getBlockNumber()),
+    readMinedCount: () =>
+      rpcManager.executeWithFailover((provider) =>
+        provider.getTransactionCount(write.walletAddress, "latest")
+      ),
     sessionNonce,
   });
 }
@@ -736,6 +896,8 @@ function checkInFlight(
 type SessionEnd =
   | { done: WriteContractResult }
   | { replayOf: Extract<InFlight, { kind: "replay" }> }
+  // The send threw after its public copy went out: its link is read after the lock.
+  | { publicPending: { hash: string; report: Partial<BundleReport> } }
   | { outcome: BundleSendOutcome };
 
 /** Refused before anything was signed or sent (run time left, Not before). */
@@ -836,6 +998,10 @@ export async function writeAsBundle(
   if ("replayOf" in ended) {
     return await replayResult(write, ended.replayOf, contractInterface);
   }
+  if ("publicPending" in ended) {
+    const { hash, report } = ended.publicPending;
+    return await publicPendingResult(write, hash, report);
+  }
   return await resultOf(write, ended.outcome, contractInterface);
 }
 
@@ -899,6 +1065,8 @@ function sendInSession(
           ...(route.settings.sendAhead && {
             sendAhead: route.settings.sendAhead,
           }),
+          sendMode: route.mode,
+          fallback: route.settings.fallback,
           builders: route.builders,
           unknownBuilders: route.unknownBuilders,
           searcher: route.searcher,
@@ -918,8 +1086,16 @@ function sendInSession(
             error,
             { chain_id: String(write.chainId) }
           );
+          const report: Partial<BundleReport> = progress.report ?? {};
+          // A public copy may be in a pool: pending on its hash, never not-checked.
+          const copy = report.publicCopy;
+          if (copy && copy.accepted !== false) {
+            return {
+              publicPending: { hash: copy.hash, report },
+            };
+          }
           return {
-            done: notIncludedResult("not-checked", progress.report ?? {}),
+            done: notIncludedResult(route.mode, "not-checked", report),
           };
         }
         return { done: failureOf(error, write, contractInterface) };

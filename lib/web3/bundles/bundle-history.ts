@@ -1,7 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, type SQL, sql } from "drizzle-orm";
 import type { ethers } from "ethers";
 import { db } from "@/lib/db";
 import {
+  type BundlePublicCopy,
   type BundleRun,
   pendingTransactions,
 } from "@/lib/db/schema-extensions";
@@ -14,8 +15,8 @@ export const LATE_BUNDLE_CHECK_MS = DAY_MS;
 /** Most bundles kept per nonce; the oldest go first on reuse. */
 export const MAX_BUNDLE_RUNS = 20;
 
-// Bundles go to mainnet builders only, whose slots are 12 s.
-const BUNDLE_BLOCK_MS = 12_000;
+/** Bundles go to mainnet builders only, whose slots are 12 s. */
+export const BUNDLE_BLOCK_MS = 12_000;
 
 /**
  * Longest a bundle row may hold its nonce: a wrong latest block can never pin
@@ -187,6 +188,63 @@ export function currentSendHashes(row: HistoryRow): string[] {
     return [row.txHash];
   }
   return [...new Set([row.txHash, ...last.hashes])];
+}
+
+/** The row's live public copy: its current send went out publicly (not marked never sent); pending until mined or found nowhere. */
+export function livePublicCopy(row: HistoryRow): BundlePublicCopy | undefined {
+  const last = row.bundleRuns.at(-1);
+  if (
+    row.lastTargetBlock === null ||
+    last?.executionId !== row.executionId ||
+    !last.public ||
+    last.public.accepted === false
+  ) {
+    return;
+  }
+  return last.public;
+}
+
+/** livePublicCopy in SQL, on pending_transactions. */
+export function livePublicCopySql(): SQL {
+  const last = sql`(${pendingTransactions.bundleRuns} -> -1)`;
+  // Never NULL, so NOT() of it is safe.
+  return sql`coalesce((${pendingTransactions.lastTargetBlock} IS NOT NULL
+    AND ${last} ->> 'executionId' = ${pendingTransactions.executionId}
+    AND ${last} ? 'public'
+    AND coalesce(${last} -> 'public' ->> 'accepted', '') <> 'false'), false)`;
+}
+
+/** The other hash of this run's signed ones its bundle row was confirmed with (a reorg can mine another), if any. */
+export async function minedBundleHashFor(
+  executionId: string,
+  chainId: number,
+  hash: string
+): Promise<string | undefined> {
+  const rows = await db
+    .select({
+      txHash: pendingTransactions.txHash,
+      bundleRuns: pendingTransactions.bundleRuns,
+    })
+    .from(pendingTransactions)
+    .where(
+      and(
+        eq(pendingTransactions.chainId, chainId),
+        eq(pendingTransactions.status, "confirmed"),
+        sql`${pendingTransactions.bundleRuns} @> ${JSON.stringify([{ executionId, hashes: [hash] }])}::jsonb`
+      )
+    );
+  for (const row of rows) {
+    const ours = row.bundleRuns.some(
+      (run) =>
+        run.executionId === executionId &&
+        run.hashes.includes(hash) &&
+        run.hashes.includes(row.txHash)
+    );
+    if (ours && row.txHash !== hash) {
+      return row.txHash;
+    }
+  }
+  return;
 }
 
 /** Every hash still worth a receipt read at this nonce, newest first. */

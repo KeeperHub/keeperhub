@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, like, type SQL, sql } from "drizzle-orm";
+import { and, eq, isNull, like, type SQL, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { type TransactionHashEntry, workflowExecutions } from "@/lib/db/schema";
 import {
@@ -11,10 +11,17 @@ import { classifyExecutionError } from "@/lib/errors/classify";
 import { logInfo } from "@/lib/logging";
 import {
   recordWorkflowExecutionError,
+  recordWorkflowExecutionFinished,
   recordWorkflowExecutionLateLanded,
 } from "@/lib/metrics/collectors/prometheus";
+import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
-import { NOT_LANDED_PARTLY_REASON } from "@/lib/workflow/executor/run-outcome-keys";
+import { billableAfterSettle } from "@/lib/workflow/executor/run-outcome";
+import {
+  NOT_LANDED_PARTLY_REASON,
+  type PublicCopyEnd,
+  publicCopyNotLandedReason,
+} from "@/lib/workflow/executor/run-outcome-keys";
 import {
   loadSuccessLogFacts,
   stepKey,
@@ -466,4 +473,75 @@ function hashEntry(
     ...(mined.gasUnits !== null && { gasUsed: mined.gasUnits.toString() }),
     verifiedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * The run of a public copy that will not be mined (dropped, or its nonce used by another transaction) ends Not
+ * landed (neutral), if still unconfirmed by its own steps and every other hash it lists is verified.
+ * The copy's unread hash is taken off the run, so a late landing adds it with its fee (settleLateLanding).
+ */
+export async function settleDroppedPublicCopy(
+  executionId: string,
+  stepHashes: readonly string[],
+  end: PublicCopyEnd
+): Promise<boolean> {
+  const unconfirmed = and(
+    eq(workflowExecutions.id, executionId),
+    eq(workflowExecutions.status, "unconfirmed"),
+    // A run held open by its own failure stays the reconciler's.
+    isNull(workflowExecutions.errorType)
+  );
+  const [run] = await db
+    .select({ hashes: workflowExecutions.transactionHashes })
+    .from(workflowExecutions)
+    .where(unconfirmed);
+  if (!run) {
+    return false;
+  }
+  const dropped = new Set(stepHashes.map((hash) => hash.toLowerCase()));
+  const listed = run.hashes ?? [];
+  const kept = listed.filter((entry) => !dropped.has(entry.hash.toLowerCase()));
+  // Another send of the run not verified yet: the reconciler settles the run once it is read.
+  if (kept.some((entry) => entry.verified !== true)) {
+    return false;
+  }
+  const error = publicCopyNotLandedReason(end);
+  const [updated] = await db
+    .update(workflowExecutions)
+    .set({
+      status: "not_landed",
+      error,
+      completedAt: new Date(),
+      transactionHashes: kept,
+      billable: billableAfterSettle(workflowExecutions, {
+        status: "not_landed",
+        errorCode: null,
+        error,
+      }),
+    })
+    .where(
+      and(
+        unconfirmed,
+        // Unchanged since read: a hash verified meanwhile is not lost.
+        sql`coalesce(${workflowExecutions.transactionHashes}, '[]'::jsonb) = ${JSON.stringify(listed)}::jsonb`
+      )
+    )
+    .returning({ workflowId: workflowExecutions.workflowId });
+  if (!updated) {
+    return false;
+  }
+  logInfo("[Bundle] A public copy's run ended not landed", {
+    execution_id: executionId,
+    reason: end,
+  });
+  try {
+    recordWorkflowExecutionFinished({
+      status: "not_landed",
+      orgSlug: await resolveOrgSlugForCounter(updated.workflowId),
+      errorType: NA_ERROR_TYPE,
+    });
+  } catch {
+    // Counter emission must never break the settle.
+  }
+  return true;
 }

@@ -376,7 +376,7 @@ describe("readBundleSettings: Not before and Send ahead", () => {
     expect(readBundleSettings({ sendAheadBlocks: 3, bundleBlocks: 5 })).toEqual(
       {
         ok: true,
-        settings: { blocks: 5, tipIncreasePercent: 0 },
+        settings: { blocks: 5, tipIncreasePercent: 0, fallback: "stop" },
       }
     );
   });
@@ -387,6 +387,7 @@ describe("readBundleSettings: Not before and Send ahead", () => {
       settings: {
         blocks: 3,
         tipIncreasePercent: 0,
+        fallback: "stop",
         sendAhead: { notBefore: 1_796_126_400, blocks: 2 },
       },
     });
@@ -427,7 +428,7 @@ describe("readBundleSettings: Not before and Send ahead", () => {
     const templated = { notBefore: "{{@read:Read Contract.result}}" };
     expect(readBundleSettings(templated, "save")).toEqual({
       ok: true,
-      settings: { blocks: 3, tipIncreasePercent: 0 },
+      settings: { blocks: 3, tipIncreasePercent: 0, fallback: "stop" },
     });
     // At run time a template still unfilled is a refusal the step fails with after its in-flight check.
     expect(readBundleSettings(templated, "run")).toEqual({
@@ -435,6 +436,7 @@ describe("readBundleSettings: Not before and Send ahead", () => {
       settings: {
         blocks: 3,
         tipIncreasePercent: 0,
+        fallback: "stop",
         notBeforeRefusal:
           'Not before (notBefore) still holds a template after it was filled in, so nothing was sent: "{{@read:Read Contract.result}}".',
       },
@@ -483,6 +485,7 @@ describe("readBundleSettings: Not before and Send ahead", () => {
         settings: {
           blocks: 3,
           tipIncreasePercent: 0,
+          fallback: "stop",
           notBeforeRefusal:
             "Not before (notBefore) resolved to an empty value, so nothing was sent.",
         },
@@ -490,7 +493,7 @@ describe("readBundleSettings: Not before and Send ahead", () => {
       // A field left empty in the editor (no template) still means off.
       expect(readBundleSettings({ notBefore }, "run")).toEqual({
         ok: true,
-        settings: { blocks: 3, tipIncreasePercent: 0 },
+        settings: { blocks: 3, tipIncreasePercent: 0, fallback: "stop" },
       });
     }
     // Save never sees a resolved value.

@@ -226,7 +226,7 @@ The `tagId` field assigns the workflow to an organization tag for categorization
 
 ### Send as checks on save
 
-Create, update, import and the editor's autosave run the same Send as checks; a copy runs them with its own rule (below). A refused save answers `422` with `error: "INVALID_ACTION_CONFIG"`; each entry of `invalidFields` names the node, the `field` and a `message` that gives both the editor label and the API value. For a Write Contract step with `sendMode: "bundle"` (see [Send as Bundle](/plugins/web3#send-as-bundle)) the save is refused when:
+Create, update, import and the editor's autosave run the same Send as checks; a copy runs them with its own rule (below). A refused save answers `422` with `error: "INVALID_ACTION_CONFIG"`; each entry of `invalidFields` names the node, the `field` and a `message` that gives both the editor label and the API value. For a Write Contract step with `sendMode: "bundle"` or `"bundle-and-public"` (see [Send as Bundle](/plugins/web3#send-as-bundle)) the save is refused when (each message names the step's own mode):
 
 - the step is not Write Contract (`Bundle (sendMode: "bundle") is only available on Write Contract steps`);
 - bundles are not turned on for your organization (`bundleSendEnabled` in [Get Organization Features](#get-organization-features)); a step already saved as a bundle keeps saving, even when its settings or network change (its runs are refused);
@@ -234,10 +234,13 @@ Create, update, import and the editor's autosave run the same Send as checks; a 
 - `bundleBlocks` is not a whole number from 1 to 5, or `bundleTipIncreasePercent` not one from 0 to 100;
 - `notBefore` is neither unix seconds (1000000000 to 9999999999) nor an ISO 8601 date with a time zone, or looks like milliseconds (13 digits; the message gives the seconds to use); a template passes and is read when the run starts;
 - `sendAheadBlocks` is not a whole number from 0 to 3, or, with `notBefore` set, `sendAheadBlocks` + `bundleBlocks` is above 5 (the message names both);
+- `bundleFallback` is not `"stop"` or `"public"` (no templates); with `"bundle-and-public"` a valid value is accepted and ignored;
 - the network has no block builders that take bundles, or `bundleBuilders` names one the network does not list (see `bundleBuilders` in the [Chains API](/api/chains));
 - the step sits inside a For Each that is itself inside another For Each.
 
-A step whose action, network, Send as keys and bundle settings (`notBefore` and `sendAheadBlocks` included) are unchanged since it was saved passes, except for the nested For Each rule, which is checked on every save. A step saved as a bundle whose settings or network changed is checked again except for the rollout: the Safe connection, the settings and the network's builders.
+`notBefore`, `sendAheadBlocks` or `bundleFallback` on a step whose `sendMode` is neither `"bundle"` nor `"bundle-and-public"` is refused too.
+
+A step whose action, network, Send as keys and bundle settings (`notBefore`, `sendAheadBlocks` and `bundleFallback` included) are unchanged since it was saved passes, except for the nested For Each rule, which is checked on every save. A step saved as a bundle whose settings or network changed is checked again except for the rollout: the Safe connection, the settings and the network's builders.
 
 A copy (duplicate, and so Use template and the MCP `deploy_template` tool) checks every bundle step as new, unchanged or not: the rollout, the Safe connection, the settings and the builders (for `bundleBuilders`, only when the network lists none of the step's builders, since a run sends to the ones still listed). One refused step refuses the whole copy (see [Duplicate Workflow](#duplicate-workflow)).
 

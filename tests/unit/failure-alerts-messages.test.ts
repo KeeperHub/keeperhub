@@ -1492,6 +1492,7 @@ describe("bundles not landing", () => {
       "most likely because someone else made it first",
       "could not be checked; these may still land",
       "It could not be checked yet, and it may still land within about a day.",
+      "A public copy that no RPC knows any more ends Not landed too: most often its fee cap was below the base fee, or an RPC rejected it, so raise Max Fee or leave it empty, and check the wallet's balance.",
       "No gas is paid for a bundle that does not land, but these runs count toward your plan's runs.",
     ]) {
       expect(message.text).toContain(cause);

@@ -5,7 +5,7 @@ describe("readBundleSettings", () => {
   it("defaults to 3 blocks, no tip increase and every builder", () => {
     expect(readBundleSettings({})).toEqual({
       ok: true,
-      settings: { blocks: 3, tipIncreasePercent: 0 },
+      settings: { blocks: 3, tipIncreasePercent: 0, fallback: "stop" },
     });
     expect(
       readBundleSettings({
@@ -13,7 +13,10 @@ describe("readBundleSettings", () => {
         bundleTipIncreasePercent: null,
         bundleBuilders: [],
       })
-    ).toEqual({ ok: true, settings: { blocks: 3, tipIncreasePercent: 0 } });
+    ).toEqual({
+      ok: true,
+      settings: { blocks: 3, tipIncreasePercent: 0, fallback: "stop" },
+    });
   });
 
   it("reads numbers and their decimal text", () => {
@@ -28,6 +31,7 @@ describe("readBundleSettings", () => {
       settings: {
         blocks: 5,
         tipIncreasePercent: 20,
+        fallback: "stop",
         builders: ["flashbots", "titan"],
       },
     });
@@ -68,5 +72,26 @@ describe("readBundleSettings", () => {
     Array.from({ length: 17 }, (_, i) => `b${i}`),
   ])("refuses bundleBuilders %j", (bundleBuilders) => {
     expect(readBundleSettings({ bundleBuilders }).ok).toBe(false);
+  });
+
+  it("reads If not included: empty is stop, then stop or public only, never a template", () => {
+    for (const unset of [undefined, null, ""]) {
+      expect(readBundleSettings({ bundleFallback: unset })).toMatchObject({
+        ok: true,
+        settings: { fallback: "stop" },
+      });
+    }
+    for (const value of ["stop", "public"]) {
+      expect(
+        readBundleSettings({ bundleFallback: value }, "save")
+      ).toMatchObject({ ok: true, settings: { fallback: value } });
+    }
+    for (const value of ["Public", "{{@a:A.mode}}", true, 1, " public"]) {
+      expect(readBundleSettings({ bundleFallback: value }, "save")).toEqual({
+        ok: false,
+        field: "bundleFallback",
+        error: `If not included (bundleFallback) must be "stop" or "public", with no templates, not ${JSON.stringify(value)}.`,
+      });
+    }
   });
 });

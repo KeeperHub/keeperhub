@@ -555,13 +555,28 @@ export type BundleRun = {
   missed?: BundleMiss;
   // The step's value reservation, for audit; the reservation carries this row's key.
   valueReservationId?: string;
+  // A copy of one of `hashes` sent to the public mempool, recorded before it went out.
+  public?: BundlePublicCopy;
 };
 
-/** A bundle miss its step decided: no builder picked it, it now reverts, or none accepted it. */
+/** A bundle's public copy: accepted false when it never went out; misses and unclear count sweeps in a row. */
+export type BundlePublicCopy = {
+  hash: string;
+  kind: "with-bundle" | "fallback";
+  at: number;
+  // Sent through the user's own RPC (never miss-counted) or the platform's.
+  via?: "user" | "platform";
+  accepted?: boolean;
+  misses?: number;
+  unclear?: number;
+};
+
+/** A bundle miss its step decided: no builder picked it, it now reverts, none accepted it, or no public RPC took its fallback. */
 export type BundleMiss =
   | "not-picked"
   | "no-longer-needed"
-  | "no-builder-accepted";
+  | "no-builder-accepted"
+  | "fallback-refused";
 
 export const pendingTransactions = pgTable(
   "pending_transactions",

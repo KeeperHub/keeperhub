@@ -17,4 +17,25 @@ describe("Analytics billing tooltips", () => {
     expect(STATUS_TOOLTIPS.not_landed).toContain("your plan's runs");
     expect(STATUS_TOOLTIPS.not_landed).not.toContain("usage");
   });
+
+  it("a Running badge says a run can be a transaction sent and not mined yet", () => {
+    expect(STATUS_TOOLTIPS.running).toContain(
+      "a transaction was sent and is not mined yet"
+    );
+  });
+
+  it("the Running badge says a mined copy is paid for; Not landed names a dropped copy's causes", () => {
+    expect(STATUS_TOOLTIPS.running).toContain(
+      "If it is mined, the wallet pays its gas, even if it reverts."
+    );
+    expect(STATUS_TOOLTIPS.not_landed).toContain(
+      "A public copy that no RPC knows any more ends Not landed too: most often its fee cap was below the base fee, or an RPC rejected it, so raise Max Fee or leave it empty, and check the wallet's balance."
+    );
+  });
+
+  it("the Skipped tooltips name a skip behind an earlier run's public copy", () => {
+    for (const text of [SKIPPED_TOOLTIP, STATUS_TOOLTIPS.skipped]) {
+      expect(text).toContain("an earlier run's public copy not mined yet");
+    }
+  });
 });

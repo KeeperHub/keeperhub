@@ -7,11 +7,21 @@ type Run = {
   hashes: string[];
   node?: { id: string; iterationIndex?: number };
   missed?: string;
+  public?: { hash: string; kind: string; at: number; accepted?: boolean };
+};
+
+type PendingRow = {
+  executionId: string;
+  nonce: number;
+  txHash: string;
+  lastTargetBlock: number | null;
+  bundleRuns: Run[];
+  submittedAt: Date;
 };
 
 const h = vi.hoisted(() => ({
-  // Pending bundle rows of the workflow inside the window.
-  rows: [] as { executionId: string; lastTargetBlock: number | null }[],
+  // Pending bundle rows of the workflow from the last day.
+  rows: [] as PendingRow[],
   // Rows whose history holds this run.
   replayRows: [] as {
     status: string;
@@ -43,9 +53,28 @@ import { bundleInFlight, type InFlight } from "@/lib/web3/bundles/in-flight";
 
 const STEP = { executionId: "run-2", nodeId: "write-1" };
 
-function row(executionId: string, lastTargetBlock: number) {
-  return { executionId, lastTargetBlock };
+function row(
+  executionId: string,
+  lastTargetBlock: number,
+  options: { ageMs?: number; nonce?: number; publicCopy?: Run["public"] } = {}
+): PendingRow {
+  return {
+    executionId,
+    nonce: options.nonce ?? 5,
+    txHash: "0xcc",
+    lastTargetBlock,
+    bundleRuns: [
+      {
+        executionId,
+        hashes: ["0xcc", "0xcd"],
+        ...(options.publicCopy && { public: options.publicCopy }),
+      },
+    ],
+    submittedAt: new Date(Date.now() - (options.ageMs ?? 0)),
+  };
 }
+
+const COPY = { hash: "0xcc", kind: "with-bundle", at: 0 };
 
 function ownRow(
   status: "pending" | "confirmed" | "dropped",
@@ -73,9 +102,11 @@ function ownRow(
 async function inFlight(
   step: { executionId: string; nodeId: string; iterationIndex?: number } = STEP,
   latest: number | Error = 100,
-  sessionNonce?: number
-): Promise<{ inFlight: InFlight; blockReads: number }> {
+  sessionNonce?: number,
+  minedCount: number | Error = 5
+): Promise<{ inFlight: InFlight; blockReads: number; countReads: number }> {
   let blockReads = 0;
+  let countReads = 0;
   const result = await bundleInFlight({
     workflowId: "wf-1",
     chainId: 1,
@@ -89,8 +120,15 @@ async function inFlight(
       }
       return latest;
     },
+    readMinedCount: async () => {
+      countReads += 1;
+      if (minedCount instanceof Error) {
+        throw minedCount;
+      }
+      return minedCount;
+    },
   });
-  return { inFlight: result, blockReads };
+  return { inFlight: result, blockReads, countReads };
 }
 
 beforeEach(() => {
@@ -102,7 +140,11 @@ const NONE = { kind: "none" };
 
 describe("bundleInFlight", () => {
   it("reads no block when no bundle row is pending", async () => {
-    expect(await inFlight()).toEqual({ inFlight: NONE, blockReads: 0 });
+    expect(await inFlight()).toEqual({
+      inFlight: NONE,
+      blockReads: 0,
+      countReads: 0,
+    });
   });
 
   it("is in flight while another run's window is open, with the nonce manager's margin", async () => {
@@ -120,7 +162,11 @@ describe("bundleInFlight", () => {
   it("ignores another step of the same run, which waits under the lock instead", async () => {
     h.rows = [row("run-2", 105)];
     h.replayRows = [ownRow("pending", { node: { id: "write-0" } })];
-    expect(await inFlight()).toEqual({ inFlight: NONE, blockReads: 0 });
+    expect(await inFlight()).toEqual({
+      inFlight: NONE,
+      blockReads: 0,
+      countReads: 0,
+    });
   });
 
   it("calls a pending row of the same step a replay, at any age, so it never signs twice", async () => {
@@ -128,6 +174,7 @@ describe("bundleInFlight", () => {
     expect(await inFlight()).toEqual({
       inFlight: { kind: "replay", nonce: 7 },
       blockReads: 0,
+      countReads: 0,
     });
   });
 
@@ -236,5 +283,95 @@ describe("bundleInFlight", () => {
     expect((await inFlight(STEP, new Error("rpc down"))).inFlight.kind).toBe(
       "other"
     );
+  });
+
+  it("ends an ordinary row's skip with its window, a day-old copy row aside", async () => {
+    h.rows = [row("run-1", 102, { ageMs: 10 * 60_000 })];
+    expect((await inFlight(STEP, 101)).inFlight).toEqual(NONE);
+  });
+
+  it("skips behind another run's public copy until the wallet's mined count passes its nonce, with no block", async () => {
+    h.rows = [row("run-1", 102, { ageMs: 60 * 60_000, publicCopy: COPY })];
+    // Long past its window and its last target: still in flight while unmined.
+    expect(await inFlight(STEP, 500, undefined, 5)).toEqual({
+      inFlight: { kind: "other", publicHash: COPY.hash },
+      blockReads: 0,
+      countReads: 1,
+    });
+    expect((await inFlight(STEP, 500, undefined, 6)).inFlight).toEqual(NONE);
+  });
+
+  it("counts an unreadable mined count as in flight behind a public copy", async () => {
+    h.rows = [row("run-1", 102, { publicCopy: COPY })];
+    expect(
+      (await inFlight(STEP, 500, undefined, new Error("rpc down"))).inFlight
+    ).toEqual({ kind: "other", publicHash: COPY.hash });
+  });
+
+  it("ignores a public copy every endpoint refused: the row is a plain bundle again", async () => {
+    h.rows = [
+      row("run-1", 102, {
+        ageMs: 60 * 60_000,
+        publicCopy: { ...COPY, accepted: false },
+      }),
+    ];
+    expect((await inFlight(STEP, 500, undefined, 5)).inFlight).toEqual(NONE);
+  });
+
+  it("returns the public hash for a replay of a pending row whose copy went out", async () => {
+    const own = ownRow("pending");
+    h.replayRows = [
+      {
+        ...own,
+        bundleRuns: [
+          { ...own.bundleRuns[0], public: { ...COPY, hash: "0xab" } },
+        ],
+      },
+    ];
+    expect((await inFlight()).inFlight).toEqual({
+      kind: "replay",
+      nonce: 7,
+      publicHash: "0xab",
+    });
+  });
+
+  it("returns the public hash for a dropped row whose copy went out, whatever the session nonce", async () => {
+    const own = ownRow("dropped");
+    h.replayRows = [
+      {
+        ...own,
+        bundleRuns: [
+          { ...own.bundleRuns[0], public: { ...COPY, hash: "0xab" } },
+        ],
+      },
+    ];
+    for (const sessionNonce of [undefined, 7, 8]) {
+      expect((await inFlight(STEP, 100, sessionNonce)).inFlight).toEqual({
+        kind: "replay",
+        nonce: 7,
+        publicHash: "0xab",
+      });
+    }
+  });
+
+  it("returns fallback-refused as the miss, not the refused copy", async () => {
+    const own = ownRow("dropped");
+    h.replayRows = [
+      {
+        ...own,
+        bundleRuns: [
+          {
+            ...own.bundleRuns[0],
+            missed: "fallback-refused",
+            public: { ...COPY, hash: "0xab", accepted: false },
+          },
+        ],
+      },
+    ];
+    expect((await inFlight()).inFlight).toEqual({
+      kind: "replay",
+      nonce: 7,
+      missed: "fallback-refused",
+    });
   });
 });

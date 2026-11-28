@@ -21,14 +21,31 @@ import {
   BUNDLE_ROUTES,
   bundleReservationEnd,
   bundleSignalsOfStep,
+  FALLBACK_NOT_SENT_REASONS,
+  FALLBACK_NOT_SENT_TEXT,
+  fallbackNotSentText,
   isBundleRoute,
   isUnbilledOutcome,
+  NEVER_MINED_RUN_ERROR,
+  NOT_INCLUDED_REASON_TEXT,
   nodeOutcomeOf,
+  PUBLIC_COPY_DROPPED_REASON,
+  PUBLIC_COPY_ERRORS,
+  PUBLIC_COPY_EXPIRED_TEXT,
+  publicCopyNotLandedReason,
+  publicPendingSentence,
   RUN_OUTCOME_REASON,
   SKIP_REASON,
   SKIPPED_WHILE_RUNNING_REASON,
+  STEP_OUTCOME_TEXT,
+  settledPendingReason,
+  skippedBehindPublicCopy,
   skippedMetricReason,
+  skippedStepSentence,
+  skippedStepTitle,
   skipReasonOf,
+  stepOutcomeOf,
+  unconfirmedRunNote,
   WAITING_STEP_TEXT,
   waitingStepSentence,
 } from "@/lib/workflow/executor/run-outcome-keys";
@@ -263,6 +280,126 @@ describe("bundle routes: TS and SQL agree", () => {
   it.each(NOT_BUNDLE_ROUTES)("route %s is no sent bundle", (route) => {
     expect(isBundleRoute(route)).toBe(false);
     expect(bundleSignalsOfStep(WRITE, { route }).bundleSent).toBe(false);
+  });
+});
+
+describe("Bundle and public outputs", () => {
+  it("lists bundle-and-public as a sent bundle route", () => {
+    expect([...BUNDLE_ROUTES]).toEqual(["bundle", "bundle-and-public"]);
+  });
+
+  it("a public copy not mined yet is sent, not Not included, and keeps its charge", () => {
+    const output = {
+      success: true,
+      route: "bundle-and-public",
+      included: false,
+      pending: true,
+      transactionHash: "0xab",
+    };
+    expect(signalsOfStep(WRITE, output)).toMatchObject({
+      bundleSent: true,
+      notIncluded: false,
+    });
+    const step = { nodeId: "n", nodeType: WRITE, status: "success", output };
+    // Shown Pending (neutral) while the run is unconfirmed, never Completed.
+    expect(nodeOutcomeOf(step)).toBe("public-pending");
+    expect(nodeOutcomeOf(step, { status: "unconfirmed" })).toBe(
+      "public-pending"
+    );
+    expect(bundleReservationEnd(output)).toBe("settle");
+  });
+
+  describe("a public copy not mined when its step ended, once the run settles", () => {
+    const output = {
+      success: true,
+      route: "bundle",
+      included: false,
+      pending: true,
+      transactionHash: "0xab",
+    };
+    const step = { nodeId: "n", nodeType: WRITE, status: "success", output };
+    const hashEntry = (receiptStatus: string) => ({
+      nodeId: "n",
+      receiptStatus,
+    });
+
+    it("mined later: landed late (the reconciler's Success)", () => {
+      expect(
+        stepOutcomeOf(step, {
+          status: "success",
+          transactionHashes: [hashEntry("success")],
+        })
+      ).toBe("landed-late");
+    });
+
+    it("mined later and reverted: reverted late, gas paid", () => {
+      expect(
+        stepOutcomeOf(step, {
+          status: "error",
+          transactionHashes: [hashEntry("reverted")],
+        })
+      ).toBe("landed-late-reverted");
+      expect(STEP_OUTCOME_TEXT["landed-late-reverted"].sentence).toContain(
+        "paid gas"
+      );
+    });
+
+    it("its own unread hash is not a landing: still pending while unconfirmed", () => {
+      expect(
+        stepOutcomeOf(step, {
+          status: "unconfirmed",
+          transactionHashes: [hashEntry("not_found")],
+        })
+      ).toBe("public-pending");
+    });
+
+    it("dropped or never found: not included", () => {
+      expect(stepOutcomeOf(step, { status: "not_landed" })).toBe(
+        "not-included"
+      );
+      expect(
+        stepOutcomeOf(step, {
+          status: "error",
+          transactionHashes: [hashEntry("not_found")],
+        })
+      ).toBe("not-included");
+    });
+
+    it("needs a bundle route and a JSON true", () => {
+      expect(
+        stepOutcomeOf({ ...step, output: { ...output, pending: "true" } })
+      ).toBeUndefined();
+      expect(
+        stepOutcomeOf({ ...step, output: { ...output, route: "public" } })
+      ).toBeUndefined();
+    });
+
+    it("the Unconfirmed sentence says it is sent publicly, settles later, and is paid for once mined", () => {
+      expect(STEP_OUTCOME_TEXT["public-pending"]).toEqual({
+        label: "Unconfirmed",
+        sentence:
+          "this step's transaction was sent publicly and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts.",
+      });
+    });
+  });
+
+  it("a paid revert releases; a refused fallback holds", () => {
+    expect(
+      bundleReservationEnd({
+        success: false,
+        route: "bundle-and-public",
+        included: true,
+        broadcastAttempted: true,
+      })
+    ).toBe("release");
+    expect(
+      bundleReservationEnd({
+        success: false,
+        route: "bundle",
+        included: false,
+        broadcastAttempted: true,
+      })
+    ).toBe("hold");
   });
 });
 
@@ -588,6 +725,204 @@ describe("waiting runs: skip reason, billing, metrics, node outcome", () => {
     );
     expect(nodeOutcomeOf(step({ route: "bundle", included: true }))).toBe(
       undefined
+    );
+  });
+});
+
+describe("review round 1 texts", () => {
+  it("has a plain sentence for every fallbackNotSentReason; check-failed never says the call would work", () => {
+    for (const reason of FALLBACK_NOT_SENT_REASONS) {
+      expect(FALLBACK_NOT_SENT_TEXT[reason]).toMatch(
+        /^The public fallback was not sent: /
+      );
+    }
+    expect(fallbackNotSentText({ fallbackNotSentReason: "check-failed" })).toBe(
+      "The public fallback was not sent: the call could not be checked."
+    );
+    expect(fallbackNotSentText({ fallbackNotSentReason: "toString" })).toBe(
+      undefined
+    );
+    expect(fallbackNotSentText({})).toBeUndefined();
+  });
+
+  it("says a dropped public copy's nonce is used again", () => {
+    expect(NOT_INCLUDED_REASON_TEXT["public-copy-dropped"]).toBe(
+      "Its public copy was not found on any RPC for three checks, so KeeperHub treats it as dropped; nothing was mined and the nonce is used again. Most often its fee cap was below the base fee, or an RPC rejected it (for example for too little balance): raise Max Fee or leave it empty, and check the wallet's balance."
+    );
+  });
+
+  it("names the public copy a skipped step waited behind", () => {
+    expect(skippedStepSentence({ inFlightHash: "0xab" })).toBe(
+      "an earlier run's public copy (0xab) is not mined yet, so this step sent nothing; no gas was paid. KeeperHub checks it every few minutes and stops waiting after a day."
+    );
+    expect(skippedStepSentence({ inFlightUntilBlock: 5 })).toBe(
+      STEP_OUTCOME_TEXT["skipped-in-flight"].sentence
+    );
+  });
+});
+
+describe("review round 2 texts and outcomes", () => {
+  const COPY = `0x${"ab".repeat(32)}`;
+  const behind = {
+    success: true,
+    route: "skipped-in-flight",
+    included: false,
+    inFlightHash: COPY,
+  };
+
+  it("a skip behind a public copy carries its own reason, grouped and billed as a bundle skip", () => {
+    const signals = signalsOfStep(WRITE, behind);
+    expect(signals).toMatchObject({
+      skippedInFlight: true,
+      skippedPublicCopy: true,
+    });
+    expect(runOutcomeOf(signals)).toBe("skipped");
+    expect(runOutcomeReason("skipped", signals)).toBe(
+      RUN_OUTCOME_REASON.skippedPublicCopy
+    );
+    expect(RUN_OUTCOME_REASON.skippedPublicCopy).toBe(
+      "Skipped: an earlier run's public copy is not mined yet, so the bundle step sent no transaction."
+    );
+    expect(runOutcomeCode("skipped", signals)).toBeNull();
+    expect(
+      skipReasonOf({
+        status: "skipped",
+        error: RUN_OUTCOME_REASON.skippedPublicCopy,
+      })
+    ).toBe(SKIP_REASON.bundleInFlight);
+    expect(
+      skippedMetricReason(null, RUN_OUTCOME_REASON.skippedPublicCopy)
+    ).toBe("bundle_in_flight");
+    expect(
+      isUnbilledOutcome("skipped", null, RUN_OUTCOME_REASON.skippedPublicCopy)
+    ).toBe(false);
+  });
+
+  it("a skip behind a bundle keeps the bundle reason; the flag is only set when true", () => {
+    const signals = signalsOfStep(WRITE, {
+      route: "skipped-in-flight",
+      inFlightUntilBlock: 9,
+    });
+    expect(signals).not.toHaveProperty("skippedPublicCopy");
+    expect(runOutcomeReason("skipped", signals)).toBe(
+      RUN_OUTCOME_REASON.skipped
+    );
+    // A non-string hash is not a public copy.
+    expect(
+      signalsOfStep(WRITE, { route: "skipped-in-flight", inFlightHash: 5 })
+    ).not.toHaveProperty("skippedPublicCopy");
+    // Only Write Contract carries it.
+    expect(bundleSignalsOfStep("HTTP Request", behind)).not.toHaveProperty(
+      "skippedPublicCopy"
+    );
+  });
+
+  it("the SQL signal reads the same keys as the TS one", () => {
+    const rendered = new PgDialect().sqlToQuery(
+      runOutcomeSignalSql({
+        nodeType: workflowExecutionLogs.nodeType,
+        outputRaw: workflowExecutionLogs.outputRaw,
+      }).skippedPublicCopy
+    ).sql;
+    expect(rendered).toContain("'skipped-in-flight'");
+    expect(rendered).toContain("jsonb_typeof(");
+    expect(rendered).toContain("->'inFlightHash') = 'string', false)");
+  });
+
+  it("says when no RPC confirmed taking a pending copy, in the step sentence and the run note", () => {
+    const sure = {
+      pending: true,
+      transactionHash: COPY,
+      publicCopy: { hash: COPY, accepted: true },
+    };
+    const unclear = { ...sure, publicCopy: { hash: COPY, accepted: null } };
+    expect(publicPendingSentence(sure)).toBe(
+      STEP_OUTCOME_TEXT["public-pending"].sentence
+    );
+    expect(publicPendingSentence(unclear)).toBe(
+      "this step's transaction was sent publicly (no RPC confirmed taking it) and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts."
+    );
+    expect(unconfirmedRunNote([{ triggered: true }, sure])).toBe(
+      `A transaction (${COPY}) was sent and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts.`
+    );
+    expect(unconfirmedRunNote([unclear])).toContain(
+      `A transaction (${COPY}) was sent (no RPC confirmed taking it) and`
+    );
+    expect(unconfirmedRunNote([{ success: true }])).toBe(
+      "A transaction was sent and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts."
+    );
+  });
+
+  it("names the skipped step's copy in its tooltip and finds the step that skipped behind one", () => {
+    expect(skippedStepTitle(behind)).toBe(
+      `Skipped: ${skippedStepSentence(behind)}`
+    );
+    expect(skippedStepTitle(undefined)).toBe(
+      `Skipped: ${STEP_OUTCOME_TEXT["skipped-in-flight"].sentence}`
+    );
+    expect(
+      skippedBehindPublicCopy([
+        { route: "skipped-in-flight", inFlightUntilBlock: 4 },
+        behind,
+      ])
+    ).toBe(behind);
+    expect(
+      skippedBehindPublicCopy([{ route: "bundle", inFlightHash: COPY }])
+    ).toBeUndefined();
+  });
+
+  it("says why a pending step's run settled without it", () => {
+    const pending = { pending: true, transactionHash: COPY };
+    expect(
+      settledPendingReason(pending, {
+        status: "not_landed",
+        error: PUBLIC_COPY_DROPPED_REASON,
+      })
+    ).toBe(NOT_INCLUDED_REASON_TEXT["public-copy-dropped"]);
+    expect(
+      settledPendingReason(pending, {
+        status: "not_landed",
+        error: publicCopyNotLandedReason("public-copy-replaced"),
+      })
+    ).toBe(
+      "Another transaction from the wallet used its nonce first, so its public copy can no longer be mined; no gas was paid for it."
+    );
+    expect(
+      settledPendingReason(pending, {
+        status: "error",
+        error: `${NEVER_MINED_RUN_ERROR}; treating them as dropped after 24h`,
+      })
+    ).toBe(PUBLIC_COPY_EXPIRED_TEXT);
+    expect(PUBLIC_COPY_EXPIRED_TEXT).toBe(
+      "Its public copy was not mined within a day; it stays valid until the wallet's next transaction, and KeeperHub no longer watches it."
+    );
+    // Another error, or a step that was not pending, adds nothing.
+    expect(
+      settledPendingReason(pending, { status: "error", error: "boom" })
+    ).toBeUndefined();
+    expect(
+      settledPendingReason(
+        { notIncludedReason: "not-picked" },
+        { status: "not_landed", error: PUBLIC_COPY_DROPPED_REASON }
+      )
+    ).toBeUndefined();
+  });
+
+  it("refused and nonce-used say what happened", () => {
+    expect(PUBLIC_COPY_ERRORS.refused).toBe(
+      "no public RPC could be reached or every RPC rejected it"
+    );
+    expect(PUBLIC_COPY_ERRORS.nonceUsed).toBe(
+      "another transaction holds this nonce"
+    );
+    expect(FALLBACK_NOT_SENT_TEXT["nonce-used"]).toBe(
+      "The public fallback was not sent: another transaction holds this nonce."
+    );
+    expect(FALLBACK_NOT_SENT_TEXT.refused).toContain(
+      "every RPC rejected it (for example for too little balance)"
+    );
+    expect(FALLBACK_NOT_SENT_TEXT["no-public-rpc"]).toBe(
+      "The public fallback was not sent: the network's RPC for this step is a private relay, so there is nowhere public to send it."
     );
   });
 });

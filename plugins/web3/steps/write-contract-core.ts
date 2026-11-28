@@ -13,10 +13,14 @@ import {
   sendReportFields,
 } from "@/lib/web3/submit-signed";
 import type { SkippedTarget } from "@/lib/web3/bundles/plan";
-import type { BuilderReport } from "@/lib/web3/bundles/send-bundle";
+import type {
+  BuilderReport,
+  PublicCopyReport,
+} from "@/lib/web3/bundles/send-bundle";
 import type { BundleSettingsInput } from "@/lib/web3/bundles/settings";
 import {
   type BundleSendRoute,
+  type FallbackNotSentReason,
   RUN_OUTCOME_OUTPUT,
 } from "@/lib/workflow/executor/run-outcome-keys";
 import {
@@ -201,11 +205,19 @@ type BundleOutputs = {
   bundleTargetsSkipped?: SkippedTarget[];
   // Skipped in flight: the block after which the earlier bundle can no longer land.
   inFlightUntilBlock?: number;
+  // Skipped behind an earlier run's public copy not mined yet: its hash.
+  inFlightHash?: string;
   // With Not before set: its unix seconds, the first block that cannot precede it, the latest block read.
   notBefore?: number;
   firstAllowedBlock?: number;
   latestBlock?: number;
   sendAheadBlocks?: number;
+  // A public copy (Bundle and public, or the fallback) and what became of it.
+  publicCopy?: PublicCopyReport;
+  fallbackSent?: boolean;
+  fallbackNotSentReason?: FallbackNotSentReason;
+  // A public copy is out and not mined yet: transactionHash is its hash.
+  pending?: boolean;
 };
 
 export type WriteContractResult =
@@ -653,7 +665,7 @@ async function writeContractCoreImpl(
     };
   }
 
-  const signerRefusal = bundleRoute && bundleSignerRefusal(signerMode);
+  const signerRefusal = bundleRoute && bundleSignerRefusal(signerMode, bundleRoute.mode);
   if (signerRefusal) {
     return signerRefusal;
   }

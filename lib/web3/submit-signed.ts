@@ -47,7 +47,7 @@ export type BroadcastInfo = {
   builders?: BuilderBroadcastResult[];
 };
 
-export type SubmitSignedOptions = {
+type SubmitSignedOptions = {
   // Also send the signed bytes to these block builders, in parallel.
   builderRpcUrls?: BuilderRpcUrls;
 };
@@ -580,16 +580,19 @@ async function reconcile(
     );
   }
 
-  throw pendingBroadcast(expectedHash, originalError);
+  // Read-only flag: no attempt can have sent it and no node knows the hash; callers may read the node's answer.
+  throw pendingBroadcast(expectedHash, originalError, !mayHaveSent);
 }
 
 function pendingBroadcast(
   transactionHash: string,
-  cause: unknown
+  cause: unknown,
+  notSent = false
 ): OnChainPendingError {
   return new OnChainPendingError({
     message: `Transaction send outcome could not be determined (${errorMessage(cause)})`,
     transactionHash,
+    ...(notSent && { notSent: { sendError: cause } }),
   });
 }
 

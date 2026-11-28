@@ -32,6 +32,7 @@ import type { ethers } from "ethers";
 import { db } from "@/lib/db";
 import {
   type BundleMiss,
+  type BundlePublicCopy,
   type BundleRun,
   orgValueReservations,
   type PendingTransaction,
@@ -56,6 +57,8 @@ import {
   LATE_BUNDLE_CHECK_MS,
   LONGEST_BUNDLE_HOLD_MS,
   laggedMinedCount,
+  livePublicCopy,
+  livePublicCopySql,
   MAX_BUNDLE_RUNS,
   MAX_BUNDLE_WINDOW_MS,
   type MinedHash,
@@ -489,6 +492,21 @@ export class NonceManager {
     };
 
     for (const tx of pending) {
+      // Before the nonce checks: the "pending" count includes our own pooled copy.
+      const copy = livePublicCopy(tx);
+      if (
+        copy &&
+        (tx.submittedAt?.getTime() ?? 0) > now - LATE_BUNDLE_CHECK_MS
+      ) {
+        const settled = await this.reconcilePublicCopy(tx, copy.hash, {
+          reader,
+          readMinedNonce,
+          historyVerdict,
+        });
+        warnings.push(...settled.warnings);
+        reconciledCount += settled.reconciled ? 1 : 0;
+        continue;
+      }
       if (tx.nonce < chainNonce && tx.bundleRuns.length > 0) {
         const { mined, replaced } = await historyVerdict(
           tx,
@@ -619,6 +637,58 @@ export class NonceManager {
   }
 
   /**
+   * A public-copy row stays pending until the mined count passes it, then is confirmed with its mined hash or
+   * marked replaced (provedReplaced). Only the sweep's miss count drops it.
+   */
+  private async reconcilePublicCopy(
+    tx: PendingTransaction,
+    publicHash: string,
+    reads: {
+      reader: SessionReader;
+      readMinedNonce: () => Promise<number | null>;
+      historyVerdict: (
+        tx: PendingTransaction,
+        current: readonly string[]
+      ) => Promise<{ mined?: MinedHash; replaced: boolean }>;
+    }
+  ): Promise<{ reconciled: boolean; warnings: string[] }> {
+    const minedCount = await reads.readMinedNonce();
+    if (minedCount === null || minedCount <= tx.nonce) {
+      return {
+        reconciled: false,
+        warnings: [
+          `Public copy ${publicHash} (nonce ${tx.nonce}) not mined yet; left pending`,
+        ],
+      };
+    }
+    const { mined, replaced } = await reads.historyVerdict(
+      tx,
+      currentSendHashes(tx)
+    );
+    if (mined) {
+      await this.confirmMined(tx, mined, reads.reader);
+      return { reconciled: true, warnings: [] };
+    }
+    if (replaced) {
+      if (await this.updateRow(tx, { status: "replaced" })) {
+        await this.settleReplacedCopy(tx);
+      }
+      return {
+        reconciled: true,
+        warnings: [
+          `Public copy ${publicHash} (nonce ${tx.nonce}) was replaced`,
+        ],
+      };
+    }
+    return {
+      reconciled: false,
+      warnings: [
+        `Public copy ${publicHash} (nonce ${tx.nonce}): nonce used, but none of its hashes found yet; left pending`,
+      ],
+    };
+  }
+
+  /**
    * Receipt reads of these hashes, newest first, one each. `nonceEndpointOnly`
    * says every read was answered by the endpoint the chain nonce came from.
    */
@@ -676,6 +746,31 @@ export class NonceManager {
       // The row is confirmed; the sweep retries the settle while its run is not landed.
       logWarn("[NonceManager] Late bundle landing could not settle its run", {
         tx_hash: mined.hash,
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  }
+
+  /** A replaced public copy's run ends Not landed; a failure leaves it to the reconciler's day limit. */
+  private async settleReplacedCopy(tx: PendingTransaction): Promise<void> {
+    // The row's newest entry is its run's (livePublicCopy).
+    const entry = tx.bundleRuns.at(-1);
+    if (!entry) {
+      return;
+    }
+    try {
+      // Loaded on use, as in confirmMined.
+      const { settleDroppedPublicCopy } = await import(
+        "@/lib/web3/bundles/late-landing"
+      );
+      await settleDroppedPublicCopy(
+        entry.executionId,
+        entry.hashes,
+        "public-copy-replaced"
+      );
+    } catch (error) {
+      logWarn("[NonceManager] A replaced public copy's run could not settle", {
+        tx_hash: tx.txHash,
         error: error instanceof Error ? error.name : "unknown",
       });
     }
@@ -863,6 +958,77 @@ export class NonceManager {
           eq(pendingTransactions.status, "pending")
         )
       );
+  }
+
+  /**
+   * Record a public copy on this session's pending row before it is sent (the row's hash becomes the copy's).
+   * False when the row is no longer this session's (nothing is sent).
+   */
+  async markPublicCopy(
+    session: NonceSession,
+    nonce: number,
+    copy: Pick<BundlePublicCopy, "hash" | "kind" | "via">
+  ): Promise<boolean> {
+    const runs = pendingTransactions.bundleRuns;
+    const entry: BundlePublicCopy = { ...copy, at: Date.now() };
+    const updated = await db
+      .update(pendingTransactions)
+      .set({
+        txHash: copy.hash,
+        bundleRuns: sql`jsonb_set(${runs}, ARRAY[(jsonb_array_length(${runs}) - 1)::text], (${runs} -> -1) || ${JSON.stringify({ public: entry })}::jsonb)`,
+      })
+      .where(
+        and(
+          this.ownRow(session, nonce),
+          eq(pendingTransactions.status, "pending"),
+          sql`jsonb_array_length(${runs}) > 0`,
+          sql`${runs} -> -1 ->> 'executionId' = ${session.executionId}`
+        )
+      )
+      .returning({ nonce: pendingTransactions.nonce });
+    return updated.length > 0;
+  }
+
+  /** The public copy never went out (no RPC reached, nonce used): the row is a plain bundle row again. */
+  async markPublicCopyRefused(
+    session: NonceSession,
+    nonce: number
+  ): Promise<void> {
+    const runs = pendingTransactions.bundleRuns;
+    await db
+      .update(pendingTransactions)
+      .set({
+        bundleRuns: sql`jsonb_set(${runs}, ARRAY[(jsonb_array_length(${runs}) - 1)::text, 'public', 'accepted'], 'false'::jsonb)`,
+      })
+      .where(
+        and(
+          this.ownRow(session, nonce),
+          eq(pendingTransactions.status, "pending"),
+          sql`${runs} -> -1 ->> 'executionId' = ${session.executionId}`,
+          sql`${runs} -> -1 ? 'public'`
+        )
+      );
+  }
+
+  /** The hash of a live public copy pending at this wallet's nonce, if any. */
+  async pendingPublicCopyHash(
+    walletAddress: string,
+    chainId: number,
+    nonce: number
+  ): Promise<string | undefined> {
+    const [row] = await db
+      .select({ txHash: pendingTransactions.txHash })
+      .from(pendingTransactions)
+      .where(
+        and(
+          eq(pendingTransactions.walletAddress, walletAddress.toLowerCase()),
+          eq(pendingTransactions.chainId, chainId),
+          eq(pendingTransactions.nonce, nonce),
+          eq(pendingTransactions.status, "pending"),
+          livePublicCopySql()
+        )
+      );
+    return row?.txHash;
   }
 
   private ownRow(session: NonceSession, nonce: number): SQL | undefined {

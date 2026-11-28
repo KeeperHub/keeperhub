@@ -130,6 +130,10 @@ vi.mock("@/lib/web3/wallet-helpers", () => ({
     },
   }),
 }));
+vi.mock("@/lib/execute/native-balance", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/execute/native-balance")>()),
+  getNativeSymbol: async () => "ETH",
+}));
 vi.mock("@/lib/web3/chain-adapter", () => ({
   getChainAdapter: () => ({
     getTransactionUrl: async (hash: string) =>
@@ -327,14 +331,26 @@ describe("prepareBundleRoute", () => {
 
 describe("bundleSignerRefusal", () => {
   it("lets the wallet (EOA) through and refuses Safe and Roles", () => {
-    expect(bundleSignerRefusal({ kind: "eoa" } as never)).toBeUndefined();
+    expect(
+      bundleSignerRefusal({ kind: "eoa" } as never, "bundle")
+    ).toBeUndefined();
     for (const kind of ["safe", "safe-role"]) {
-      expect(bundleSignerRefusal({ kind } as never)).toMatchObject({
+      expect(bundleSignerRefusal({ kind } as never, "bundle")).toMatchObject({
         success: false,
         error: expect.stringContaining("Safe or Roles"),
         errorClass: ExecutionErrorType.USER,
       });
     }
+  });
+
+  it("names the step's own mode", () => {
+    const refusal = bundleSignerRefusal(
+      { kind: "safe" } as never,
+      "bundle-and-public"
+    );
+    expect(!refusal?.success && refusal?.error).toContain(
+      'Send as: Bundle and public (sendMode: "bundle-and-public") cannot send through a Safe'
+    );
   });
 });
 
@@ -940,6 +956,394 @@ describe("writeAsBundle", () => {
     const triggerBlock = { chainId: 1, number: 9 };
     await write({ triggerBlock });
     expect(h.send.mock.calls[0][0]).toMatchObject({ triggerBlock });
+  });
+});
+
+describe("Bundle and public and the public fallback in Write Contract", () => {
+  const PUBLIC_HASH = `0x${"bb".repeat(32)}`;
+  const COPY = { hash: PUBLIC_HASH, sentAtBlock: 10, accepted: true };
+
+  async function publicRoute(): Promise<BundleRoute> {
+    const prepared = await prepare({
+      config: { sendMode: "bundle-and-public", bundleFallback: "public" },
+    });
+    if (!prepared.ok) {
+      throw new Error("expected a route");
+    }
+    return prepared.route;
+  }
+
+  it("reads the mode from the config and keeps the fallback setting", async () => {
+    const prepared = await prepare({
+      config: { sendMode: "bundle", bundleFallback: "public" },
+    });
+    expect(prepared.ok && prepared.route).toMatchObject({
+      mode: "bundle",
+      settings: { fallback: "public" },
+    });
+    expect(await publicRoute()).toMatchObject({ mode: "bundle-and-public" });
+  });
+
+  it("names Bundle and public in its refusals", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org-2");
+    const prepared = await prepare({
+      config: { sendMode: "bundle-and-public" },
+    });
+    expect(!prepared.ok && prepared.failure.error).toBe(
+      'This step is set to Send as: Bundle and public (sendMode: "bundle-and-public"), but bundles are not enabled for this organization. Set Send as to Normal transaction (sendMode: "transaction").'
+    );
+  });
+
+  it("hands the mode and the fallback to the send", async () => {
+    h.send.mockResolvedValue({
+      kind: "not-included",
+      reason: "not-picked",
+      report: REPORT,
+    });
+    await write({ route: await publicRoute() });
+    expect(h.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sendMode: "bundle-and-public",
+        fallback: "public",
+      })
+    );
+  });
+
+  it("routes every outcome by the mode", async () => {
+    h.send.mockResolvedValue({
+      kind: "not-included",
+      reason: "not-picked",
+      report: REPORT,
+    });
+    const result = await write({ route: await publicRoute() });
+    expect(result).toMatchObject({
+      success: true,
+      route: "bundle-and-public",
+      included: false,
+      notIncludedReason: "not-picked",
+    });
+    expect(signals(result).bundleSent).toBe(true);
+    h.send.mockResolvedValue(landed(`0x${"ab".repeat(32)}`));
+    expect(await write({ route: await publicRoute() })).toMatchObject({
+      route: "bundle-and-public",
+      included: true,
+    });
+  });
+
+  it("a copy out and not mined: success, not included, pending, with its hash and no reason", async () => {
+    h.send.mockResolvedValue({
+      kind: "public-pending",
+      hash: PUBLIC_HASH,
+      report: { ...REPORT, publicCopy: { ...COPY, accepted: null } },
+    });
+    const result = await write({ route: await publicRoute() });
+    expect(result).toEqual({
+      success: true,
+      route: "bundle-and-public",
+      included: false,
+      pending: true,
+      transactionHash: PUBLIC_HASH,
+      chainId: 1,
+      transactionLink: `https://scan.example/tx/${PUBLIC_HASH}`,
+      ...REPORT,
+      publicCopy: { ...COPY, accepted: null },
+    });
+    expect(result).not.toHaveProperty("notIncludedReason");
+    // Never shown as Not included; the reservation keeps its charge.
+    expect(signals(result)).toMatchObject({
+      bundleSent: true,
+      notIncluded: false,
+    });
+    expect(bundleReservationEnd(result)).toBe("settle");
+  });
+
+  it("a paid revert: an error with the gas paid, in the native token and units", async () => {
+    h.send.mockResolvedValue({
+      kind: "included",
+      gasLimit: BigInt(60_000),
+      mined: {
+        hash: PUBLIC_HASH,
+        blockNumber: 12,
+        succeeded: false,
+        gasUnits: BigInt(30_000),
+        feeWei: BigInt(30_000) * BigInt(2e9),
+      },
+      report: { ...REPORT, publicCopy: COPY },
+      paidRevert: { lostRace: false },
+    });
+    const result = await write({ route: await publicRoute() });
+    expect(result).toMatchObject({
+      success: false,
+      route: "bundle-and-public",
+      included: true,
+      transactionHash: PUBLIC_HASH,
+      gasUsed: "60000000000000",
+      gasUsedUnits: "30000",
+      broadcastAttempted: true,
+    });
+    expect(!result.success && result.error).toContain("reverted on-chain");
+    expect(!result.success && result.error).toContain(
+      "The public copy was mined and reverted, so the wallet paid its gas: 0.00006 ETH (30000 gas units)."
+    );
+    expect(bundleReservationEnd(result)).toBe("release");
+  });
+
+  it("a lost race says another transaction made the call first", async () => {
+    h.send.mockResolvedValue({
+      kind: "included",
+      gasLimit: BigInt(60_000),
+      mined: {
+        hash: PUBLIC_HASH,
+        blockNumber: 12,
+        succeeded: false,
+        gasUnits: BigInt(30_000),
+        feeWei: BigInt(30_000) * BigInt(2e9),
+      },
+      report: { ...REPORT, publicCopy: COPY },
+      paidRevert: { lostRace: true },
+    });
+    const result = await write({ route: await publicRoute() });
+    expect(!result.success && result.error).toMatch(
+      new RegExp(
+        `^Most likely another transaction made the call first: your public copy \\(${PUBLIC_HASH}\\) was mined in block 12 and reverted \\(.+\\), and the wallet paid 0\\.00006 ETH \\(30000 gas units\\) in gas\\.$`
+      )
+    );
+  });
+
+  it("a plain bundle's mined revert keeps today's text and outputs", async () => {
+    h.send.mockResolvedValue({
+      kind: "included",
+      gasLimit: BigInt(60_000),
+      mined: {
+        hash: PUBLIC_HASH,
+        blockNumber: 12,
+        succeeded: false,
+        gasUnits: BigInt(30_000),
+        feeWei: BigInt(1),
+      },
+      report: REPORT,
+    });
+    const result = await write();
+    expect(result).not.toHaveProperty("gasUsed");
+    expect(!result.success && result.error).not.toContain("public copy");
+  });
+
+  it("a refused fallback is an external error that holds the value and names no reason", async () => {
+    h.send.mockResolvedValue({
+      kind: "fallback-refused",
+      report: {
+        ...REPORT,
+        fallbackSent: false,
+        fallbackNotSentReason: "refused",
+        publicCopy: { ...COPY, accepted: false },
+      },
+    });
+    const result = await write();
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.EXTERNAL,
+      route: "bundle",
+      included: false,
+      broadcastAttempted: true,
+      fallbackSent: false,
+      fallbackNotSentReason: "refused",
+    });
+    expect(!result.success && result.error).toBe(
+      "No public RPC could be reached or every RPC rejected it, so the fallback copy was not sent; nothing was mined and the nonce was released. Check the network's RPC and the wallet's balance."
+    );
+    expect(bundleReservationEnd(result)).toBe("hold");
+    // failOnError=false keeps the fallback outputs.
+    expect(applyFailOnError(result, false)).toMatchObject({
+      success: true,
+      fallbackSent: false,
+      fallbackNotSentReason: "refused",
+      publicCopy: { accepted: false },
+    });
+  });
+
+  it("Bundle and public, no builder accepted and no copy sent: says the copy was not sent either", async () => {
+    h.send.mockResolvedValue({
+      kind: "no-builder-accepted",
+      report: {
+        ...REPORT,
+        publicCopy: {
+          hash: PUBLIC_HASH,
+          accepted: false,
+          error: "no public RPC could be reached or every RPC rejected it",
+        },
+      },
+    });
+    const result = await write({ route: await publicRoute() });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.EXTERNAL,
+      route: "bundle-and-public",
+    });
+    expect(!result.success && result.error).toBe(
+      "No block builder accepted the bundle, and its public copy was not sent (see publicCopy.error), so it is not expected to be included. See this step's builders output for each builder's answer."
+    );
+    // Plain Bundle keeps its words.
+    h.send.mockResolvedValue({ kind: "no-builder-accepted", report: REPORT });
+    const plain = await write();
+    expect(!plain.success && plain.error).toBe(
+      "No block builder accepted the bundle, so it is not expected to be included. See this step's builders output for each builder's answer."
+    );
+  });
+
+  it("a fallback not sent keeps the miss and says why", async () => {
+    h.send.mockResolvedValue({
+      kind: "not-included",
+      reason: "not-picked",
+      report: {
+        ...REPORT,
+        fallbackSent: false,
+        fallbackNotSentReason: "window-ending",
+      },
+    });
+    const result = await write();
+    expect(result).toMatchObject({
+      success: true,
+      route: "bundle",
+      notIncludedReason: "not-picked",
+      fallbackSent: false,
+      fallbackNotSentReason: "window-ending",
+    });
+    expect(bundleReservationEnd(result)).toBe("hold");
+  });
+
+  it("skips behind a public copy with no block to wait for, naming its hash", async () => {
+    h.inFlight.mockResolvedValue({ kind: "other", publicHash: PUBLIC_HASH });
+    expect(await write()).toEqual({
+      success: true,
+      route: "skipped-in-flight",
+      included: false,
+      inFlightHash: PUBLIC_HASH,
+    });
+  });
+
+  it("a throw after the public copy went out is pending on its hash, never not-checked", async () => {
+    h.send.mockImplementationOnce(
+      async (input: { progress: { sent: boolean; report?: unknown } }) => {
+        input.progress.sent = true;
+        input.progress.report = {
+          ...REPORT,
+          publicCopy: { ...COPY, accepted: null },
+        };
+        throw new Error("socket hang up");
+      }
+    );
+    const result = await write({ route: await publicRoute() });
+    expect(result).toMatchObject({
+      success: true,
+      route: "bundle-and-public",
+      included: false,
+      pending: true,
+      transactionHash: COPY.hash,
+    });
+    expect(result).not.toHaveProperty("notIncludedReason");
+  });
+
+  it("a throw after a copy that never went out stays not-checked", async () => {
+    h.send.mockImplementationOnce(
+      async (input: { progress: { sent: boolean; report?: unknown } }) => {
+        input.progress.sent = true;
+        input.progress.report = {
+          ...REPORT,
+          publicCopy: { ...COPY, accepted: false },
+        };
+        throw new Error("socket hang up");
+      }
+    );
+    const result = await write({ route: await publicRoute() });
+    expect(result).toMatchObject({ notIncludedReason: "not-checked" });
+    expect(result).not.toHaveProperty("transactionHash");
+  });
+
+  it("reads the wallet's mined count for the in-flight check", async () => {
+    h.inFlight.mockResolvedValue({ kind: "other", publicHash: PUBLIC_HASH });
+    await write();
+    const [options] = h.inFlight.mock.calls[0] as [
+      { readMinedCount: () => Promise<number> },
+    ];
+    expect(typeof options.readMinedCount).toBe("function");
+  });
+
+  it("a replay whose public copy was mined returns the landing", async () => {
+    replayReceipt = {
+      blockNumber: 12,
+      status: 1,
+      gasUsed: BigInt(40_000),
+      gasPrice: BigInt(11),
+    };
+    h.inFlight.mockResolvedValue({
+      kind: "replay",
+      nonce: 1,
+      publicHash: PUBLIC_HASH,
+    });
+    const result = await write({ route: await publicRoute() });
+    expect(result).toMatchObject({
+      success: true,
+      route: "bundle-and-public",
+      included: true,
+      transactionHash: PUBLIC_HASH,
+    });
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("a replay whose public copy was mined and reverted is a paid revert", async () => {
+    replayReceipt = {
+      blockNumber: 12,
+      status: 0,
+      gasUsed: BigInt(40_000),
+      gasPrice: BigInt(11),
+    };
+    h.inFlight.mockResolvedValue({
+      kind: "replay",
+      nonce: 1,
+      publicHash: PUBLIC_HASH,
+    });
+    const result = await write({ route: await publicRoute() });
+    expect(result).toMatchObject({ success: false, gasUsedUnits: "40000" });
+    expect(!result.success && result.error).toContain("public copy");
+  });
+
+  it.each([
+    ["not mined yet", null],
+    ["unreadable", new Error("rpc down")],
+  ])(
+    "a replay whose public copy is %s is pending on its hash, never not-checked",
+    async (_name, receipt) => {
+      replayReceipt = receipt;
+      h.inFlight.mockResolvedValue({
+        kind: "replay",
+        nonce: 1,
+        publicHash: PUBLIC_HASH,
+      });
+      const result = await write({ route: await publicRoute() });
+      expect(result).toMatchObject({
+        success: true,
+        included: false,
+        pending: true,
+        transactionHash: PUBLIC_HASH,
+      });
+      expect(result).not.toHaveProperty("notIncludedReason");
+    }
+  );
+
+  it("a replay of a refused fallback fails the same way", async () => {
+    h.inFlight.mockResolvedValue({
+      kind: "replay",
+      nonce: 1,
+      missed: "fallback-refused",
+    });
+    const result = await write();
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.EXTERNAL,
+      route: "bundle",
+      fallbackSent: false,
+    });
+    expect(h.send).not.toHaveBeenCalled();
   });
 });
 

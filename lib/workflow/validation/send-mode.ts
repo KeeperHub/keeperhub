@@ -16,7 +16,9 @@ import {
   shortened,
 } from "@/lib/web3/bundles/settings";
 import {
-  BUNDLE_SAFE_REFUSAL,
+  bundleModeName,
+  bundleModeOf,
+  bundleSafeRefusal,
   chainHasBuilders,
   chainHasPrivateRelay,
   hasLegacyFlagOnly,
@@ -30,6 +32,7 @@ import {
   SEND_MODE_KEY,
   type SendMode,
   type SendModeChain,
+  sendAsSubject,
   sendModeConflict,
   sendModeOption,
   USE_NORMAL_HINT,
@@ -73,7 +76,7 @@ function networkName(chainId: number, row: ChainRow | undefined): string {
   return row?.name ?? `chain ${chainId}`;
 }
 
-const SET_TO_BUNDLE = 'Send as: Bundle (sendMode "bundle")';
+const BUNDLE_MODES_TEXT = `${sendAsSubject(SEND_MODE.BUNDLE)} or ${bundleModeName(SEND_MODE.BUNDLE_AND_PUBLIC)}`;
 
 function chainIdOf(network: unknown): number | undefined {
   if (typeof network !== "string" && typeof network !== "number") {
@@ -128,6 +131,7 @@ function bundleKeysOf(config: Config): string {
     config[BUNDLE_SETTING_KEYS.builders],
     config[BUNDLE_SETTING_KEYS.notBefore],
     config[BUNDLE_SETTING_KEYS.sendAheadBlocks],
+    config[BUNDLE_SETTING_KEYS.fallback],
     config.web3Connection,
   ]);
 }
@@ -144,42 +148,45 @@ function unchangedFromSaved(
     Object.is(before[networkField], config[networkField]) &&
     Object.is(before[SEND_MODE_KEY], config[SEND_MODE_KEY]) &&
     Object.is(storedLegacyFlag(before), storedLegacyFlag(config)) &&
-    sendAheadKeysOf(before) === sendAheadKeysOf(config) &&
+    bundleOnlyKeysOf(before) === bundleOnlyKeysOf(config) &&
     (!isBundleMode(resolveSendMode(config)) ||
       bundleKeysOf(before) === bundleKeysOf(config))
   );
 }
 
-/** Not before and Send ahead, compared on every Send as: only a bundle may hold them. */
-function sendAheadKeysOf(config: Config): string {
-  return JSON.stringify([
-    config[BUNDLE_SETTING_KEYS.notBefore],
-    config[BUNDLE_SETTING_KEYS.sendAheadBlocks],
-  ]);
+// Keys only a bundle step may hold, with their labels.
+const BUNDLE_ONLY_KEYS = [
+  [BUNDLE_SETTING_KEYS.notBefore, BUNDLE_SETTING_LABELS.notBefore],
+  [BUNDLE_SETTING_KEYS.sendAheadBlocks, BUNDLE_SETTING_LABELS.sendAheadBlocks],
+  [BUNDLE_SETTING_KEYS.fallback, BUNDLE_SETTING_LABELS.fallback],
+] as const;
+
+/** Not before, Send ahead and If not included, compared on every Send as: only a bundle may hold them. */
+function bundleOnlyKeysOf(config: Config): string {
+  return JSON.stringify(BUNDLE_ONLY_KEYS.map(([key]) => config[key]));
 }
 
-/** Not before or Send ahead set on a step that does not send as a bundle, which would ignore them. */
-function strayBundleTimeIssue(
+/** A bundle-only key set on a step that does not send as a bundle, which would ignore it. */
+function strayBundleOnlyKeyIssue(
   index: number,
   node: Node,
   config: Config
 ): ActionConfigValidationIssue | undefined {
-  const key = [
-    BUNDLE_SETTING_KEYS.notBefore,
-    BUNDLE_SETTING_KEYS.sendAheadBlocks,
-  ].find((field) => !isUnset(config[field]));
-  if (key === undefined) {
+  const stray = BUNDLE_ONLY_KEYS.find(([key]) => !isUnset(config[key]));
+  if (stray === undefined) {
     return;
   }
-  const label =
-    key === BUNDLE_SETTING_KEYS.notBefore
-      ? BUNDLE_SETTING_LABELS.notBefore
-      : BUNDLE_SETTING_LABELS.sendAheadBlocks;
+  const [key, label] = stray;
+  // If not included is Bundle's alone; Bundle and public ignores it.
+  const modes =
+    key === BUNDLE_SETTING_KEYS.fallback
+      ? sendAsSubject(SEND_MODE.BUNDLE)
+      : BUNDLE_MODES_TEXT;
   return issueFor(
     index,
     node,
     config[key],
-    `${label} (${key}) only works with ${SET_TO_BUNDLE}. Clear it, or set Send as to Bundle.`,
+    `${label} (${key}) only works with ${modes}. Clear it, or set Send as to Bundle.`,
     key
   );
 }
@@ -302,7 +309,8 @@ function bundleNodeIssues(
   kept: { route: boolean; storedAsIs: boolean },
   ctx: BundleContext
 ): { issue?: ActionConfigValidationIssue; candidate?: Candidate } {
-  const mode = resolveSendMode(config);
+  const mode = bundleModeOf(config);
+  const subject = sendAsSubject(mode);
   const keptRoute = kept.route;
   const refuse = (message: string, field: string = SEND_MODE_KEY) => ({
     issue: issueFor(
@@ -315,7 +323,7 @@ function bundleNodeIssues(
   });
   if (ctx.direct) {
     return refuse(
-      `${SET_TO_BUNDLE} only runs in a Write Contract step of a workflow, not through direct execution. ${USE_NORMAL_HINT}`
+      `${subject} only runs in a Write Contract step of a workflow, not through direct execution. ${USE_NORMAL_HINT}`
     );
   }
   // A step saved as a bundle before keeps saving (a rollback of the rollout included).
@@ -328,13 +336,13 @@ function bundleNodeIssues(
   if (!(keptRoute || ctx.enabled)) {
     return refuse(
       ctx.copy
-        ? `${SET_TO_BUNDLE} cannot run in your organization: bundles are not turned on for it yet.`
-        : `${SET_TO_BUNDLE} is not turned on for this organization yet. ${USE_NORMAL_HINT}`
+        ? `${subject} cannot run in your organization: bundles are not turned on for it yet.`
+        : `${subject} is not turned on for this organization yet. ${USE_NORMAL_HINT}`
     );
   }
   if (String(config.web3Connection ?? "").startsWith("safe:")) {
     return refuse(
-      `web3Connection "safe:...": ${BUNDLE_SAFE_REFUSAL}`,
+      `web3Connection "safe:...": ${bundleSafeRefusal(mode)}`,
       "web3Connection"
     );
   }
@@ -366,14 +374,15 @@ function bundleCandidateIssue(
   if (chainId === undefined) {
     return;
   }
+  const subject = sendAsSubject(isBundleMode(mode) ? mode : SEND_MODE.BUNDLE);
   if (!chainHasBuilders(row)) {
     return issueFor(
       index,
       node,
       mode,
       candidate.copy
-        ? `${SET_TO_BUNDLE} cannot run on ${networkName(chainId, row)}: it has no block builders that take bundles.`
-        : `${SET_TO_BUNDLE} is not available on ${networkName(chainId, row)}: it has no block builders that take bundles. ${USE_NORMAL_HINT}`
+        ? `${subject} cannot run on ${networkName(chainId, row)}: it has no block builders that take bundles.`
+        : `${subject} is not available on ${networkName(chainId, row)}: it has no block builders that take bundles. ${USE_NORMAL_HINT}`
     );
   }
   if (candidate.notBefore && minBlockGapSeconds(chainId) === undefined) {
@@ -401,7 +410,7 @@ function bundleCandidateIssue(
       index,
       node,
       received,
-      `${SET_TO_BUNDLE} cannot run: ${networkName(chainId, row)} lists none of its builders (${shown.join(", ")}).`,
+      `${subject} cannot run: ${networkName(chainId, row)} lists none of its builders (${shown.join(", ")}).`,
       BUNDLE_SETTING_KEYS.builders
     );
   }
@@ -447,7 +456,7 @@ function nodeIssues(
   }
   const mode = resolveSendMode(config);
   if (!isBundleMode(mode)) {
-    const stray = strayBundleTimeIssue(index, node, config);
+    const stray = strayBundleOnlyKeyIssue(index, node, config);
     if (stray) {
       return { issue: stray };
     }
@@ -575,7 +584,7 @@ export async function validateSendModeForSave(
     const unchanged = unchangedFromSaved(config, before, networkField);
     // validate_workflow also flags a stored Not before / Send ahead a non-bundle step ignores.
     if (options.recheckBundles === true && !ctx.copy && !recheck && unchanged) {
-      const stray = strayBundleTimeIssue(index, node, config);
+      const stray = strayBundleOnlyKeyIssue(index, node, config);
       if (stray) {
         issues.push(stray);
       }

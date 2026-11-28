@@ -10,6 +10,7 @@
  */
 import { NOT_LANDED_LATER } from "@/lib/errors/execution-status";
 import {
+  BUNDLE_FALLBACK,
   BUNDLE_SETTING_KEYS,
   BUNDLE_SETTING_LABELS,
   DEFAULT_BUNDLE_BLOCKS,
@@ -25,11 +26,16 @@ import {
 } from "@/lib/web3/next-block-limits";
 import {
   BUNDLE_SEND_MODES,
+  SEND_MODE,
   SEND_MODE_KEY,
   SEND_MODE_OPTIONS,
   unsupportedSendMode,
 } from "@/lib/web3/send-mode";
 import type { ShowWhen } from "@/lib/workflow/editor/show-when";
+import {
+  FALLBACK_NOT_SENT_REASONS,
+  PUBLIC_COPY_ERRORS,
+} from "@/lib/workflow/executor/run-outcome-keys";
 import type {
   ActionConfigField,
   ActionConfigFieldBase,
@@ -68,7 +74,7 @@ export function sendModeField(actionType?: string): ActionConfigFieldBase {
   const noRelay = unsupportedSendMode(actionType, "private-relay");
   const bundle = unsupportedSendMode(actionType, "bundle")
     ? ""
-    : ` "bundle" sends it only to the network's block builders for the next 1 to ${MAX_BUNDLE_BLOCKS} blocks (bundleBlocks), never gas-sponsored and never included if it would revert; only on networks with builders, for organizations where bundles are turned on, with your wallet (EOA) connection, and not inside a For Each nested in another For Each.`;
+    : ` "bundle" sends it only to the network's block builders for the next 1 to ${MAX_BUNDLE_BLOCKS} blocks (bundleBlocks), never gas-sponsored and never included if it would revert; only on networks with builders, for organizations where bundles are turned on, with your wallet (EOA) connection, and not inside a For Each nested in another For Each. "bundle-and-public" does the same and also sends the first target's transaction to the public mempool, from the first target block (or Not before, when set); only one copy can be mined, a public copy that is mined and reverts is paid for, and anyone can see it and rebroadcast it until the wallet's next transaction. With "bundle", bundleFallback "public" sends the last target's transaction publicly when no builder picked it and the call still works.`;
   return {
     editorRenderer: "send-mode",
     helpTip: noRelay
@@ -102,7 +108,7 @@ export function bundleSettingsFields(): ActionConfigFieldBase[] {
     {
       editorRenderer: "bundle-setting",
       helpText: "Each block keeps the wallet busy for about 12 seconds more.",
-      helpTip: `Bundle only: how many blocks to try, starting with the next one, one signed transaction each. A whole number from 1 to ${MAX_BUNDLE_BLOCKS}; empty means ${DEFAULT_BUNDLE_BLOCKS}. Each block adds about 12 seconds while the wallet waits for the result.`,
+      helpTip: `Bundle or Bundle and public only: how many blocks to try, starting with the next one, one signed transaction each. A whole number from 1 to ${MAX_BUNDLE_BLOCKS}; empty means ${DEFAULT_BUNDLE_BLOCKS}. Each block adds about 12 seconds while the wallet waits for the result.`,
       key: BUNDLE_SETTING_KEYS.blocks,
       label: BUNDLE_SETTING_LABELS.blocks,
       max: MAX_BUNDLE_BLOCKS,
@@ -114,7 +120,7 @@ export function bundleSettingsFields(): ActionConfigFieldBase[] {
     },
     {
       editorRenderer: "bundle-setting",
-      helpTip: `Bundle only: how much higher the tip is for each later block, compounded, starting from Priority Fee. Later tips stop at the network's tip limit, and the step raises its fee cap to pay them, up to Max Fee (10,000 gwei when empty). A whole number from 0 to ${MAX_TIP_INCREASE_PERCENT}; empty means 0.`,
+      helpTip: `Bundle or Bundle and public only: how much higher the tip is for each later block, compounded, starting from Priority Fee. Later tips stop at the network's tip limit, and the step raises its fee cap to pay them, up to Max Fee (10,000 gwei when empty). A whole number from 0 to ${MAX_TIP_INCREASE_PERCENT}; empty means 0.`,
       key: BUNDLE_SETTING_KEYS.tipIncreasePercent,
       label: BUNDLE_SETTING_LABELS.tipIncreasePercent,
       max: MAX_TIP_INCREASE_PERCENT,
@@ -128,7 +134,7 @@ export function bundleSettingsFields(): ActionConfigFieldBase[] {
       editorRenderer: "bundle-setting",
       helpText:
         "Includes builders the network adds later. Untick it to pick some, at least one; new builders are then not added.",
-      helpTip: `Bundle only: the names of the network's block builders to send to (GET /api/chains lists them as bundleBuilders), up to ${MAX_SELECTED_BUILDERS}. Leave it out, or send [], to send to all of them, including builders added later.`,
+      helpTip: `Bundle or Bundle and public only: the names of the network's block builders to send to (GET /api/chains lists them as bundleBuilders), up to ${MAX_SELECTED_BUILDERS}. Leave it out, or send [], to send to all of them, including builders added later.`,
       key: BUNDLE_SETTING_KEYS.builders,
       label: BUNDLE_SETTING_LABELS.builders,
       max: MAX_SELECTED_BUILDERS,
@@ -137,7 +143,7 @@ export function bundleSettingsFields(): ActionConfigFieldBase[] {
     },
     {
       editorRenderer: "bundle-setting",
-      helpTip: `Bundle only, optional: the bundle never lands in a block before this time. Unix seconds (such as 1796126400) or an ISO 8601 date with a time zone (such as 2026-12-01T12:00:00Z); a template is read when the run starts (a number, its text, or such a date). A 13-, 16- or 19-digit value is refused (milliseconds, microseconds, nanoseconds), and so is Not before on a network without fixed slots. While the first block that cannot be earlier is more than Send ahead + 1 blocks away, the step sends nothing and the run ends Skipped (Waiting). Empty: sends for the next blocks.`,
+      helpTip: `Bundle or Bundle and public only, optional: the bundle never lands in a block before this time. Unix seconds (such as 1796126400) or an ISO 8601 date with a time zone (such as 2026-12-01T12:00:00Z); a template is read when the run starts (a number, its text, or such a date). A 13-, 16- or 19-digit value is refused (milliseconds, microseconds, nanoseconds), and so is Not before on a network without fixed slots. While the first block that cannot be earlier is more than Send ahead + 1 blocks away, the step sends nothing and the run ends Skipped (Waiting). Empty: sends for the next blocks.`,
       key: BUNDLE_SETTING_KEYS.notBefore,
       label: BUNDLE_SETTING_LABELS.notBefore,
       placeholder: "1796126400",
@@ -155,6 +161,22 @@ export function bundleSettingsFields(): ActionConfigFieldBase[] {
       showWhen: SHOW_FOR_BUNDLE,
       step: 1,
       type: "number",
+    },
+    {
+      editorRenderer: "bundle-setting",
+      helpTip: `Bundle only: what happens when no builder includes the bundle. "${BUNDLE_FALLBACK.STOP}" (the default, also when empty) ends the step Not landed. "${BUNDLE_FALLBACK.PUBLIC}" sends the last target block's transaction to the public mempool when the call still works; a public copy that is mined and reverts is paid for. No templates. Bundle and public ignores it.`,
+      key: BUNDLE_SETTING_KEYS.fallback,
+      label: BUNDLE_SETTING_LABELS.fallback,
+      // No defaultValue: an action switch would write it onto steps that are not Bundle.
+      options: [
+        { label: "Stop", value: BUNDLE_FALLBACK.STOP },
+        {
+          label: "Send publicly if still needed",
+          value: BUNDLE_FALLBACK.PUBLIC,
+        },
+      ],
+      showWhen: { field: SEND_MODE_KEY, equals: SEND_MODE.BUNDLE },
+      type: "select",
     },
   ];
 }
@@ -325,7 +347,7 @@ export function sendRouteOutputFields(): OutputField[] {
     {
       field: "route",
       description:
-        "How KeeperHub routed the send on an EVM network: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as), sponsored (gas-sponsored), bundle (Write Contract sent as a bundle to block builders), skipped-in-flight (Write Contract with Send as Bundle sent nothing because this workflow's earlier bundle could still land) or waiting (Write Contract with Send as Bundle sent nothing because its Not before time is still too far ahead, or Max Fee held back the targets ahead). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent (except skipped-in-flight and waiting), or when only the private relay was tried and it never confirmed taking the transaction; more values may be added.",
+        "How KeeperHub routed the send on an EVM network: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as), sponsored (gas-sponsored), bundle (Write Contract sent as a bundle to block builders), bundle-and-public (sent as a bundle and to the public mempool), skipped-in-flight (Write Contract with Send as Bundle sent nothing because this workflow's earlier bundle could still land, or an earlier run's public copy is not mined yet: KeeperHub checks it every few minutes and stops waiting after a day) or waiting (Write Contract with Send as Bundle sent nothing because its Not before time is still too far ahead, or Max Fee held back the targets ahead). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent (except skipped-in-flight and waiting), or when only the private relay was tried and it never confirmed taking the transaction; more values may be added.",
     },
     {
       field: "included",
@@ -335,42 +357,70 @@ export function sendRouteOutputFields(): OutputField[] {
   ];
 }
 
-/** Write Contract outputs when Send as is Bundle (sendMode "bundle"). */
+const PUBLIC_COPY_ERROR_LIST = Object.values(PUBLIC_COPY_ERRORS)
+  .map((error) => `"${error}"`)
+  .join(", ");
+
+/** Write Contract outputs when Send as is Bundle or Bundle and public. */
 export function bundleOutputFields(): OutputField[] {
   return [
     {
       field: "includedBlock",
       description:
-        'Bundle only (route "bundle"): the block the transaction was included in. Absent when it was not included.',
+        "Bundle or Bundle and public only: the block the transaction was included in. Absent when it was not included.",
     },
     {
       field: "notIncludedReason",
-      description: `Bundle only: why the bundle did not land in any of its blocks. not-picked: no builder included it, though the call would still succeed. no-longer-needed: the call would now revert, so no builder could include it. not-checked: KeeperHub could not tell whether it landed (the network could not be read in time, or this step ran again after sending its bundle); it may still land. With it, success is true, included is false, there is no transactionHash, and the run ends Not landed. No gas is paid unless it lands. ${NOT_LANDED_LATER} This step's output is not updated.`,
+      description: `Bundle or Bundle and public only: why the bundle did not land in any of its blocks. not-picked: no builder included it, though the call would still succeed. no-longer-needed: the call would now revert, so no builder could include it. not-checked: KeeperHub could not tell whether it landed (the network could not be read in time, or this step ran again after sending its bundle); it may still land. With it, success is true, included is false, there is no transactionHash, and the run ends Not landed. No gas is paid unless it lands. ${NOT_LANDED_LATER} This step's output is not updated.`,
+    },
+    {
+      field: "pending",
+      description:
+        "Bundle or Bundle and public only: true when a public copy was sent and is not mined yet. Then success is true, included is false, transactionHash is the public copy's hash and there is no notIncludedReason; the run ends unconfirmed until KeeperHub finds the copy mined (Success, or Error if it reverted), finds it on no RPC for three checks (Not landed), or a day passes (Error). This step's output is not updated when the run settles. Branch on included, not on success.",
+    },
+    {
+      field: "publicCopy",
+      description:
+        `Bundle or Bundle and public only: the transaction sent to the public mempool (Bundle and public, or the fallback), { hash, sentAtBlock?, accepted, error? }. sentAtBlock is the latest block when it was sent, absent when it was not sent. accepted is true when an RPC took it, null when no answer was clear (it may be in a mempool), false when it was not sent (including when every RPC rejected it, for example for too little balance), with error one of: ${PUBLIC_COPY_ERROR_LIST}. The step landed through this copy when transactionHash equals publicCopy.hash.`,
+    },
+    {
+      field: "fallbackSent",
+      description:
+        'Bundle with If not included set to "public" only: true when the last target\'s transaction was sent publicly (taken or unclear), false when it was not. A public copy that is mined and reverts is paid for.',
+    },
+    {
+      field: "fallbackNotSentReason",
+      description: `Bundle with If not included set to "public" only, with fallbackSent false: why it was not sent, one of ${FALLBACK_NOT_SENT_REASONS.join(", ")}. check-failed: the call could not be checked; window-ending: less than two slots left; not-checked: the bundle's outcome was still open; no-public-rpc: the network's RPC for this step is a private relay, so there is nowhere public to send it; refused: no public RPC could be reached or every RPC rejected it; nonce-used: another transaction holds this nonce.`,
     },
     {
       field: "targetBlocks",
       description:
-        "Bundle only: the block numbers the bundle was sent for, in order.",
+        "Bundle or Bundle and public only: the block numbers the bundle was sent for, in order.",
     },
     {
       field: "targetTipsGwei",
       description:
-        "Bundle only: the maximum priority fee (tip) in gwei of the transaction sent for each target block, in the order of targetBlocks. The tip paid can be lower when the base fee leaves less room under the fee cap.",
+        "Bundle or Bundle and public only: the maximum priority fee (tip) in gwei of the transaction sent for each target block, in the order of targetBlocks. The tip paid can be lower when the base fee leaves less room under the fee cap.",
     },
     {
       field: "builders",
       description:
-        "Bundle only: one entry per block builder, { name, accepted, error? }. accepted is true when the builder took the bundle for any target, false when it refused every one, null when its answer was unclear. error is the builder's answer (shortened, links and long hex removed) or a KeeperHub note when there was no usable answer (no answer in time, unreadable answer, ...).",
+        "Bundle or Bundle and public only: one entry per block builder, { name, accepted, error? }. accepted is true when the builder took the bundle for any target, false when it refused every one, null when its answer was unclear. error is the builder's answer (shortened, links and long hex removed) or a KeeperHub note when there was no usable answer (no answer in time, unreadable answer, ...).",
     },
     {
       field: "bundleTargetsSkipped",
       description:
-        "Bundle only: blocks no transaction was sent for, { block, reason }, where reason is simulation-failed, target-passed or max-fee-below-projected-base-fee. Absent when none were skipped.",
+        "Bundle or Bundle and public only: blocks no transaction was sent for, { block, reason }, where reason is simulation-failed, target-passed or max-fee-below-projected-base-fee. Absent when none were skipped.",
     },
     {
       field: "inFlightUntilBlock",
       description:
-        'Bundle only (route "skipped-in-flight"): the block after which the earlier bundle this step waited behind can no longer land.',
+        'Bundle or Bundle and public only (route "skipped-in-flight"): the block after which the earlier bundle this step waited behind can no longer land. Absent when it waited behind a public copy not mined yet, which has no such block (see inFlightHash).',
+    },
+    {
+      field: "inFlightHash",
+      description:
+        'Bundle or Bundle and public only (route "skipped-in-flight"): the hash of the earlier run\'s public copy this step waited behind, not mined yet. KeeperHub checks it every few minutes and stops waiting after a day.',
     },
     {
       field: "notBefore",

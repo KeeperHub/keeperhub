@@ -1,9 +1,27 @@
 import {
+  BUNDLE_BLOCK_MS,
   BUNDLE_WINDOW_MARGIN_BLOCKS,
   findMinedHash,
   type MinedHash,
   type ReceiptView,
 } from "./bundle-history";
+
+const POLL_MS = 1000;
+
+/** Test hooks for a send's timing; production leaves them unset. */
+type SendTiming = { timing?: { pollMs?: number; slotMs?: number } };
+
+export function pollMsOf(input: SendTiming): number {
+  return input.timing?.pollMs ?? POLL_MS;
+}
+
+export function slotMsOf(input: SendTiming): number {
+  return input.timing?.slotMs ?? BUNDLE_BLOCK_MS;
+}
+
+export function sleepFor(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
 
 /** Reads the watcher needs; each may throw on an RPC failure. */
 export type InclusionReads = {
@@ -55,9 +73,17 @@ const RECEIPT_LAG_BLOCKS = 2;
 
 type WatchState = { passedAt?: number };
 
+type PollOptions = {
+  nonce: number;
+  hashes: readonly string[];
+  lastTarget: number;
+  // A public copy is out: the pool can mine it after the targets, so never not-included.
+  publicOut?: boolean;
+};
+
 // One poll: a block, the nonce at that block, then receipts once it passed.
 async function poll(
-  options: { nonce: number; hashes: readonly string[]; lastTarget: number },
+  options: PollOptions,
   reads: InclusionReads,
   state: WatchState
 ): Promise<InclusionResult | undefined> {
@@ -74,7 +100,8 @@ async function poll(
       : undefined;
   }
   // Decided by blocks only, with the same margin the nonce manager keeps.
-  return block > options.lastTarget + BUNDLE_WINDOW_MARGIN_BLOCKS
+  return !options.publicOut &&
+    block > options.lastTarget + BUNDLE_WINDOW_MARGIN_BLOCKS
     ? { kind: "not-included" }
     : undefined;
 }
@@ -83,15 +110,10 @@ async function poll(
  * Watch for one of a bundle's hashes to be mined at `nonce`, polling every
  * `pollMs` until the chain decides it or `windowEnd` (epoch ms) passes.
  * Read errors keep it polling; wall time alone never says "not included".
+ * With `publicOut` it ends only included, used elsewhere or undecided.
  */
 export async function watchInclusion(
-  options: {
-    nonce: number;
-    hashes: readonly string[];
-    lastTarget: number;
-    pollMs: number;
-    windowEnd: number;
-  },
+  options: PollOptions & { pollMs: number; windowEnd: number },
   reads: InclusionReads,
   sleep: (ms: number) => Promise<void> = (ms) =>
     new Promise((resolve) => setTimeout(resolve, ms))

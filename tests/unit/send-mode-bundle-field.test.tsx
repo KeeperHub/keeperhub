@@ -433,7 +433,7 @@ describe("warnings and changes around Bundle", () => {
     expect(
       sendModeWarning({ ...BUNDLE, web3Connection: "safe:s1" })?.text
     ).toBe(
-      'Send as Bundle cannot send through a Safe or Roles connection yet. Use your wallet (EOA) connection, or set Send as to Normal transaction (sendMode: "transaction").'
+      'Send as: Bundle (sendMode: "bundle") cannot send through a Safe or Roles connection yet. Use your wallet (EOA) connection, or set Send as to Normal transaction (sendMode: "transaction").'
     );
     setEditorBundlesEnabled(undefined);
     expect(sendModeWarning(BUNDLE)).toBeUndefined();
@@ -460,5 +460,193 @@ describe("warnings and changes around Bundle", () => {
     expect(badge?.getAttribute("title")).toBe(
       "Send as: Bundle to block builders"
     );
+  });
+});
+
+const BUNDLE_AND_PUBLIC = { ...BUNDLE, sendMode: "bundle-and-public" };
+const PUBLIC_HINT =
+  "Sent to the block builders and to the public mempool too, from the first target block (or Not before, when set). Only one copy can be mined. If the public copy is mined and reverts, your wallet pays its gas. Anyone can see the public copy, and it stays valid until the wallet's next transaction.";
+const RISK_HINT =
+  "The public copy can be mined and revert; then your wallet pays its gas.";
+
+function describedText(element: Element | null | undefined): string[] {
+  return (element?.getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent ?? `missing ${id}`);
+}
+
+function fallbackTrigger(): HTMLElement | null {
+  return container.querySelector('[data-setting="bundleFallback"]');
+}
+
+describe("Bundle and public in the Send as menu", () => {
+  it("is offered where Bundle is, with its label, hint, badge and Sponsor gas notice", () => {
+    const option = availableSendModes(editorChainOf("1")).find(
+      (candidate) => candidate.value === "bundle-and-public"
+    );
+    expect(option).toMatchObject({
+      label: "Bundle and public",
+      shortLabel: "Bundle and public",
+      badge: "BUNDLE + PUBLIC",
+      sponsorOffNotice:
+        "Sponsor gas turned off: bundles are paid from your wallet.",
+    });
+    expect(option?.hint ?? option?.description).toBe(PUBLIC_HINT);
+    const offered = (network: string) =>
+      availableSendModes(editorChainOf(network)).map((entry) => entry.value);
+    expect(offered("8453")).not.toContain("bundle-and-public");
+    setEditorBundlesEnabled(false);
+    expect(offered("1")).not.toContain("bundle-and-public");
+  });
+
+  it("is only on Write Contract", () => {
+    const values = (action: string) =>
+      findActionById(action)
+        ?.configFields.flatMap((entry) =>
+          entry.type === "group" ? entry.fields : [entry]
+        )
+        .find((entry) => entry.key === "sendMode")
+        ?.options?.map((option) => option.value);
+    expect(values("web3/write-contract")).toContain("bundle-and-public");
+    expect(values("web3/transfer-funds")).not.toContain("bundle-and-public");
+    expect(values("web3/batch-write-contract")).not.toContain(
+      "bundle-and-public"
+    );
+  });
+
+  it("turns Sponsor gas off with the bundle notice when picked", () => {
+    const change = pickSendMode(
+      { ...WRITE, sponsorGas: true },
+      "bundle-and-public"
+    );
+    expect(Object.fromEntries(change.writes)).toEqual({
+      sendMode: "bundle-and-public",
+      usePrivateMempool: false,
+      sponsorGas: false,
+    });
+    expect(change.notice).toBe(
+      "Sponsor gas turned off: bundles are paid from your wallet."
+    );
+  });
+
+  it("shows its hint under the closed field, read with it", async () => {
+    await render(BUNDLE_AND_PUBLIC);
+    expect(describedText(container.querySelector("#sendMode"))).toEqual([
+      PUBLIC_HINT,
+    ]);
+  });
+
+  it("draws the bundle box without If not included", async () => {
+    await render({ ...BUNDLE_AND_PUBLIC, bundleFallback: "public" });
+    const box = byTestId("bundle-settings");
+    expect(box?.textContent).toContain("Target blocks");
+    expect(box?.textContent).toContain("Tip increase per block (%)");
+    expect(box?.textContent).not.toContain("If not included");
+    expect(fallbackTrigger()).toBeNull();
+    expect(byTestId("bundle-fallback-risk")).toBeNull();
+  });
+
+  it("shows a BUNDLE + PUBLIC badge on the canvas", async () => {
+    await act(async () => {
+      root.render(<SendModeBadge config={BUNDLE_AND_PUBLIC} />);
+      await Promise.resolve();
+    });
+    const badge = byTestId("send-mode-badge");
+    expect(badge?.firstChild?.textContent).toBe("BUNDLE + PUBLIC");
+    expect(badge?.getAttribute("title")).toBe("Send as: Bundle and public");
+    expect(byTestId("send-mode-warning-badge")).toBeNull();
+  });
+});
+
+describe("If not included", () => {
+  const field = () =>
+    findActionById("web3/write-contract")
+      ?.configFields.flatMap((entry) =>
+        entry.type === "group" ? entry.fields : [entry]
+      )
+      .find((entry) => entry.key === "bundleFallback");
+
+  it("is a Stop / Send publicly select shown only for Bundle, with no default", () => {
+    expect(field()).toMatchObject({
+      label: "If not included",
+      type: "select",
+      options: [
+        { label: "Stop", value: "stop" },
+        { label: "Send publicly if still needed", value: "public" },
+      ],
+      showWhen: { field: "sendMode", equals: "bundle" },
+    });
+    // A default would be written onto every new Write Contract step.
+    expect(field()?.defaultValue).toBeUndefined();
+  });
+
+  it("shows Stop when unset, after the tips, with its help read with it", async () => {
+    await render(BUNDLE);
+    const trigger = fallbackTrigger();
+    expect(trigger?.textContent).toBe("Stop");
+    expect(trigger?.getAttribute("aria-invalid")).toBeNull();
+    expect(describedText(trigger)).toEqual([
+      "When no builder includes the bundle, the step ends Not landed.",
+    ]);
+    expect(byTestId("bundle-fallback-risk")).toBeNull();
+    // Order in the box: the tips, then If not included, then the note.
+    const settings = [
+      ...(byTestId("bundle-settings")?.querySelectorAll("[data-setting]") ??
+        []),
+    ].map((element) => element.getAttribute("data-setting"));
+    expect(settings.at(-1)).toBe("bundleFallback");
+    expect(settings.at(-2)).toBe("bundleTipIncreasePercent");
+    expect(
+      [...container.querySelectorAll("label")].find(
+        (label) => label.textContent === "If not included"
+      )?.htmlFor
+    ).toBe(trigger?.id);
+  });
+
+  it("with Send publicly, warns that a mined public copy that reverts is paid for", async () => {
+    await render({ ...BUNDLE, bundleFallback: "public" });
+    const trigger = fallbackTrigger();
+    expect(trigger?.textContent).toBe("Send publicly if still needed");
+    expect(byTestId("bundle-fallback-risk")?.textContent).toBe(RISK_HINT);
+    expect(describedText(trigger)).toEqual([
+      "When no builder includes the bundle and the call still works, the last target block's transaction goes to the public mempool.",
+      RISK_HINT,
+    ]);
+  });
+
+  it("flags a saved value that is neither choice", async () => {
+    await render({ ...BUNDLE, bundleFallback: "{{Read.value}}" });
+    const trigger = fallbackTrigger();
+    expect(trigger?.getAttribute("aria-invalid")).toBe("true");
+    expect(trigger?.textContent).toBe("{{Read.value}}");
+    expect(describedText(trigger)).toEqual([
+      "Pick Stop or Send publicly if still needed.",
+    ]);
+  });
+
+  it("writes the picked choice", async () => {
+    // jsdom has no scrollIntoView, which the open list calls.
+    Element.prototype.scrollIntoView ??= () => undefined;
+    await render(BUNDLE);
+    const trigger = fallbackTrigger();
+    await act(async () => {
+      trigger?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+      );
+      await Promise.resolve();
+    });
+    const option = [...document.body.querySelectorAll('[role="option"]')].find(
+      (candidate) => candidate.textContent === "Send publicly if still needed"
+    );
+    expect(option).toBeDefined();
+    await act(async () => {
+      option?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+      );
+      await Promise.resolve();
+    });
+    expect(latest.bundleFallback).toBe("public");
+    expect(byTestId("bundle-fallback-risk")?.textContent).toBe(RISK_HINT);
   });
 });

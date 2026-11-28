@@ -21,7 +21,14 @@ export const BUNDLE_SETTING_KEYS = {
   builders: "bundleBuilders",
   notBefore: "notBefore",
   sendAheadBlocks: "sendAheadBlocks",
+  fallback: "bundleFallback",
 } as const;
+
+/** "If not included" on Bundle: stop, or send the last signed transaction publicly when still needed. */
+export const BUNDLE_FALLBACK = { STOP: "stop", PUBLIC: "public" } as const;
+
+export type BundleFallback =
+  (typeof BUNDLE_FALLBACK)[keyof typeof BUNDLE_FALLBACK];
 
 /** Not before needs a fixed slot length (a beacon chain) to know which blocks cannot be early. */
 export const NOT_BEFORE_UNSUPPORTED_ERROR =
@@ -37,6 +44,7 @@ export const BUNDLE_SETTING_LABELS = {
   builders: "Builders",
   notBefore: "Not before",
   sendAheadBlocks: "Send ahead (blocks)",
+  fallback: "If not included",
 } as const;
 
 // How the editor names the seeded builders; the stored value stays the name.
@@ -68,6 +76,8 @@ export type BundleSettings = {
   sendAhead?: SendAhead;
   // At run only: why Not before cannot be used. The step fails with it after its in-flight check.
   notBeforeRefusal?: string;
+  // Bundle only; Bundle and public ignores it. An older executor ignores it too and stops.
+  fallback: BundleFallback;
 };
 
 export type BundleSettingsInput = {
@@ -76,6 +86,7 @@ export type BundleSettingsInput = {
   bundleBuilders?: unknown;
   notBefore?: unknown;
   sendAheadBlocks?: unknown;
+  bundleFallback?: unknown;
   [NOT_BEFORE_FROM_TEMPLATE_KEY]?: unknown;
 };
 
@@ -222,16 +233,35 @@ export function readBundleSettings(
   if (!ahead.ok) {
     return ahead;
   }
+  const fallback = readFallback(input.bundleFallback);
+  if (fallback === undefined) {
+    return {
+      ok: false,
+      field: BUNDLE_SETTING_KEYS.fallback,
+      error: `${BUNDLE_SETTING_LABELS.fallback} (bundleFallback) must be "${BUNDLE_FALLBACK.STOP}" or "${BUNDLE_FALLBACK.PUBLIC}", with no templates, not ${quoted(input.bundleFallback)}.`,
+    };
+  }
   return {
     ok: true,
     settings: {
       blocks,
       tipIncreasePercent,
+      fallback,
       ...(builders && { builders }),
       ...(ahead.sendAhead && { sendAhead: ahead.sendAhead }),
       ...(ahead.refusal && { notBeforeRefusal: ahead.refusal }),
     },
   };
+}
+
+/** The fallback setting: empty is Stop; anything but the two values (a template included) is undefined. */
+function readFallback(value: unknown): BundleFallback | undefined {
+  if (isUnset(value)) {
+    return BUNDLE_FALLBACK.STOP;
+  }
+  return value === BUNDLE_FALLBACK.STOP || value === BUNDLE_FALLBACK.PUBLIC
+    ? value
+    : undefined;
 }
 
 const NOT_BEFORE_NAME = `${BUNDLE_SETTING_LABELS.notBefore} (notBefore)`;

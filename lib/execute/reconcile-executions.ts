@@ -23,6 +23,7 @@ import {
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
 import { DAY_MS } from "@/lib/utils/duration";
+import { minedBundleHashFor } from "@/lib/web3/bundles/bundle-history";
 import {
   type LateBundleSweep,
   sweepLateBundles,
@@ -41,7 +42,10 @@ import {
   runOutcomeReason,
   skippedMetricReason,
 } from "@/lib/workflow/executor/run-outcome";
-import type { RunOutcomeCode } from "@/lib/workflow/executor/run-outcome-keys";
+import {
+  NEVER_MINED_RUN_ERROR,
+  type RunOutcomeCode,
+} from "@/lib/workflow/executor/run-outcome-keys";
 import { loadSuccessLogFacts } from "@/lib/workflow/executor/success-log-facts";
 
 /**
@@ -445,15 +449,24 @@ async function reconcileWorkflow(
     return "failed";
   }
 
-  const { allVerified, results } = await verifyExecutionReceipts(
+  const verified = await verifyExecutionReceipts(
     verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId }))
   );
+  // Only a run whose logs carry a bundle route has bundle rows to read.
+  const bundleSent = needsBundleCheck(verified.results)
+    ? await runSentBundle(execution.id, logged, failureOrigin)
+    : false;
+  const swapped = bundleSent
+    ? await swapMinedBundleHashes(execution.id, entries, verified)
+    : undefined;
+  const { allVerified, results } = swapped?.verified ?? verified;
+  const settledHashes = swapped?.entries ?? logged?.hashes;
 
   if (allVerified && !failureOrigin) {
     // A step that did not land keeps the run not landed; a skipped bundle step skips it.
     const { signals } =
       logged ?? (await loadSuccessLogFacts(execution.id, false));
-    await settleByOutcome(execution, signals, logged?.hashes);
+    await settleByOutcome(execution, signals, settledHashes);
     return "completed";
   }
 
@@ -476,13 +489,108 @@ async function reconcileWorkflow(
     execution,
     settledStatus,
     stillUnreadable
-      ? `Transactions were broadcast but never appeared on chain; treating them as dropped after ${Math.round(
+      ? `${NEVER_MINED_RUN_ERROR}; treating them as dropped after ${Math.round(
           DROPPED_AFTER_MS / 3_600_000
         )}h`
-      : describeVerificationFailure(results),
-    logged?.hashes
+      : verificationFailure(results, bundleSent),
+    settledHashes
   );
   return "failed";
+}
+
+type Verified = Awaited<ReturnType<typeof verifyExecutionReceipts>>;
+
+function needsBundleCheck(results: Verified["results"]): boolean {
+  return results.some(
+    (result) => result.status === "not_found" || result.status === "reverted"
+  );
+}
+
+/** Whether a step of the run reported a bundle route; a failed run's failed step is not in its success logs, so it counts. */
+async function runSentBundle(
+  executionId: string,
+  logged: { signals: RunOutcomeSignals } | undefined,
+  failureOrigin: boolean
+): Promise<boolean> {
+  if (logged) {
+    return logged.signals.bundleSent;
+  }
+  if (failureOrigin) {
+    return true;
+  }
+  try {
+    return (await loadSuccessLogFacts(executionId, false)).signals.bundleSent;
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[Reconcile] Could not read a run's bundle steps",
+      error,
+      { execution_id: executionId }
+    );
+    return false;
+  }
+}
+
+/** The failure text; a mined revert in a run that sent a bundle says its gas was paid. */
+function verificationFailure(
+  results: Verified["results"],
+  bundleSent: boolean
+): string {
+  const text = describeVerificationFailure(results);
+  return bundleSent && results.some((result) => result.status === "reverted")
+    ? `${text}; the wallet paid its gas`
+    : text;
+}
+
+/** A not-found hash the run's bundle row was confirmed past (a reorg mined another of its hashes) verifies as that one. */
+async function swapMinedBundleHashes(
+  executionId: string,
+  entries: readonly TransactionHashEntry[],
+  verified: Verified
+): Promise<
+  { entries: TransactionHashEntry[]; verified: Verified } | undefined
+> {
+  const swaps = new Map<string, string>();
+  for (const result of verified.results) {
+    if (result.status !== "not_found") {
+      continue;
+    }
+    let mined: string | undefined;
+    try {
+      mined = await minedBundleHashFor(
+        executionId,
+        result.chainId,
+        result.hash
+      );
+    } catch (error) {
+      logSystemWarn(
+        ErrorCategory.DATABASE,
+        "[Reconcile] Could not read a run's bundle row",
+        error,
+        { execution_id: executionId }
+      );
+    }
+    if (mined) {
+      swaps.set(result.hash, mined);
+    }
+  }
+  if (swaps.size === 0) {
+    return;
+  }
+  const next = entries.map((entry) => {
+    const mined = swaps.get(entry.hash);
+    return mined ? { ...entry, hash: mined } : entry;
+  });
+  return {
+    entries: next,
+    verified: await verifyExecutionReceipts(
+      next.flatMap((entry) =>
+        entry.chainId === undefined
+          ? []
+          : [{ hash: entry.hash, chainId: entry.chainId }]
+      )
+    ),
+  };
 }
 
 /**

@@ -5,12 +5,20 @@ import { MultiSelectPicker } from "@/components/workflow/config/multi-select-fie
 import { UnixTimeField } from "@/components/workflow/config/unix-time-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { bundleTipsText } from "@/lib/web3/bundles/editor-text";
 import {
   READ_ONLY_LIST_PLACE,
   WAITING_BILLING_TEXT,
 } from "@/lib/workflow/waiting-run-groups";
 import {
+  BUNDLE_FALLBACK,
   BUNDLE_SETTING_KEYS,
   builderDisplayName,
   DEFAULT_BUNDLE_BLOCKS,
@@ -20,7 +28,7 @@ import {
   readInteger,
 } from "@/lib/web3/bundles/settings";
 import { bundleSettingsFields } from "@/plugins/field-fragments";
-import type { ActionConfigFieldBase } from "@/plugins/registry";
+import { type ActionConfigFieldBase, isFieldShown } from "@/plugins/registry";
 
 type Update = (key: string, value: unknown) => void;
 
@@ -132,6 +140,95 @@ function NumberSetting({
   );
 }
 
+const FALLBACK_HELP: Readonly<Record<string, string>> = {
+  [BUNDLE_FALLBACK.STOP]:
+    "When no builder includes the bundle, the step ends Not landed.",
+  [BUNDLE_FALLBACK.PUBLIC]:
+    "When no builder includes the bundle and the call still works, the last target block's transaction goes to the public mempool.",
+};
+
+const FALLBACK_RISK_HINT =
+  "The public copy can be mined and revert; then your wallet pays its gas.";
+
+type FallbackSettingProps = {
+  field: ActionConfigFieldBase;
+  value: unknown;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+};
+
+/** "If not included" on Bundle: Stop (the default, also when unset) or Send publicly. */
+function FallbackSetting({
+  field,
+  value,
+  disabled,
+  onChange,
+}: FallbackSettingProps) {
+  const id = useId();
+  const helpId = `${id}-help`;
+  const riskId = `${id}-risk`;
+  const errorId = `${id}-error`;
+  const options = field.options ?? [];
+  const known = isUnset(value)
+    ? BUNDLE_FALLBACK.STOP
+    : options.find((option) => option.value === value)?.value;
+  // A value saved through the API that is neither choice: shown so it can be fixed.
+  const invalid = known === undefined;
+  const risk = known === BUNDLE_FALLBACK.PUBLIC;
+  const describedBy = [
+    invalid ? errorId : undefined,
+    known ? helpId : undefined,
+    risk ? riskId : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <div className="space-y-2">
+      <Label className="ml-1" htmlFor={id}>
+        {field.label}
+      </Label>
+      <Select disabled={disabled} onValueChange={onChange} value={known ?? ""}>
+        <SelectTrigger
+          aria-describedby={describedBy || undefined}
+          aria-invalid={invalid || undefined}
+          // Wraps on a narrow panel, as the Builders picker does.
+          className="min-h-9 w-full whitespace-normal text-left data-[size=default]:h-auto *:data-[slot=select-value]:line-clamp-none"
+          data-setting={field.key}
+          id={id}
+        >
+          <SelectValue placeholder={String(value)} />
+        </SelectTrigger>
+        <SelectContent className="w-(--radix-select-trigger-width)">
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {invalid && (
+        <p className="ml-1 text-destructive text-xs" id={errorId}>
+          Pick {options.map((option) => option.label).join(" or ")}.
+        </p>
+      )}
+      {known && (
+        <p className="ml-1 text-muted-foreground text-xs" id={helpId}>
+          {FALLBACK_HELP[known]}
+        </p>
+      )}
+      {risk && (
+        <p
+          className="ml-1 text-muted-foreground text-xs"
+          data-testid="bundle-fallback-risk"
+          id={riskId}
+        >
+          {FALLBACK_RISK_HINT}
+        </p>
+      )}
+    </div>
+  );
+}
+
 const BUNDLE_DOCS_URL = "https://docs.keeperhub.com/plugins/web3#send-as-bundle";
 
 // The billing line, with its docs place linked to the Send as Bundle section.
@@ -181,7 +278,7 @@ type BundleSettingsBoxProps = {
   tipLimitGwei?: number;
 };
 
-/** The bundle settings, indented under Send as while it is Bundle. */
+/** The bundle settings, indented under Send as while it is Bundle or Bundle and public. */
 export function BundleSettingsBox({
   config,
   onUpdateConfig,
@@ -197,6 +294,7 @@ export function BundleSettingsBox({
   const buildersField = fieldOf(BUNDLE_SETTING_KEYS.builders);
   const notBeforeField = fieldOf(BUNDLE_SETTING_KEYS.notBefore);
   const aheadField = fieldOf(BUNDLE_SETTING_KEYS.sendAheadBlocks);
+  const fallbackField = fieldOf(BUNDLE_SETTING_KEYS.fallback);
   const blocksValue = config[blocksField.key];
   const tipValue = config[tipField.key];
   const notBeforeValue = config[notBeforeField.key];
@@ -329,6 +427,15 @@ export function BundleSettingsBox({
         onChange={(next) => onUpdateConfig(tipField.key, next)}
         value={tipValue}
       />
+      {/* After the tips: it acts once every target block has been tried. Bundle only. */}
+      {isFieldShown(fallbackField, config) && (
+        <FallbackSetting
+          disabled={disabled}
+          field={fallbackField}
+          onChange={(next) => onUpdateConfig(fallbackField.key, next)}
+          value={config[fallbackField.key]}
+        />
+      )}
       <p
         className="ml-1 text-muted-foreground text-xs"
         data-testid="bundle-settings-note"

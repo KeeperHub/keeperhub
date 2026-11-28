@@ -118,3 +118,57 @@ describe("the Waiting pill on the canvas node", () => {
     expect(container.querySelector('[data-testid="node-waiting"]')).toBeNull();
   });
 });
+
+describe("a bundle step's public copy on the canvas node", () => {
+  it("is Unconfirmed (neutral, dashed, an hourglass as in the Runs panel) while its run is unconfirmed", () => {
+    expect(
+      canvasNodeStatus({ status: "success", outcome: "public-pending" })
+    ).toBe("public-pending");
+    renderNode("public-pending");
+    const pill = container.querySelector('[data-testid="node-public-pending"]');
+    expect(pill?.textContent).toBe("Unconfirmed");
+    expect(pill?.getAttribute("title")).toBe(
+      "Unconfirmed: this step's transaction was sent publicly and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts."
+    );
+    // Not the Waiting clock.
+    const icon = pill?.querySelector("svg")?.getAttribute("class") ?? "";
+    expect(icon).toContain("lucide-hourglass");
+    expect(icon).not.toContain("lucide-clock");
+    const node = container.querySelector('[data-testid="action-node-keeper"]');
+    expect(node?.className).toContain("border-dashed");
+    expect(node?.className).not.toContain("border-green-500");
+  });
+
+  it("says when no RPC confirmed taking the copy", () => {
+    renderNode("public-pending", {
+      success: true,
+      route: "bundle-and-public",
+      included: false,
+      pending: true,
+      transactionHash: `0x${"ab".repeat(32)}`,
+      publicCopy: { hash: `0x${"ab".repeat(32)}`, accepted: null },
+    });
+    expect(
+      container
+        .querySelector('[data-testid="node-public-pending"]')
+        ?.getAttribute("title")
+    ).toContain("sent publicly (no RPC confirmed taking it) and is not mined");
+  });
+
+  it("a skip behind a public copy names its hash", () => {
+    const hash = `0x${"ab".repeat(32)}`;
+    renderNode("skipped", {
+      success: true,
+      route: "skipped-in-flight",
+      included: false,
+      inFlightHash: hash,
+    });
+    expect(
+      container
+        .querySelector('[data-testid="node-skipped"]')
+        ?.getAttribute("title")
+    ).toBe(
+      `Skipped: an earlier run's public copy (${hash}) is not mined yet, so this step sent nothing; no gas was paid. KeeperHub checks it every few minutes and stops waiting after a day.`
+    );
+  });
+});

@@ -54,7 +54,10 @@ afterEach(() => {
 
 describe("isBundleMode", () => {
   it("is true for every bundle mode and only those", () => {
-    expect(BUNDLE_SEND_MODES).toEqual([SEND_MODE.BUNDLE]);
+    expect(BUNDLE_SEND_MODES).toEqual([
+      SEND_MODE.BUNDLE,
+      SEND_MODE.BUNDLE_AND_PUBLIC,
+    ]);
     for (const mode of Object.values(SEND_MODE)) {
       expect(isBundleMode(mode)).toBe(
         (BUNDLE_SEND_MODES as readonly string[]).includes(mode)
@@ -127,7 +130,7 @@ describe("resolveSendMode", () => {
     expect(
       sendModeConflict({ sendMode: "private-relay", usePrivateMempool: false })
     ).toBe(
-      'sendMode "private-relay" and usePrivateMempool false disagree. Send sendMode alone, or pair usePrivateMempool: true with "private-relay" and usePrivateMempool: false with "transaction" or "bundle".'
+      'sendMode "private-relay" and usePrivateMempool false disagree. Send sendMode alone, or pair usePrivateMempool: true with "private-relay" and usePrivateMempool: false with "transaction", "bundle" or "bundle-and-public".'
     );
   });
 
@@ -989,7 +992,7 @@ describe("unknown sendMode values", () => {
     1,
   ])("refuses %j", (value) => {
     expect(unknownSendModeIssue(value)).toBe(
-      `sendMode must be "transaction" (Normal transaction), "private-relay" (Private relay) or "bundle" (Bundle), not ${JSON.stringify(value)}.`
+      `sendMode must be "transaction" (Normal transaction), "private-relay" (Private relay), "bundle" (Bundle) or "bundle-and-public" (Bundle and public), not ${JSON.stringify(value)}.`
     );
   });
 

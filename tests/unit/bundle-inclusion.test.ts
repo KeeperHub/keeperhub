@@ -186,3 +186,37 @@ describe("bundle window", () => {
     );
   });
 });
+
+describe("watchInclusion with a public copy out", () => {
+  const watchPublic = (reads: InclusionReads, windowEnd: number) =>
+    watchInclusion(
+      {
+        nonce: NONCE,
+        hashes: HASHES,
+        lastTarget: LAST_TARGET,
+        pollMs: 1,
+        windowEnd,
+        publicOut: true,
+      },
+      reads,
+      noSleep
+    );
+
+  it("never says not-included past the targets: it keeps watching for the pool", async () => {
+    const { reads } = chain({ minedAt: 130, minedHash: "0xa1" });
+    const result = await watchPublic(reads, Date.now() + 60_000);
+    expect(result).toMatchObject({ kind: "included", mined: { hash: "0xa1" } });
+  });
+
+  it("ends undecided at the window's end when nothing is mined", async () => {
+    const { reads } = chain({});
+    const result = await watchPublic(reads, Date.now() + 50);
+    expect(result.kind).toBe("undecided");
+  });
+
+  it("still reports used elsewhere on another transaction at the nonce", async () => {
+    const { reads } = chain({ minedAt: 120 });
+    const result = await watchPublic(reads, Date.now() + 60_000);
+    expect(result.kind).toBe("used-elsewhere");
+  });
+});

@@ -12,6 +12,7 @@ import {
   EyeOff,
   GitBranch,
   HardDriveDownload,
+  Hourglass,
   HardDriveUpload,
   ListEnd,
   Repeat,
@@ -33,8 +34,10 @@ import { cn } from "@/lib/utils";
 import { hasSendModeField } from "@/lib/workflow/editor/send-mode-editor";
 import {
   notIncludedReasonText,
+  publicPendingSentence,
   STEP_OUTCOME_TEXT,
   type StepOutcome,
+  skippedStepTitle,
   stepOutcomeTitle,
   WAITING_STEP_TEXT,
   waitingStepSentence,
@@ -197,7 +200,8 @@ type OutcomeBadge = {
   testId: string;
   Icon: typeof Check;
   label: string;
-  title: (reason?: string) => string;
+  // From the step's output when a run is selected, else undefined.
+  title: (output: unknown) => string;
   error?: boolean;
 };
 
@@ -211,10 +215,10 @@ function stepOutcomeBadge(
     Icon,
     label: STEP_OUTCOME_TEXT[outcome].label,
     // Only a missed bundle has a reason worth adding.
-    title: (reason) =>
+    title: (output) =>
       stepOutcomeTitle(
         outcome,
-        outcome === "not-included" ? reason : undefined
+        outcome === "not-included" ? notIncludedReasonText(output) : undefined
       ),
     error: outcome === "landed-late-reverted",
   };
@@ -226,8 +230,17 @@ const OUTCOME_BADGES: Partial<Record<NodeRunStatus, OutcomeBadge>> = {
     "node-not-included",
     CircleOff
   ),
-  skipped: stepOutcomeBadge("skipped-in-flight", "node-skipped", SkipForward),
+  skipped: {
+    ...stepOutcomeBadge("skipped-in-flight", "node-skipped", SkipForward),
+    // Behind a public copy the sentence names it.
+    title: skippedStepTitle,
+  },
   "landed-late": stepOutcomeBadge("landed-late", "node-landed-late", Check),
+  "public-pending": {
+    ...stepOutcomeBadge("public-pending", "node-public-pending", Hourglass),
+    title: (output) =>
+      `${STEP_OUTCOME_TEXT["public-pending"].label}: ${publicPendingSentence(output)}`,
+  },
   "landed-late-reverted": stepOutcomeBadge(
     "landed-late-reverted",
     "node-landed-late-reverted",
@@ -237,31 +250,17 @@ const OUTCOME_BADGES: Partial<Record<NodeRunStatus, OutcomeBadge>> = {
     testId: "node-waiting",
     Icon: Clock,
     label: WAITING_STEP_TEXT.label,
-    title: (reason) =>
-      `${WAITING_STEP_TEXT.label}: ${reason ?? WAITING_STEP_TEXT.sentence}`,
+    title: (output) => `${WAITING_STEP_TEXT.label}: ${waitingStepSentence(output)}`,
   },
 };
 
-/** The badge's extra words from the step's output: a miss's reason, or why it waited. */
-function stepBadgeReason(
-  status: NodeRunStatus | undefined,
-  output: unknown
-): string | undefined {
-  if (output === undefined) {
-    return;
-  }
-  return status === "waiting"
-    ? waitingStepSentence(output)
-    : notIncludedReasonText(output);
-}
-
-// Status badge component
+// Status badge component; `output` is the selected run's step output.
 const StatusBadge = ({
   status,
-  reason,
+  output,
 }: {
   status?: NodeRunStatus;
-  reason?: string;
+  output?: unknown;
 }) => {
   // Don't show badge for idle or running (running has BorderBeam animation)
   if (!status || status === "idle" || status === "running") {
@@ -279,7 +278,7 @@ const StatusBadge = ({
             : "border-muted-foreground/50 bg-muted text-foreground"
         )}
         data-testid={badge.testId}
-        title={badge.title(reason)}
+        title={badge.title(output)}
       >
         <Icon
           aria-hidden="true"
@@ -498,10 +497,7 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
 
       {/* Status indicator badge in top right */}
       <StatusBadge
-        reason={stepBadgeReason(
-          status,
-          selectedExecutionId ? nodeLog?.output : undefined
-        )}
+        output={selectedExecutionId ? nodeLog?.output : undefined}
         status={status}
       />
 

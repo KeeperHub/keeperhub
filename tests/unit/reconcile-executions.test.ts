@@ -25,7 +25,9 @@ const {
   mockLoadHashes,
   mockRecordSkipped,
   mockSweepLateBundles,
+  mockMinedBundleHashFor,
 } = vi.hoisted(() => ({
+  mockMinedBundleHashFor: vi.fn(),
   mockLoadSignals: vi.fn(),
   mockLoadHashes: vi.fn(),
   mockRecordSkipped: vi.fn(),
@@ -119,7 +121,7 @@ vi.mock("@/lib/metrics/org-slug.server", () => ({
 }));
 
 vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { NETWORK_RPC: "network_rpc" },
+  ErrorCategory: { NETWORK_RPC: "network_rpc", DATABASE: "database" },
   logInfo: mockLogInfo,
   logWarn: mockLogWarn,
   logSystemWarn: mockLogSystemWarn,
@@ -135,6 +137,10 @@ vi.mock("@/lib/workflow/executor/success-log-facts", () => ({
 
 vi.mock("@/lib/web3/bundles/late-landing-sweep", () => ({
   sweepLateBundles: mockSweepLateBundles,
+}));
+
+vi.mock("@/lib/web3/bundles/bundle-history", () => ({
+  minedBundleHashFor: mockMinedBundleHashFor,
 }));
 
 import { reconcileUnconfirmedExecutions } from "@/lib/execute/reconcile-executions";
@@ -929,5 +935,60 @@ describe("scheduling safety", () => {
       "[Reconciler] Settled unconfirmed executions",
       expect.objectContaining({ direct_examined: "1", workflow_examined: "1" })
     );
+  });
+});
+
+describe("runs that sent a bundle", () => {
+  const bundleSignals = {
+    skippedInFlight: false,
+    notIncluded: false,
+    bundleSent: true,
+  };
+
+  it("a mined revert says the wallet paid its gas", async () => {
+    verifyResolves("reverted");
+    mockLoadSignals.mockResolvedValue(bundleSignals);
+    await run([], [workflowRow()]);
+    expect(workflowUpdates()[0].values).toMatchObject({
+      status: "error",
+      error:
+        "On-chain verification failed for 1 transaction; the wallet paid its gas",
+    });
+  });
+
+  it("a run with no bundle step keeps the plain revert text", async () => {
+    verifyResolves("reverted");
+    await run([], [workflowRow()]);
+    expect(workflowUpdates()[0].values).toMatchObject({
+      error: "On-chain verification failed for 1 transaction",
+    });
+  });
+
+  it("reads the bundle rows for a hash not found only when the run sent a bundle", async () => {
+    verifyResolves("not_found");
+    await run([], [workflowRow({ startedAt: minutesAgo(25 * 60) })]);
+    expect(mockMinedBundleHashFor).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    updateCalls = [];
+    verifyResolves("not_found");
+    mockLoadSignals.mockResolvedValue(bundleSignals);
+    mockMinedBundleHashFor.mockResolvedValue(undefined);
+    await run([], [workflowRow({ startedAt: minutesAgo(25 * 60) })]);
+    expect(mockMinedBundleHashFor).toHaveBeenCalledWith("we_1", CHAIN_ID, HASH);
+  });
+
+  it("warns, and verifies the hash as is, when the bundle row read fails", async () => {
+    verifyResolves("not_found");
+    mockLoadSignals.mockResolvedValue(bundleSignals);
+    mockMinedBundleHashFor.mockRejectedValue(new Error("db down"));
+    await run([], [workflowRow({ startedAt: minutesAgo(25 * 60) })]);
+    expect(mockLogSystemWarn).toHaveBeenCalledWith(
+      "database",
+      "[Reconcile] Could not read a run's bundle row",
+      expect.any(Error),
+      { execution_id: "we_1" }
+    );
+    expect(mockVerify).toHaveBeenCalledTimes(1);
   });
 });

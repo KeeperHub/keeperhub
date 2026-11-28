@@ -11,6 +11,7 @@ import {
   Copy,
   ExternalLink,
   GitBranch,
+  Hourglass,
   Loader2,
   Play,
   SkipForward,
@@ -36,12 +37,21 @@ import {
   shownRefusal,
 } from "@/lib/notifications/failure-alerts/view-types";
 import {
+  fallbackNotSentText,
   NOT_LANDED_STEP_POINTER,
+  NOT_MINED_YET_TEXT,
   type NodeOutcome,
   nodeOutcomeOf,
   notIncludedReasonText,
+  publicPendingSentence,
   STEP_OUTCOME_TEXT,
+  type StepOutcome,
+  settledPendingReason,
+  skippedBehindPublicCopy,
+  skippedStepSentence,
+  skippedStepTitle,
   stepOutcomeTitle,
+  unconfirmedRunNote,
   WAITING_STEP_TEXT,
   waitingStepSentence,
 } from "@/lib/workflow/executor/run-outcome-keys";
@@ -111,6 +121,8 @@ type ExecutionLog = {
   outcome?: NodeOutcome;
   // Another step of the run started after this one.
   laterStepRan?: boolean;
+  // A pending step's line once its run settled without it (dropped, replaced, a day passed).
+  settledReason?: string;
 };
 
 type WorkflowExecution = ExecutionSummary;
@@ -853,13 +865,18 @@ function getStatusLabel(status: string): string {
       return "Skipped - expand for the reason";
     case "not_landed":
       return `Not landed - a bundle was not seen in its target blocks. ${NOT_LANDED_LATER}`;
+    case "unconfirmed":
+      return `Unconfirmed - ${UNCONFIRMED_TEXT}`;
     default:
       return "Pending - has not run yet";
   }
 }
 
+const UNCONFIRMED_TEXT = `a transaction was sent and ${NOT_MINED_YET_TEXT}`;
+
 // A successful bundle step that did not land, or sent nothing: shown neutral.
 const STEP_NOT_INCLUDED = "not_included";
+const STEP_PUBLIC_PENDING = "public_pending";
 const STEP_SKIPPED_IN_FLIGHT = "skipped_in_flight";
 const STEP_WAITING = "waiting_not_before";
 
@@ -884,6 +901,10 @@ const OUTCOME_STEP_STYLE: Record<
     testId: "step-skipped-in-flight",
   },
   "landed-late": { status: "success", testId: "step-landed-late" },
+  "public-pending": {
+    status: STEP_PUBLIC_PENDING,
+    testId: "step-public-pending",
+  },
   "landed-late-reverted": {
     status: "error",
     testId: "step-landed-late-reverted",
@@ -907,15 +928,11 @@ function stepDisplay(log: ExecutionLog): StepDisplay {
   // Only a step that sent nothing that landed has later steps worth naming.
   const sentNothing =
     log.outcome === "not-included" || log.outcome === "skipped-in-flight";
+  const later =
+    sentNothing && log.laterStepRan ? "Later steps still ran." : undefined;
   return {
     status: style.status,
-    title: stepOutcomeTitle(
-      log.outcome,
-      log.outcome === "not-included"
-        ? notIncludedReasonText(log.output)
-        : undefined,
-      sentNothing && log.laterStepRan ? "Later steps still ran." : undefined
-    ),
+    title: outcomeTitle(log, log.outcome, later),
     chip: {
       label: STEP_OUTCOME_TEXT[log.outcome].label,
       testId: style.testId,
@@ -924,13 +941,50 @@ function stepDisplay(log: ExecutionLog): StepDisplay {
   };
 }
 
-/** The plain reasons a not landed run's steps give, each once. */
+/** A step outcome's tooltip in the Runs panel, with the words its output and run add. */
+function outcomeTitle(
+  log: ExecutionLog,
+  outcome: StepOutcome,
+  later: string | undefined
+): string {
+  switch (outcome) {
+    case "skipped-in-flight":
+      return [skippedStepTitle(log.output), later].filter(Boolean).join(" ");
+    case "public-pending":
+      return `${STEP_OUTCOME_TEXT[outcome].label}: ${publicPendingSentence(log.output)}`;
+    case "not-included":
+      return stepOutcomeTitle(
+        outcome,
+        notIncludedReasonText(log.output) ?? log.settledReason,
+        later
+      );
+    default:
+      return stepOutcomeTitle(outcome, undefined, later);
+  }
+}
+
+/** The plain reasons a not landed run's steps give, each once, with why a public fallback was not sent. */
 function notLandedReasons(logs: readonly ExecutionLog[]): string[] {
   const reasons = logs
     .filter((log) => log.outcome === "not-included")
-    .map((log) => notIncludedReasonText(log.output))
+    .flatMap((log) => [
+      notIncludedReasonText(log.output),
+      fallbackNotSentText(log.output),
+    ])
     .filter((text): text is string => text !== undefined);
   return [...new Set(reasons)];
+}
+
+/** A skipped run's note: behind a public copy, the step's own sentence naming it; else the stored reason. */
+function skippedRunNote(error: string, logs: readonly ExecutionLog[]): string {
+  const behindCopy = skippedBehindPublicCopy(
+    logs
+      .filter((log) => log.outcome === "skipped-in-flight")
+      .map((log) => log.output)
+  );
+  return behindCopy === undefined
+    ? shownRefusal(error)
+    : skippedStepSentence(behindCopy);
 }
 
 // A bundle skip's run note names later steps only when one of them ran.
@@ -1290,13 +1344,22 @@ export function WorkflowRuns({
         iterationIndex?: number | null;
         forEachNodeId?: string | null;
       }>,
-      run: Parameters<typeof nodeOutcomeOf>[1]
+      run:
+        | (NonNullable<Parameters<typeof nodeOutcomeOf>[1]> & {
+            error?: string | null;
+          })
+        | undefined
     ): ExecutionLog[] =>
       logEntries.map((log) => {
         const outcome = nodeOutcomeOf(log, run);
         const started = new Date(log.startedAt).getTime();
+        const settledReason =
+          outcome === "not-included" && run
+            ? settledPendingReason(log.output, run)
+            : undefined;
         return {
           outcome,
+          ...(settledReason && { settledReason }),
           // Another step, not a later iteration of this one.
           laterStepRan:
             outcome !== undefined &&
@@ -1558,6 +1621,9 @@ export function WorkflowRuns({
       case "not_landed":
       case STEP_NOT_INCLUDED:
         return <CircleOff className="h-3 w-3 text-white" />;
+      case "unconfirmed":
+      case STEP_PUBLIC_PENDING:
+        return <Hourglass className="h-3 w-3 text-white" />;
       case STEP_SKIPPED_IN_FLIGHT:
         return <SkipForward className="h-3 w-3 text-white" />;
       case STEP_WAITING:
@@ -1581,9 +1647,11 @@ export function WorkflowRuns({
         return "bg-orange-500";
       // Neutral: sent nothing (refused or skipped) or not included, not a failure.
       case "skipped":
+      case "unconfirmed":
       case STEP_NOT_INCLUDED:
       case STEP_SKIPPED_IN_FLIGHT:
       case STEP_WAITING:
+      case STEP_PUBLIC_PENDING:
         return "bg-muted-foreground";
       // One shade darker than the swatch, like the other dots: the white icon needs 3:1.
       case "not_landed":
@@ -1806,13 +1874,17 @@ export function WorkflowRuns({
             ? notLandedReasons(executionLogs)
             : [];
         if (execution.status === "skipped" && execution.error) {
-          shownReason = `${shownRefusal(execution.error)}${skippedStepNote(executionLogs)}`;
+          shownReason = `${skippedRunNote(execution.error, executionLogs)}${skippedStepNote(executionLogs)}`;
         } else if (execution.status === "not_landed" && execution.error) {
           shownReason = execution.error.replace(NOT_LANDED_PREFIX, "");
           // The reasons follow below, so the pointer to the step is not needed.
           if (stepReasons.length > 0) {
             shownReason = shownReason.replace(NOT_LANDED_STEP_POINTER, ".");
           }
+        } else if (execution.status === "unconfirmed") {
+          shownReason = unconfirmedRunNote(
+            executionLogs.map((log) => log.output)
+          );
         }
         const skippedReason = shownReason
           ? `${shownReason.charAt(0).toUpperCase()}${shownReason.slice(1)}`
@@ -1927,14 +1999,17 @@ export function WorkflowRuns({
                 {showSkipped && (
                   <div className={cn("p-4", executionLogs.length > 0 && "pb-0")}>
                     <Alert>
-                      {execution.status === "not_landed" ? (
-                        <CircleOff />
-                      ) : (
-                        <SkipForward />
-                      )}
+                      {execution.status === "not_landed" && <CircleOff />}
+                      {execution.status === "unconfirmed" && <Hourglass />}
+                      {execution.status !== "not_landed" &&
+                        execution.status !== "unconfirmed" && <SkipForward />}
                       <AlertDescription className="flex flex-col items-start gap-1.5">
                         {skippedReason && (
-                          <span data-testid="run-outcome-reason">
+                          // A transaction hash has no break points of its own.
+                          <span
+                            className="min-w-0 max-w-full wrap-anywhere"
+                            data-testid="run-outcome-reason"
+                          >
                             {skippedReason}
                           </span>
                         )}

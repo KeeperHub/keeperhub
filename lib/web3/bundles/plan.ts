@@ -119,7 +119,7 @@ type ParentBlock = {
 };
 
 /** The exact EIP-1559 base fee of the block after `parent`. */
-function nextBaseFee(parent: ParentBlock): bigint {
+export function nextBaseFee(parent: ParentBlock): bigint {
   const target = parent.gasLimit / ELASTICITY;
   if (target === BigInt(0) || parent.gasUsed === target) {
     return parent.baseFee;

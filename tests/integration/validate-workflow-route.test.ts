@@ -504,7 +504,7 @@ describe("/api/workflows/[workflowId]/validate", () => {
       expect(body.result.errors).toContainEqual({
         code: "invalid-send-mode",
         message:
-          'Send as: Bundle (sendMode "bundle") is not turned on for this organization yet. Set Send as to Normal transaction (sendMode: "transaction").',
+          'Send as: Bundle (sendMode: "bundle") is not turned on for this organization yet. Set Send as to Normal transaction (sendMode: "transaction").',
         parameterPath: "nodes[1].config.sendMode",
       });
     });
@@ -652,7 +652,7 @@ describe("/api/workflows/[workflowId]/validate", () => {
       expect(await sendModeErrors()).toEqual([
         expect.objectContaining({
           message: expect.stringContaining(
-            'Not before (notBefore) only works with Send as: Bundle (sendMode "bundle")'
+            'Not before (notBefore) only works with Send as: Bundle (sendMode: "bundle")'
           ),
           parameterPath: "nodes[1].config.notBefore",
         }),

@@ -15,6 +15,11 @@ import type { WorkflowExecutionStatus } from "../../../lib/errors/execution-stat
 vi.mock("server-only", () => ({}));
 // tests/setup.ts stubs @/lib/db; these tests must read Postgres.
 vi.unmock("@/lib/db");
+// The real logger, spied on so a warning can be pinned.
+vi.mock("@/lib/logging", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/logging")>();
+  return { ...actual, logWarn: vi.fn(actual.logWarn) };
+});
 
 type Receipt = {
   hash: string;
@@ -63,7 +68,28 @@ const sweepChain = vi.hoisted(() => {
     receiptsElsewhere: false,
     node: {} as Record<string, unknown>,
     otherNode: {} as Record<string, unknown>,
+    // What each endpoint says of a public copy: known, unknown, or an error.
+    seen: { primary: false, fallback: false, extra: false } as Record<
+      "primary" | "fallback" | "extra",
+      boolean | "error"
+    >,
+    extras: ["https://extra.example"] as string[],
+    // The manager failed over to its fallback; or the chain has none.
+    failedOver: false,
+    noFallback: false,
+    // getTransaction reads of a public copy, per endpoint.
+    copyReads: { primary: 0, fallback: 0 },
   };
+  const seenOn =
+    (endpoint: "primary" | "fallback") =>
+    async (h: string): Promise<{ hash: string } | null> => {
+      state.copyReads[endpoint] += 1;
+      const answer = state.seen[endpoint];
+      if (answer === "error") {
+        throw new Error("node down");
+      }
+      return answer ? { hash: h } : null;
+    };
   const receipt = async (h: string) => {
     state.receiptReads += 1;
     const race = state.onReceipt;
@@ -97,7 +123,14 @@ const sweepChain = vi.hoisted(() => {
     },
   };
   state.otherNode = { getTransactionReceipt: receipt };
-  return state;
+  Object.assign(state, {
+    primaryNode: { getTransaction: seenOn("primary") },
+    fallbackNode: { getTransaction: seenOn("fallback") },
+  });
+  return state as typeof state & {
+    primaryNode: unknown;
+    fallbackNode: unknown;
+  };
 });
 vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: async () => ({
@@ -110,7 +143,21 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
         return operation(sweepChain.otherNode);
       }
     },
+    // Failed over, the current provider is the fallback.
+    getProvider: () =>
+      sweepChain.failedOver ? sweepChain.fallbackNode : sweepChain.primaryNode,
+    getFallbackProvider: () =>
+      sweepChain.noFallback ? null : sweepChain.fallbackNode,
+    isCurrentlyUsingFallback: () => sweepChain.failedOver,
+    getBroadcastRpcUrls: () => sweepChain.extras,
   }),
+}));
+vi.mock("@/lib/web3/extra-broadcast", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/web3/extra-broadcast")>()),
+  extraRpcHasTransaction: async () => {
+    const answer = sweepChain.seen.extra;
+    return answer === "error" ? undefined : answer;
+  },
 }));
 
 const SKIP =
@@ -431,6 +478,11 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
     sweepChain.countTags = [];
     sweepChain.onReceipt = undefined;
     sweepChain.receiptsElsewhere = false;
+    sweepChain.seen = { primary: false, fallback: false, extra: false };
+    sweepChain.extras = ["https://extra.example"];
+    sweepChain.failedOver = false;
+    sweepChain.noFallback = false;
+    sweepChain.copyReads = { primary: 0, fallback: 0 };
     await db
       .delete(ext.pendingTransactions)
       .where(eq(ext.pendingTransactions.walletAddress, WALLET));
@@ -2372,6 +2424,621 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
           otherWork: true,
         },
       });
+    });
+  });
+
+  describe("public copies", () => {
+    const H1 = hash("1");
+    const H2 = hash("2");
+    const H3 = hash("3");
+    const OLD_MS = 5 * 60_000;
+
+    /** A bundle `executionId` recorded at nonce 7 and sent publicly (the last target's bytes), `ageMs` ago. */
+    async function publicRow(
+      executionId: string,
+      options: { ageMs?: number; copy?: string; via?: "user" | "platform" } = {}
+    ) {
+      const manager = new nonces.NonceManager();
+      const { session } = await manager.startSession(
+        WALLET,
+        CHAIN_ID,
+        executionId,
+        provider({ transactionCount: 7, latestBlock: 100 }) as never
+      );
+      await manager.recordBundle(session, 7, {
+        hashes: [H1, H2, H3],
+        lastTargetBlock: 102,
+        workflowId: WORKFLOW_ID,
+        node: { id: "write-1", name: "Write Contract" },
+      });
+      const marked = await manager.markPublicCopy(session, 7, {
+        hash: options.copy ?? H3,
+        kind: "fallback",
+        ...(options.via && { via: options.via }),
+      });
+      await manager.endSession(session);
+      await setRow(7, {
+        submittedAt: new Date(Date.now() - (options.ageMs ?? OLD_MS)),
+      });
+      return { manager, session, marked };
+    }
+
+    it("records the copy before it is sent: the row's hash, and its newest entry", async () => {
+      const bundleRun = await run("running");
+      const { marked } = await publicRow(bundleRun);
+      expect(marked).toBe(true);
+      const row = await rowAt(7);
+      expect(row?.txHash).toBe(H3);
+      expect(row?.status).toBe("pending");
+      expect(row?.bundleRuns.at(-1)?.public).toEqual({
+        hash: H3,
+        kind: "fallback",
+        at: expect.any(Number),
+      });
+      expect(
+        await new nonces.NonceManager().pendingPublicCopyHash(
+          WALLET.toUpperCase().replace("0X", "0x"),
+          CHAIN_ID,
+          7
+        )
+      ).toBe(H3);
+    });
+
+    it("records nothing on a row this session does not own, or one no longer pending", async () => {
+      const bundleRun = await run("running");
+      const { manager, session } = await publicRow(bundleRun);
+      const stranger = { ...session, executionId: `${bundleRun}_other` };
+      expect(
+        await manager.markPublicCopy(stranger, 7, {
+          hash: H1,
+          kind: "with-bundle",
+        })
+      ).toBe(false);
+      await setRow(7, { status: "dropped" });
+      expect(
+        await manager.markPublicCopy(session, 7, {
+          hash: H1,
+          kind: "with-bundle",
+        })
+      ).toBe(false);
+      expect((await rowAt(7))?.txHash).toBe(H3);
+    });
+
+    it("a session keeps the row pending while its copy is pooled: the pending count includes it", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun);
+      // The pool holds the copy: pending count 8, mined 7, long past the window.
+      const { manager, session, validation } = await startSession(
+        `${PREFIX}next_pub`,
+        { transactionCount: 8, minedCount: 7, latestBlock: 600 }
+      );
+      expect((await rowAt(7))?.status).toBe("pending");
+      expect(session.currentNonce).toBe(8);
+      expect(validation.warnings.join(" ")).toContain("not mined yet");
+      await manager.endSession(session);
+    });
+
+    it("the same row without its copy is dropped there, as before", async () => {
+      const bundleRun = await run("not_landed");
+      await publicRow(bundleRun);
+      const owner = new nonces.NonceManager();
+      await owner.markPublicCopyRefused(
+        {
+          walletAddress: WALLET,
+          chainId: CHAIN_ID,
+          executionId: bundleRun,
+        } as never,
+        7
+      );
+      expect((await rowAt(7))?.bundleRuns.at(-1)?.public?.accepted).toBe(false);
+      const { manager, session } = await startSession(`${PREFIX}next_ref`, {
+        transactionCount: 8,
+        minedCount: 7,
+        latestBlock: 600,
+      });
+      expect((await rowAt(7))?.status).toBe("dropped");
+      await manager.endSession(session);
+    });
+
+    it("a session confirms the row once mined, by whichever of its hashes was", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun);
+      const { manager, session } = await startSession(`${PREFIX}next_mined`, {
+        transactionCount: 8,
+        minedCount: 8,
+        latestBlock: 600,
+        mined: { [H3]: 1 },
+      });
+      expect(await rowAt(7)).toMatchObject({ status: "confirmed", txHash: H3 });
+      await manager.endSession(session);
+    });
+
+    it("other runs of the workflow skip behind the copy until the wallet's mined count passes it", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun, { ageMs: 60 * 60_000 });
+      const check = (mined: number) =>
+        inFlight.bundleInFlight({
+          workflowId: WORKFLOW_ID,
+          chainId: CHAIN_ID,
+          walletAddress: WALLET,
+          step: { executionId: `${PREFIX}later`, nodeId: "write-1" },
+          readLatestBlock: async () => 900,
+          readMinedCount: async () => mined,
+        });
+      expect(await check(7)).toEqual({ kind: "other", publicHash: H3 });
+      expect(await check(8)).toEqual({ kind: "none" });
+      // Not past a day.
+      await setRow(7, { submittedAt: new Date(Date.now() - 25 * HOUR_MS) });
+      expect(await check(7)).toEqual({ kind: "none" });
+    });
+
+    it("a replay of its step returns the copy's hash, pending or dropped", async () => {
+      const bundleRun = await run("running");
+      await setRun(bundleRun, {
+        startedAt: new Date(Date.now() - 30 * 60_000),
+      });
+      await publicRow(bundleRun);
+      const check = () =>
+        inFlight.bundleInFlight({
+          workflowId: WORKFLOW_ID,
+          chainId: CHAIN_ID,
+          walletAddress: WALLET,
+          step: { executionId: bundleRun, nodeId: "write-1" },
+          readLatestBlock: async () => 900,
+        });
+      expect(await check()).toEqual({
+        kind: "replay",
+        nonce: 7,
+        publicHash: H3,
+      });
+      await setRow(7, { status: "dropped" });
+      expect(await check()).toEqual({
+        kind: "replay",
+        nonce: 7,
+        publicHash: H3,
+      });
+    });
+
+    const publicOf = async () => (await rowAt(7))?.bundleRuns.at(-1)?.public;
+
+    it("the sweep leaves the row pending past its window and counts a miss when the primary and the fallback answer no; an extra's error is left out", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun);
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      // A send-only extra that errors every time never holds the count back.
+      sweepChain.seen = { primary: false, fallback: false, extra: "error" };
+      for (let i = 1; i < late.PUBLIC_COPY_MISSES_TO_DROP; i += 1) {
+        await sweep();
+        expect((await publicOf())?.misses).toBe(i);
+        expect((await rowAt(7))?.status).toBe("pending");
+      }
+      await sweep();
+      expect(await rowAt(7)).toMatchObject({ status: "dropped" });
+      expect((await publicOf())?.misses).toBe(late.PUBLIC_COPY_MISSES_TO_DROP);
+    });
+
+    it.each([
+      ["the primary", { primary: true, fallback: false, extra: false }],
+      ["the fallback", { primary: false, fallback: true, extra: false }],
+      ["an extra", { primary: false, fallback: false, extra: true }],
+    ] as const)("seen on %s, the count starts again", async (_name, seen) => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun);
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      await sweep();
+      await sweep();
+      expect((await publicOf())?.misses).toBe(2);
+      sweepChain.seen = { ...seen };
+      await sweep();
+      expect((await publicOf())?.misses).toBe(0);
+      expect((await rowAt(7))?.status).toBe("pending");
+    });
+
+    it.each([
+      ["the primary", { primary: "error", fallback: false, extra: false }],
+      ["the fallback", { primary: false, fallback: "error", extra: false }],
+    ] as const)(
+      "an error from %s is unclear: no miss, the unclear count goes up to its cap, one warning",
+      async (_name, seen) => {
+        const { logWarn } = await import("@/lib/logging");
+        const unclearWarnings = () =>
+          vi
+            .mocked(logWarn)
+            .mock.calls.filter(([message]) =>
+              message.includes("Public copy unclear")
+            ).length;
+        const warnedBefore = unclearWarnings();
+        const bundleRun = await run("unconfirmed");
+        await publicRow(bundleRun);
+        sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+        await sweep();
+        expect((await publicOf())?.misses).toBe(1);
+        sweepChain.seen = { ...seen };
+        for (let i = 1; i <= 2; i += 1) {
+          await sweep();
+        }
+        expect(unclearWarnings()).toBe(warnedBefore);
+        for (let i = 3; i <= 5; i += 1) {
+          await sweep();
+        }
+        // Stored no higher than the warning's count, and warned once.
+        expect(await publicOf()).toMatchObject({ misses: 1, unclear: 3 });
+        expect(unclearWarnings()).toBe(warnedBefore + 1);
+        expect((await rowAt(7))?.status).toBe("pending");
+        // A clear answer again resets it.
+        sweepChain.seen = { primary: false, fallback: false, extra: false };
+        await sweep();
+        expect(await publicOf()).toMatchObject({ misses: 2, unclear: 0 });
+      }
+    );
+
+    it("a drop ends the copy's unconfirmed run Not landed and takes its unread hash off the run", async () => {
+      const bundleRun = await run("unconfirmed");
+      await setRun(bundleRun, {
+        transactionHashes: [
+          {
+            hash: H3,
+            nodeId: "write-1",
+            nodeName: "Write Contract",
+            chainId: CHAIN_ID,
+            receiptStatus: "not_found",
+          },
+          {
+            hash: hash("9"),
+            nodeId: "other",
+            nodeName: "Other",
+            chainId: CHAIN_ID,
+            verified: true,
+            receiptStatus: "success",
+          },
+        ],
+      });
+      await publicRow(bundleRun);
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      for (let i = 0; i < late.PUBLIC_COPY_MISSES_TO_DROP; i += 1) {
+        await sweep();
+      }
+      expect((await rowAt(7))?.status).toBe("dropped");
+      const settled = await executionOf(bundleRun);
+      expect(settled).toMatchObject({
+        status: "not_landed",
+        error: expect.stringContaining(
+          "Its public copy was not found on any RPC for three checks"
+        ),
+      });
+      expect(settled?.completedAt).toBeInstanceOf(Date);
+      expect(settled?.transactionHashes?.map((entry) => entry.hash)).toEqual([
+        hash("9"),
+      ]);
+    });
+
+    it("a drop leaves a run held open by its own failure, or already settled, as it is", async () => {
+      const failed = await run("unconfirmed");
+      await setRun(failed, { errorType: "user" as never, error: "boom" });
+      await publicRow(failed);
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      for (let i = 0; i < late.PUBLIC_COPY_MISSES_TO_DROP; i += 1) {
+        await sweep();
+      }
+      expect((await rowAt(7))?.status).toBe("dropped");
+      expect(await statusOf(failed)).toBe("unconfirmed");
+    });
+
+    it("a copy dropped and then mined late re-settles its run through the late-landing path", async () => {
+      const bundleRun = await run("unconfirmed");
+      await logStep(bundleRun, "write-1", {
+        success: true,
+        route: "bundle",
+        included: false,
+        pending: true,
+        transactionHash: H3,
+      });
+      await publicRow(bundleRun);
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      for (let i = 0; i < late.PUBLIC_COPY_MISSES_TO_DROP; i += 1) {
+        await sweep();
+      }
+      expect(await statusOf(bundleRun)).toBe("not_landed");
+      sweepChain.view = {
+        transactionCount: 8,
+        countAt: () => 8,
+        latestBlock: 700,
+        mined: { [H3]: 1 },
+      };
+      await sweep();
+      expect(await rowAt(7)).toMatchObject({ status: "confirmed", txHash: H3 });
+      const settled = await executionOf(bundleRun);
+      expect(settled?.status).toBe("success");
+      expect(settled?.transactionHashes).toEqual([
+        expect.objectContaining({ hash: H3, receiptStatus: "success" }),
+      ]);
+      expect(String(settled?.gasUsedWei)).toBe(String(FEE_WEI));
+    });
+
+    it("a copy sent through the user's own RPC never counts a miss and stays pending to the day's end", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun, { via: "user" });
+      expect((await publicOf())?.via).toBe("user");
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      for (let i = 0; i < late.PUBLIC_COPY_MISSES_TO_DROP + 1; i += 1) {
+        await sweep();
+      }
+      // The copy is never looked up on the platform's endpoints.
+      expect(sweepChain.copyReads).toEqual({ primary: 0, fallback: 0 });
+      expect((await rowAt(7))?.status).toBe("pending");
+      expect((await publicOf())?.misses).toBeUndefined();
+      // Mined: still confirmed from the chain's receipts.
+      sweepChain.view = {
+        transactionCount: 8,
+        countAt: () => 8,
+        latestBlock: 600,
+        mined: { [H3]: 1 },
+      };
+      await sweep();
+      expect(await rowAt(7)).toMatchObject({ status: "confirmed", txHash: H3 });
+    });
+
+    // The run as the finalizer left it: the copy's hash listed, unread.
+    const copyEntry = {
+      hash: H3,
+      nodeId: "write-1",
+      nodeName: "Write Contract",
+      chainId: CHAIN_ID,
+      verified: false,
+      receiptStatus: "not_found" as const,
+    };
+
+    it("the nonce mined with none of the row's hashes found: replaced on proof, never miss-count dropped; its run ends Not landed", async () => {
+      const bundleRun = await run("unconfirmed");
+      await setRun(bundleRun, { transactionHashes: [copyEntry] });
+      await publicRow(bundleRun, { ageMs: 15 * 60_000 });
+      sweepChain.view = {
+        transactionCount: 8,
+        countAt: () => 8,
+        latestBlock: 600,
+      };
+      await sweep();
+      expect((await rowAt(7))?.status).toBe("replaced");
+      expect((await publicOf())?.misses).toBeUndefined();
+      const settled = await executionOf(bundleRun);
+      expect(settled).toMatchObject({
+        status: "not_landed",
+        error:
+          "Not landed: a bundle in this run was not seen in any of the blocks it was sent for. Another transaction from the wallet used its nonce first, so its public copy can no longer be mined; no gas was paid for it.",
+        transactionHashes: [],
+      });
+    });
+
+    it("a session that proves the copy replaced ends its run Not landed too", async () => {
+      const bundleRun = await run("unconfirmed");
+      await setRun(bundleRun, { transactionHashes: [copyEntry] });
+      await publicRow(bundleRun, { ageMs: 15 * 60_000 });
+      const { manager, session, validation } = await startSession(
+        `${PREFIX}next_repl`,
+        { transactionCount: 8, minedCount: 8, latestBlock: 600 }
+      );
+      await manager.endSession(session);
+      expect((await rowAt(7))?.status).toBe("replaced");
+      expect(validation.warnings.join(" ")).toContain("was replaced");
+      expect(await executionOf(bundleRun)).toMatchObject({
+        status: "not_landed",
+        error: expect.stringContaining(
+          "Another transaction from the wallet used its nonce first"
+        ),
+      });
+    });
+
+    it("a mixed run (another send not verified yet) is left to the reconciler when its copy drops", async () => {
+      const bundleRun = await run("unconfirmed");
+      await setRun(bundleRun, {
+        transactionHashes: [
+          copyEntry,
+          {
+            hash: hash("9"),
+            nodeId: "other",
+            nodeName: "Other",
+            chainId: CHAIN_ID,
+            verified: false,
+            receiptStatus: "not_found",
+          },
+        ],
+      });
+      await publicRow(bundleRun);
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      for (let i = 0; i < late.PUBLIC_COPY_MISSES_TO_DROP; i += 1) {
+        await sweep();
+      }
+      expect((await rowAt(7))?.status).toBe("dropped");
+      const left = await executionOf(bundleRun);
+      expect(left?.status).toBe("unconfirmed");
+      expect(left?.transactionHashes).toHaveLength(2);
+    });
+
+    it("failed over, the fallback's no is unclear: no miss, and a seen still resets", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun);
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      await sweep();
+      expect((await publicOf())?.misses).toBe(1);
+      sweepChain.failedOver = true;
+      for (let i = 0; i < late.PUBLIC_COPY_MISSES_TO_DROP; i += 1) {
+        await sweep();
+      }
+      expect(await publicOf()).toMatchObject({ misses: 1, unclear: 3 });
+      expect((await rowAt(7))?.status).toBe("pending");
+      // Asked once per sweep: the fallback is not asked twice, the primary not at all.
+      expect(sweepChain.copyReads.primary).toBe(1);
+      expect(sweepChain.copyReads.fallback).toBe(
+        1 + late.PUBLIC_COPY_MISSES_TO_DROP
+      );
+      sweepChain.seen = { primary: false, fallback: true, extra: false };
+      await sweep();
+      expect(await publicOf()).toMatchObject({ misses: 0, unclear: 0 });
+    });
+
+    it("with no fallback configured, the primary alone decides", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun);
+      sweepChain.noFallback = true;
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      for (let i = 0; i < late.PUBLIC_COPY_MISSES_TO_DROP; i += 1) {
+        await sweep();
+      }
+      expect((await rowAt(7))?.status).toBe("dropped");
+      expect(sweepChain.copyReads).toEqual({
+        primary: late.PUBLIC_COPY_MISSES_TO_DROP,
+        fallback: 0,
+      });
+    });
+
+    it("the nonce mined with none found, too young for proof: left pending, no miss", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun);
+      sweepChain.view = {
+        transactionCount: 8,
+        countAt: () => 8,
+        latestBlock: 600,
+      };
+      await sweep();
+      await sweep();
+      await sweep();
+      expect((await rowAt(7))?.status).toBe("pending");
+      expect((await publicOf())?.misses).toBeUndefined();
+    });
+
+    it("marks a copy never sent only on its own pending row", async () => {
+      const bundleRun = await run("running");
+      const { manager, session } = await publicRow(bundleRun);
+      await manager.markPublicCopyRefused(
+        { ...session, executionId: `${bundleRun}_other` },
+        7
+      );
+      expect((await publicOf())?.accepted).toBeUndefined();
+      await setRow(7, { status: "dropped" });
+      await manager.markPublicCopyRefused(session, 7);
+      expect((await publicOf())?.accepted).toBeUndefined();
+      await setRow(7, { status: "pending" });
+      await manager.markPublicCopyRefused(session, 7);
+      expect((await publicOf())?.accepted).toBe(false);
+    });
+
+    it("a session leaves a public row older than a day to the plain bundle rules (dropped)", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun, { ageMs: 25 * HOUR_MS });
+      const { manager, session, validation } = await startSession(
+        `${PREFIX}next_old`,
+        { transactionCount: 8, minedCount: 7, latestBlock: 600 }
+      );
+      await manager.endSession(session);
+      expect(validation.warnings.join(" ")).not.toContain("not mined yet");
+      // Past the day the sweep and in-flight stop too: the window rule frees the nonce.
+      expect((await rowAt(7))?.status).toBe("dropped");
+    });
+
+    it("livePublicCopy and livePublicCopySql agree on every shape of row", async () => {
+      const history = await import("@/lib/web3/bundles/bundle-history");
+      const mine = await run("unconfirmed");
+      const other = await run("unconfirmed");
+      const entry = (executionId: string, extra: object = {}) => ({
+        executionId,
+        hashes: [H1, H3],
+        signedAt: Date.now(),
+        ...extra,
+      });
+      const copy = (extra: object = {}) => ({
+        public: { hash: H3, kind: "with-bundle", at: Date.now(), ...extra },
+      });
+      const shapes: [string, number | null, object[], boolean][] = [
+        ["accepted absent", 102, [entry(mine, copy())], true],
+        ["accepted true", 102, [entry(mine, copy({ accepted: true }))], true],
+        ["accepted null", 102, [entry(mine, copy({ accepted: null }))], true],
+        ["refused", 102, [entry(mine, copy({ accepted: false }))], false],
+        [
+          "another run's last entry",
+          102,
+          [entry(mine, copy()), entry(other)],
+          false,
+        ],
+        ["another run's entry with a copy", 102, [entry(other, copy())], false],
+        ["no last target block", null, [entry(mine, copy())], false],
+        ["no public field", 102, [entry(mine)], false],
+        ["no entries", 102, [], false],
+      ];
+      for (const [index, [, lastTargetBlock, bundleRuns]] of shapes.entries()) {
+        await db.insert(ext.pendingTransactions).values({
+          walletAddress: WALLET,
+          chainId: CHAIN_ID,
+          nonce: 20 + index,
+          txHash: H3,
+          executionId: mine,
+          workflowId: WORKFLOW_ID,
+          lastTargetBlock,
+          bundleRuns: bundleRuns as never,
+        });
+      }
+      const rows = await db
+        .select({
+          nonce: ext.pendingTransactions.nonce,
+          txHash: ext.pendingTransactions.txHash,
+          executionId: ext.pendingTransactions.executionId,
+          lastTargetBlock: ext.pendingTransactions.lastTargetBlock,
+          bundleRuns: ext.pendingTransactions.bundleRuns,
+          live: history.livePublicCopySql(),
+        })
+        .from(ext.pendingTransactions)
+        .where(eq(ext.pendingTransactions.walletAddress, WALLET));
+      for (const [index, [name, , , expected]] of shapes.entries()) {
+        const row = rows.find((candidate) => candidate.nonce === 20 + index);
+        expect([name, row?.live]).toEqual([name, expected]);
+        expect([
+          name,
+          history.livePublicCopy(row as never) !== undefined,
+        ]).toEqual([name, expected]);
+      }
+    });
+
+    it("a refused copy past its window is a plain bundle row: dropped by the window rule, never miss-counted, never named", async () => {
+      const bundleRun = await run("unconfirmed");
+      const { manager, session } = await publicRow(bundleRun);
+      await manager.markPublicCopyRefused(session, 7);
+      expect(
+        await new nonces.NonceManager().pendingPublicCopyHash(
+          WALLET,
+          CHAIN_ID,
+          7
+        )
+      ).toBeUndefined();
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      await sweep();
+      expect((await rowAt(7))?.status).toBe("dropped");
+      expect((await publicOf())?.misses).toBeUndefined();
+    });
+
+    it("the sweep confirms a mined copy instead of counting a miss", async () => {
+      const bundleRun = await run("unconfirmed");
+      await publicRow(bundleRun);
+      sweepChain.view = {
+        transactionCount: 8,
+        countAt: () => 8,
+        latestBlock: 600,
+        mined: { [H3]: 1 },
+      };
+      const result = await sweep();
+      expect(result.landed).toBe(1);
+      expect(await rowAt(7)).toMatchObject({ status: "confirmed", txHash: H3 });
+    });
+
+    it("the sweep never touches a copy inside its window", async () => {
+      const bundleRun = await run("running");
+      await publicRow(bundleRun, { ageMs: 10_000 });
+      sweepChain.view = { transactionCount: 7, latestBlock: 600 };
+      await sweep();
+      await sweep();
+      await sweep();
+      expect((await rowAt(7))?.status).toBe("pending");
+      expect(
+        (await rowAt(7))?.bundleRuns.at(-1)?.public?.misses
+      ).toBeUndefined();
     });
   });
 });

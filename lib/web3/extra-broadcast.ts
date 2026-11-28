@@ -133,3 +133,40 @@ function normalizeHash(value: string): string {
   const trimmed = value.trim().toLowerCase();
   return trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`;
 }
+
+/**
+ * Whether an extra URL's node knows this transaction (eth_getTransactionByHash):
+ * true when it returns it, false on a clear null, undefined when unclear.
+ */
+export async function extraRpcHasTransaction(
+  url: string,
+  hash: string
+): Promise<boolean | undefined> {
+  try {
+    const response = await safeFetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_getTransactionByHash",
+        params: [hash],
+      }),
+      signal: AbortSignal.timeout(EXTRA_BROADCAST_TIMEOUT_MS),
+      redirect: "manual",
+      plugin: "rpc-evm",
+    });
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => undefined);
+      return;
+    }
+    const body = await readCappedBody(response, MAX_RESPONSE_BYTES);
+    const parsed = body === undefined ? undefined : parseJsonRpcAnswer(body);
+    if (!parsed || parsed.error || parsed.result === undefined) {
+      return;
+    }
+    return parsed.result !== null;
+  } catch {
+    return;
+  }
+}
