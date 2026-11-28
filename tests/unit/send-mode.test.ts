@@ -4,6 +4,8 @@ vi.mock("server-only", () => ({}));
 
 import {
   availableSendModes,
+  BUNDLE_SEND_MODES,
+  isBundleMode,
   isLegacyPrivateRelayConfig,
   legacyFlagTypeIssue,
   relayUseOf,
@@ -48,6 +50,20 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+});
+
+describe("isBundleMode", () => {
+  it("is true for every bundle mode and only those", () => {
+    expect(BUNDLE_SEND_MODES).toEqual([SEND_MODE.BUNDLE]);
+    for (const mode of Object.values(SEND_MODE)) {
+      expect(isBundleMode(mode)).toBe(
+        (BUNDLE_SEND_MODES as readonly string[]).includes(mode)
+      );
+    }
+    for (const value of ["Bundle", "bundle ", "", undefined, null, true]) {
+      expect(isBundleMode(value)).toBe(false);
+    }
+  });
 });
 
 describe("resolveSendMode", () => {

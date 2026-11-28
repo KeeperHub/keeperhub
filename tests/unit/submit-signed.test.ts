@@ -22,6 +22,7 @@ import {
   PreBroadcastNetworkError,
   type SendReport,
   sendReportFields,
+  submitRawSignedWithFailover,
   submitSignedTransactionWithFailover,
 } from "@/lib/web3/submit-signed";
 
@@ -466,6 +467,131 @@ describe("submitSignedTransactionWithFailover", () => {
     );
 
     expect(result.preExistingReceipt).toBe(receipt);
+  });
+});
+
+// The send half alone: already-signed bytes, no signer.
+describe("submitRawSignedWithFailover", () => {
+  it("sends the given bytes once and returns their hash when the node accepts them", async () => {
+    const sendRawTransaction = vi.fn().mockResolvedValue(EXPECTED_HASH);
+    const { rpcManager, executeWithFailover } = makeMockRpcManager({
+      sendRawTransaction,
+    });
+    const report: SendReport = {};
+
+    const result = await submitRawSignedWithFailover(
+      SIGNED_HEX,
+      rpcManager,
+      report
+    );
+
+    expect(result.hash).toBe(EXPECTED_HASH);
+    expect(result.response.hash).toBe(EXPECTED_HASH);
+    expect(result.preExistingReceipt).toBeUndefined();
+    expect(result.broadcast?.broadcastAt).toEqual(expect.any(String));
+    expect(sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(sendRawTransaction).toHaveBeenCalledWith(SIGNED_HEX);
+    expect(executeWithFailover).toHaveBeenCalledWith(
+      expect.any(Function),
+      "write-broadcast"
+    );
+    expect(sendReportFields(report)).toEqual({
+      route: "public",
+      included: false,
+    });
+  });
+
+  it("returns the pooled copy on an already known reply the node can show", async () => {
+    const pendingResponse = makeMockTxResponse(EXPECTED_HASH);
+    const { rpcManager } = makeMockRpcManager({
+      sendRawTransaction: vi.fn().mockRejectedValue(new Error("already known")),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(pendingResponse),
+    });
+
+    const result = await submitRawSignedWithFailover(SIGNED_HEX, rpcManager);
+
+    expect(result.hash).toBe(EXPECTED_HASH);
+    expect(result.response).toBe(pendingResponse);
+  });
+
+  it("keeps the hash as pending on an already known reply the node cannot show", async () => {
+    const { rpcManager } = makeMockRpcManager({
+      sendRawTransaction: vi.fn().mockRejectedValue(new Error("already known")),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    const error = await submitRawSignedWithFailover(
+      SIGNED_HEX,
+      rpcManager
+    ).catch((caught: unknown) => caught);
+
+    expect(error).not.toBeInstanceOf(NonceConflictError);
+    expect(broadcastTransactionHash(error)).toBe(EXPECTED_HASH);
+  });
+
+  it("throws PreBroadcastNetworkError when every endpoint refused the connection", async () => {
+    const originalError = new Error(
+      "RPC failed on both endpoints. Primary: connection refused. Fallback: ECONNREFUSED"
+    );
+    const { rpcManager } = makeMockRpcManager({
+      sendRawTransaction: vi.fn().mockRejectedValue(originalError),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    const thrown = await submitRawSignedWithFailover(
+      SIGNED_HEX,
+      rpcManager
+    ).catch((caught: unknown) => caught);
+
+    expect(isPreBroadcastNetworkError(thrown)).toBe(true);
+    expect((thrown as PreBroadcastNetworkError).cause).toBe(originalError);
+    expect(broadcastTransactionHash(thrown)).toBeUndefined();
+  });
+
+  it("keeps the hash as pending when the send may have reached the node", async () => {
+    const { rpcManager } = makeMockRpcManager({
+      sendRawTransaction: vi
+        .fn()
+        .mockRejectedValue(new Error("request timed out")),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+    const report: SendReport = {};
+
+    await expect(
+      submitRawSignedWithFailover(SIGNED_HEX, rpcManager, report)
+    ).rejects.toMatchObject({
+      name: "OnChainPendingError",
+      kind: "onchain-pending",
+      transactionHash: EXPECTED_HASH,
+    });
+    expect(sendReportFields(report)).toEqual({
+      route: "public",
+      included: false,
+    });
+  });
+
+  it("reads the nonce of a conflict from the signed bytes", async () => {
+    const { rpcManager } = makeMockRpcManager({
+      sendRawTransaction: vi.fn().mockRejectedValue(
+        makeError("replacement fee too low", "REPLACEMENT_UNDERPRICED", {
+          transaction: { from: "0x", to: "0x" },
+        })
+      ),
+      getTransactionReceipt: vi.fn().mockResolvedValue(null),
+      getTransaction: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      submitRawSignedWithFailover(SIGNED_HEX, rpcManager)
+    ).rejects.toMatchObject({
+      name: "NonceConflictError",
+      expectedHash: EXPECTED_HASH,
+      nonce: TEST_TX_REQUEST.nonce,
+    });
   });
 });
 

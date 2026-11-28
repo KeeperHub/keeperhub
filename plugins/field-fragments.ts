@@ -24,10 +24,12 @@ import {
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
 } from "@/lib/web3/next-block-limits";
 import {
+  BUNDLE_SEND_MODES,
   SEND_MODE_KEY,
   SEND_MODE_OPTIONS,
   unsupportedSendMode,
 } from "@/lib/web3/send-mode";
+import type { ShowWhen } from "@/lib/workflow/editor/show-when";
 import type {
   ActionConfigField,
   ActionConfigFieldBase,
@@ -86,7 +88,10 @@ export function sendModeField(actionType?: string): ActionConfigFieldBase {
   };
 }
 
-const SHOW_FOR_BUNDLE = { field: SEND_MODE_KEY, equals: "bundle" } as const;
+const SHOW_FOR_BUNDLE: ShowWhen = {
+  field: SEND_MODE_KEY,
+  oneOf: [...BUNDLE_SEND_MODES],
+};
 
 /**
  * Write Contract's bundle settings, drawn by Send as in one box under it; see
@@ -226,7 +231,12 @@ export function sponsorGasField(): ActionConfigFieldBase {
   };
 }
 
-const NOT_BUNDLE = { field: SEND_MODE_KEY, notEquals: "bundle" } as const;
+const NOT_BUNDLE: ShowWhen = {
+  all: BUNDLE_SEND_MODES.map((mode) => ({
+    field: SEND_MODE_KEY,
+    notEquals: mode,
+  })),
+};
 
 /**
  * "Simulate at" on Read Contract, Write Contract and Batch Write Contract.

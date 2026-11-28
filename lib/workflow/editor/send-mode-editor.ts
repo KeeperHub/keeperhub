@@ -8,6 +8,7 @@ import {
   availableSendModes,
   BUNDLE_SAFE_REFUSAL,
   chainHasBuilders,
+  isBundleMode,
   isLegacyPrivateRelayConfig,
   LEGACY_PRIVATE_MEMPOOL_KEY,
   resolveSendMode,
@@ -68,13 +69,12 @@ const LEGACY_UNRESOLVED_NOTICE =
 
 function networkChangeNotice(mode: SendMode, chain: EditorChain): string {
   const prefix = "Send as changed to Normal transaction (public mempool):";
-  if (mode === SEND_MODE.BUNDLE && chainHasBuilders(chain)) {
+  if (isBundleMode(mode) && chainHasBuilders(chain)) {
     return `${prefix} bundles are not turned on for this organization.`;
   }
-  const lacks =
-    mode === SEND_MODE.BUNDLE
-      ? "no block builders that take bundles"
-      : "no private relay";
+  const lacks = isBundleMode(mode)
+    ? "no block builders that take bundles"
+    : "no private relay";
   return `${prefix} ${chain.name ?? "this network"} has ${lacks}.`;
 }
 
@@ -326,7 +326,7 @@ export function pickSendMode(
   config: Record<string, unknown>,
   mode: SendMode
 ): SendModeChange {
-  const cleared = mode === SEND_MODE.BUNDLE ? [] : sendAheadClears(config);
+  const cleared = isBundleMode(mode) ? [] : sendAheadClears(config);
   const clearNotice = sendAheadClearedNotice(cleared);
   if (mode === SEND_MODE.TRANSACTION) {
     return changeOf(config, toNormalWrites(config), clearNotice);
@@ -465,7 +465,7 @@ function keysIssue(config: Record<string, unknown>): string | undefined {
 /** The chain has builders but the organization's rollout is not known yet. */
 function bundleRolloutUnknown(mode: SendMode, chain: EditorChain): boolean {
   return (
-    mode === SEND_MODE.BUNDLE &&
+    isBundleMode(mode) &&
     chain.bundlesEnabled === undefined &&
     chainHasBuilders(chain)
   );
@@ -473,9 +473,10 @@ function bundleRolloutUnknown(mode: SendMode, chain: EditorChain): boolean {
 
 /** A bundle step that signs through a Safe, which cannot bundle yet. */
 function bundleWarning(
-  config: Record<string, unknown>
+  config: Record<string, unknown>,
+  mode: SendMode
 ): SendModeWarning | undefined {
-  if (unsupportedSendMode(config.actionType, SEND_MODE.BUNDLE)) {
+  if (unsupportedSendMode(config.actionType, mode)) {
     return;
   }
   if (String(config.web3Connection ?? "").startsWith("safe:")) {
@@ -510,8 +511,9 @@ export function sendModeWarning(
   const mode = editorSendMode(config);
   const chain = sendModeChainOf(config);
   const option = sendModeOption(mode);
-  const bundleIssue =
-    mode === SEND_MODE.BUNDLE ? bundleWarning(config) : undefined;
+  const bundleIssue = isBundleMode(mode)
+    ? bundleWarning(config, mode)
+    : undefined;
   if (bundleIssue) {
     return bundleIssue;
   }
@@ -666,7 +668,7 @@ export function actionSwitchNotice(
   const chain = sendModeChainOf(before);
   const legacy = isLegacyPrivateRelayConfig(before);
   let notice = `Send as changed to Normal transaction (public mempool): ${label} can't send through the private relay yet.`;
-  if (was === SEND_MODE.BUNDLE) {
+  if (isBundleMode(was)) {
     notice =
       "Send as changed to Normal transaction (public mempool): only Write Contract can send as a bundle.";
   } else if (legacy && chain === undefined) {

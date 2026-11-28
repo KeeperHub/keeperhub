@@ -20,6 +20,7 @@ import {
   chainHasBuilders,
   chainHasPrivateRelay,
   hasLegacyFlagOnly,
+  isBundleMode,
   isLegacyPrivateRelayConfig,
   isSendMode,
   LEGACY_PRIVATE_MEMPOOL_KEY,
@@ -144,7 +145,7 @@ function unchangedFromSaved(
     Object.is(before[SEND_MODE_KEY], config[SEND_MODE_KEY]) &&
     Object.is(storedLegacyFlag(before), storedLegacyFlag(config)) &&
     sendAheadKeysOf(before) === sendAheadKeysOf(config) &&
-    (resolveSendMode(config) !== SEND_MODE.BUNDLE ||
+    (!isBundleMode(resolveSendMode(config)) ||
       bundleKeysOf(before) === bundleKeysOf(config))
   );
 }
@@ -301,7 +302,7 @@ function bundleNodeIssues(
   kept: { route: boolean; storedAsIs: boolean },
   ctx: BundleContext
 ): { issue?: ActionConfigValidationIssue; candidate?: Candidate } {
-  const mode = SEND_MODE.BUNDLE;
+  const mode = resolveSendMode(config);
   const keptRoute = kept.route;
   const refuse = (message: string, field: string = SEND_MODE_KEY) => ({
     issue: issueFor(
@@ -445,7 +446,7 @@ function nodeIssues(
     };
   }
   const mode = resolveSendMode(config);
-  if (mode !== SEND_MODE.BUNDLE) {
+  if (!isBundleMode(mode)) {
     const stray = strayBundleTimeIssue(index, node, config);
     if (stray) {
       return { issue: stray };
@@ -454,7 +455,7 @@ function nodeIssues(
   if (mode === SEND_MODE.TRANSACTION) {
     return {};
   }
-  if (mode === SEND_MODE.BUNDLE) {
+  if (isBundleMode(mode)) {
     return bundleNodeIssues(index, node, config, networkField, kept, ctx);
   }
   const reason =
@@ -481,7 +482,7 @@ function candidateIssue(
   candidate: Candidate,
   row: ChainRow | undefined
 ): ActionConfigValidationIssue | undefined {
-  if (candidate.mode === SEND_MODE.BUNDLE) {
+  if (isBundleMode(candidate.mode)) {
     return bundleCandidateIssue(candidate, row);
   }
   const { index, node, chainId, mode, legacy, unsupported } = candidate;
@@ -512,13 +513,13 @@ async function nestedLoopIssues(
   nodes: readonly Node[],
   edges: readonly unknown[] | undefined
 ): Promise<ActionConfigValidationIssue[]> {
-  const bundleNodes = [...nodes.entries()].filter(([, node]) => {
+  const bundleNodes = [...nodes.entries()].flatMap(([index, node]) => {
     const config = node.data?.config;
-    return (
-      config !== undefined &&
-      sendModeNetworkField(config) !== undefined &&
-      resolveSendMode(config) === SEND_MODE.BUNDLE
-    );
+    if (config === undefined || sendModeNetworkField(config) === undefined) {
+      return [];
+    }
+    const mode = resolveSendMode(config);
+    return isBundleMode(mode) ? [{ index, node, mode }] : [];
   });
   if (bundleNodes.length === 0 || !edges || edges.length === 0) {
     return [];
@@ -528,11 +529,11 @@ async function nestedLoopIssues(
     edges.filter((edge): edge is Record<string, unknown> => isObject(edge))
   );
   const issues: ActionConfigValidationIssue[] = [];
-  for (const [index, node] of bundleNodes) {
+  for (const { index, node, mode } of bundleNodes) {
     const depth = typeof node.id === "string" ? (depths.get(node.id) ?? 0) : 0;
     const refusal = bundleLoopRefusal(depth);
     if (refusal) {
-      issues.push(issueFor(index, node, SEND_MODE.BUNDLE, refusal));
+      issues.push(issueFor(index, node, mode, refusal));
     }
   }
   return issues;
@@ -570,8 +571,7 @@ export async function validateSendModeForSave(
     }
     const before = typeof node.id === "string" ? saved.get(node.id) : undefined;
     const recheck =
-      options.recheckBundles === true &&
-      resolveSendMode(config) === SEND_MODE.BUNDLE;
+      options.recheckBundles === true && isBundleMode(resolveSendMode(config));
     const unchanged = unchangedFromSaved(config, before, networkField);
     // validate_workflow also flags a stored Not before / Send ahead a non-bundle step ignores.
     if (options.recheckBundles === true && !ctx.copy && !recheck && unchanged) {

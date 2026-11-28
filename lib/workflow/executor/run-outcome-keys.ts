@@ -19,6 +19,16 @@ export const BUNDLE_STEP_ACTION_TYPES: readonly string[] = [
 /** Where a bundle step's write went: sent as a bundle. */
 export const BUNDLE_ROUTE = "bundle" as const;
 
+/** Every route a bundle step reports after sending; quote-free, the SQL reads them as literals. */
+export const BUNDLE_ROUTES = [BUNDLE_ROUTE] as const;
+
+export type BundleSendRoute = (typeof BUNDLE_ROUTES)[number];
+
+/** Whether a step's `route` says it sent a bundle; use this, never a compare with "bundle". */
+export function isBundleRoute(route: unknown): route is BundleSendRoute {
+  return (BUNDLE_ROUTES as readonly unknown[]).includes(route);
+}
+
 /** Output keys that show a step sent or paid for something; an allowed step must carry none. */
 export const SENT_OUTPUT_KEYS = ["transactionHash", "gasUsed"] as const;
 
@@ -40,7 +50,7 @@ export function bundleReservationEnd(result: {
   notIncludedReason?: string;
 }): "settle" | "release" | "hold" {
   const sentNotIncluded =
-    result.route === BUNDLE_ROUTE && result.included === false;
+    isBundleRoute(result.route) && result.included === false;
   if (!result.success) {
     return sentNotIncluded && result.broadcastAttempted === true
       ? "hold"
@@ -126,7 +136,7 @@ export function bundleSignalsOfStep(
     skippedInFlight: route === RUN_OUTCOME_OUTPUT.skippedInFlightRoute,
     notIncluded: typeof reason === "string" && hasVisibleText(reason),
     waiting: route === RUN_OUTCOME_OUTPUT.waitingRoute,
-    bundleSent: route === BUNDLE_ROUTE,
+    bundleSent: isBundleRoute(route),
   };
 }
 

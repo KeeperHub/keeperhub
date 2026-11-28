@@ -55,7 +55,11 @@ import {
   rpcRelayErrorClass,
 } from "@/lib/rpc/providers";
 import { getSendRpcProvider } from "@/lib/rpc/send-provider";
-import { unsupportedSendMode } from "@/lib/web3/send-mode";
+import {
+  BUNDLE_SEND_MODES,
+  SEND_MODE,
+  unsupportedSendMode,
+} from "@/lib/web3/send-mode";
 
 const ETHEREUM = {
   chainId: 1,
@@ -261,6 +265,34 @@ describe("getSendRpcProvider: every step's route", () => {
     expect(send.relayRequested).toBe(false);
     expect(send.bundleRequested).toBe(true);
   });
+
+  it.each(BUNDLE_SEND_MODES)(
+    "treats every bundle mode as a bundle: %s",
+    async (sendMode) => {
+      const refused = await outcome(ETHEREUM, { sendMode });
+      expect(refused.error).toBeInstanceOf(InvalidSendModeError);
+      expect(state.calls).toBe(0);
+      state.chain = ETHEREUM;
+      const send = await getSendRpcProvider(
+        { sendMode },
+        { chainId: 1, allowBundle: true }
+      );
+      expect(send.bundleRequested).toBe(true);
+      expect(send.rpcManager.hasPrivateRelayPrimary()).toBe(false);
+    }
+  );
+
+  it.each([SEND_MODE.TRANSACTION, SEND_MODE.PRIVATE_RELAY])(
+    "does not treat %s as a bundle",
+    async (sendMode) => {
+      state.chain = ETHEREUM;
+      const send = await getSendRpcProvider(
+        { sendMode },
+        { chainId: 1, allowBundle: true }
+      );
+      expect(send.bundleRequested).toBe(false);
+    }
+  );
 
   it("names the editor label and the API value in every refusal", async () => {
     const noRelay = await outcome(BASE, { sendMode: "private-relay" });

@@ -10,10 +10,10 @@ import {
 import { readRpcFor } from "@/lib/rpc/read-provider";
 import { getErrorMessage } from "@/lib/utils";
 import {
+  isBundleMode,
   noPrivateRelayMessage,
   relayUseOf,
   resolveSendMode,
-  SEND_MODE,
   USE_NORMAL_HINT,
   unknownSendModeIssue,
 } from "@/lib/web3/send-mode";
@@ -40,7 +40,7 @@ function refuseUnknownOrBundle(input: SendAsInput, allowBundle: boolean): void {
   if (invalid) {
     throw new InvalidSendModeError(invalid);
   }
-  if (!allowBundle && resolveSendMode(input) === SEND_MODE.BUNDLE) {
+  if (!allowBundle && isBundleMode(resolveSendMode(input))) {
     throw new InvalidSendModeError(BUNDLE_REFUSAL);
   }
 }
@@ -79,7 +79,7 @@ export async function getSendRpcProvider(
   return {
     rpcManager,
     relayRequested: relay !== "none",
-    bundleRequested: resolveSendMode(input) === SEND_MODE.BUNDLE,
+    bundleRequested: isBundleMode(resolveSendMode(input)),
   };
 }
 

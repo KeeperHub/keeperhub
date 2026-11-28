@@ -25,6 +25,7 @@ import { useSendModeChains } from "@/lib/hooks/use-send-mode-chains";
 import { cn } from "@/lib/utils";
 import {
   availableSendModes,
+  isBundleMode,
   isLegacyPrivateRelayConfig,
   isSendMode,
   SEND_MODE,
@@ -556,8 +557,8 @@ export function SendModeField({
         )}
         {announcement && <span className="sr-only">{announcement}</span>}
       </div>
-      {mode === SEND_MODE.BUNDLE &&
-        !unsupportedSendMode(config.actionType, SEND_MODE.BUNDLE) && (
+      {isBundleMode(mode) &&
+        !unsupportedSendMode(config.actionType, mode) && (
           <BundleSettingsBox
             builders={chain?.bundleBuilders ?? undefined}
             config={config}

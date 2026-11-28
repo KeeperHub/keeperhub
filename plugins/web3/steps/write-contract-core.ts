@@ -16,7 +16,7 @@ import type { SkippedTarget } from "@/lib/web3/bundles/plan";
 import type { BuilderReport } from "@/lib/web3/bundles/send-bundle";
 import type { BundleSettingsInput } from "@/lib/web3/bundles/settings";
 import {
-  BUNDLE_ROUTE,
+  type BundleSendRoute,
   RUN_OUTCOME_OUTPUT,
 } from "@/lib/workflow/executor/run-outcome-keys";
 import {
@@ -90,7 +90,7 @@ import {
 } from "@/lib/web3/next-block-simulation";
 import { maxFeeCapFailure } from "@/lib/web3/max-fee-cap-failure";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
-import { resolveSendMode, SEND_MODE } from "@/lib/web3/send-mode";
+import { isBundleMode, resolveSendMode } from "@/lib/web3/send-mode";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { BroadcastInfo } from "@/lib/web3/submit-signed";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
@@ -187,7 +187,7 @@ export type WriteContractCoreInput = {
 /** Where a write went: a send route, a bundle, skipped behind a bundle in flight, or waiting for Not before. */
 type WriteRoute =
   | SendRoute
-  | typeof BUNDLE_ROUTE
+  | BundleSendRoute
   | typeof RUN_OUTCOME_OUTPUT.skippedInFlightRoute
   | typeof RUN_OUTCOME_OUTPUT.waitingRoute;
 
@@ -385,7 +385,7 @@ async function writeContractCoreImpl(
 
   // Simulate at is hidden and ignored with Bundle: a stale stored value cannot fail the step.
   const simulationSettings =
-    resolveSendMode(input) === SEND_MODE.BUNDLE
+    isBundleMode(resolveSendMode(input))
       ? undefined
       : readSimulationSettings(
           simulateAt,

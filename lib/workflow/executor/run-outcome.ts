@@ -1,6 +1,6 @@
 import { type AnyColumn, type SQL, sql } from "drizzle-orm";
 import {
-  BUNDLE_ROUTE,
+  BUNDLE_ROUTES,
   BUNDLE_STEP_ACTION_TYPES,
   isUnbilledOutcome,
   RUN_OUTCOME_CODE,
@@ -169,6 +169,7 @@ export function runOutcomeSignalSql(
   const route = literal(RUN_OUTCOME_OUTPUT.routeKey);
   const reason = literal(RUN_OUTCOME_OUTPUT.notIncludedReasonKey);
   const writeContract = sql`${log.nodeType} IN (${types})`;
+  const bundleRoutes = sql.join(BUNDLE_ROUTES.map(literal), sql`, `);
   return {
     skippedInFlight: sql`(${writeContract}
       AND ${log.outputRaw}->>${route} = ${literal(RUN_OUTCOME_OUTPUT.skippedInFlightRoute)})`,
@@ -178,7 +179,7 @@ export function runOutcomeSignalSql(
     waiting: sql`(${writeContract}
       AND ${log.outputRaw}->>${route} = ${literal(RUN_OUTCOME_OUTPUT.waitingRoute)})`,
     bundleSent: sql`(${writeContract}
-      AND ${log.outputRaw}->>${route} = ${literal(BUNDLE_ROUTE)})`,
+      AND ${log.outputRaw}->>${route} IN (${bundleRoutes}))`,
     otherWork: otherWorkSql(log),
   };
 }

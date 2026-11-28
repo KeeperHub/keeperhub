@@ -47,7 +47,7 @@ export type BroadcastInfo = {
   builders?: BuilderBroadcastResult[];
 };
 
-type SubmitSignedOptions = {
+export type SubmitSignedOptions = {
   // Also send the signed bytes to these block builders, in parallel.
   builderRpcUrls?: BuilderRpcUrls;
 };
@@ -170,18 +170,37 @@ export async function submitSignedTransactionWithFailover(
   report: SendReport = {},
   options: SubmitSignedOptions = {}
 ): Promise<BroadcastResult> {
-  let populated: ethers.TransactionRequest;
   let signedHex: string;
   try {
-    populated = await signer.populateTransaction(txRequest);
+    const populated = await signer.populateTransaction(txRequest);
     signedHex = await signer.signTransaction(populated);
   } catch (error) {
     // No broadcast call has started. Preserve that provenance structurally so
     // callers can release an idempotency key without matching error text.
     throw new PreBroadcastNetworkError(errorMessage(error), error);
   }
+  return await submitRawSignedWithFailover(
+    signedHex,
+    rpcManager,
+    report,
+    options
+  );
+}
+
+/**
+ * Broadcast already-signed bytes with RPC failover, reconcile on error: the
+ * send half of submitSignedTransactionWithFailover, with the same results and throws.
+ */
+export async function submitRawSignedWithFailover(
+  signedHex: string,
+  rpcManager: RpcProviderManager,
+  report: SendReport = {},
+  options: SubmitSignedOptions = {}
+): Promise<BroadcastResult> {
   const expectedHash = computeTxHash(signedHex);
-  const chainId = Number(ethers.Transaction.from(signedHex).chainId);
+  const signed = ethers.Transaction.from(signedHex);
+  const chainId = Number(signed.chainId);
+  const { nonce } = signed;
 
   // The manager returns no extra URLs while the private relay is in use.
   const extraUrls = rpcManager.getBroadcastRpcUrls();
@@ -288,14 +307,10 @@ export async function submitSignedTransactionWithFailover(
             rpcManager,
             signedHex,
             expectedHash,
-            populated.nonce
+            nonce
           ))
         ) {
-          throw new NonceConflictError(
-            expectedHash,
-            typeof populated.nonce === "number" ? populated.nonce : null,
-            err
-          );
+          throw new NonceConflictError(expectedHash, nonce, err);
         }
         report.route = routeIf(false);
         throw confirmError;
@@ -307,7 +322,7 @@ export async function submitSignedTransactionWithFailover(
       const result = await reconcile(
         rpcManager,
         expectedHash,
-        populated.nonce,
+        nonce,
         err,
         // An extra, or an earlier managed attempt without a clear answer (a
         // timeout or a server error, not a refused connection), may hold our

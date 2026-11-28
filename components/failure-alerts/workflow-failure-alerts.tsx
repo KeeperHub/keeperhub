@@ -56,7 +56,7 @@ import {
 } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
 import { HOUR_MS } from "@/lib/utils/duration";
-import { resolveSendMode, SEND_MODE } from "@/lib/web3/send-mode";
+import { isBundleMode, resolveSendMode } from "@/lib/web3/send-mode";
 import {
   extraUnsavedAtom,
   registerExtraSave,
@@ -102,7 +102,7 @@ const hasBundleStepAtom = atom((get) =>
   get(nodesAtom).some(
     (node) =>
       node.data?.config !== undefined &&
-      resolveSendMode(node.data.config) === SEND_MODE.BUNDLE
+      isBundleMode(resolveSendMode(node.data.config))
   )
 );
 

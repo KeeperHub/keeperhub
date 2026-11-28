@@ -435,6 +435,49 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     }
   });
 
+  it("the SQL bundleSent signal agrees with bundleSignalsOfStep, every bundle route included", async () => {
+    const { runOutcomeSignalSql } = await import(
+      "@/lib/workflow/executor/run-outcome"
+    );
+    const routes = [
+      ...keys.BUNDLE_ROUTES,
+      "public",
+      "private-relay",
+      "waiting",
+      "skipped-in-flight",
+      "Bundle",
+    ];
+    const run = await newRun();
+    for (const [index, route] of routes.entries()) {
+      await logStep(run, `r${index}`, { route });
+    }
+    // Another step type never carries the signal.
+    await logStep(run, "http", { route: keys.BUNDLE_ROUTE }, "HTTP Request");
+    const rows = await db
+      .select({
+        nodeType: schema.workflowExecutionLogs.nodeType,
+        outputRaw: schema.workflowExecutionLogs.outputRaw,
+        sql: runOutcomeSignalSql(
+          schema.workflowExecutionLogs
+        ).bundleSent.mapWith(Boolean),
+      })
+      .from(schema.workflowExecutionLogs)
+      .where(eq(schema.workflowExecutionLogs.executionId, run));
+    expect(rows).toHaveLength(routes.length + 1);
+    for (const row of rows) {
+      const ts = keys.bundleSignalsOfStep(row.nodeType, row.outputRaw);
+      expect({ output: row.outputRaw, sent: row.sql }).toEqual({
+        output: row.outputRaw,
+        sent: ts.bundleSent,
+      });
+    }
+    const sent = rows.filter((row) => row.sql).map((row) => row.outputRaw);
+    expect(sent).toHaveLength(keys.BUNDLE_ROUTES.length);
+    expect(sent).toEqual(
+      expect.arrayContaining(keys.BUNDLE_ROUTES.map((route) => ({ route })))
+    );
+  });
+
   it("a waiting step beside a protocol write is billed, even one that sent nothing yet", async () => {
     const run = await newRun();
     await logStep(run, "write-1", WAITING_OUTPUT);

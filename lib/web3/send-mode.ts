@@ -11,6 +11,16 @@ export const SEND_MODE = {
 
 export type SendMode = (typeof SEND_MODE)[keyof typeof SEND_MODE];
 
+/** The Send as modes that send a bundle to block builders. */
+export const BUNDLE_SEND_MODES = [SEND_MODE.BUNDLE] as const;
+
+export type BundleSendMode = (typeof BUNDLE_SEND_MODES)[number];
+
+/** Whether `mode` sends a bundle; use this, never a compare with "bundle". */
+export function isBundleMode(mode: unknown): mode is BundleSendMode {
+  return (BUNDLE_SEND_MODES as readonly unknown[]).includes(mode);
+}
+
 /**
  * What a chain offers, as /api/chains reports it, plus whether the caller's
  * organization may send bundles (unknown while it loads in the editor).
@@ -135,7 +145,7 @@ export function unsupportedSendMode(
   actionType: unknown,
   mode: SendMode
 ): string | undefined {
-  if (mode === SEND_MODE.BUNDLE) {
+  if (isBundleMode(mode)) {
     return typeof actionType === "string" &&
       BUNDLE_STEP_ACTION_TYPES.includes(actionType)
       ? undefined

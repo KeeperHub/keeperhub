@@ -13,10 +13,15 @@ import {
   runOutcomeLogSql,
   runOutcomeOf,
   runOutcomeReason,
+  runOutcomeSignalSql,
   signalsOfStep,
   stepOutcomeKeysSql,
 } from "@/lib/workflow/executor/run-outcome";
 import {
+  BUNDLE_ROUTES,
+  bundleReservationEnd,
+  bundleSignalsOfStep,
+  isBundleRoute,
   isUnbilledOutcome,
   nodeOutcomeOf,
   RUN_OUTCOME_REASON,
@@ -40,6 +45,15 @@ import {
 } from "@/lib/workflow/run-polling";
 
 const WRITE = "web3/write-contract";
+// The bundleSent condition's route list, as rendered SQL.
+const BUNDLE_SENT_ROUTES_RE = /->>'route' IN \(([^)]*)\)/;
+const NOT_BUNDLE_ROUTES = [
+  "public",
+  "private-relay",
+  "waiting",
+  "skipped-in-flight",
+  "Bundle",
+];
 const executionId = "exec_run_outcome";
 const context: StepContext = {
   executionId,
@@ -215,6 +229,40 @@ describe("runOutcomeLogSql", () => {
     expect(sql).toContain(
       `btrim("workflow_execution_logs"."output_raw"->>'notIncludedReason', U&' \\0009\\000A\\000B\\000C\\000D\\200B\\200C\\200D\\FEFF') <> ''`
     );
+  });
+});
+
+describe("bundle routes: TS and SQL agree", () => {
+  it("the SQL bundleSent signal lists exactly BUNDLE_ROUTES", () => {
+    const text = new PgDialect()
+      .sqlToQuery(runOutcomeSignalSql(workflowExecutionLogs).bundleSent)
+      .sql.replace(/\s+/g, " ");
+    const listed = BUNDLE_SENT_ROUTES_RE.exec(text)?.[1]
+      .split(", ")
+      .map((quoted) => quoted.slice(1, -1));
+    expect(listed).toEqual([...BUNDLE_ROUTES]);
+  });
+
+  it.each(BUNDLE_ROUTES)("route %s is a sent bundle in TS", (route) => {
+    expect(isBundleRoute(route)).toBe(true);
+    expect(bundleSignalsOfStep(WRITE, { route }).bundleSent).toBe(true);
+    expect(signalsOfStep(WRITE, { route }).bundleSent).toBe(true);
+    expect(
+      bundleReservationEnd({ success: true, route, included: false })
+    ).toBe("settle");
+    expect(
+      bundleReservationEnd({
+        success: true,
+        route,
+        included: false,
+        notIncludedReason: "not-picked",
+      })
+    ).toBe("hold");
+  });
+
+  it.each(NOT_BUNDLE_ROUTES)("route %s is no sent bundle", (route) => {
+    expect(isBundleRoute(route)).toBe(false);
+    expect(bundleSignalsOfStep(WRITE, { route }).bundleSent).toBe(false);
   });
 });
 
