@@ -40,6 +40,8 @@ Returns execution history for a workflow.
 ]
 ```
 
+Every run also has `skipReason` and `waiting`. `skipReason` is `null` unless the run is `skipped` for one of these reasons: `"bundle-in-flight"` (a Send as Bundle step sent nothing because an earlier bundle of the workflow could still land), `"bundle-waiting"` (a Send as Bundle step's Not before time was still too far ahead, and only the trigger, read-only steps and that step ran) or `"while-running"` (skipped because the previous run was still running). A waiting run that also ran other steps has `errorCode` `"bundle-waiting-other-steps"` and `skipReason` `null`; a waiting run that ran nothing else has `errorCode` `"bundle-waiting"`. On a `"bundle-waiting"` run, `waiting` is `{ notBefore, firstAllowedBlock, latestBlock, sendAheadBlocks }` from that step's output (see [Send ahead with Not before](/plugins/web3#send-ahead-with-not-before)), so back-to-back waiting runs with the same `notBefore` can be shown as one; it is `null` on every other run. More `skipReason` values may be added.
+
 A run's `input` or `output` larger than 1 MiB is returned as `{ "_truncated": true, "originalSize": <bytes>, "preview": "<first 1024 characters>" }` in place of the value.
 
 ### Summary view and pagination
@@ -64,7 +66,9 @@ Add `view=summary` for a lighter, paginated list. Each run omits `input`, `outpu
       "totalSteps": 3,
       "completedSteps": 3,
       "transactionHashes": [...],
-      "ranVersion": 2
+      "ranVersion": 2,
+      "skipReason": null,
+      "waiting": null
     }
   ],
   "nextCursor": "WyIyMDI0LTAxLTAxIDAwOjAwOjAwIiwibjVseXkwNjZ6enBsdjY0Z2lqbTB5Il0",
@@ -120,7 +124,7 @@ Returns real-time execution status with progress tracking.
 }
 ```
 
-A `nodeStatuses` entry for a Write Contract step sent with Send as Bundle can also carry `outcome`: `"not-included"` when the step succeeded but its bundle was not included in any of its blocks (its `notIncludedReason` says why), `"skipped-in-flight"` when it sent nothing because an earlier bundle from the workflow could still land, `"landed-late"` when its bundle was missed but its transaction was mined later and the run re-settled (the run's `transactionHashes` then list it), and `"landed-late-reverted"` when that late transaction reverted (the run is then `error`). Once a late revert has made the run `error`, later late landings of its other steps are still recorded (the run's `transactionHashes` and fee) and those steps show `"landed-late"`; the run stays `error`. Its `status` stays `success`; the editor shows such a step as Not included, Skipped, Landed late or Reverted late (in red) rather than plain green. More values may be added. The public read-only view carries `outcome` too.
+A `nodeStatuses` entry for a Write Contract step sent with Send as Bundle can also carry `outcome`: `"not-included"` when the step succeeded but its bundle was not included in any of its blocks (its `notIncludedReason` says why), `"skipped-in-flight"` when it sent nothing because an earlier bundle from the workflow could still land, `"landed-late"` when its bundle was missed but its transaction was mined later and the run re-settled (the run's `transactionHashes` then list it), and `"landed-late-reverted"` when that late transaction reverted (the run is then `error`), and `"waiting"` when it sent nothing because its Not before time was still too far ahead (the run is then `skipped`, unless another bundle step in it sent a bundle). Once a late revert has made the run `error`, later late landings of its other steps are still recorded (the run's `transactionHashes` and fee) and those steps show `"landed-late"`; the run stays `error`. Its `status` stays `success`; the editor shows such a step as Not included, Skipped, Landed late, Reverted late (in red) or Waiting rather than plain green. More values may be added. The public read-only view carries `outcome` too.
 
 ### Status Values
 
@@ -133,8 +137,8 @@ A `nodeStatuses` entry for a Write Contract step sent with Send as Bundle can al
 | `error` | Failed with error | yes |
 | `system_error` | Failed for an infrastructure reason, or was reaped after going stale | yes |
 | `cancelled` | Manually cancelled | yes |
-| `skipped` | Refused before it started, skipped behind a run that was still going, or a Send as Bundle step sent no transaction because an earlier run's bundle could still land (the run's other steps still ran, and may have sent transactions). Not a failure. Counts towards usage only in that last case | yes |
-| `not_landed` | Finished, but a bundle in it was not seen in its target blocks (for example no block builder picked it up). Neither a success nor a failure, and counts towards usage. A bundle that could not be checked (`notIncludedReason` `not-checked`) can still land within about a day (less for a workflow that sends very often from one wallet, which keeps a shorter history); then the run changes to `success`, or to `error` if the call reverted. Re-read the run if that matters, and put a deadline in the calldata of calls that must not run late | yes, but see below: it can still change within about a day |
+| `skipped` | Refused before it started, skipped behind a run that was still going, or a Send as Bundle step sent no transaction because an earlier run's bundle could still land or its Not before time was still too far ahead (the run's other steps still ran, and may have sent transactions; `skipReason` says which). Not a failure. A waiting run whose other steps are all on the read-only list ([Billing in the Web3 docs](/plugins/web3#send-as-bundle)) does not count toward your plan's runs. Pay-as-you-go charges taken when a run starts are not refunded. Skips behind an earlier run's bundle count toward your plan's runs | yes |
+| `not_landed` | Finished, but a bundle in it was not seen in its target blocks (for example no block builder picked it up). Neither a success nor a failure, and counts toward your plan's runs. A bundle that could not be checked (`notIncludedReason` `not-checked`) can still land within about a day (less for a workflow that sends very often from one wallet, which keeps a shorter history); then the run changes to `success`, or to `error` if the call reverted. Re-read the run if that matters, and put a deadline in the calldata of calls that must not run late | yes, but see below: it can still change within about a day |
 
 `not_landed` is the only terminal status that can still change: when a bundle reported `not-checked` lands later (within about a day), the run becomes `success`, or `error` if the call reverted. `pollIntervalHint` is `0` for it, so a poller stops there; re-read the run later if a late landing matters to you. A run can also change while it stays `not_landed`: when one of its bundles is mined late while another is still missing, its `transactionHashes` and `gasUsedWei` gain that transaction and its fee, its `error` reason changes to say a bundle was mined later and paid gas, and the step shows `landed-late`; if that transaction reverted, the run becomes `error` at once.
 

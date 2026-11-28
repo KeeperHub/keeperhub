@@ -58,12 +58,16 @@ import {
 } from "@/lib/web3/verify-receipt";
 import { pollForCompletedOutput } from "@/lib/workflow/executor/poll-for-output";
 import {
+  billableAfterSettle,
   mergeSignals,
   NO_RUN_OUTCOME_SIGNALS,
   type RunOutcome,
+  runOutcomeCode,
   runOutcomeOf,
   runOutcomeReason,
+  skippedMetricReason,
 } from "@/lib/workflow/executor/run-outcome";
+import type { RunOutcomeCode } from "@/lib/workflow/executor/run-outcome-keys";
 import {
   EXCEEDED_MAX_RETRIES_REGEX,
   FAILED_AFTER_RETRIES_REGEX,
@@ -265,6 +269,8 @@ async function resolveSuccessFacts(
   outcome: RunOutcome | undefined;
   // The reason the run's row shows when the outcome applies.
   outcomeReason: string | undefined;
+  // Its stable code (a waiting run), stored in errorCode.
+  outcomeCode: RunOutcomeCode | null;
   outcomeKnown: boolean;
 }> {
   const tracked = getTransactionHashes(executionId);
@@ -284,7 +290,8 @@ async function resolveSuccessFacts(
   return {
     hashes,
     outcome: kept,
-    outcomeReason: kept && runOutcomeReason(kept),
+    outcomeReason: kept && runOutcomeReason(kept, signals),
+    outcomeCode: kept ? runOutcomeCode(kept, signals) : null,
     outcomeKnown,
   };
 }
@@ -293,10 +300,15 @@ async function resolveSuccessFacts(
 function recordFinishedSample(
   status: "success" | ErrorStatus | RunOutcome,
   orgSlug: string,
-  errorType: ExecutionErrorType | typeof NA_ERROR_TYPE
+  errorType: ExecutionErrorType | typeof NA_ERROR_TYPE,
+  error: string | null | undefined,
+  errorCode: string | null | undefined
 ): void {
   if (status === "skipped") {
-    recordWorkflowExecutionSkipped({ orgSlug, reason: "bundle_in_flight" });
+    recordWorkflowExecutionSkipped({
+      orgSlug,
+      reason: skippedMetricReason(errorCode, error),
+    });
     return;
   }
   recordWorkflowExecutionFinished({ status, orgSlug, errorType });
@@ -580,6 +592,7 @@ async function selfHealWorkflowAfterLateStepCommit(
     hashes: resolvedHashes,
     outcome: runOutcome,
     outcomeReason,
+    outcomeCode,
     outcomeKnown,
   } = await resolveSuccessFacts(executionId, finishFacts);
   // A success written without the outcome could hide a send that did not land.
@@ -607,12 +620,18 @@ async function selfHealWorkflowAfterLateStepCommit(
     .set({
       status: runOutcome ?? "success",
       error: outcomeReason ?? null,
+      // A run that only waited for Not before is not billed.
+      billable: billableAfterSettle(workflowExecutions, {
+        status: runOutcome ?? "success",
+        errorCode: outcomeCode,
+        error: outcomeReason,
+      }),
       // The classification columns are written alongside `error` at finalize.
       // Clearing only the message left a success row still labelled with the
       // spurious failure (e.g. E-0002), which the UI reads as a failed run.
       errorCategory: null,
       errorType: null,
-      errorCode: null,
+      errorCode: outcomeCode,
       completedAt: new Date(),
       duration: newDuration,
       currentNodeId: null,
@@ -1109,6 +1128,7 @@ export async function logWorkflowCompleteDb(
     hashes: transactionHashes,
     outcome: runOutcome,
     outcomeReason,
+    outcomeCode,
     outcomeKnown,
   } = resolvedStatus === "success"
     ? await resolveSuccessFacts(params.executionId, finishFacts)
@@ -1116,6 +1136,7 @@ export async function logWorkflowCompleteDb(
         hashes: [],
         outcome: undefined,
         outcomeReason: undefined,
+        outcomeCode: null,
         outcomeKnown: true,
       };
 
@@ -1201,6 +1222,8 @@ export async function logWorkflowCompleteDb(
   // the non-success branches.
   const persistedClassification = unreadableReceipts ? null : classification;
 
+  // A waiting run's stable code, stored in errorCode.
+  let resolvedCode: RunOutcomeCode | null = null;
   let executionStatus: "success" | "unconfirmed" | ErrorStatus | RunOutcome =
     resolvedStatus === "error"
       ? statusForErrorType(
@@ -1222,6 +1245,7 @@ export async function logWorkflowCompleteDb(
     // Only a success becomes not landed or skipped; any error wins.
     executionStatus = runOutcome;
     resolvedError = outcomeReason;
+    resolvedCode = outcomeCode;
   } else if (executionStatus === "success" && !outcomeKnown) {
     // The logs could not be read: the reconciler reads the outcome later.
     executionStatus = "unconfirmed";
@@ -1243,9 +1267,15 @@ export async function logWorkflowCompleteDb(
       // reaches this function with an oversized value.
       output: boundStoredOutput(params.output).value,
       error: resolvedError,
+      // A run that only waited for Not before is not billed.
+      billable: billableAfterSettle(workflowExecutions, {
+        status: executionStatus,
+        errorCode: persistedClassification?.code ?? resolvedCode,
+        error: resolvedError,
+      }),
       errorCategory: persistedClassification?.errorCategory ?? null,
       errorType: persistedClassification?.errorType ?? null,
-      errorCode: persistedClassification?.code ?? null,
+      errorCode: persistedClassification?.code ?? resolvedCode,
       completedAt: new Date(),
       duration: duration.toString(),
       // Clear current step on completion
@@ -1313,7 +1343,9 @@ export async function logWorkflowCompleteDb(
       recordFinishedSample(
         executionStatus,
         orgSlug,
-        persistedClassification?.errorType ?? NA_ERROR_TYPE
+        persistedClassification?.errorType ?? NA_ERROR_TYPE,
+        resolvedError,
+        persistedClassification?.code ?? resolvedCode
       );
     } catch {
       // Counter emission must never break finalization.

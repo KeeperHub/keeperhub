@@ -806,6 +806,169 @@ describe("Send as Bundle at save", () => {
     expect(result.issues[0].message).toContain(label);
   });
 
+  it.each([
+    [
+      { notBefore: "1796126400000" },
+      "notBefore",
+      "This looks like milliseconds. Use seconds: 1796126400.",
+    ],
+    [
+      { notBefore: "2026-12-01 12:00" },
+      "notBefore",
+      "Add a time zone, such as Z for UTC: 2026-12-01T12:00:00Z.",
+    ],
+    [{ notBefore: 123 }, "notBefore", "Not before (notBefore)"],
+    [
+      { notBefore: 1_796_126_400, bundleBlocks: 4 },
+      "sendAheadBlocks",
+      "Send ahead (2) + Target blocks (4) is 6. Together they can be at most 5, so lower one of them",
+    ],
+    [
+      { sendAheadBlocks: "{{@n:N.x}}" },
+      "sendAheadBlocks",
+      "Send ahead (blocks) (sendAheadBlocks)",
+    ],
+  ])("refuses Not before / Send ahead %j", async (config, field, text) => {
+    enable();
+    const result = await check([bundle(config)]);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({ field });
+    expect(result.issues[0].message).toContain(text);
+  });
+
+  it("accepts Not before as unix seconds, a zoned date or a template", async () => {
+    enable();
+    for (const notBefore of [
+      1_796_126_400,
+      "2026-12-01T12:00:00Z",
+      "{{@read:Read Contract.result}}",
+    ]) {
+      const result = await check([bundle({ notBefore, sendAheadBlocks: 2 })]);
+      expect(result.issues).toEqual([]);
+    }
+  });
+
+  it("checks a saved bundle step again when only its Not before or Send ahead changed", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
+    const saved = bundle({ notBefore: 1_796_126_400 });
+    expect(
+      (
+        await check([bundle({ notBefore: 1_796_126_400 })], {
+          savedNodes: [saved],
+        })
+      ).issues
+    ).toEqual([]);
+    const moved = await check([bundle({ notBefore: "1796126400000" })], {
+      savedNodes: [saved],
+    });
+    expect(moved.issues[0]).toMatchObject({ field: "notBefore" });
+    const ahead = await check(
+      [bundle({ notBefore: 1_796_126_400, sendAheadBlocks: 9 })],
+      { savedNodes: [saved] }
+    );
+    expect(ahead.issues[0]).toMatchObject({ field: "sendAheadBlocks" });
+  });
+
+  it("refuses Not before on a network without fixed slots, at save and when rechecked", async () => {
+    enable();
+    rows.value.push({
+      chainId: 42_161,
+      name: "Arbitrum One",
+      usePrivateMempoolRpc: false,
+      builderRpcUrls: [
+        { label: "arb", url: "https://arb.example", methods: ["bundle"] },
+      ],
+    });
+    const step = bundle({ network: "42161", notBefore: 1_796_126_400 });
+    const result = await check([step]);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toMatchObject({ field: "notBefore" });
+    expect(result.issues[0].message).toMatch(
+      /^Not before is not supported on this network\. Arbitrum One has no fixed block slots/
+    );
+    // A template is refused too: no value can be safe there.
+    expect(
+      (
+        await check([
+          bundle({ network: "42161", notBefore: "{{@r:Read.result}}" }),
+        ])
+      ).issues[0]
+    ).toMatchObject({ field: "notBefore" });
+    expect(
+      (await check([step], { savedNodes: [step], recheckBundles: true }))
+        .issues[0]
+    ).toMatchObject({ field: "notBefore" });
+    // Without Not before the same network bundles.
+    expect((await check([bundle({ network: "42161" })])).issues).toEqual([]);
+  });
+
+  it.each([
+    [{ sendMode: "transaction", notBefore: 1_796_126_400 }, "notBefore"],
+    [{ notBefore: "{{@r:Read.result}}" }, "notBefore"],
+    [{ sendMode: "transaction", sendAheadBlocks: 2 }, "sendAheadBlocks"],
+    [{ sendMode: "private-relay", sendAheadBlocks: "1" }, "sendAheadBlocks"],
+  ])(
+    "refuses Not before / Send ahead on a step not sent as a bundle: %j",
+    async (config, field) => {
+      const result = await check([write("a", { network: "1", ...config })]);
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0]).toMatchObject({ field });
+      expect(result.issues[0].message).toContain(
+        'only works with Send as: Bundle (sendMode "bundle")'
+      );
+    }
+  );
+
+  it("lets an unchanged stored stray Not before save, flags it in validate_workflow, keeps a copy", async () => {
+    const stored = write("a", {
+      network: "1",
+      sendMode: "transaction",
+      notBefore: 1_796_126_400,
+    });
+    expect((await check([stored], { savedNodes: [stored] })).issues).toEqual(
+      []
+    );
+    expect(
+      (await check([stored], { savedNodes: [stored], recheckBundles: true }))
+        .issues[0]
+    ).toMatchObject({ field: "notBefore" });
+    expect(
+      (
+        await check([stored], {
+          savedNodes: [stored],
+          recheckBundles: true,
+          copy: true,
+        })
+      ).issues
+    ).toEqual([]);
+    // Only Not before changed on a normal step: checked again.
+    const changed = write("a", {
+      network: "1",
+      sendMode: "transaction",
+      notBefore: 1_796_126_401,
+    });
+    expect(
+      (await check([changed], { savedNodes: [stored] })).issues[0]
+    ).toMatchObject({ field: "notBefore" });
+    // Cleared: saves.
+    expect(
+      (
+        await check(
+          [
+            write("a", {
+              network: "1",
+              sendMode: "transaction",
+              notBefore: "",
+            }),
+          ],
+          {
+            savedNodes: [stored],
+          }
+        )
+      ).issues
+    ).toEqual([]);
+  });
+
   it("refuses a chain without builders", async () => {
     enable();
     const result = await check([bundle({ network: "8453" })]);

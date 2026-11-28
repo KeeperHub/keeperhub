@@ -22,8 +22,9 @@ import {
 import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
+import { beaconSlotSeconds, minBlockGapSeconds } from "@/lib/web3/beacon-slots";
+import { firstAllowedBlock } from "@/lib/web3/bundles/plan";
 import { decodeRevertReason } from "@/lib/web3/decode-revert-error";
-import { ETHEREUM_L1_CHAIN_IDS } from "@/lib/web3/ethereum-l1";
 import {
   assertGasLimitFits,
   GasLimitTooLowError,
@@ -37,7 +38,7 @@ import {
 } from "@/lib/web3/next-block-limits";
 import { extractRevertData, rpcErrorOf } from "@/lib/web3/revert-data";
 
-export type SimulateAt = "latest" | "next-block";
+export type SimulateAt = "latest" | "next-block" | "time";
 
 export type NextBlockSimulationOptions = {
   // Unset = the chain's observed block time.
@@ -50,14 +51,18 @@ export type NextBlockSimulationOptions = {
   // Simulate this block number instead of the next one, on the latest state;
   // its time is one slot per block after the next block's. Ignores basedOn.
   targetBlock?: number;
+  // Read Contract "At a time" (unix seconds): this block time, and the first
+  // block number that cannot be earlier. A time not after latest checks the next block.
+  atTime?: number;
 };
 
 export type NextBlockSimulation = {
-  mode: "next-block";
+  mode: "next-block" | "time";
   baseBlock: number;
   assumedBlockNumber: number;
   assumedTimestamp: number;
-  timestampOffsetSec: number;
+  // Next block only: the block time the prediction used.
+  timestampOffsetSec?: number;
   rpcMethod:
     | "eth_estimateGas+blockOverrides"
     | "eth_simulateV1"
@@ -182,9 +187,15 @@ type SettingsResult =
 export function readSimulationSettings(
   simulateAt: unknown,
   timestampOffsetSec: unknown,
-  triggerBlock?: TriggerBlock
+  triggerBlock?: TriggerBlock,
+  // Read Contract only: the "At a time" value, as the template resolved it.
+  simulateTime?: { value: unknown }
 ): SettingsResult {
-  const parsed = parseSimulationSettings(simulateAt, timestampOffsetSec);
+  const parsed = parseSimulationSettings(
+    simulateAt,
+    timestampOffsetSec,
+    simulateTime && { value: simulateTime.value, strict: false }
+  );
   if (parsed.ok) {
     return parsed.options && triggerBlock
       ? { ok: true, options: { ...parsed.options, triggerBlock } }
@@ -546,10 +557,11 @@ export function nextBlockFailure(
   if (!simulation) {
     return { error: message };
   }
-  return {
-    error: `${message} (simulated as of next block ${simulation.assumedBlockNumber}, timestamp ${simulation.assumedTimestamp})`,
-    simulation,
-  };
+  const when =
+    simulation.mode === "time"
+      ? `simulated at time ${simulation.assumedTimestamp}, block ${simulation.assumedBlockNumber}`
+      : `simulated as of next block ${simulation.assumedBlockNumber}, timestamp ${simulation.assumedTimestamp}`;
+  return { error: `${message} (${when})`, simulation };
 }
 
 type Overrides = { number: string; time: string };
@@ -720,14 +732,6 @@ function preparedFrom(simulation: NextBlockSimulation): Prepared {
 }
 
 const MS_PER_SECOND = 1000;
-// Beacon chains keep to fixed wall-clock slots and leave a missed slot's
-// timestamp unused: Ethereum L1 and Holesky (12 s), Gnosis and Chiado (5 s).
-// Wider than the Block Trigger slot clock, which needs genesis times and 12 s slots.
-const BEACON_SLOT_SECONDS = new Map<number, number>([
-  ...[...ETHEREUM_L1_CHAIN_IDS, 17_000].map((id): [number, number] => [id, 12]),
-  [100, 5],
-  [10_200, 5],
-]);
 // An older head means a lagging RPC, a wrong server clock or missing slots.
 const STALE_HEAD_SLOTS = 5;
 
@@ -753,7 +757,7 @@ function predictedTime(
   offsetSeconds: number,
   nowSeconds: number
 ): number {
-  const slot = BEACON_SLOT_SECONDS.get(chainId);
+  const slot = beaconSlotSeconds(chainId);
   if (slot === undefined) {
     return latestTimestamp + offsetSeconds;
   }
@@ -864,7 +868,7 @@ async function prepare(
   // Reuse an earlier check's prediction only while nothing moved, so a wait
   // never sends on a stale check.
   if (
-    basedOn &&
+    basedOn?.timestampOffsetSec !== undefined &&
     latest.number === basedOn.baseBlock &&
     predictedTime(
       chainId,
@@ -880,9 +884,70 @@ async function prepare(
       `Next-block simulation: the RPC is behind the block the check ran on (${RETRY_HINT})`
     );
   }
+  if (options.atTime !== undefined && options.atTime > latest.timestamp) {
+    return preparedAtTime(latest, chainId, options.atTime);
+  }
+  const prepared = await preparedForNextBlock(
+    provider,
+    chainId,
+    options,
+    latest
+  );
+  // At a time in the past checks the next block, reported as a time check.
+  return options.atTime === undefined
+    ? prepared
+    : {
+        ...prepared,
+        simulation: timeSimulation(prepared.simulation),
+      };
+}
+
+function timeSimulation(simulation: NextBlockSimulation): NextBlockSimulation {
+  return {
+    mode: "time",
+    baseBlock: simulation.baseBlock,
+    assumedBlockNumber: simulation.assumedBlockNumber,
+    assumedTimestamp: simulation.assumedTimestamp,
+    rpcMethod: simulation.rpcMethod,
+  };
+}
+
+// The given time as the block time, on the first block number that cannot be earlier.
+function preparedAtTime(
+  latest: ethers.Block,
+  chainId: number,
+  atTime: number
+): Prepared {
+  // Read only: off beacon chains the block number is an estimate (1 s per block).
+  const number = firstAllowedBlock(
+    atTime,
+    { number: latest.number, timestamp: latest.timestamp },
+    minBlockGapSeconds(chainId) ?? 1
+  );
+  return {
+    blockTag: toQuantity(latest.number),
+    blockGasLimit: latest.gasLimit,
+    time: atTime,
+    overrides: { number: toQuantity(number), time: toQuantity(atTime) },
+    simulation: {
+      mode: "time",
+      baseBlock: latest.number,
+      assumedBlockNumber: number,
+      assumedTimestamp: atTime,
+      rpcMethod: "eth_call+blockOverrides",
+    },
+  };
+}
+
+async function preparedForNextBlock(
+  provider: ethers.JsonRpcProvider,
+  chainId: number,
+  options: NextBlockSimulationOptions,
+  latest: ethers.Block
+): Promise<Prepared> {
   // On a beacon chain the fixed slot is the block time; a set offset can only
   // raise it, so the reported value is the one the prediction used.
-  const beaconSlot = BEACON_SLOT_SECONDS.get(chainId);
+  const beaconSlot = beaconSlotSeconds(chainId);
   const offset =
     beaconSlot === undefined
       ? (options.timestampOffsetSec ??

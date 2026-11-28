@@ -598,6 +598,67 @@ describe("/api/workflows/[workflowId]/validate", () => {
       ]);
     });
 
+    it("reports a Not before in milliseconds and Send ahead + Target blocks above 5 as invalid-send-mode", async () => {
+      vi.stubEnv("BUNDLE_SEND_ROLLOUT", `orgs:${OWNER_ORG_ID}`);
+      const withConfig = (extra: Record<string, unknown>) => ({
+        ...bundleRow,
+        nodes: [
+          triggerNode,
+          {
+            ...bundleRow.nodes[1],
+            data: {
+              ...bundleRow.nodes[1].data,
+              config: { ...bundleRow.nodes[1].data.config, ...extra },
+            },
+          },
+        ],
+      });
+      const sendModeErrors = async () => {
+        selectCallIndex = 0;
+        const res = await GET(
+          makeRequest(WORKFLOW_ID),
+          makeParams(WORKFLOW_ID)
+        );
+        const body = await res.json();
+        return (body.result.errors ?? []).filter(
+          (error: { code: string }) => error.code === "invalid-send-mode"
+        );
+      };
+      mockChainRows = [chainRow];
+      mockWorkflowRows = [withConfig({ notBefore: "1796126400000" })];
+      expect(await sendModeErrors()).toEqual([
+        expect.objectContaining({
+          message: expect.stringContaining(
+            "This looks like milliseconds. Use seconds: 1796126400."
+          ),
+          parameterPath: "nodes[1].config.notBefore",
+        }),
+      ]);
+      mockWorkflowRows = [
+        withConfig({ notBefore: "{{@r:Read.result}}", bundleBlocks: 5 }),
+      ];
+      expect(await sendModeErrors()).toEqual([
+        expect.objectContaining({
+          message: expect.stringContaining(
+            "Send ahead (2) + Target blocks (5) is 7."
+          ),
+          parameterPath: "nodes[1].config.sendAheadBlocks",
+        }),
+      ]);
+      // A stored normal step ignores Not before: flagged, though a save lets it through.
+      mockWorkflowRows = [
+        withConfig({ sendMode: "transaction", notBefore: 1_796_126_400 }),
+      ];
+      expect(await sendModeErrors()).toEqual([
+        expect.objectContaining({
+          message: expect.stringContaining(
+            'Not before (notBefore) only works with Send as: Bundle (sendMode "bundle")'
+          ),
+          parameterPath: "nodes[1].config.notBefore",
+        }),
+      ]);
+    });
+
     it("reports a network without builders for an organization in the rollout", async () => {
       vi.stubEnv("BUNDLE_SEND_ROLLOUT", `orgs:${OWNER_ORG_ID}`);
       mockWorkflowRows = [bundleRow];

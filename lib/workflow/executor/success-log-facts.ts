@@ -10,6 +10,7 @@ import {
 import {
   mergeSignals,
   NO_RUN_OUTCOME_SIGNALS,
+  otherWorkSql,
   type RunOutcomeSignals,
   runOutcomeLogSql,
   runOutcomeSignalSql,
@@ -130,7 +131,7 @@ export async function loadSuccessLogFacts(
   const seen = new Set<string>();
   const hashes: TransactionHashEntry[] = [];
   const notIncluded = new Set<string>();
-  let signals = NO_RUN_OUTCOME_SIGNALS;
+  let signals: RunOutcomeSignals = NO_RUN_OUTCOME_SIGNALS;
   for (const row of rows) {
     const step = signalsOfStep(row.nodeType, row.outputRaw);
     signals = mergeSignals(signals, step);
@@ -143,6 +144,21 @@ export async function loadSuccessLogFacts(
     }
     seen.add(entry.hash);
     hashes.push(entry);
+  }
+  // Other work only matters to a waiting run; any status, as a failed step may have called out.
+  if (signals.waiting) {
+    const [work] = await db
+      .select({
+        otherWork: sql<
+          boolean | null
+        >`bool_or(${otherWorkSql(workflowExecutionLogs)})`,
+      })
+      .from(workflowExecutionLogs)
+      .where(eq(workflowExecutionLogs.executionId, executionId));
+    signals = {
+      ...signals,
+      otherWork: signals.otherWork || work?.otherWork === true,
+    };
   }
   return { hashes, signals, notIncludedSteps: [...notIncluded] };
 }
@@ -173,12 +189,18 @@ export async function loadFinishLogFacts(
       notIncluded: sql<
         boolean | null
       >`bool_or(${succeeded} AND ${signal.notIncluded})`,
+      waiting: sql<boolean | null>`bool_or(${succeeded} AND ${signal.waiting})`,
+      bundleSent: sql<
+        boolean | null
+      >`bool_or(${succeeded} AND ${signal.bundleSent})`,
+      // Any status, as in loadSuccessLogFacts.
+      otherWork: sql<boolean | null>`bool_or(${signal.otherWork})`,
     })
     .from(workflowExecutionLogs)
     .where(
       and(
         eq(workflowExecutionLogs.executionId, executionId),
-        sql`(${gasUsed} IS NOT NULL OR ${runOutcomeLogSql(workflowExecutionLogs)})`
+        sql`(${gasUsed} IS NOT NULL OR ${runOutcomeLogSql(workflowExecutionLogs)} OR ${signal.otherWork})`
       )
     );
   return {
@@ -186,6 +208,9 @@ export async function loadFinishLogFacts(
     signals: {
       skippedInFlight: row?.skippedInFlight === true,
       notIncluded: row?.notIncluded === true,
+      waiting: row?.waiting === true,
+      bundleSent: row?.bundleSent === true,
+      otherWork: row?.otherWork === true,
     },
   };
 }

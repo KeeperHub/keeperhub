@@ -13,8 +13,10 @@ import {
   BUNDLE_SETTING_KEYS,
   BUNDLE_SETTING_LABELS,
   DEFAULT_BUNDLE_BLOCKS,
+  DEFAULT_SEND_AHEAD_BLOCKS,
   MAX_BUNDLE_BLOCKS,
   MAX_SELECTED_BUILDERS,
+  MAX_SEND_AHEAD_BLOCKS,
   MAX_TIP_INCREASE_PERCENT,
 } from "@/lib/web3/bundles/settings";
 import {
@@ -127,6 +129,27 @@ export function bundleSettingsFields(): ActionConfigFieldBase[] {
       max: MAX_SELECTED_BUILDERS,
       showWhen: SHOW_FOR_BUNDLE,
       type: "multi-select",
+    },
+    {
+      editorRenderer: "bundle-setting",
+      helpTip: `Bundle only, optional: the bundle never lands in a block before this time. Unix seconds (such as 1796126400) or an ISO 8601 date with a time zone (such as 2026-12-01T12:00:00Z); a template is read when the run starts (a number, its text, or such a date). A 13-, 16- or 19-digit value is refused (milliseconds, microseconds, nanoseconds), and so is Not before on a network without fixed slots. While the first block that cannot be earlier is more than Send ahead + 1 blocks away, the step sends nothing and the run ends Skipped (Waiting). Empty: sends for the next blocks.`,
+      key: BUNDLE_SETTING_KEYS.notBefore,
+      label: BUNDLE_SETTING_LABELS.notBefore,
+      placeholder: "1796126400",
+      showWhen: SHOW_FOR_BUNDLE,
+      type: "template-input",
+    },
+    {
+      editorRenderer: "bundle-setting",
+      helpTip: `Bundle with Not before only: how many blocks before the first allowed block the step may already send, so the builders hold the bundle when that block starts. A whole number from 0 to ${MAX_SEND_AHEAD_BLOCKS}, no templates; empty means ${DEFAULT_SEND_AHEAD_BLOCKS}. With Target blocks, at most ${MAX_BUNDLE_BLOCKS}.`,
+      key: BUNDLE_SETTING_KEYS.sendAheadBlocks,
+      label: BUNDLE_SETTING_LABELS.sendAheadBlocks,
+      max: MAX_SEND_AHEAD_BLOCKS,
+      min: 0,
+      placeholder: String(DEFAULT_SEND_AHEAD_BLOCKS),
+      showWhen: SHOW_FOR_BUNDLE,
+      step: 1,
+      type: "number",
     },
   ];
 }
@@ -244,7 +267,7 @@ export function simulateTimestampOffsetField(): ActionConfigFieldBase {
 export function simulationOutput(): OutputField {
   return {
     description:
-      "The predicted block a Next block check ran against: { mode, baseBlock (the latest block used), assumedBlockNumber, assumedTimestamp, timestampOffsetSec, rpcMethod }. Absent with Latest block, and when the step failed before or without simulating (a settings or RPC support error).",
+      'The predicted block a Next block check (or, on Read Contract, an At a time check) ran against: { mode ("next-block" or "time"), baseBlock (the latest block used), assumedBlockNumber, assumedTimestamp, timestampOffsetSec (Next block only), rpcMethod }. Absent with Latest block, and when the step failed before or without simulating (a settings or RPC support error).',
     field: "simulation",
   };
 }
@@ -292,12 +315,12 @@ export function sendRouteOutputFields(): OutputField[] {
     {
       field: "route",
       description:
-        "How KeeperHub routed the send on an EVM network: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as), sponsored (gas-sponsored), bundle (Write Contract sent as a bundle to block builders) or skipped-in-flight (Write Contract with Send as Bundle sent nothing because this workflow's earlier bundle could still land). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent (except skipped-in-flight), or when only the private relay was tried and it never confirmed taking the transaction; more values may be added.",
+        "How KeeperHub routed the send on an EVM network: public (the public mempool, through your RPC or the chain's default RPC), private-relay (accepted by the private relay chosen in Send as), sponsored (gas-sponsored), bundle (Write Contract sent as a bundle to block builders), skipped-in-flight (Write Contract with Send as Bundle sent nothing because this workflow's earlier bundle could still land) or waiting (Write Contract with Send as Bundle sent nothing because its Not before time is still too far ahead, or Max Fee held back the targets ahead). Through a Safe, the route of the transaction your wallet sent to the Safe. Absent when nothing was sent (except skipped-in-flight and waiting), or when only the private relay was tried and it never confirmed taking the transaction; more values may be added.",
     },
     {
       field: "included",
       description:
-        "True when the transaction was seen in a block (one confirmation, not final); it may have reverted, so check error too. False when it was sent but is not in a block, and on a skipped-in-flight bundle step. Absent when route is absent.",
+        "True when the transaction was seen in a block (one confirmation, not final); it may have reverted, so check error too. False when it was sent but is not in a block, and on a skipped-in-flight or waiting bundle step. Absent when route is absent.",
     },
   ];
 }
@@ -338,6 +361,26 @@ export function bundleOutputFields(): OutputField[] {
       field: "inFlightUntilBlock",
       description:
         'Bundle only (route "skipped-in-flight"): the block after which the earlier bundle this step waited behind can no longer land.',
+    },
+    {
+      field: "notBefore",
+      description:
+        "Bundle with Not before only: the Not before time the step used, in unix seconds (a value past 9999999999 counts as 9999999999).",
+    },
+    {
+      field: "firstAllowedBlock",
+      description:
+        'Bundle with Not before only: the first block number that cannot have a timestamp before Not before. On route "waiting" it was still more than Send ahead + 1 blocks after latestBlock, so nothing was sent; otherwise the targets start at it (or at the next block, if it has passed).',
+    },
+    {
+      field: "latestBlock",
+      description:
+        "Bundle with Not before only: the latest block KeeperHub read when it decided to wait or planned the targets.",
+    },
+    {
+      field: "sendAheadBlocks",
+      description:
+        "Bundle with Not before only: the Send ahead setting the step used (how many blocks before firstAllowedBlock it may send).",
     },
   ];
 }

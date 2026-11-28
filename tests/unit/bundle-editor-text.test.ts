@@ -34,6 +34,24 @@ describe("bundleTipsText", () => {
     );
   });
 
+  it("with Not before set, counts the tips from the first allowed block", () => {
+    const text = (fromFirstAllowed: boolean, priorityFeeGwei: string) =>
+      bundleTipsText({
+        blocks: 3,
+        increasePercent: 20,
+        priorityFeeGwei,
+        maxFeeGwei: "",
+        fromFirstAllowed,
+      });
+    expect(text(true, "5")).toMatch(
+      /^Tips: 5, 6 and 7\.2 gwei, from Priority Fee in Advanced, counted from the first allowed block\. /
+    );
+    expect(text(true, "")).toContain(
+      "(or the network's default), counted from the first allowed block, so the last block's tip"
+    );
+    expect(text(false, "5")).not.toContain("first allowed block");
+  });
+
   it("with Max Fee set, caps the tips there and says a tip is paid only up to what it leaves", () => {
     expect(
       bundleTipsText({

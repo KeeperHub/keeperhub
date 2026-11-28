@@ -100,7 +100,7 @@ export type ActionConfigFieldBase = {
 
   // Draw the field with this registered editor renderer instead of its
   // type's own; the type still decides validation and schemas.
-  editorRenderer?: "send-mode" | "bundle-setting";
+  editorRenderer?: "send-mode" | "bundle-setting" | "unix-time";
 
   // Example value for AI prompt generation
   example?: string;

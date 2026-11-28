@@ -20,7 +20,7 @@ import {
 import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { JSX } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { api, type ExecutionSummary } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
@@ -37,11 +37,13 @@ import {
 } from "@/lib/notifications/failure-alerts/view-types";
 import {
   NOT_LANDED_STEP_POINTER,
+  type NodeOutcome,
+  nodeOutcomeOf,
   notIncludedReasonText,
   STEP_OUTCOME_TEXT,
-  type StepOutcome,
-  stepOutcomeOf,
   stepOutcomeTitle,
+  WAITING_STEP_TEXT,
+  waitingStepSentence,
 } from "@/lib/workflow/executor/run-outcome-keys";
 import {
   OUTPUT_DISPLAY_CONFIGS,
@@ -73,6 +75,14 @@ import {
 import { refusalSummary } from "@/lib/workflow/refusal-summary";
 import { runLogsDue } from "@/lib/workflow/run-polling";
 import {
+  groupWaitingRuns,
+  type WaitingGroup,
+  waitingChipText,
+  waitingDetails,
+  waitingRowLine,
+  waitingRowTitle,
+} from "@/lib/workflow/waiting-run-groups";
+import {
   currentWorkflowIdAtom,
   executionLogsAtom,
   propertiesPanelActiveTabAtom,
@@ -98,7 +108,7 @@ type ExecutionLog = {
   iterationIndex: number | null;
   forEachNodeId: string | null;
   // A bundle step's shown outcome, from its output and its run.
-  outcome?: StepOutcome;
+  outcome?: NodeOutcome;
   // Another step of the run started after this one.
   laterStepRan?: boolean;
 };
@@ -851,6 +861,7 @@ function getStatusLabel(status: string): string {
 // A successful bundle step that did not land, or sent nothing: shown neutral.
 const STEP_NOT_INCLUDED = "not_included";
 const STEP_SKIPPED_IN_FLIGHT = "skipped_in_flight";
+const STEP_WAITING = "waiting_not_before";
 
 type StepDisplay = {
   status: string;
@@ -860,9 +871,10 @@ type StepDisplay = {
 
 // The Runs panel's dot status and chip test id for each step outcome.
 const OUTCOME_STEP_STYLE: Record<
-  StepOutcome,
+  NodeOutcome,
   { status: string; testId: string }
 > = {
+  waiting: { status: STEP_WAITING, testId: "step-waiting" },
   "not-included": {
     status: STEP_NOT_INCLUDED,
     testId: "step-not-included",
@@ -884,6 +896,14 @@ function stepDisplay(log: ExecutionLog): StepDisplay {
     return { status: log.status, title: getStatusLabel(log.status) };
   }
   const style = OUTCOME_STEP_STYLE[log.outcome];
+  if (log.outcome === "waiting") {
+    const title = `${WAITING_STEP_TEXT.label}: ${waitingStepSentence(log.output)}`;
+    return {
+      status: style.status,
+      title,
+      chip: { label: WAITING_STEP_TEXT.label, testId: style.testId, error: false },
+    };
+  }
   // Only a step that sent nothing that landed has later steps worth naming.
   const sentNothing =
     log.outcome === "not-included" || log.outcome === "skipped-in-flight";
@@ -1270,10 +1290,10 @@ export function WorkflowRuns({
         iterationIndex?: number | null;
         forEachNodeId?: string | null;
       }>,
-      run: Parameters<typeof stepOutcomeOf>[1]
+      run: Parameters<typeof nodeOutcomeOf>[1]
     ): ExecutionLog[] =>
       logEntries.map((log) => {
-        const outcome = stepOutcomeOf(log, run);
+        const outcome = nodeOutcomeOf(log, run);
         const started = new Date(log.startedAt).getTime();
         return {
           outcome,
@@ -1324,6 +1344,29 @@ export function WorkflowRuns({
     },
     [mapNodeLabels, setExecutionLogs]
   );
+
+  // Rows of the list: back-to-back waiting runs share one (display only).
+  const runEntries = useMemo(
+    () => groupWaitingRuns(executions, total),
+    [executions, total]
+  );
+  // An open waiting row shows its newest run's steps, also once a newer run joins.
+  const requestedLogsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const entry of runEntries) {
+      if (entry.kind !== "waiting" || !expandedRuns.has(entry.stateKey)) {
+        continue;
+      }
+      const latestId = entry.runs[0].id;
+      if (
+        logs[latestId] === undefined &&
+        !requestedLogsRef.current.has(latestId)
+      ) {
+        requestedLogsRef.current.add(latestId);
+        loadExecutionLogs(latestId);
+      }
+    }
+  }, [runEntries, expandedRuns, logs, loadExecutionLogs]);
 
   // Notify parent when a new execution starts and auto-expand it
   useEffect(() => {
@@ -1477,6 +1520,18 @@ export function WorkflowRuns({
     setExecutionLogs(createExecutionLogsMap(executionLogEntries));
   };
 
+  const toggleWaitingGroup = (key: string) => {
+    setExpandedRuns((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
   const toggleLog = (logId: string) => {
     const newExpanded = new Set(expandedLogs);
     if (newExpanded.has(logId)) {
@@ -1505,6 +1560,8 @@ export function WorkflowRuns({
         return <CircleOff className="h-3 w-3 text-white" />;
       case STEP_SKIPPED_IN_FLIGHT:
         return <SkipForward className="h-3 w-3 text-white" />;
+      case STEP_WAITING:
+        return <Clock className="h-3 w-3 text-white" />;
       default:
         return <Clock className="h-3 w-3 text-white" />;
     }
@@ -1526,6 +1583,7 @@ export function WorkflowRuns({
       case "skipped":
       case STEP_NOT_INCLUDED:
       case STEP_SKIPPED_IN_FLIGHT:
+      case STEP_WAITING:
         return "bg-muted-foreground";
       // One shade darker than the swatch, like the other dots: the white icon needs 3:1.
       case "not_landed":
@@ -1533,6 +1591,166 @@ export function WorkflowRuns({
       default:
         return "bg-muted-foreground";
     }
+  };
+
+  const sortedLogsOf = (executionId: string): ExecutionLog[] =>
+    [...(logs[executionId] ?? [])].sort(
+      (a, b) =>
+        new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+    );
+
+  const renderSteps = (executionLogs: ExecutionLog[]) => {
+    const lookup = buildChildLogsLookup(executionLogs);
+    const grouped = groupLogsByIteration(executionLogs, lookup);
+    return (
+      <div className="p-4">
+        {grouped.map((entry, entryIndex, entries) => {
+          if (entry.type === FOR_EACH_GROUP_TYPE) {
+            return (
+              <ForEachLogGroup
+                collectLog={entry.collectLog}
+                expandedLogs={expandedLogs}
+                forEachLog={entry.forEachLog}
+                getStatusDotClass={getStatusDotClass}
+                getStatusIcon={getStatusIcon}
+                isFirst={entryIndex === 0}
+                isLast={entryIndex === entries.length - 1}
+                iterations={entry.iterations}
+                key={entry.forEachLog.id}
+                lookup={lookup}
+                onToggleLog={toggleLog}
+              />
+            );
+          }
+          return (
+            <ExecutionLogEntry
+              getStatusDotClass={getStatusDotClass}
+              getStatusIcon={getStatusIcon}
+              isExpanded={expandedLogs.has(entry.log.id)}
+              isFirst={entryIndex === 0}
+              isLast={entryIndex === entries.length - 1}
+              key={entry.log.id}
+              log={entry.log}
+              onToggle={() => toggleLog(entry.log.id)}
+            />
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderVersionPill = (ranVersion: number | null) =>
+    ranVersion === null ? null : (
+      <button
+        className="flex shrink-0 items-center gap-1 rounded-full border border-border px-2 py-0.5 font-medium text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
+        onClick={() => openRanVersion(ranVersion)}
+        title={`Ran version ${ranVersion} — open in History`}
+        type="button"
+      >
+        <GitBranch className="size-3" />v{ranVersion}
+      </button>
+    );
+
+  // One row for back-to-back runs that waited for the same Not before.
+  const renderWaitingGroup = (group: WaitingGroup<WorkflowExecution>) => {
+    const latest = group.runs[0];
+    const isExpanded = expandedRuns.has(group.stateKey);
+    const textOptions = { now: new Date() };
+    const latestLogs = sortedLogsOf(latest.id);
+    return (
+      <div
+        className="overflow-hidden rounded-lg border bg-card transition-all"
+        data-testid="waiting-run-group"
+        key={`waiting-${group.stateKey}`}
+      >
+        <div className="flex w-full items-center gap-3 p-4">
+          <button
+            aria-expanded={isExpanded}
+            aria-label={`${isExpanded ? "Collapse" : "Expand"} waiting runs`}
+            className="flex size-5 shrink-0 items-center justify-center rounded-full border-0 transition-colors hover:bg-muted"
+            onClick={() => toggleWaitingGroup(group.stateKey)}
+            type="button"
+          >
+            <div
+              className="flex size-5 items-center justify-center rounded-full border-0 bg-muted-foreground"
+              title="Skipped, waiting for Not before"
+            >
+              <Clock className="h-3 w-3 text-white" />
+            </div>
+          </button>
+          <button
+            aria-expanded={isExpanded}
+            className="min-w-0 flex-1 overflow-hidden text-left transition-colors hover:opacity-80"
+            data-testid="waiting-run-row"
+            onClick={() => {
+              selectRun(latest.id);
+              toggleWaitingGroup(group.stateKey);
+            }}
+            title={waitingRowTitle(group, textOptions)}
+            type="button"
+          >
+            <div className="mb-1 flex min-w-0 items-center gap-2">
+              {/* The chip gives way first; the name is cut only when it alone is too wide. */}
+              <span className="min-w-0 truncate font-semibold text-sm">
+                Run #{group.oldestNumber}
+              </span>
+              <span
+                className="min-w-0 shrink-100 truncate rounded-full border border-muted-foreground/50 bg-muted px-2 py-0.5 font-medium text-foreground text-xs"
+                data-testid="waiting-run-count"
+              >
+                {waitingChipText(group)}
+              </span>
+            </div>
+            <div
+              className="truncate font-mono text-muted-foreground text-xs"
+              data-testid="waiting-run-line"
+            >
+              {waitingRowLine(group, textOptions)}
+            </div>
+          </button>
+          {renderVersionPill(latest.ranVersion)}
+          <button
+            aria-expanded={isExpanded}
+            aria-label={isExpanded ? "Collapse" : "Expand"}
+            className="flex shrink-0 items-center justify-center rounded p-1 transition-colors hover:bg-muted"
+            data-testid="waiting-run-chevron"
+            onClick={() => toggleWaitingGroup(group.stateKey)}
+            type="button"
+          >
+            {isExpanded ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </button>
+        </div>
+        {isExpanded && (
+          <div className="border-t bg-muted/20">
+            <div className={cn("p-4", latestLogs.length > 0 && "pb-0")}>
+              <Alert>
+                <Clock />
+                <AlertDescription
+                  className="flex flex-col items-start gap-1.5"
+                  data-testid="waiting-run-details"
+                >
+                  {waitingDetails(group, textOptions).map((line) => (
+                    <span key={line}>{line}</span>
+                  ))}
+                </AlertDescription>
+              </Alert>
+            </div>
+            {latestLogs.length > 0 && (
+              <>
+                <div className="px-4 pt-4 font-mono text-muted-foreground text-xs">
+                  Steps of the latest waiting run
+                </div>
+                {renderSteps(latestLogs)}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   const isReady = !loading;
@@ -1561,7 +1779,11 @@ export function WorkflowRuns({
 
   return (
     <div data-ready={String(isReady)} data-testid="workflow-runs" className="space-y-3">
-      {executions.map((execution, index) => {
+      {runEntries.map((entry) => {
+        if (entry.kind === "waiting") {
+          return renderWaitingGroup(entry);
+        }
+        const { run: execution, number } = entry;
         const isExpanded = expandedRuns.has(execution.id);
         const executionLogs = (logs[execution.id] || []).sort((a, b) => {
           // Sort by startedAt to ensure first to last order
@@ -1636,7 +1858,7 @@ export function WorkflowRuns({
               >
                 <div className="mb-1 flex items-center gap-2">
                   <span className="font-semibold text-sm">
-                    Run #{total - index}
+                    Run #{number}
                   </span>
                 </div>
                 <div className="flex items-center gap-2 font-mono text-muted-foreground text-xs">
@@ -1663,18 +1885,7 @@ export function WorkflowRuns({
                 </div>
               </button>
 
-              {execution.ranVersion !== null && (
-                <button
-                  className="flex shrink-0 items-center gap-1 rounded-full border border-border px-2 py-0.5 font-medium text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
-                  onClick={() =>
-                    openRanVersion(execution.ranVersion as number)
-                  }
-                  title={`Ran version ${execution.ranVersion} — open in History`}
-                  type="button"
-                >
-                  <GitBranch className="size-3" />v{execution.ranVersion}
-                </button>
-              )}
+              {renderVersionPill(execution.ranVersion)}
 
               <button
                 className="flex shrink-0 items-center justify-center rounded p-1 transition-colors hover:bg-muted"
@@ -1757,45 +1968,7 @@ export function WorkflowRuns({
                     </div>
                   )
                 ) : (
-                  <div className="p-4">
-                    {(() => {
-                      const lookup = buildChildLogsLookup(executionLogs);
-                      const grouped = groupLogsByIteration(executionLogs, lookup);
-                      return grouped.map(
-                        (entry, entryIndex, entries) => {
-                          if (entry.type === FOR_EACH_GROUP_TYPE) {
-                            return (
-                              <ForEachLogGroup
-                                collectLog={entry.collectLog}
-                                expandedLogs={expandedLogs}
-                                forEachLog={entry.forEachLog}
-                                getStatusDotClass={getStatusDotClass}
-                                getStatusIcon={getStatusIcon}
-                                isFirst={entryIndex === 0}
-                                isLast={entryIndex === entries.length - 1}
-                                iterations={entry.iterations}
-                                key={entry.forEachLog.id}
-                                lookup={lookup}
-                                onToggleLog={toggleLog}
-                              />
-                            );
-                          }
-                          return (
-                            <ExecutionLogEntry
-                              getStatusDotClass={getStatusDotClass}
-                              getStatusIcon={getStatusIcon}
-                              isExpanded={expandedLogs.has(entry.log.id)}
-                              isFirst={entryIndex === 0}
-                              isLast={entryIndex === entries.length - 1}
-                              key={entry.log.id}
-                              log={entry.log}
-                              onToggle={() => toggleLog(entry.log.id)}
-                            />
-                          );
-                        }
-                      );
-                    })()}
-                  </div>
+                  renderSteps(executionLogs)
                 )}
               </div>
             )}

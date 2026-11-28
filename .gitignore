@@ -106,6 +106,7 @@ docker-compose.override.yml
 # generated files
 lib/types/integration.ts
 lib/workflow/codegen/registry.ts
+lib/workflow/executor/protocol-read-actions.ts
 lib/step-registry.ts
 lib/output-display-configs.ts
 public/.well-known/

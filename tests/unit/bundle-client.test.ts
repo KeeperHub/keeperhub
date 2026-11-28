@@ -490,6 +490,29 @@ describe("sendBundle", () => {
     );
   });
 
+  it("adds minTimestamp (Not before) to the one body every builder gets", async () => {
+    mockSafeFetch.mockImplementation(async () => json(200, { result: {} }));
+    await sendBundle({
+      builders,
+      signedTxs: ["0x02f8"],
+      targetBlock: 16,
+      searcher,
+      minTimestamp: 1_796_126_400,
+    });
+    const bodies = new Set(
+      mockSafeFetch.mock.calls.map(([, init]) => init.body as string)
+    );
+    expect([...bodies]).toEqual([
+      '{"jsonrpc":"2.0","id":1,"method":"eth_sendBundle","params":[{"txs":["0x02f8"],"blockNumber":"0x10","revertingTxHashes":[],"minTimestamp":1796126400}]}',
+    ]);
+    const headers = new Set(
+      mockSafeFetch.mock.calls.map(
+        ([, init]) => init.headers["x-flashbots-signature"] as string
+      )
+    );
+    expect(headers.size).toBe(1);
+  });
+
   it("classes a refused connection as refused and a timeout as unknown, without the URL", async () => {
     mockSafeFetch.mockImplementation(async (url: string) => {
       if (url.includes("alpha")) {

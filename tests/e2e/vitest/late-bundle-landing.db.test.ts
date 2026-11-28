@@ -2363,7 +2363,14 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
 
       expect(await facts.loadFinishLogFacts(finished)).toEqual({
         gasUsedWei: "150",
-        signals: { skippedInFlight: false, notIncluded: true },
+        signals: {
+          skippedInFlight: false,
+          notIncluded: true,
+          waiting: false,
+          bundleSent: true,
+          // The transfer and the HTTP step (any status) did more than read.
+          otherWork: true,
+        },
       });
     });
   });

@@ -39,7 +39,9 @@ export const Node = ({ handles, className, status, nodeId, ...props }: NodeProps
         "border-red-500 border-2",
       status === "landed-late" && "border-green-500 border-2",
       // Ran, but its bundle did not land or it sent nothing: neutral, never green.
-      (status === "not-included" || status === "skipped") &&
+      (status === "not-included" ||
+        status === "skipped" ||
+        status === "waiting") &&
         "border-2 border-muted-foreground border-dashed",
       className
     )}

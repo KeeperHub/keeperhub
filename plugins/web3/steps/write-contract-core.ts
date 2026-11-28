@@ -88,7 +88,7 @@ import {
   type SimulateAt,
   unsupportedFailure,
 } from "@/lib/web3/next-block-simulation";
-import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
+import { maxFeeCapFailure } from "@/lib/web3/max-fee-cap-failure";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import { resolveSendMode, SEND_MODE } from "@/lib/web3/send-mode";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
@@ -139,6 +139,8 @@ export type WriteContractCoreInput = {
   bundleBlocks?: BundleSettingsInput["bundleBlocks"];
   bundleTipIncreasePercent?: BundleSettingsInput["bundleTipIncreasePercent"];
   bundleBuilders?: BundleSettingsInput["bundleBuilders"];
+  notBefore?: BundleSettingsInput["notBefore"];
+  sendAheadBlocks?: BundleSettingsInput["sendAheadBlocks"];
   // false: a relay failure other than a revert is retried on the public RPC, and
   // sendMode "private-relay" on a chain without a relay sends publicly.
   strict?: boolean;
@@ -182,11 +184,12 @@ export type WriteContractCoreInput = {
   };
 };
 
-/** Where a write went: a send route, a bundle, or skipped behind a bundle in flight. */
+/** Where a write went: a send route, a bundle, skipped behind a bundle in flight, or waiting for Not before. */
 type WriteRoute =
   | SendRoute
   | typeof BUNDLE_ROUTE
-  | typeof RUN_OUTCOME_OUTPUT.skippedInFlightRoute;
+  | typeof RUN_OUTCOME_OUTPUT.skippedInFlightRoute
+  | typeof RUN_OUTCOME_OUTPUT.waitingRoute;
 
 /** Send as Bundle outputs; see the Write Contract output fields. */
 type BundleOutputs = {
@@ -198,6 +201,11 @@ type BundleOutputs = {
   bundleTargetsSkipped?: SkippedTarget[];
   // Skipped in flight: the block after which the earlier bundle can no longer land.
   inFlightUntilBlock?: number;
+  // With Not before set: its unix seconds, the first block that cannot precede it, the latest block read.
+  notBefore?: number;
+  firstAllowedBlock?: number;
+  latestBlock?: number;
+  sendAheadBlocks?: number;
 };
 
 export type WriteContractResult =
@@ -567,16 +575,11 @@ async function writeContractCoreImpl(
     bundleRoute = prepared.route;
   }
 
-  if (maxFeeOverride !== undefined) {
-    const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
-    if (capError) {
-      // The base fee, not the node's config, decides this, so failOnError=false
-      // can carry a run through a gas spike.
-      return {
-        success: false,
-        error: capError,
-        errorClass: ExecutionErrorType.EXTERNAL,
-      };
+  // A bundle checks the cap in writeAsBundle, after its replay, in-flight and waiting checks.
+  if (maxFeeOverride !== undefined && !bundleRoute) {
+    const capFailure = await maxFeeCapFailure(rpcManager, maxFeeOverride);
+    if (capFailure) {
+      return capFailure;
     }
   }
 

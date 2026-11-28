@@ -10,6 +10,7 @@ vi.mock("@/lib/logging", async (importOriginal) => ({
   logSystemWarn: mockLogSystemWarn,
 }));
 
+import { maxFeeCapFailure } from "@/lib/web3/max-fee-cap-failure";
 import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
 
 type Manager = Parameters<typeof maxFeeBelowBaseFeeError>[0];
@@ -67,5 +68,19 @@ describe("maxFeeBelowBaseFeeError", () => {
     } as unknown as Manager;
     expect(await maxFeeBelowBaseFeeError(manager, BigInt(1))).toBeUndefined();
     expect(mockLogSystemWarn).toHaveBeenCalled();
+  });
+});
+
+describe("maxFeeCapFailure", () => {
+  it("fails a cap below the next base fee as a network failure, and passes one above", async () => {
+    const { manager } = managerWithFeeHistory({
+      baseFeePerGas: ["0x2540be400", "0x2cb417800"],
+    });
+    expect(await maxFeeCapFailure(manager, BigInt(11e9))).toEqual({
+      success: false,
+      error: expect.stringContaining("Max fee 11.0 gwei is below"),
+      errorClass: "external",
+    });
+    expect(await maxFeeCapFailure(manager, BigInt(12e9))).toBeUndefined();
   });
 });

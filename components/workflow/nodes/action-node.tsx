@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   Check,
   CircleOff,
+  Clock,
   Code,
   Database,
   EyeOff,
@@ -35,6 +36,8 @@ import {
   STEP_OUTCOME_TEXT,
   type StepOutcome,
   stepOutcomeTitle,
+  WAITING_STEP_TEXT,
+  waitingStepSentence,
 } from "@/lib/workflow/executor/run-outcome-keys";
 import {
   CONDITION_SOURCE_HANDLES,
@@ -190,33 +193,67 @@ const getProviderLogo = (actionType: string) => {
 };
 
 // A bundle step's own run states: a pill with the shared outcome words as its tooltip.
-const OUTCOME_BADGES: Partial<
-  Record<
-    NodeRunStatus,
-    { outcome: StepOutcome; testId: string; Icon: typeof Check }
-  >
-> = {
-  "not-included": {
-    outcome: "not-included",
-    testId: "node-not-included",
-    Icon: CircleOff,
-  },
-  skipped: {
-    outcome: "skipped-in-flight",
-    testId: "node-skipped",
-    Icon: SkipForward,
-  },
-  "landed-late": {
-    outcome: "landed-late",
-    testId: "node-landed-late",
-    Icon: Check,
-  },
-  "landed-late-reverted": {
-    outcome: "landed-late-reverted",
-    testId: "node-landed-late-reverted",
-    Icon: XCircle,
+type OutcomeBadge = {
+  testId: string;
+  Icon: typeof Check;
+  label: string;
+  title: (reason?: string) => string;
+  error?: boolean;
+};
+
+function stepOutcomeBadge(
+  outcome: StepOutcome,
+  testId: string,
+  Icon: typeof Check
+): OutcomeBadge {
+  return {
+    testId,
+    Icon,
+    label: STEP_OUTCOME_TEXT[outcome].label,
+    // Only a missed bundle has a reason worth adding.
+    title: (reason) =>
+      stepOutcomeTitle(
+        outcome,
+        outcome === "not-included" ? reason : undefined
+      ),
+    error: outcome === "landed-late-reverted",
+  };
+}
+
+const OUTCOME_BADGES: Partial<Record<NodeRunStatus, OutcomeBadge>> = {
+  "not-included": stepOutcomeBadge(
+    "not-included",
+    "node-not-included",
+    CircleOff
+  ),
+  skipped: stepOutcomeBadge("skipped-in-flight", "node-skipped", SkipForward),
+  "landed-late": stepOutcomeBadge("landed-late", "node-landed-late", Check),
+  "landed-late-reverted": stepOutcomeBadge(
+    "landed-late-reverted",
+    "node-landed-late-reverted",
+    XCircle
+  ),
+  waiting: {
+    testId: "node-waiting",
+    Icon: Clock,
+    label: WAITING_STEP_TEXT.label,
+    title: (reason) =>
+      `${WAITING_STEP_TEXT.label}: ${reason ?? WAITING_STEP_TEXT.sentence}`,
   },
 };
+
+/** The badge's extra words from the step's output: a miss's reason, or why it waited. */
+function stepBadgeReason(
+  status: NodeRunStatus | undefined,
+  output: unknown
+): string | undefined {
+  if (output === undefined) {
+    return;
+  }
+  return status === "waiting"
+    ? waitingStepSentence(output)
+    : notIncludedReasonText(output);
+}
 
 // Status badge component
 const StatusBadge = ({
@@ -237,24 +274,18 @@ const StatusBadge = ({
       <div
         className={cn(
           "absolute top-2 right-2 flex items-center gap-1 rounded-full border px-2 py-0.5 font-medium text-xs",
-          badge.outcome === "landed-late-reverted"
+          badge.error
             ? "border-destructive/60 bg-destructive/10 text-foreground"
             : "border-muted-foreground/50 bg-muted text-foreground"
         )}
         data-testid={badge.testId}
-        title={stepOutcomeTitle(
-          badge.outcome,
-          badge.outcome === "not-included" ? reason : undefined
-        )}
+        title={badge.title(reason)}
       >
         <Icon
           aria-hidden="true"
-          className={cn(
-            "size-3",
-            badge.outcome === "landed-late-reverted" && "text-destructive"
-          )}
+          className={cn("size-3", badge.error && "text-destructive")}
         />
-        {STEP_OUTCOME_TEXT[badge.outcome].label}
+        {badge.label}
       </div>
     );
   }
@@ -467,11 +498,10 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
 
       {/* Status indicator badge in top right */}
       <StatusBadge
-        reason={
-          selectedExecutionId
-            ? notIncludedReasonText(nodeLog?.output)
-            : undefined
-        }
+        reason={stepBadgeReason(
+          status,
+          selectedExecutionId ? nodeLog?.output : undefined
+        )}
         status={status}
       />
 

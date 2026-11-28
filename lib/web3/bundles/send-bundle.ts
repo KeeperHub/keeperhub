@@ -11,6 +11,7 @@ import {
 import { ErrorCategory, logInfo, logSystemError, logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { getErrorMessage } from "@/lib/utils";
+import { minBlockGapSeconds } from "@/lib/web3/beacon-slots";
 import type { GasOverrides } from "@/lib/web3/chain-adapter/types";
 import { fixedGasLimit, MAX_FEE_GWEI } from "@/lib/web3/gas-defaults";
 import { getGasStrategy } from "@/lib/web3/gas-strategy";
@@ -46,10 +47,13 @@ import {
 import {
   maxFeeForTips,
   type PlannedTarget,
+  planSendAhead,
   planTips,
+  type SendAheadPlan,
   type SkippedTarget,
   toGwei,
 } from "./plan";
+import { NOT_BEFORE_UNSUPPORTED_ERROR, type SendAhead } from "./settings";
 
 // The most a user may set as Max Fee; a raised cap never goes above it.
 const MAX_FEE_WEI = BigInt(MAX_FEE_GWEI) * BigInt(1_000_000_000);
@@ -77,6 +81,14 @@ export type BundleReport = {
   targetTipsGwei: string[];
   builders: BuilderReport[];
   bundleTargetsSkipped?: SkippedTarget[];
+} & Partial<SendAheadReport>;
+
+/** With Not before set: the time, the first block that cannot precede it, the latest block read, and Send ahead. */
+export type SendAheadReport = {
+  notBefore: number;
+  firstAllowedBlock: number;
+  latestBlock: number;
+  sendAheadBlocks: number;
 };
 
 export type BundleSendOutcome =
@@ -91,6 +103,8 @@ export type BundleSendOutcome =
   | { kind: "no-builder-accepted"; report: BundleReport }
   // Another transaction took the nonce while the bundle waited.
   | { kind: "used-elsewhere"; report: BundleReport }
+  // Not before is still too far ahead: nothing was signed or sent.
+  | { kind: "waiting"; report: Partial<BundleReport> & SendAheadReport }
   // Refused before signing: nothing was signed or sent.
   | {
       kind: "refused";
@@ -111,6 +125,8 @@ type BundleSendInput = {
   gas: GasOverrides;
   blocks: number;
   tipIncreasePercent: number;
+  // With Not before set: targets start at its first allowed block.
+  sendAhead?: SendAhead;
   builders: readonly BuilderEndpoint[];
   // Picked names this network has no builder for, reported as refused.
   unknownBuilders: readonly string[];
@@ -145,11 +161,13 @@ const TOO_SLOW: Extract<BundleSendOutcome, { kind: "refused" }> = {
   report: {},
 };
 
-// The RPC stayed below the trigger block for the whole wait: nothing was signed or sent.
+/** The RPC stayed below the trigger block for the whole wait: nothing was signed or sent. */
+export const TRIGGER_NOT_REACHED_ERROR =
+  "The RPC has not reached the block that triggered the run, so nothing was sent. Run it again. If this keeps happening, the RPC lags the block trigger: use another RPC for this network.";
+
 const TRIGGER_NOT_REACHED: Extract<BundleSendOutcome, { kind: "refused" }> = {
   kind: "refused",
-  error:
-    "The RPC has not reached the block that triggered the run, so nothing was sent. Run it again. If this keeps happening, the RPC lags the block trigger: use another RPC for this network.",
+  error: TRIGGER_NOT_REACHED_ERROR,
   errorClass: ExecutionErrorType.EXTERNAL,
   report: {},
 };
@@ -472,9 +490,72 @@ async function dropPassedTargets(
 const sleepFor = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
+/** The latest block's parent, read by hash so it is that block's own parent. */
+async function parentOf(
+  rpcManager: RpcProviderManager,
+  latest: ethers.Block
+): Promise<{ number: number; timestamp: number }> {
+  if (latest.number === 0) {
+    return { number: 0, timestamp: latest.timestamp };
+  }
+  const parent = await rpcManager.executeWithFailover((provider) =>
+    provider.getBlock(latest.parentHash)
+  );
+  if (!parent) {
+    throw new Error(
+      "The RPC did not return the latest block's parent, so the first allowed block could not be worked out. Run it again."
+    );
+  }
+  return { number: parent.number, timestamp: parent.timestamp };
+}
+
+/** Wait or send at `latest`, for a step with Not before set. */
+export async function sendAheadPlanAt(
+  rpcManager: RpcProviderManager,
+  chainId: number,
+  latest: ethers.Block,
+  options: { sendAhead: SendAhead; blocks: number }
+): Promise<SendAheadPlan> {
+  const gapSeconds = minBlockGapSeconds(chainId);
+  if (gapSeconds === undefined) {
+    // prepareBundleRoute refuses first; never plan with a guessed gap.
+    throw new Error(NOT_BEFORE_UNSUPPORTED_ERROR);
+  }
+  return planSendAhead({
+    notBefore: options.sendAhead.notBefore,
+    latest: latest.number,
+    parent: await parentOf(rpcManager, latest),
+    gapSeconds,
+    sendAheadBlocks: options.sendAhead.blocks,
+    blocks: options.blocks,
+  });
+}
+
+/** The check before the wallet lock: the latest block (the trigger block once reached) and the plan there. */
+export async function sendAheadPlanNow(options: {
+  rpcManager: RpcProviderManager;
+  chainId: number;
+  triggerBlock?: TriggerBlock;
+  sendAhead: SendAhead;
+  blocks: number;
+}): Promise<{ latest: number; plan: SendAheadPlan }> {
+  const wait = newTriggerWait();
+  const latest = await options.rpcManager.executeWithFailover((provider) =>
+    latestReaching(provider, options.chainId, options.triggerBlock, wait)
+  );
+  return {
+    latest: latest.number,
+    plan: await sendAheadPlanAt(options.rpcManager, options.chainId, latest, {
+      sendAhead: options.sendAhead,
+      blocks: options.blocks,
+    }),
+  };
+}
+
 /**
- * Send a contract call as a bundle for the next `blocks` blocks, inside the
- * caller's nonce session: simulate each target, sign one transaction per
+ * Send a contract call as a bundle for the next `blocks` blocks (from Not
+ * before's first allowed block when set; waiting while it is too far ahead),
+ * inside the caller's nonce session: simulate each target, sign one transaction per
  * target at one nonce with a rising tip, record the row, send to every
  * builder, then watch the chain until it decides or the row's window passes.
  * Once sent it never throws: an undecided end is "not-checked", row pending.
@@ -516,7 +597,28 @@ async function sendInBudget(
     )
   );
   const latest = latestBlock.number;
-  const blocks = Array.from({ length: input.blocks }, (_, i) => latest + i + 1);
+  let blocks = Array.from({ length: input.blocks }, (_, i) => latest + i + 1);
+  let aheadReport: SendAheadReport | undefined;
+  if (input.sendAhead) {
+    // Worked out again under the lock, from this newer latest block.
+    const plan = await inBudget(
+      sendAheadPlanAt(input.rpcManager, input.chainId, latestBlock, {
+        sendAhead: input.sendAhead,
+        blocks: input.blocks,
+      })
+    );
+    aheadReport = {
+      notBefore: input.sendAhead.notBefore,
+      firstAllowedBlock: plan.firstAllowedBlock,
+      latestBlock: latest,
+      sendAheadBlocks: input.sendAhead.blocks,
+    };
+    if (plan.kind === "waiting") {
+      return { kind: "waiting", report: aheadReport };
+    }
+    blocks = plan.targets;
+  }
+  const firstTarget = blocks[0];
 
   const simulated = await inBudget(simulateTargets(input, blocks));
   if (simulated.passed.length === 0) {
@@ -528,7 +630,7 @@ async function sendInBudget(
       error:
         "Every target block was mined before its check finished, so nothing was sent. The RPC may be lagging; run it again.",
       errorClass: ExecutionErrorType.EXTERNAL,
-      report: { bundleTargetsSkipped: simulated.skipped },
+      report: { bundleTargetsSkipped: simulated.skipped, ...aheadReport },
     };
   }
 
@@ -568,6 +670,7 @@ async function sendInBudget(
     blocks: passedBlocks,
     tipLimit,
     parent,
+    firstTarget,
   });
   const feeCeiling = input.gas.maxFeeOverride ?? MAX_FEE_WEI;
   const maxFee = raisedMaxFee < feeCeiling ? raisedMaxFee : feeCeiling;
@@ -582,6 +685,7 @@ async function sendInBudget(
     increasePercent: input.tipIncreasePercent,
     blocks: passedBlocks,
     tipLimit,
+    firstTarget,
   });
   const skipped = [...simulated.skipped, ...plan.skipped];
   if (plan.targets.length === 0) {
@@ -589,14 +693,19 @@ async function sendInBudget(
     if (simulated.firstError !== undefined) {
       throw simulated.firstError;
     }
+    // Past latest + 1 the base fee is a worst case: a later run, nearer U, may fit the cap.
+    if (aheadReport && firstTarget > latest + 1) {
+      return {
+        kind: "waiting",
+        report: { bundleTargetsSkipped: sortedSkips(skipped), ...aheadReport },
+      };
+    }
     return {
       kind: "refused",
       error: maxFeeRefusal(maxFee, plan.lowestSkippedBaseFee, userMaxFeeBinds),
-      // The user's own Max Fee caused it when it set the cap; otherwise the network's fees did.
-      errorClass: userMaxFeeBinds
-        ? ExecutionErrorType.USER
-        : ExecutionErrorType.EXTERNAL,
-      report: { bundleTargetsSkipped: sortedSkips(skipped) },
+      // The base fee moved past the cap: a network failure, so failOnError=false softens it.
+      errorClass: ExecutionErrorType.EXTERNAL,
+      report: { bundleTargetsSkipped: sortedSkips(skipped), ...aheadReport },
     };
   }
 
@@ -614,7 +723,7 @@ async function sendInBudget(
     )
   );
   if (refusal) {
-    return refusal;
+    return { ...refusal, report: { ...refusal.report, ...aheadReport } };
   }
   if (Date.now() >= preRecordEnd) {
     return TOO_SLOW;
@@ -630,8 +739,10 @@ async function sendInBudget(
     dropPassedTargets(input, plan.targets, allSigned)
   );
   skipped.push(...live.passed);
-  const skippedField =
-    skipped.length > 0 ? { bundleTargetsSkipped: sortedSkips(skipped) } : {};
+  const skippedField = {
+    ...(skipped.length > 0 && { bundleTargetsSkipped: sortedSkips(skipped) }),
+    ...aheadReport,
+  };
   if (live.targets.length === 0) {
     return {
       kind: "refused",
@@ -697,6 +808,11 @@ async function sendInBudget(
       signed: live.signed,
       gasLimit: gasConfig.gasLimit,
       report,
+      // Only a Not before still ahead of the chain; 0 or a past time adds nothing.
+      ...(input.sendAhead &&
+        input.sendAhead.notBefore > latestBlock.timestamp && {
+          minTimestamp: input.sendAhead.notBefore,
+        }),
     });
   } catch (error) {
     // Never release the lock while a target can land; the row stays pending.
@@ -782,6 +898,7 @@ type Recorded = {
   signed: string[];
   gasLimit: bigint;
   report: BundleReport;
+  minTimestamp?: number;
 };
 
 async function afterRecord(
@@ -800,6 +917,9 @@ async function afterRecord(
             signedTxs: [recorded.signed[index]],
             targetBlock: target.block,
             searcher: input.searcher,
+            ...(recorded.minTimestamp !== undefined && {
+              minTimestamp: recorded.minTimestamp,
+            }),
           })
         )
       )

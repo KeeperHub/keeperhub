@@ -33,6 +33,13 @@ const h = vi.hoisted(() => ({
   sessionError: undefined as Error | undefined,
   // linkBundleReservation calls: a replay's own reservation joins the row's nonce.
   links: [] as unknown[][],
+  // What the max fee cap check says: an error while the cap is below the next base fee.
+  capError: undefined as string | undefined,
+  capChecks: 0,
+  // Hands the cap check to the real one, which reads eth_feeHistory.
+  realCapCheck: false,
+  realSend: undefined as ((...args: unknown[]) => unknown) | undefined,
+  signs: 0,
 }));
 
 vi.mock("@/lib/web3/nonce-manager", async (importOriginal) => ({
@@ -49,9 +56,35 @@ vi.mock("@/lib/web3/bundles/builders", async (importOriginal) => ({
 vi.mock("@/lib/web3/bundles/in-flight", () => ({
   bundleInFlight: (...args: unknown[]) => h.inFlight(...args),
 }));
-vi.mock("@/lib/web3/bundles/send-bundle", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/web3/bundles/send-bundle")>()),
-  sendBundleInSession: (...args: unknown[]) => h.send(...args),
+vi.mock("@/lib/web3/bundles/send-bundle", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/web3/bundles/send-bundle")>();
+  // A test may hand the send to the real code, over the stubs below.
+  h.realSend = actual.sendBundleInSession as (...args: unknown[]) => unknown;
+  return {
+    ...actual,
+    sendBundleInSession: (...args: unknown[]) => h.send(...args),
+  };
+});
+// Only the real send reaches these: every target simulates, and the cap is Max Fee.
+vi.mock("@/lib/web3/next-block-simulation", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/web3/next-block-simulation")
+  >()),
+  simulateSendAtNextBlock: async () => ({
+    gasEstimate: BigInt(50_000),
+    simulation: {},
+  }),
+}));
+vi.mock("@/lib/web3/gas-strategy", () => ({
+  getGasStrategy: () => ({
+    getGasConfig: async () => ({
+      gasLimit: BigInt(60_000),
+      maxFeePerGas: BigInt(30e9),
+      maxPriorityFeePerGas: BigInt(1e9),
+    }),
+    priorityFeeLimit: async () => BigInt(500e9),
+  }),
 }));
 vi.mock("@/lib/web3/gas-preflight", () => ({
   preflightGasBalance: async () =>
@@ -59,6 +92,20 @@ vi.mock("@/lib/web3/gas-preflight", () => ({
       ? { affordable: true }
       : { affordable: false, message: "Insufficient funds for gas" },
 }));
+vi.mock("@/lib/web3/max-fee-check", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/web3/max-fee-check")>();
+  return {
+    maxFeeBelowBaseFeeError: async (
+      ...args: Parameters<typeof actual.maxFeeBelowBaseFeeError>
+    ) => {
+      h.capChecks += 1;
+      return h.realCapCheck
+        ? await actual.maxFeeBelowBaseFeeError(...args)
+        : await Promise.resolve(h.capError);
+    },
+  };
+});
 vi.mock("@/lib/web3/transaction-manager", () => ({
   withNonceSession: async (
     _context: unknown,
@@ -71,11 +118,17 @@ vi.mock("@/lib/web3/transaction-manager", () => ({
       throw h.sessionError;
     }
     h.sessions += 1;
-    return await fn({ currentNonce: 1 });
+    return await fn({ currentNonce: 1, startedAt: new Date() });
   },
 }));
 vi.mock("@/lib/web3/wallet-helpers", () => ({
-  initializeWalletSigner: async () => ({ provider: {} }),
+  initializeWalletSigner: async () => ({
+    provider: {},
+    signTransaction: async () => {
+      h.signs += 1;
+      return "0x";
+    },
+  }),
 }));
 vi.mock("@/lib/web3/chain-adapter", () => ({
   getChainAdapter: () => ({
@@ -96,7 +149,10 @@ import {
 } from "@/lib/web3/bundles/send-bundle";
 import { NonceLockWaitEndedError } from "@/lib/web3/nonce-manager";
 import { signalsOfStep } from "@/lib/workflow/executor/run-outcome";
-import { bundleReservationEnd } from "@/lib/workflow/executor/run-outcome-keys";
+import {
+  bundleReservationEnd,
+  waitingStepSentence,
+} from "@/lib/workflow/executor/run-outcome-keys";
 import { RUN_DEADLINE_AT_ENV } from "@/lib/workflow/executor/runner-constants";
 import {
   type BundleRoute,
@@ -148,6 +204,10 @@ beforeEach(() => {
   h.links = [];
   h.sessionOptions = undefined;
   h.sessionError = undefined;
+  h.capError = undefined;
+  h.capChecks = 0;
+  h.realCapCheck = false;
+  h.signs = 0;
 });
 
 describe("prepareBundleRoute", () => {
@@ -363,8 +423,11 @@ describe("writeAsBundle", () => {
     expect(h.sessions).toBe(0);
     expect(h.send).not.toHaveBeenCalled();
     expect(signals(result)).toEqual({
+      bundleSent: false,
+      otherWork: true,
       skippedInFlight: true,
       notIncluded: false,
+      waiting: false,
     });
     expect(h.inFlight).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -415,8 +478,11 @@ describe("writeAsBundle", () => {
     });
     expect(h.send).not.toHaveBeenCalled();
     expect(signals(result)).toEqual({
+      bundleSent: true,
+      otherWork: true,
       skippedInFlight: false,
       notIncluded: true,
+      waiting: false,
     });
   });
 
@@ -559,6 +625,68 @@ describe("writeAsBundle", () => {
     );
   });
 
+  describe("with a max fee cap below the next base fee", () => {
+    const CAP = { maxFeeOverride: BigInt(1e9) };
+    const CAP_ERROR =
+      "Max fee 1 gwei is below the next block's base fee of 2 gwei, so the transaction could not be included. Raise the max fee or leave it empty.";
+    beforeEach(() => {
+      h.capError = CAP_ERROR;
+    });
+
+    it("a replay of a landed step still returns the landing", async () => {
+      replayReceipt = {
+        blockNumber: 50,
+        status: 1,
+        gasUsed: BigInt(40_000),
+        gasPrice: BigInt(11),
+      };
+      h.inFlight.mockResolvedValue({
+        kind: "replay",
+        nonce: 7,
+        landedHash: "0xab",
+      });
+      const result = await write({ gas: CAP });
+      expect(result).toMatchObject({
+        success: true,
+        route: "bundle",
+        included: true,
+        transactionHash: "0xab",
+      });
+      expect(h.send).not.toHaveBeenCalled();
+    });
+
+    it("another run's bundle in flight still ends skipped in flight", async () => {
+      h.inFlight.mockResolvedValue({ kind: "other", untilBlock: 15 });
+      const result = await write({ gas: CAP });
+      expect(result).toEqual({
+        success: true,
+        route: "skipped-in-flight",
+        included: false,
+        inFlightUntilBlock: 15,
+      });
+    });
+
+    it("with nothing in flight fails as an external error, before the gas check and the lock", async () => {
+      h.affordable = false;
+      const result = await write({ gas: CAP });
+      expect(result).toEqual({
+        success: false,
+        error: CAP_ERROR,
+        errorClass: ExecutionErrorType.EXTERNAL,
+      });
+      expect(h.capChecks).toBe(1);
+      expect(h.sessions).toBe(0);
+      expect(h.send).not.toHaveBeenCalled();
+    });
+
+    it("leaves the check out without a cap", async () => {
+      h.send.mockResolvedValue(landed("0xcd"));
+      const result = await write();
+      expect(result).toMatchObject({ success: true, included: true });
+      expect(h.capChecks).toBe(0);
+    });
+  });
+
   it("checks gas before taking the lock", async () => {
     h.affordable = false;
     const result = await write();
@@ -582,8 +710,11 @@ describe("writeAsBundle", () => {
     });
     expect(result).not.toHaveProperty("transactionHash");
     expect(signals(result)).toEqual({
+      bundleSent: true,
+      otherWork: true,
       skippedInFlight: false,
       notIncluded: true,
+      waiting: false,
     });
   });
 
@@ -616,8 +747,11 @@ describe("writeAsBundle", () => {
       ...REPORT,
     });
     expect(signals(result)).toEqual({
+      bundleSent: true,
+      otherWork: true,
       skippedInFlight: false,
       notIncluded: false,
+      waiting: false,
     });
   });
 
@@ -968,5 +1102,561 @@ describe("bundle step vs the run's time limit", () => {
     await write();
     expect(h.sessionOptions).toEqual({});
     expect(h.send.mock.calls[0][0]).toMatchObject({ runDeadline: undefined });
+  });
+});
+
+describe("writeAsBundle with Not before", () => {
+  const LATEST = 1000;
+  const LATEST_TIME = 1_800_000_000;
+  // Latest 1000; its parent 999 one slot earlier. Ethereum: 12 s slots.
+  const chainManager = (fail = false) =>
+    ({
+      executeWithFailover: async (
+        operation: (provider: unknown) => Promise<unknown>
+      ) =>
+        await operation({
+          getBlockNumber: async () => LATEST,
+          getTransactionReceipt: async () => replayReceipt,
+          getBlock: async (tag: unknown) => {
+            if (fail) {
+              throw new Error("rpc down");
+            }
+            return tag === "latest"
+              ? { number: LATEST, timestamp: LATEST_TIME, parentHash: "0xp" }
+              : { number: LATEST - 1, timestamp: LATEST_TIME - 12 };
+          },
+        }),
+    }) as never;
+
+  async function aheadRoute(notBefore: unknown): Promise<BundleRoute> {
+    const prepared = await prepare({ config: { notBefore } });
+    if (!prepared.ok) {
+      throw new Error("expected a route");
+    }
+    return prepared.route;
+  }
+
+  it("ends waiting before the gas check and the wallet lock: nothing signed, value released", async () => {
+    // U = 999 + ceil(72 / 12) = 1005, more than Send ahead 2 + 1 blocks away.
+    h.affordable = false;
+    const result = await write({
+      route: await aheadRoute(LATEST_TIME + 60),
+      rpcManager: chainManager(),
+    });
+    expect(result).toEqual({
+      success: true,
+      route: "waiting",
+      included: false,
+      notBefore: LATEST_TIME + 60,
+      firstAllowedBlock: 1005,
+      latestBlock: LATEST,
+      sendAheadBlocks: 2,
+    });
+    expect(h.sessions).toBe(0);
+    expect(h.send).not.toHaveBeenCalled();
+    expect(signals(result)).toEqual({
+      bundleSent: false,
+      otherWork: false,
+      skippedInFlight: false,
+      notIncluded: false,
+      waiting: true,
+    });
+    expect(bundleReservationEnd(result)).toBe("release");
+  });
+
+  it("keeps waiting through a base-fee spike: the cap is checked only when it is about to send", async () => {
+    h.capError = "Max fee 1 gwei is below the next block's base fee of 2 gwei";
+    const result = await write({
+      route: await aheadRoute(LATEST_TIME + 60),
+      rpcManager: chainManager(),
+      gas: { maxFeeOverride: BigInt(1e9) },
+    });
+    expect(result).toMatchObject({ success: true, route: "waiting" });
+    expect(h.capChecks).toBe(0);
+  });
+
+  it("checks replay and in flight first: a replay whose Not before moved returns its result", async () => {
+    h.inFlight.mockResolvedValue({
+      kind: "replay",
+      nonce: 7,
+      missed: "not-picked",
+    });
+    const replayed = await write({
+      route: await aheadRoute(LATEST_TIME + 6000),
+      rpcManager: chainManager(),
+    });
+    expect(replayed).toMatchObject({
+      route: "bundle",
+      included: false,
+      notIncludedReason: "not-picked",
+    });
+    h.inFlight.mockResolvedValue({ kind: "other", untilBlock: 15 });
+    const skipped = await write({
+      route: await aheadRoute(LATEST_TIME + 6000),
+      rpcManager: chainManager(),
+    });
+    expect(skipped).toMatchObject({ route: "skipped-in-flight" });
+  });
+
+  it("goes to the wallet lock when U is close enough, handing Not before to the send", async () => {
+    h.send.mockResolvedValue({
+      kind: "included",
+      gasLimit: BigInt(60_000),
+      mined: {
+        hash: "0xab",
+        blockNumber: 1003,
+        succeeded: true,
+        gasUnits: BigInt(1),
+        feeWei: BigInt(1),
+      },
+      report: { ...REPORT, notBefore: LATEST_TIME + 36 },
+    });
+    const result = await write({
+      route: await aheadRoute(LATEST_TIME + 36),
+      rpcManager: chainManager(),
+    });
+    expect(h.sessions).toBe(1);
+    expect(h.send.mock.calls[0][0]).toMatchObject({
+      sendAhead: { notBefore: LATEST_TIME + 36, blocks: 2 },
+    });
+    expect(result).toMatchObject({
+      success: true,
+      notBefore: LATEST_TIME + 36,
+    });
+  });
+
+  it("ends waiting when U, worked out again under the lock, is still too far", async () => {
+    const report = {
+      notBefore: LATEST_TIME + 36,
+      firstAllowedBlock: 1004,
+      latestBlock: 1000,
+      sendAheadBlocks: 2,
+    };
+    h.send.mockResolvedValue({ kind: "waiting", report });
+    const result = await write({
+      route: await aheadRoute(LATEST_TIME + 36),
+      rpcManager: chainManager(),
+    });
+    expect(result).toEqual({
+      success: true,
+      route: "waiting",
+      included: false,
+      ...report,
+    });
+  });
+
+  describe("a Max Fee the worst-case base fee projection passes over", () => {
+    const gwei = (value: number): bigint => BigInt(Math.round(value * 1e9));
+    // Half-full blocks: the base fee stays flat at `baseFee`, which eth_feeHistory gives as the next one.
+    const feeChain = (baseFee: bigint) =>
+      ({
+        executeWithFailover: async (
+          operation: (provider: unknown) => Promise<unknown>
+        ) =>
+          await operation({
+            send: async (method: string) =>
+              method === "eth_feeHistory"
+                ? {
+                    baseFeePerGas: [
+                      ethers.toBeHex(baseFee),
+                      ethers.toBeHex(baseFee),
+                    ],
+                  }
+                : null,
+            getBlock: async (tag: unknown) =>
+              tag === "latest"
+                ? {
+                    number: LATEST,
+                    timestamp: LATEST_TIME,
+                    parentHash: "0xp",
+                    baseFeePerGas: baseFee,
+                    gasUsed: BigInt(15_000_000),
+                    gasLimit: BigInt(30_000_000),
+                  }
+                : { number: LATEST - 1, timestamp: LATEST_TIME - 12 },
+          }),
+      }) as never;
+
+    async function capRoute(notBefore: number): Promise<BundleRoute> {
+      const prepared = await prepare({
+        config: { notBefore, sendAheadBlocks: 3, bundleBlocks: 2 },
+      });
+      if (!prepared.ok) {
+        throw new Error("expected a route");
+      }
+      return prepared.route;
+    }
+
+    beforeEach(() => {
+      h.send.mockImplementation(async (...args: unknown[]) =>
+        h.realSend?.(...args)
+      );
+    });
+
+    it("waits when every target from U is fee-skipped: nothing signed, value released", async () => {
+      // U = 999 + 60 / 12 = 1004 = latest + 4; 10 gwei x (9/8)^3 > 12.5 gwei there.
+      const result = await write({
+        route: await capRoute(LATEST_TIME - 12 + 60),
+        rpcManager: feeChain(gwei(10)),
+        gas: { maxFeeOverride: gwei(12.5) },
+      });
+      expect(result).toEqual({
+        success: true,
+        route: "waiting",
+        included: false,
+        bundleTargetsSkipped: [
+          { block: 1004, reason: "max-fee-below-projected-base-fee" },
+          { block: 1005, reason: "max-fee-below-projected-base-fee" },
+        ],
+        notBefore: LATEST_TIME + 48,
+        firstAllowedBlock: 1004,
+        latestBlock: LATEST,
+        sendAheadBlocks: 3,
+      });
+      expect(h.sessions).toBe(1);
+      expect(h.signs).toBe(0);
+      expect(bundleReservationEnd(result)).toBe("release");
+      expect(waitingStepSentence(result)).toContain("Max Fee held back");
+    });
+
+    it("waits, not fails, on a cap below the next base fee when the targets start past the next block", async () => {
+      h.realCapCheck = true;
+      // U = latest + 4: the pre-lock check leaves the cap to the in-session projection.
+      const result = await write({
+        route: await capRoute(LATEST_TIME - 12 + 60),
+        rpcManager: feeChain(gwei(10)),
+        gas: { maxFeeOverride: gwei(9.9) },
+      });
+      expect(result).toMatchObject({
+        success: true,
+        route: "waiting",
+        firstAllowedBlock: 1004,
+        bundleTargetsSkipped: [
+          { block: 1004, reason: "max-fee-below-projected-base-fee" },
+          { block: 1005, reason: "max-fee-below-projected-base-fee" },
+        ],
+      });
+      expect(h.capChecks).toBe(0);
+      expect(h.signs).toBe(0);
+      expect(bundleReservationEnd(result)).toBe("release");
+    });
+
+    it("still fails that cap before the lock when the first target is the next block", async () => {
+      h.realCapCheck = true;
+      // U = 999 + 24 / 12 = 1001 = latest + 1.
+      const result = await write({
+        route: await capRoute(LATEST_TIME + 12),
+        rpcManager: feeChain(gwei(10)),
+        gas: { maxFeeOverride: gwei(9.9) },
+      });
+      expect(result).toEqual({
+        success: false,
+        error:
+          "Max fee 9.9 gwei is below the next block's base fee of 10.0 gwei, so the transaction could not be included. Raise the max fee or leave it empty.",
+        errorClass: ExecutionErrorType.EXTERNAL,
+      });
+      expect(h.capChecks).toBe(1);
+      expect(h.sessions).toBe(0);
+      expect(h.signs).toBe(0);
+      expect(bundleReservationEnd(result)).toBe("release");
+    });
+
+    it("waits at latest + 2 when the projection one block on passes over the cap", async () => {
+      h.realCapCheck = true;
+      // U = 999 + 36 / 12 = 1002 = latest + 2; 10 gwei x 9/8 = 11.25 gwei there.
+      const result = await write({
+        route: await capRoute(LATEST_TIME + 24),
+        rpcManager: feeChain(gwei(10)),
+        gas: { maxFeeOverride: gwei(11) },
+      });
+      expect(result).toMatchObject({
+        success: true,
+        route: "waiting",
+        firstAllowedBlock: 1002,
+        latestBlock: LATEST,
+      });
+      // Sending ahead from latest + 2 leaves the cap to the session.
+      expect(h.capChecks).toBe(0);
+      expect(h.sessions).toBe(1);
+      expect(h.signs).toBe(0);
+      expect(bundleReservationEnd(result)).toBe("release");
+    });
+
+    it("still refuses at latest + 1, where the base fee is exact, as a network failure", async () => {
+      // U = 999 + 24 / 12 = 1001 = latest + 1; its base fee 13 gwei is above the cap.
+      const result = await write({
+        route: await capRoute(LATEST_TIME + 12),
+        rpcManager: feeChain(gwei(13)),
+        gas: { maxFeeOverride: gwei(12.5) },
+      });
+      expect(result).toMatchObject({
+        success: false,
+        errorClass: ExecutionErrorType.EXTERNAL,
+        broadcastAttempted: false,
+        error:
+          "Max fee 12.5 gwei is below the base fee the target blocks may reach (13 gwei), so nothing was sent. Raise the max fee or leave it empty.",
+      });
+      expect(h.signs).toBe(0);
+      expect(bundleReservationEnd(result)).toBe("release");
+      expect(applyFailOnError(result, false)).toMatchObject({
+        success: true,
+        error: expect.stringContaining("Max fee 12.5 gwei"),
+      });
+    });
+  });
+
+  it("fails before the lock when the latest block cannot be read", async () => {
+    const result = await write({
+      route: await aheadRoute(LATEST_TIME + 60),
+      rpcManager: chainManager(true),
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.EXTERNAL,
+      broadcastAttempted: false,
+      error: expect.stringContaining("check Not before"),
+    });
+    expect(h.sessions).toBe(0);
+  });
+
+  it("says the RPC lags the block trigger when it never reaches the trigger block", async () => {
+    const { TriggerBlockNotReachedError } = await import(
+      "@/lib/web3/next-block-simulation"
+    );
+    const lagging = {
+      executeWithFailover: async () => {
+        throw new TriggerBlockNotReachedError("behind");
+      },
+    } as never;
+    const result = await write({
+      route: await aheadRoute(LATEST_TIME + 60),
+      rpcManager: lagging,
+      triggerBlock: { chainId: 1, number: 2000 },
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.EXTERNAL,
+      error: expect.stringContaining(
+        "has not reached the block that triggered"
+      ),
+    });
+  });
+
+  // A run-time Not before refusal is data on the route; the step fails with it after the in-flight check.
+  async function refusedRoute(config: Record<string, unknown>) {
+    const prepared = await prepare({ config });
+    if (!prepared.ok) {
+      throw new Error("expected a route");
+    }
+    expect(prepared.route.settings.sendAhead).toBeUndefined();
+    return prepared.route;
+  }
+
+  const unsent = (error: unknown) => ({
+    success: false,
+    errorClass: ExecutionErrorType.USER,
+    broadcastAttempted: false,
+    error,
+  });
+
+  it("refuses a run-time Not before that looks like milliseconds", async () => {
+    const result = await write({
+      route: await refusedRoute({ notBefore: "1796126400000" }),
+      rpcManager: chainManager(),
+    });
+    expect(result).toEqual(
+      unsent(expect.stringContaining("Use seconds: 1796126400."))
+    );
+  });
+
+  it("fails a templated Not before that the run filled in empty, nothing sent", async () => {
+    // The executor marks a Not before saved as a template; it rendered "".
+    const result = await write({
+      route: await refusedRoute({
+        notBefore: "",
+        _notBeforeFromTemplate: true,
+      }),
+      rpcManager: chainManager(),
+    });
+    expect(result).toEqual(
+      unsent(
+        "Not before (notBefore) resolved to an empty value, so nothing was sent."
+      )
+    );
+    expect(h.sessions).toBe(0);
+    expect(h.send).not.toHaveBeenCalled();
+    // Left empty in the editor: no Not before, sends as without it.
+    const plain = await prepare({ config: { notBefore: "" } });
+    expect(plain.ok && plain.route.settings).not.toHaveProperty(
+      "notBeforeRefusal"
+    );
+  });
+
+  it.each([
+    [
+      "0",
+      true,
+      "Not before (notBefore) resolved to 0, which usually means the time is not set yet, so nothing was sent.",
+    ],
+    [
+      0,
+      false,
+      "Not before (notBefore) resolved to 0, which usually means the time is not set yet, so nothing was sent.",
+    ],
+    [
+      "3600",
+      true,
+      "Not before (notBefore) resolved to 3600, which looks like a duration or block number, not a unix time, so nothing was sent.",
+    ],
+    [
+      19_000_000,
+      false,
+      "Not before (notBefore) resolved to 19000000, which looks like a duration or block number, not a unix time, so nothing was sent.",
+    ],
+    [
+      "999999999",
+      true,
+      "Not before (notBefore) resolved to 999999999, which looks like a duration or block number, not a unix time, so nothing was sent.",
+    ],
+    [
+      "10000000000",
+      true,
+      "Not before (notBefore) resolved to 10000000000, which is past the year 2286 and is not a unix time (an amount, or a 'never' value such as the largest uint256), so nothing was sent.",
+    ],
+    [
+      10_000_000_000,
+      false,
+      "Not before (notBefore) resolved to 10000000000, which is past the year 2286 and is not a unix time (an amount, or a 'never' value such as the largest uint256), so nothing was sent.",
+    ],
+  ])(
+    "fails a run-time Not before of %j (template: %s), nothing sent",
+    async (notBefore, fromTemplate, error) => {
+      const result = await write({
+        route: await refusedRoute({
+          notBefore,
+          ...(fromTemplate && { _notBeforeFromTemplate: true }),
+        }),
+        rpcManager: chainManager(),
+      });
+      expect(result).toEqual(unsent(error));
+      expect(h.sessions).toBe(0);
+      expect(h.send).not.toHaveBeenCalled();
+    }
+  );
+
+  it("names a huge resolved Not before as it came, not in exponent form", async () => {
+    const huge =
+      "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+    const result = await write({
+      route: await refusedRoute({
+        notBefore: huge,
+        _notBeforeFromTemplate: true,
+      }),
+      rpcManager: chainManager(),
+    });
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringMatching(
+        /^Not before \(notBefore\) resolved to 1157920892373161954235709850086879078532\.\.\., which is past the year 2286/
+      ),
+    });
+  });
+
+  it("takes both run-time boundaries", async () => {
+    for (const notBefore of ["1000000000", "9999999999"]) {
+      const prepared = await prepare({
+        config: { notBefore, _notBeforeFromTemplate: true },
+      });
+      expect(prepared.ok && prepared.route.settings.sendAhead).toEqual({
+        notBefore: Number(notBefore),
+        blocks: 2,
+      });
+    }
+  });
+
+  it.each([
+    ["templated 0", { notBefore: "0", _notBeforeFromTemplate: true }],
+    ["templated empty", { notBefore: "", _notBeforeFromTemplate: true }],
+  ])(
+    "a replay of a landed step with a %s Not before returns the landed result",
+    async (_name, config) => {
+      // The contract cleared its unlock time after the bundle landed.
+      replayReceipt = {
+        blockNumber: 50,
+        status: 1,
+        gasUsed: BigInt(40_000),
+        gasPrice: BigInt(11),
+      };
+      h.inFlight.mockResolvedValue({
+        kind: "replay",
+        nonce: 7,
+        landedHash: "0xab",
+      });
+      const result = await write({
+        route: await refusedRoute(config),
+        rpcManager: chainManager(),
+      });
+      expect(result).toMatchObject({
+        success: true,
+        route: "bundle",
+        included: true,
+        transactionHash: "0xab",
+      });
+      expect(h.send).not.toHaveBeenCalled();
+    }
+  );
+
+  it("another run's bundle in flight with a templated 0 Not before ends skipped in flight", async () => {
+    h.inFlight.mockResolvedValue({ kind: "other", untilBlock: 15 });
+    const result = await write({
+      route: await refusedRoute({
+        notBefore: "0",
+        _notBeforeFromTemplate: true,
+      }),
+      rpcManager: chainManager(),
+    });
+    expect(result).toMatchObject({
+      success: true,
+      route: "skipped-in-flight",
+      inFlightUntilBlock: 15,
+    });
+  });
+
+  it("refuses Not before on a network without fixed slots, before reading any block", async () => {
+    const prepared = await prepareBundleRoute({
+      organizationId: "org-1",
+      chainId: 42_161,
+      context: CONTEXT,
+      config: { notBefore: 1_796_126_400 },
+    });
+    expect(!prepared.ok && prepared.failure).toMatchObject({
+      errorClass: ExecutionErrorType.USER,
+      error: expect.stringMatching(
+        /^Not before is not supported on this network\. Nothing was sent\./
+      ),
+    });
+    // A run-time Not before that is refused still meets the network check first.
+    for (const notBefore of ["0", ""]) {
+      const templated = await prepareBundleRoute({
+        organizationId: "org-1",
+        chainId: 42_161,
+        context: CONTEXT,
+        config: { notBefore, _notBeforeFromTemplate: true },
+      });
+      expect(!templated.ok && templated.failure).toMatchObject({
+        errorClass: ExecutionErrorType.USER,
+        error: expect.stringMatching(
+          /^Not before is not supported on this network\. Nothing was sent\./
+        ),
+      });
+    }
+    // Without Not before the same network still bundles.
+    const plain = await prepareBundleRoute({
+      organizationId: "org-1",
+      chainId: 42_161,
+      context: CONTEXT,
+      config: {},
+    });
+    expect(plain.ok).toBe(true);
   });
 });

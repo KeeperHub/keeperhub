@@ -299,8 +299,9 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
         { extras: { refusals: { sql: SQL } } },
       ];
       const { sql } = new PgDialect().sqlToQuery(args.extras.refusals.sql);
-      expect(sql).toBe(
-        'CASE WHEN "workflow_executions"."status" = \'skipped\' THEN ("workflow_executions"."output"->>\'refusals\')::int END'
+      // Skipped rows only; a refusals that is not a small whole number reads as NULL.
+      expect(sql.replace(/\s+/g, " ")).toBe(
+        'CASE WHEN "workflow_executions"."status" = \'skipped\' THEN CASE WHEN jsonb_typeof("workflow_executions"."output"->\'refusals\') = \'number\' AND "workflow_executions"."output"->>\'refusals\' ~ \'^[0-9]{1,9}$\' THEN ("workflow_executions"."output"->>\'refusals\')::int END END'
       );
     });
 

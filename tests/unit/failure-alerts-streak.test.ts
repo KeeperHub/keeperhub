@@ -9,6 +9,10 @@ import {
   summarizeNotLanding,
   summarizeStreak,
 } from "@/lib/notifications/failure-alerts/streak";
+import {
+  RUN_OUTCOME_REASON,
+  SKIPPED_WHILE_RUNNING_REASON,
+} from "@/lib/workflow/executor/run-outcome-keys";
 
 const BASE = new Date("2026-10-28T12:00:00Z").getTime();
 
@@ -358,6 +362,60 @@ describe("refused runs", () => {
     expect(
       isRefusedRun({ status: "error", errorCategory: null, billable: false })
     ).toBe(false);
+  });
+});
+
+describe("waiting runs (Not before)", () => {
+  // As finalize stores them: a pure waiting run is unbilled, one with other steps billed.
+  const waiting = (run: StreakRun, billable: boolean): StreakRun => ({
+    ...run,
+    status: "skipped",
+    error: billable
+      ? RUN_OUTCOME_REASON.waitingWithOtherSteps
+      : RUN_OUTCOME_REASON.waiting,
+    billable,
+  });
+
+  it("neither counts nor resets the failure streak", () => {
+    const list = runs(["error", "error", "error", "error", "success"]);
+    const withWaiting: StreakRun[] = [
+      list[0],
+      waiting(list[1], false),
+      list[1],
+      waiting(list[2], true),
+      list[2],
+      list[3],
+      list[4],
+    ];
+    const summary = summarizeStreak(withWaiting, null, 20);
+    expect(summary.failures).toBe(4);
+    expect(summary.latestSuccessRunId).toBeNull();
+    // A waiting run newest: still the same streak, nothing resolved.
+    const newest = summarizeStreak(
+      [waiting(list[0], false), ...withWaiting.slice(1)],
+      null,
+      20
+    );
+    expect(newest.failures).toBe(3);
+    expect(newest.latestSuccessRunId).toBeNull();
+  });
+
+  it("neither counts nor ends a not-landing streak", () => {
+    const list = runs(["not_landed", "not_landed", "not_landed", "success"]);
+    const streak = summarizeNotLanding(
+      [
+        waiting(list[0], false),
+        list[0],
+        waiting(list[1], true),
+        { ...list[1], status: "skipped", error: SKIPPED_WHILE_RUNNING_REASON },
+        list[1],
+        list[2],
+        list[3],
+      ],
+      null,
+      3
+    );
+    expect(streak).toMatchObject({ count: 3, lastRunId: "run-0" });
   });
 });
 

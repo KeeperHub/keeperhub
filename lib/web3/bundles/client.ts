@@ -51,8 +51,14 @@ export async function sendBundle(options: {
   targetBlock: number;
   searcher: ethers.Signer;
   timeoutMs?: number;
+  // Unix seconds: builders that honour it never include the bundle in an earlier block.
+  minTimestamp?: number;
 }): Promise<BuilderAnswer[]> {
-  const body = bundleRequestBody(options.signedTxs, options.targetBlock);
+  const body = bundleRequestBody(
+    options.signedTxs,
+    options.targetBlock,
+    options.minTimestamp
+  );
   const signature = await flashbotsSignature(options.searcher, body);
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   return await Promise.all(
@@ -67,7 +73,8 @@ export async function sendBundle(options: {
 // covers them all.
 function bundleRequestBody(
   signedTxs: readonly string[],
-  targetBlock: number
+  targetBlock: number,
+  minTimestamp: number | undefined
 ): string {
   return JSON.stringify({
     jsonrpc: "2.0",
@@ -78,6 +85,7 @@ function bundleRequestBody(
         txs: [...signedTxs],
         blockNumber: `0x${targetBlock.toString(16)}`,
         revertingTxHashes: [],
+        ...(minTimestamp !== undefined && { minTimestamp }),
       },
     ],
   });

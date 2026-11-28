@@ -1,4 +1,8 @@
 import { isToggleValue } from "@/lib/utils";
+import {
+  BUNDLE_SETTING_KEYS,
+  BUNDLE_SETTING_LABELS,
+} from "@/lib/web3/bundles/settings";
 import { simulatesNextBlock } from "@/lib/web3/next-block-limits";
 import {
   availableSendModes,
@@ -268,12 +272,45 @@ function changeOf(
   };
 }
 
+// Bundle-only keys a save refuses under any other Send as, with their editor names.
+const SEND_AHEAD_KEYS: Readonly<Record<string, string>> = {
+  [BUNDLE_SETTING_KEYS.notBefore]: BUNDLE_SETTING_LABELS.notBefore,
+  [BUNDLE_SETTING_KEYS.sendAheadBlocks]: "Send ahead",
+};
+
+/** Names the keys cleared: "Not before was cleared: ...", or both. */
+function sendAheadClearedNotice(cleared: ConfigWrites): string | undefined {
+  const names = cleared.map(([key]) => SEND_AHEAD_KEYS[key]);
+  if (names.length === 0) {
+    return;
+  }
+  return names.length === 1
+    ? `${names[0]} was cleared: it only applies to Send as Bundle.`
+    : `${names.join(" and ")} were cleared: they only apply to Send as Bundle.`;
+}
+
+/** The notices of one change, in order, as one text. */
+function joinNotices(...notices: (string | undefined)[]): string | undefined {
+  const text = notices.filter(Boolean).join(" ");
+  return text === "" ? undefined : text;
+}
+
+/** Clears Not before and Send ahead when set, for a Send as other than Bundle. */
+function sendAheadClears(config: Record<string, unknown>): ConfigWrites {
+  return Object.keys(SEND_AHEAD_KEYS)
+    .filter((key) => isConfigValueSet(config[key]))
+    .map((key) => [key, undefined]);
+}
+
 /**
  * Back to Normal from another mode. Sponsor gas that was never set showed off,
  * so it stays off rather than turning sponsorship on unseen.
  */
 function toNormalWrites(config: Record<string, unknown>): ConfigWrites {
-  const writes = sendModeUpdates(SEND_MODE.TRANSACTION);
+  const writes = [
+    ...sendModeUpdates(SEND_MODE.TRANSACTION),
+    ...sendAheadClears(config),
+  ];
   if (
     notNormal(config) &&
     sponsorGasField(config) !== undefined &&
@@ -289,16 +326,18 @@ export function pickSendMode(
   config: Record<string, unknown>,
   mode: SendMode
 ): SendModeChange {
+  const cleared = mode === SEND_MODE.BUNDLE ? [] : sendAheadClears(config);
+  const clearNotice = sendAheadClearedNotice(cleared);
   if (mode === SEND_MODE.TRANSACTION) {
-    return changeOf(config, toNormalWrites(config));
+    return changeOf(config, toNormalWrites(config), clearNotice);
   }
-  const writes = sendModeUpdates(mode);
-  let notice: string | undefined;
+  const writes = [...sendModeUpdates(mode), ...cleared];
+  let sponsorNotice: string | undefined;
   if (sponsorGasOn(config)) {
     writes.push([SPONSOR_GAS_KEY, false]);
-    notice = sendModeOption(mode).sponsorOffNotice;
+    sponsorNotice = sendModeOption(mode).sponsorOffNotice;
   }
-  return changeOf(config, writes, notice);
+  return changeOf(config, writes, joinNotices(sponsorNotice, clearNotice));
 }
 
 /**
@@ -314,8 +353,13 @@ export function switchSponsorGas(
   if (next !== true || !notNormal(config)) {
     return changeOf(config, writes);
   }
-  writes.push(...sendModeUpdates(SEND_MODE.TRANSACTION));
-  return changeOf(config, writes, SPONSOR_ON_NOTICE);
+  const cleared = sendAheadClears(config);
+  writes.push(...sendModeUpdates(SEND_MODE.TRANSACTION), ...cleared);
+  return changeOf(
+    config,
+    writes,
+    joinNotices(SPONSOR_ON_NOTICE, sendAheadClearedNotice(cleared))
+  );
 }
 
 /** A network pick: Send as the new chain lacks falls back to Normal, with a notice. */
@@ -341,7 +385,14 @@ export function chooseNetwork(
     return none;
   }
   const writes = toNormalWrites(config);
-  const change = changeOf(config, writes, networkChangeNotice(shown, target));
+  const change = changeOf(
+    config,
+    writes,
+    joinNotices(
+      networkChangeNotice(shown, target),
+      sendAheadClearedNotice(sendAheadClears(config))
+    )
+  );
   return {
     ...change,
     // Undo puts the network back too; the notice goes once it changes again.

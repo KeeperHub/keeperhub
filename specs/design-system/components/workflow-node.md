@@ -90,6 +90,7 @@ interface ActionNodeData {
 | Success | Green border/badge |
 | Error | Red/destructive border, error icon |
 | Cancelled | Gray border, cancelled badge |
+| Bundle outcome (Not included, Skipped, Waiting) | Dashed `--muted-foreground` border, neutral pill (`bg-muted`, `border-muted-foreground/50`) top right with an icon and the label; the tooltip gives the shared sentence |
 
 ## Code Example
 

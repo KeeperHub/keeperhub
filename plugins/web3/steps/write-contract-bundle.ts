@@ -38,14 +38,19 @@ import {
   type NotIncludedReason,
   runTimeRefusal,
   STEP_HOLD,
-  walletBusyRefusal,
+  type SendAheadReport,
+  sendAheadPlanNow,
   sendBundleInSession,
+  TRIGGER_NOT_REACHED_ERROR,
+  walletBusyRefusal,
 } from "@/lib/web3/bundles/send-bundle";
 import {
   type BundleSettings,
   type BundleSettingsInput,
+  NOT_BEFORE_UNSUPPORTED_ERROR,
   readBundleSettings,
 } from "@/lib/web3/bundles/settings";
+import { minBlockGapSeconds } from "@/lib/web3/beacon-slots";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import type { GasOverrides } from "@/lib/web3/chain-adapter/types";
 import {
@@ -54,10 +59,12 @@ import {
 } from "@/lib/web3/decode-revert-error";
 import { buildErrorDecodeInterface } from "@/lib/web3/extra-error-abis";
 import { preflightGasBalance } from "@/lib/web3/gas-preflight";
+import { maxFeeCapFailure } from "@/lib/web3/max-fee-cap-failure";
 import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
+  isTriggerBlockNotReached,
 } from "@/lib/web3/next-block-simulation";
 import { minedRevertError } from "@/lib/web3/onchain-revert";
 import {
@@ -153,6 +160,14 @@ export async function prepareBundleRoute(options: {
   if (!read.ok) {
     return userFailure(read.error);
   }
+  if (
+    (read.settings.sendAhead || read.settings.notBeforeRefusal) &&
+    minBlockGapSeconds(options.chainId) === undefined
+  ) {
+    return userFailure(
+      `${NOT_BEFORE_UNSUPPORTED_ERROR} Nothing was sent. Clear Not before, or use a network with fixed slots such as Ethereum.`
+    );
+  }
   const available = await loadChainBuilders(options.chainId);
   if (available.length === 0) {
     return userFailure(
@@ -228,13 +243,25 @@ export function bundleSignerRefusal(
 export function bundleOutputsOf(
   result: WriteContractResult
 ): Partial<BundleReport> {
-  const { targetBlocks, targetTipsGwei, builders, bundleTargetsSkipped } =
-    result;
+  const {
+    targetBlocks,
+    targetTipsGwei,
+    builders,
+    bundleTargetsSkipped,
+    notBefore,
+    firstAllowedBlock,
+    latestBlock,
+    sendAheadBlocks,
+  } = result;
   return {
     ...(targetBlocks && { targetBlocks }),
     ...(targetTipsGwei && { targetTipsGwei }),
     ...(builders && { builders }),
     ...(bundleTargetsSkipped && { bundleTargetsSkipped }),
+    ...(notBefore !== undefined && { notBefore }),
+    ...(firstAllowedBlock !== undefined && { firstAllowedBlock }),
+    ...(latestBlock !== undefined && { latestBlock }),
+    ...(sendAheadBlocks !== undefined && { sendAheadBlocks }),
   };
 }
 
@@ -407,6 +434,8 @@ async function resultOf(
       return await includedResult(write, outcome, contractInterface);
     case "not-included":
       return notIncludedResult(outcome.reason, outcome.report);
+    case "waiting":
+      return waitingResult(outcome.report);
     case "refused":
       return {
         success: false,
@@ -505,6 +534,75 @@ function failureOf(
     ...declaredErrorClass(error),
     broadcastAttempted: false,
     ...(rejection.kind === "unknown" ? {} : { rejection }),
+  };
+}
+
+/** Not before is too far ahead: nothing signed, the run goes on and ends Skipped. */
+function waitingResult(
+  report: Partial<BundleReport> & SendAheadReport
+): WriteContractResult {
+  return {
+    success: true,
+    route: RUN_OUTCOME_OUTPUT.waitingRoute,
+    included: false,
+    ...report,
+  };
+}
+
+// A pre-lock end, or whether the send would start past the next block.
+type AheadCheck = { done: WriteContractResult } | { sendsAhead: boolean };
+
+/** Before the lock: waiting when Not before's first allowed block is still too far ahead. */
+async function waitingCheck(write: BundleWrite): Promise<AheadCheck> {
+  const { sendAhead, blocks } = write.route.settings;
+  if (!sendAhead) {
+    return { sendsAhead: false };
+  }
+  let checked: Awaited<ReturnType<typeof sendAheadPlanNow>>;
+  try {
+    checked = await sendAheadPlanNow({
+      rpcManager: write.rpcManager,
+      chainId: write.chainId,
+      triggerBlock: write.triggerBlock,
+      sendAhead,
+      blocks,
+    });
+  } catch (error) {
+    logUserError(
+      ErrorCategory.NETWORK_RPC,
+      "[Bundle] Could not read the latest block for Not before",
+      error,
+      {
+        plugin_name: "web3",
+        action_name: "write-contract",
+        chain_id: String(write.chainId),
+      }
+    );
+    return {
+      done: {
+        success: false,
+        error: isTriggerBlockNotReached(error)
+          ? TRIGGER_NOT_REACHED_ERROR
+          : `The latest block could not be read to check Not before, so nothing was sent: ${getErrorMessage(error)}`,
+        errorClass: ExecutionErrorType.EXTERNAL,
+        broadcastAttempted: false,
+      },
+    };
+  }
+  if (checked.plan.kind === "send") {
+    return { sendsAhead: checked.plan.targets[0] > checked.latest + 1 };
+  }
+  logInfo("[Bundle] Waiting: Not before is still too far ahead", {
+    workflow_id: write.route.workflowId,
+    chain_id: String(write.chainId),
+  });
+  return {
+    done: waitingResult({
+      notBefore: sendAhead.notBefore,
+      firstAllowedBlock: checked.plan.firstAllowedBlock,
+      latestBlock: checked.latest,
+      sendAheadBlocks: sendAhead.blocks,
+    }),
   };
 }
 
@@ -640,8 +738,8 @@ type SessionEnd =
   | { replayOf: Extract<InFlight, { kind: "replay" }> }
   | { outcome: BundleSendOutcome };
 
-/** Refused for the run's time left: nothing was signed or sent. */
-function outOfRunTime(error: string): WriteContractResult {
+/** Refused before anything was signed or sent (run time left, Not before). */
+function refusedUnsent(error: string): WriteContractResult {
   return {
     success: false,
     error,
@@ -652,8 +750,9 @@ function outOfRunTime(error: string): WriteContractResult {
 
 /**
  * Send the call as a bundle: skip when this workflow's earlier bundle may
- * still land (checked again under the lock), else check gas and send inside
- * the wallet's nonce session. Explorer and trace lookups run after the lock.
+ * still land (checked again under the lock), wait while Not before is too far
+ * ahead, else check gas and send inside the wallet's nonce session. Explorer
+ * and trace lookups run after the lock.
  */
 export async function writeAsBundle(
   write: BundleWrite
@@ -681,6 +780,24 @@ export async function writeAsBundle(
   if (early) {
     return early;
   }
+  // After the replay check, so a replay whose templated Not before moved or cleared still returns its result.
+  const { notBeforeRefusal } = write.route.settings;
+  if (notBeforeRefusal) {
+    return refusedUnsent(notBeforeRefusal);
+  }
+  const ahead = await waitingCheck(write);
+  if ("done" in ahead) {
+    return ahead.done;
+  }
+  // After the replay, in-flight and waiting checks: a base-fee spike fails only a step about to send.
+  // Past the next block the in-session projection decides, and a cap below it waits.
+  const { maxFeeOverride } = write.gas;
+  if (maxFeeOverride !== undefined && !ahead.sendsAhead) {
+    const capFailure = await maxFeeCapFailure(write.rpcManager, maxFeeOverride);
+    if (capFailure) {
+      return capFailure;
+    }
+  }
 
   const gasCheck = await preflightGasBalance({
     rpcManager: write.rpcManager,
@@ -696,7 +813,7 @@ export async function writeAsBundle(
   const runDeadline = runDeadlineAt();
   const tooLate = runTimeRefusal(runDeadline, STEP_HOLD);
   if (tooLate) {
-    return outOfRunTime(tooLate);
+    return refusedUnsent(tooLate);
   }
 
   let ended: SessionEnd;
@@ -707,7 +824,7 @@ export async function writeAsBundle(
     if (!(error instanceof NonceLockWaitEndedError)) {
       throw error;
     }
-    return outOfRunTime(
+    return refusedUnsent(
       runDeadline === undefined
         ? error.message
         : walletBusyRefusal(runDeadline, Date.now() - waitStart)
@@ -779,6 +896,9 @@ function sendInSession(
           gas: write.gas,
           blocks: route.settings.blocks,
           tipIncreasePercent: route.settings.tipIncreasePercent,
+          ...(route.settings.sendAhead && {
+            sendAhead: route.settings.sendAhead,
+          }),
           builders: route.builders,
           unknownBuilders: route.unknownBuilders,
           searcher: route.searcher,

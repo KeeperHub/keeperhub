@@ -316,12 +316,19 @@ vi.mock("@/lib/db", () => ({
     // resolveGasTotal: db.select({...}).from(logs).where(...) -> rows[]
     // resolveOrgSlugForCounter: db.select({...}).from(workflows)
     //   .leftJoin(organization).where(...).limit(1) -> rows[]
-    select: vi.fn(() => ({
+    select: vi.fn((fields?: Record<string, unknown>) => ({
       from: () => ({
-        where: () =>
-          finishQueryFails
+        where: () => {
+          // The log scan's other-work read fails or answers with the scan.
+          if (fields && Object.keys(fields).join() === "otherWork") {
+            return logScanFails
+              ? Promise.reject(new Error("statement timeout"))
+              : Promise.resolve([{ otherWork: false }]);
+          }
+          return finishQueryFails
             ? Promise.reject(new Error("statement timeout"))
-            : Promise.resolve(mockGasRows),
+            : Promise.resolve(mockGasRows);
+        },
         leftJoin: () => ({
           where: () => ({
             limit: () => Promise.resolve(mockOrgRows),
@@ -1797,7 +1804,8 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("not_landed");
-    expect(set).not.toHaveProperty("billable");
+    // The row keeps its billable value (only a pure waiting run sets false).
+    expect(set?.billable).not.toBe(false);
     // The runs list shows why; no error classification is written.
     expect(set?.error).toContain("Not landed: a bundle in this run");
     expect(set?.errorType).toBeNull();
@@ -1808,7 +1816,8 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("skipped");
-    expect(set).not.toHaveProperty("billable");
+    // The row keeps its billable value (only a pure waiting run sets false).
+    expect(set?.billable).not.toBe(false);
     expect(set?.error).toContain("the bundle step sent no transaction");
     expect(set?.errorType).toBeNull();
   });
@@ -1952,7 +1961,8 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("not_landed");
-    expect(set).not.toHaveProperty("billable");
+    // The row keeps its billable value (only a pure waiting run sets false).
+    expect(set?.billable).not.toBe(false);
   });
 
   it("ends a skip as skipped, billable, even when another step sent a transaction", async () => {
@@ -1964,7 +1974,8 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("skipped");
-    expect(set).not.toHaveProperty("billable");
+    // The row keeps its billable value (only a pure waiting run sets false).
+    expect(set?.billable).not.toBe(false);
     expect(set?.error).toContain("the bundle step sent no transaction");
   });
 
@@ -1988,7 +1999,8 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("success");
-    expect(set).not.toHaveProperty("billable");
+    // The row keeps its billable value (only a pure waiting run sets false).
+    expect(set?.billable).not.toBe(false);
   });
 
   it("ignores an empty or blank not-included reason", async () => {

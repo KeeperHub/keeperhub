@@ -7,6 +7,8 @@
 
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import type { SkipReason } from "@/lib/workflow/executor/run-outcome-keys";
+import type { WaitingRunInfo } from "@/lib/workflow/executor/waiting-runs";
 
 export type { TransactionHashEntry } from "@/lib/db/schema";
 
@@ -94,6 +96,12 @@ export type UnifiedRun = {
   errorCategory: string | null;
   /** On a failed workflow run that set off a failure alert. */
   alert?: RunAlert;
+  /** Why a skipped workflow run was skipped (waiting, in flight, while running). */
+  skipReason?: SkipReason | null;
+  /** A waiting run's Not before and blocks; absent otherwise. */
+  waiting?: WaitingRunInfo | null;
+  /** A skipped-while-running row's folded dispatches. */
+  refusals?: number | null;
 };
 
 /** The failure alert a run set off: when, on which methods, and how it went. */

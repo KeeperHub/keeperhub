@@ -70,6 +70,19 @@ export function automatedSql(runs: Runs) {
 /** Once the alert can open, a busy row is rewritten at most once a minute. */
 const REFUSED_ROW_REFRESH_SECONDS = 60;
 
+/**
+ * A skipped run's output.refusals as an int, else NULL. A skipped waiting run
+ * stores user step output, so anything but a small whole number reads as NULL.
+ */
+export function skippedRefusalsSql(): SQL<number | null> {
+  const { status, output } = workflowExecutions;
+  // Nested CASE: only skipped rows' output is read (detoasted), and only checked text is cast.
+  return sql<number | null>`CASE WHEN ${status} = 'skipped' THEN
+    CASE WHEN jsonb_typeof(${output}->'refusals') = 'number'
+      AND ${output}->>'refusals' ~ '^[0-9]{1,9}$'
+    THEN (${output}->>'refusals')::int END END`;
+}
+
 /** Hourly bucket key: refusals of one workflow for one reason share a row per hour. */
 function refusedDispatchKey(
   workflowId: string,

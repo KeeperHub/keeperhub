@@ -189,7 +189,17 @@ type Chain = {
   latestReads?: number[];
   // Latest-block reads made.
   latestCount: number;
+  // The block the signed transactions start at, when not latest + 1 (sent ahead).
+  firstTarget?: number;
+  // Slots missed between the head and its parent (or a head a reorg may replace).
+  missedBeforeHead?: number;
 };
+
+const PARENT_HASH = "0xparent";
+// Block LATEST's time; every block one 12 s slot after its parent.
+const LATEST_TIME = 1_800_000_000;
+const blockTime = (number: number): number =>
+  LATEST_TIME + 12 * (number - LATEST);
 
 type MinedTx = { from: string; nonce: number; hash: string };
 
@@ -210,9 +220,21 @@ function stubProvider() {
       if (prefetch) {
         return await blockWithTxs(tag as number);
       }
+      // A parent read by hash (Not before): one slot before its child.
+      if (typeof tag === "string" && tag.startsWith(PARENT_HASH)) {
+        const number = Number(tag.slice(PARENT_HASH.length));
+        // A missed slot right before the head puts the parent a slot earlier still.
+        return {
+          number,
+          timestamp: blockTime(number) - 12 * (chain.missedBeforeHead ?? 0),
+        };
+      }
       chain.latestCount += 1;
+      const number = chain.latestReads?.shift() ?? chain.block;
       return {
-        number: chain.latestReads?.shift() ?? chain.block,
+        number,
+        timestamp: blockTime(number),
+        parentHash: `${PARENT_HASH}${number - 1}`,
         baseFeePerGas: chain.baseFee ?? gwei("10"),
         gasUsed: BigInt(15_000_000),
         gasLimit: BigInt(30_000_000),
@@ -229,7 +251,7 @@ function stubProvider() {
         chain.block += 1;
       }
       if (chain.mineAt !== undefined && chain.block === chain.mineAt) {
-        const raw = signed[chain.mineAt - LATEST - 1];
+        const raw = signed[chain.mineAt - (chain.firstTarget ?? LATEST + 1)];
         chain.receipts.set(ethers.keccak256(raw), {
           status: 1,
           blockNumber: chain.block,
@@ -775,13 +797,13 @@ describe("sendBundleInSession", () => {
     const outcome = await sendBundleInSession(
       input({ gas: { maxFeeOverride: gwei("10000") } })
     );
-    expect(outcome).toMatchObject({ kind: "refused", errorClass: "user" });
+    expect(outcome).toMatchObject({ kind: "refused", errorClass: "external" });
     expect(outcome.kind === "refused" && outcome.error).toBe(
       "Max fee 10,000 gwei is below the base fee the target blocks may reach (20,000 gwei), so nothing was sent. Run it again later."
     );
   });
 
-  it("blames the user's own Max Fee when it skips every target", async () => {
+  it("names the user's own Max Fee when it skips every target, a network failure (the base fee moved)", async () => {
     h.getGasConfig.mockResolvedValue({
       gasLimit: BigInt(60_000),
       maxFeePerGas: gwei("9"),
@@ -790,7 +812,7 @@ describe("sendBundleInSession", () => {
     const outcome = await sendBundleInSession(
       input({ gas: { maxFeeOverride: gwei("9") } })
     );
-    expect(outcome).toMatchObject({ kind: "refused", errorClass: "user" });
+    expect(outcome).toMatchObject({ kind: "refused", errorClass: "external" });
     expect(outcome.kind === "refused" && outcome.error).toBe(
       "Max fee 9 gwei is below the base fee the target blocks may reach (10 gwei), so nothing was sent. Raise the max fee or leave it empty."
     );
@@ -1363,5 +1385,142 @@ describe("walletBusyRefusal", () => {
     );
     expect(text).toContain("Run it again once the wallet is free");
     expect(text).not.toContain("fewer bundle steps");
+  });
+});
+
+describe("sendBundleInSession with Not before (send ahead)", () => {
+  // From latest 1000 (its parent 999 at LATEST_TIME - 12): U = 999 + ceil((nb - parent time) / 12).
+  const sendAhead = (notBefore: number, blocks = 2) => ({
+    sendAhead: { notBefore, blocks },
+  });
+
+  it("waits under the lock while U is too far ahead: nothing signed or sent", async () => {
+    const progress = { sent: false };
+    // U = 999 + 6 = 1005 > 1000 + 1 + 2.
+    const outcome = await sendBundleInSession(
+      input({ progress, ...sendAhead(LATEST_TIME + 60) })
+    );
+    expect(outcome).toEqual({
+      kind: "waiting",
+      report: {
+        notBefore: LATEST_TIME + 60,
+        firstAllowedBlock: 1005,
+        latestBlock: LATEST,
+        sendAheadBlocks: 2,
+      },
+    });
+    nothingSigned(progress);
+    expect(h.events.some((e) => e.startsWith("simulate:"))).toBe(false);
+  });
+
+  it("sends ahead for U, U+1, U+2, tips rising from U, minTimestamp to every builder", async () => {
+    // U = 999 + 4 = 1003 = latest + 1 + Send ahead.
+    const notBefore = LATEST_TIME + 36;
+    chain.firstTarget = 1003;
+    chain.mineAt = 1003;
+    const outcome = await sendBundleInSession(input(sendAhead(notBefore)));
+    expect(outcome.kind).toBe("included");
+    expect(
+      h.simOptions.map((o) => (o as { targetBlock: number }).targetBlock)
+    ).toEqual([1003, 1004, 1005]);
+    expect(outcome.report).toMatchObject({
+      targetBlocks: [1003, 1004, 1005],
+      targetTipsGwei: ["1", "1.2", "1.44"],
+      notBefore,
+      firstAllowedBlock: 1003,
+      latestBlock: LATEST,
+      sendAheadBlocks: 2,
+    });
+    const sent = h.sendBundle.mock.calls.map(
+      ([options]) => options as { targetBlock: number; minTimestamp?: number }
+    );
+    expect(sent.map((o) => [o.targetBlock, o.minTimestamp])).toEqual([
+      [1003, notBefore],
+      [1004, notBefore],
+      [1005, notBefore],
+    ]);
+    // The row's window ends at the last target, as in step 4.
+    expect(h.recordBundle.mock.calls[0][2]).toMatchObject({
+      lastTargetBlock: 1005,
+    });
+  });
+
+  it("works U out again from its own latest block: a newer head brings U within reach", async () => {
+    // At 1000, U = 1005 waits; the session reads 1002: U = 1005 <= 1002 + 1 + 2.
+    chain.block = 1002;
+    chain.firstTarget = 1005;
+    const notBefore = LATEST_TIME + 60;
+    const outcome = await sendBundleInSession(input(sendAhead(notBefore)));
+    expect(outcome.report).toMatchObject({
+      targetBlocks: [1005, 1006, 1007],
+      firstAllowedBlock: 1005,
+      latestBlock: 1002,
+    });
+  });
+
+  it("counts U from the head's parent, so a head that may be replaced cannot make it early", async () => {
+    // Parent 999 at T - 24 (a slot missed before the head at T): U = 999 + 5 = 1004.
+    // Counted from the head it would be 1003, one slot early if the head is reorged out.
+    chain.missedBeforeHead = 1;
+    chain.firstTarget = 1004;
+    const outcome = await sendBundleInSession(
+      input({ ...sendAhead(LATEST_TIME + 36, 3), blocks: 2 })
+    );
+    expect(outcome.report).toMatchObject({
+      targetBlocks: [1004, 1005],
+      firstAllowedBlock: 1004,
+    });
+  });
+
+  it("keeps the simulation error over waiting when U's targets reverted and the rest were fee-skipped", async () => {
+    // U = 999 + 60 / 12 = 1004: 1004 reverts, 1005's worst-case base fee is above 12.5 gwei.
+    const revert = new Error("execution reverted: closed");
+    h.simulations.set(1004, revert);
+    const progress = { sent: false };
+    await expect(
+      sendBundleInSession(
+        input({
+          progress,
+          ...sendAhead(LATEST_TIME + 48, 3),
+          blocks: 2,
+          gas: { maxFeeOverride: gwei("12.5") },
+        })
+      )
+    ).rejects.toBe(revert);
+    nothingSigned(progress);
+  });
+
+  it("targets the next block when U has passed (a late run)", async () => {
+    const outcome = await sendBundleInSession(
+      input(sendAhead(LATEST_TIME - 600))
+    );
+    expect(outcome.report).toMatchObject({
+      targetBlocks: [1001, 1002, 1003],
+      targetTipsGwei: ["1", "1.2", "1.44"],
+      firstAllowedBlock: 1000,
+    });
+  });
+
+  it.each([
+    ["0", 0],
+    ["a time already passed", LATEST_TIME - 600],
+    ["the latest block's own time", LATEST_TIME],
+  ])(
+    "sends no minTimestamp for a Not before of %s",
+    async (_label, notBefore) => {
+      const outcome = await sendBundleInSession(input(sendAhead(notBefore)));
+      expect(outcome.report).toMatchObject({ notBefore });
+      expect(h.sendBundle).toHaveBeenCalled();
+      for (const [options] of h.sendBundle.mock.calls) {
+        expect(options).not.toHaveProperty("minTimestamp");
+      }
+    }
+  );
+
+  it("sends no minTimestamp without Not before", async () => {
+    await sendBundleInSession(input());
+    for (const [options] of h.sendBundle.mock.calls) {
+      expect(options).not.toHaveProperty("minTimestamp");
+    }
   });
 });

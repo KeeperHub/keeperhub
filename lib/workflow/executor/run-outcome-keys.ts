@@ -1,9 +1,12 @@
-// No imports: the step code that sets these keys loads without the SQL readers.
+// No imports: the step code, the editor and discover-plugins load these keys
+// before any file is generated. The read-only list lives in step-signals.ts.
 
 /** The output keys a step sets the run outcome with, shared by the TS and SQL readers. */
 export const RUN_OUTCOME_OUTPUT = {
   routeKey: "route",
   skippedInFlightRoute: "skipped-in-flight",
+  // Not before is still too far ahead: the step sent nothing.
+  waitingRoute: "waiting",
   notIncludedReasonKey: "notIncludedReason",
 } as const;
 
@@ -16,9 +19,12 @@ export const BUNDLE_STEP_ACTION_TYPES: readonly string[] = [
 /** Where a bundle step's write went: sent as a bundle. */
 export const BUNDLE_ROUTE = "bundle" as const;
 
+/** Output keys that show a step sent or paid for something; an allowed step must carry none. */
+export const SENT_OUTPUT_KEYS = ["transactionHash", "gasUsed"] as const;
+
 /**
  * How a Write Contract result ends its value reservation. Skipped in flight
- * moved nothing: released, as is a failure before sending or a mined revert.
+ * and waiting moved nothing: released, as is a failure before sending or a mined revert.
  * A miss is held: no builder picked it, none accepted it (each still read its
  * signed bytes), or the step stopped waiting for it. Its signed transactions
  * can still be mined until the nonce is used, and the cap counts it by its
@@ -40,7 +46,10 @@ export function bundleReservationEnd(result: {
       ? "hold"
       : "release";
   }
-  if (result.route === RUN_OUTCOME_OUTPUT.skippedInFlightRoute) {
+  if (
+    result.route === RUN_OUTCOME_OUTPUT.skippedInFlightRoute ||
+    result.route === RUN_OUTCOME_OUTPUT.waitingRoute
+  ) {
     return "release";
   }
   const decidedMiss =
@@ -54,34 +63,27 @@ export function bundleReservationEnd(result: {
 export type RunOutcomeSignals = {
   skippedInFlight: boolean;
   notIncluded: boolean;
+  // A bundle step sent nothing because Not before was still too far ahead.
+  waiting: boolean;
+  // A bundle step sent a bundle: its landing or miss wins over waiting.
+  bundleSent: boolean;
+  // A step other than the trigger, a read-only step or a waiting bundle step ran.
+  otherWork: boolean;
 };
 
 export const NO_RUN_OUTCOME_SIGNALS: RunOutcomeSignals = {
   skippedInFlight: false,
   notIncluded: false,
+  waiting: false,
+  bundleSent: false,
+  otherWork: false,
 };
 
-/** The signals one successful step's output carries; none unless it is Write Contract. */
-export function signalsOfStep(
-  nodeType: string,
-  output: unknown
-): RunOutcomeSignals {
-  if (
-    !BUNDLE_STEP_ACTION_TYPES.includes(nodeType) ||
-    output === null ||
-    typeof output !== "object" ||
-    Array.isArray(output)
-  ) {
-    return NO_RUN_OUTCOME_SIGNALS;
-  }
-  const fields = output as Record<string, unknown>;
-  const reason = fields[RUN_OUTCOME_OUTPUT.notIncludedReasonKey];
-  return {
-    skippedInFlight:
-      fields[RUN_OUTCOME_OUTPUT.routeKey] ===
-      RUN_OUTCOME_OUTPUT.skippedInFlightRoute,
-    notIncluded: typeof reason === "string" && hasVisibleText(reason),
-  };
+/** A step output's fields when it is an object, else undefined. */
+export function fieldsOf(output: unknown): Record<string, unknown> | undefined {
+  return output === null || typeof output !== "object" || Array.isArray(output)
+    ? undefined
+    : (output as Record<string, unknown>);
 }
 
 // Zero-width characters JS whitespace misses; a reason of only these is blank.
@@ -97,6 +99,35 @@ function hasVisibleText(text: string): boolean {
     }
   }
   return false;
+}
+
+/** The bundle signals; otherWork is step-signals' call. */
+type BundleSignals = Omit<RunOutcomeSignals, "otherWork">;
+
+const NO_BUNDLE_SIGNALS: BundleSignals = {
+  skippedInFlight: false,
+  notIncluded: false,
+  waiting: false,
+  bundleSent: false,
+};
+
+/** The bundle signals one successful step's output carries (otherWork: see step-signals). */
+export function bundleSignalsOfStep(
+  nodeType: string,
+  output: unknown
+): BundleSignals {
+  const fields = fieldsOf(output);
+  if (!(BUNDLE_STEP_ACTION_TYPES.includes(nodeType) && fields)) {
+    return NO_BUNDLE_SIGNALS;
+  }
+  const reason = fields[RUN_OUTCOME_OUTPUT.notIncludedReasonKey];
+  const route = fields[RUN_OUTCOME_OUTPUT.routeKey];
+  return {
+    skippedInFlight: route === RUN_OUTCOME_OUTPUT.skippedInFlightRoute,
+    notIncluded: typeof reason === "string" && hasVisibleText(reason),
+    waiting: route === RUN_OUTCOME_OUTPUT.waitingRoute,
+    bundleSent: route === BUNDLE_ROUTE,
+  };
 }
 
 /** How a run view shows a successful Write Contract step that sent no transaction that landed in time. */
@@ -133,7 +164,7 @@ export function stepOutcomeOf(
   if (step.status !== "success") {
     return;
   }
-  const signals = signalsOfStep(step.nodeType, step.output);
+  const signals = bundleSignalsOfStep(step.nodeType, step.output);
   if (signals.skippedInFlight) {
     return "skipped-in-flight";
   }
@@ -150,6 +181,23 @@ export function stepOutcomeOf(
     return "landed-late-reverted";
   }
   return lateHash || run?.status === "success" ? "landed-late" : "not-included";
+}
+
+/** A node's outcome in the status endpoint: a step outcome, or waiting for Not before. */
+export type NodeOutcome = StepOutcome | "waiting";
+
+/** The status endpoint's outcome for a step: stepOutcomeOf, else waiting when the step waited. */
+export function nodeOutcomeOf(
+  step: Parameters<typeof stepOutcomeOf>[0],
+  run?: Parameters<typeof stepOutcomeOf>[1]
+): NodeOutcome | undefined {
+  const outcome = stepOutcomeOf(step, run);
+  if (outcome || step.status !== "success") {
+    return outcome;
+  }
+  return bundleSignalsOfStep(step.nodeType, step.output).waiting
+    ? "waiting"
+    : undefined;
 }
 
 /** Each outcome's label and sentence, shared by the canvas and the Runs panel. */
@@ -193,6 +241,11 @@ export const NOT_LANDED_STEP_POINTER = "; the Write Contract step says why.";
 export const RUN_OUTCOME_REASON = {
   skipped:
     "Skipped: this workflow's earlier bundle could still land, so the bundle step sent no transaction.",
+  waiting:
+    "Waiting: a bundle step's Not before time is still too far ahead, so it sent no transaction; no gas was paid.",
+  // Other steps ran too, so the run is billed; this names the waiting step only.
+  waitingWithOtherSteps:
+    "Waiting: a bundle step's Not before time is still too far ahead, so that step sent no transaction. It counts as a run because other steps did work.",
   not_landed: `Not landed: a bundle in this run was not seen in any of the blocks it was sent for (or could not be checked). No gas is paid for a bundle that does not land${NOT_LANDED_STEP_POINTER}`,
 } as const;
 
@@ -220,4 +273,122 @@ export function notIncludedReasonText(output: unknown): string | undefined {
   return typeof reason === "string"
     ? NOT_INCLUDED_REASON_TEXT[reason]
     : undefined;
+}
+
+/** The stable key a skipped run stores in `errorCode` when a bundle step waited for Not before. */
+export const RUN_OUTCOME_CODE = {
+  // Only the trigger, read-only steps and the waiting step ran: not billed.
+  waiting: "bundle-waiting",
+  // Other steps ran too: billed.
+  waitingWithOtherSteps: "bundle-waiting-other-steps",
+} as const;
+
+export type RunOutcomeCode =
+  (typeof RUN_OUTCOME_CODE)[keyof typeof RUN_OUTCOME_CODE];
+
+/** The reason a run skipped because the previous one was still running carries. */
+export const SKIPPED_WHILE_RUNNING_REASON =
+  "Execution skipped: the previous run of this workflow was still running.";
+
+/**
+ * Why a skipped run was skipped, as a stable key the runs list returns
+ * (`skipReason`), so a view can group runs in a row with the same one.
+ */
+export const SKIP_REASON = {
+  bundleInFlight: "bundle-in-flight",
+  bundleWaiting: "bundle-waiting",
+  whileRunning: "while-running",
+} as const;
+
+export type SkipReason = (typeof SKIP_REASON)[keyof typeof SKIP_REASON];
+
+type SkippedRow = {
+  status: string;
+  error: string | null | undefined;
+  errorCode?: string | null;
+};
+
+// The code; rows stored before it fall back to the exact reason text.
+function waitingCodeOf(run: SkippedRow): RunOutcomeCode | undefined {
+  if (run.errorCode === RUN_OUTCOME_CODE.waiting) {
+    return RUN_OUTCOME_CODE.waiting;
+  }
+  if (run.errorCode === RUN_OUTCOME_CODE.waitingWithOtherSteps) {
+    return RUN_OUTCOME_CODE.waitingWithOtherSteps;
+  }
+  if (run.errorCode == null && run.error === RUN_OUTCOME_REASON.waiting) {
+    return RUN_OUTCOME_CODE.waiting;
+  }
+  return;
+}
+
+/**
+ * The skip reason key of a run row; null when none applies. Only a run that
+ * waited and ran nothing else is a waiting run: one that ran other steps is not grouped.
+ */
+export function skipReasonOf(run: SkippedRow): SkipReason | null {
+  if (run.status !== "skipped") {
+    return null;
+  }
+  const waiting = waitingCodeOf(run);
+  if (waiting) {
+    return waiting === RUN_OUTCOME_CODE.waiting
+      ? SKIP_REASON.bundleWaiting
+      : null;
+  }
+  if (run.error === RUN_OUTCOME_REASON.skipped) {
+    return SKIP_REASON.bundleInFlight;
+  }
+  return run.error === SKIPPED_WHILE_RUNNING_REASON
+    ? SKIP_REASON.whileRunning
+    : null;
+}
+
+/** Whether a finished run is not billed: Skipped only because a bundle step waited, with nothing else run. */
+export function isUnbilledOutcome(
+  status: string,
+  errorCode: string | null | undefined,
+  error: string | null | undefined
+): boolean {
+  return (
+    status === "skipped" &&
+    waitingCodeOf({ status, errorCode, error }) === RUN_OUTCOME_CODE.waiting
+  );
+}
+
+/** The metrics reason label of a skipped run, from its code and `error`. */
+export function skippedMetricReason(
+  errorCode: string | null | undefined,
+  error: string | null | undefined
+): "bundle_in_flight" | "bundle_waiting" {
+  return waitingCodeOf({ status: "skipped", errorCode, error })
+    ? "bundle_waiting"
+    : "bundle_in_flight";
+}
+
+/** What a step that ended waiting shows: label and sentence, for the run views. */
+export const WAITING_STEP_TEXT = {
+  label: "Waiting",
+  sentence:
+    "Not before is still too far ahead, so this step sent nothing; no gas was paid. A later run sends once the first allowed block is close enough.",
+} as const;
+
+// The skip reason planTips gives a target whose projected base fee is above Max Fee.
+const MAX_FEE_SKIP_REASON = "max-fee-below-projected-base-fee";
+
+/** Why a waiting step sent nothing: Not before, or a Max Fee that held back every target ahead. */
+export function waitingStepSentence(output: unknown): string {
+  const skipped =
+    typeof output === "object" && output !== null
+      ? (output as { bundleTargetsSkipped?: unknown }).bundleTargetsSkipped
+      : undefined;
+  const feeHeld =
+    Array.isArray(skipped) &&
+    skipped.some(
+      (target: unknown) =>
+        (target as { reason?: unknown } | null)?.reason === MAX_FEE_SKIP_REASON
+    );
+  return feeHeld
+    ? "Max Fee held back the targets ahead, so this step sent nothing (no gas was paid); raise Max Fee if it keeps waiting."
+    : WAITING_STEP_TEXT.sentence;
 }

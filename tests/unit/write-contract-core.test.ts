@@ -804,6 +804,41 @@ describe("writeContractCore maxFeeGwei cap", () => {
     };
     expect(optionsArg.gasOverrides.maxFeeOverride).toBeUndefined();
   });
+
+  it("leaves a bundle step's cap check to the bundle send, after its replay and in-flight checks", async () => {
+    mockMaxFeeBelowBaseFeeError.mockResolvedValue(
+      "Max fee 1 gwei is below the next block's base fee of 2 gwei"
+    );
+    const write = vi.fn(async () => ({
+      success: true,
+      route: "skipped-in-flight",
+    }));
+    bundleStub.prepare = async () => ({ ok: true, route: {} });
+    bundleStub.write = write;
+    try {
+      const result = await writeContractCore({
+        contractAddress: "0x1234567890123456789012345678901234567890",
+        network: "16602",
+        abi: VALID_ABI,
+        abiFunction: "transfer",
+        maxFeeGwei: "1",
+        sendMode: "bundle",
+        allowBundle: true,
+        _context: { organizationId: "org-1" },
+      });
+      expect(result).toEqual({ success: true, route: "skipped-in-flight" });
+      expect(mockMaxFeeBelowBaseFeeError).not.toHaveBeenCalled();
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({
+          gas: expect.objectContaining({ maxFeeOverride: BigInt(1e9) }),
+        })
+      );
+    } finally {
+      bundleStub.prepare = undefined;
+      bundleStub.write = undefined;
+      mockMaxFeeBelowBaseFeeError.mockResolvedValue(undefined);
+    }
+  });
 });
 
 describe("writeContractCore simulateAt next-block", () => {

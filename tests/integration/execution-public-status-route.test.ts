@@ -293,6 +293,31 @@ describe("GET /api/workflows/executions/[executionId]/status public access", () 
       }
     });
 
+    it("marks a Write Contract step that waited for Not before as waiting", async () => {
+      const nodeStatuses = await statuses(
+        { status: "skipped", transactionHashes: [] },
+        [
+          {
+            ...missed,
+            nodeId: "wait",
+            route: "waiting",
+            notIncludedReason: null,
+          },
+          {
+            ...missed,
+            nodeId: "code",
+            nodeType: "Code",
+            route: "waiting",
+            notIncludedReason: null,
+          },
+        ]
+      );
+      expect(nodeStatuses).toEqual([
+        { nodeId: "wait", status: "success", outcome: "waiting" },
+        { nodeId: "code", status: "success" },
+      ]);
+    });
+
     it("gives no outcome to a step that is not Write Contract, such as a webhook trigger", async () => {
       const nodeStatuses = await statuses(
         { status: "success", transactionHashes: [] },

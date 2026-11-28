@@ -33,10 +33,15 @@ import {
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
 import {
+  billableAfterSettle,
   type RunOutcome,
+  type RunOutcomeSignals,
+  runOutcomeCode,
   runOutcomeOf,
   runOutcomeReason,
+  skippedMetricReason,
 } from "@/lib/workflow/executor/run-outcome";
+import type { RunOutcomeCode } from "@/lib/workflow/executor/run-outcome-keys";
 import { loadSuccessLogFacts } from "@/lib/workflow/executor/success-log-facts";
 
 /**
@@ -271,12 +276,18 @@ async function reconcileOne(
 async function recordSettled(
   workflowId: string,
   status: SettledStatus,
-  classification?: { errorType: string | null; errorCategory: string | null }
+  classification?: { errorType: string | null; errorCategory: string | null },
+  // The row's reason and code; a skipped run's metric label follows them.
+  error?: string | null,
+  code?: RunOutcomeCode | null
 ): Promise<void> {
   try {
     const orgSlug = await resolveOrgSlugForCounter(workflowId);
     if (status === "skipped") {
-      recordWorkflowExecutionSkipped({ orgSlug, reason: "bundle_in_flight" });
+      recordWorkflowExecutionSkipped({
+        orgSlug,
+        reason: skippedMetricReason(code, error),
+      });
       return;
     }
     const errorType = classification?.errorType as ExecutionErrorType | null;
@@ -313,7 +324,9 @@ async function settleWorkflow(
   execution: UnconfirmedWorkflowExecution,
   status: SettledStatus,
   error: string | null,
-  transactionHashes?: TransactionHashEntry[]
+  transactionHashes?: TransactionHashEntry[],
+  // Settled by its outcome: the waiting code, or null; else the row's code is kept.
+  code?: RunOutcomeCode | null
 ): Promise<void> {
   const updated = await db
     .update(workflowExecutions)
@@ -322,6 +335,13 @@ async function settleWorkflow(
       error,
       completedAt: new Date(),
       ...(transactionHashes && { transactionHashes }),
+      ...(code !== undefined && { errorCode: code }),
+      // A run that only waited for Not before is not billed.
+      billable: billableAfterSettle(workflowExecutions, {
+        status,
+        errorCode: code,
+        error,
+      }),
     })
     .where(
       and(
@@ -331,11 +351,33 @@ async function settleWorkflow(
     )
     .returning({ id: workflowExecutions.id });
   if (updated.length > 0) {
-    await recordSettled(execution.workflowId, status, {
-      errorType: execution.errorType,
-      errorCategory: execution.errorCategory,
-    });
+    await recordSettled(
+      execution.workflowId,
+      status,
+      {
+        errorType: execution.errorType,
+        errorCategory: execution.errorCategory,
+      },
+      error,
+      code
+    );
   }
+}
+
+/** Settle a run whose hashes all verified (or that has none) by its steps' outcome. */
+async function settleByOutcome(
+  execution: UnconfirmedWorkflowExecution,
+  signals: RunOutcomeSignals,
+  transactionHashes?: TransactionHashEntry[]
+): Promise<void> {
+  const outcome = runOutcomeOf(signals);
+  await settleWorkflow(
+    execution,
+    outcome ?? "success",
+    outcome === undefined ? null : runOutcomeReason(outcome, signals),
+    transactionHashes,
+    outcome === undefined ? null : runOutcomeCode(outcome, signals)
+  );
 }
 
 /**
@@ -373,12 +415,7 @@ async function reconcileWorkflow(
       ? await loadSuccessLogFacts(execution.id, true)
       : undefined;
   if (logged && logged.hashes.length === 0) {
-    const outcome = runOutcomeOf(logged.signals);
-    await settleWorkflow(
-      execution,
-      outcome ?? "success",
-      outcome ? runOutcomeReason(outcome) : null
-    );
+    await settleByOutcome(execution, logged.signals);
     return "completed";
   }
   const entries = logged?.hashes ?? execution.transactionHashes ?? [];
@@ -416,13 +453,7 @@ async function reconcileWorkflow(
     // A step that did not land keeps the run not landed; a skipped bundle step skips it.
     const { signals } =
       logged ?? (await loadSuccessLogFacts(execution.id, false));
-    const outcome = runOutcomeOf(signals);
-    await settleWorkflow(
-      execution,
-      outcome ?? "success",
-      outcome === undefined ? null : runOutcomeReason(outcome),
-      logged?.hashes
-    );
+    await settleByOutcome(execution, signals, logged?.hashes);
     return "completed";
   }
 

@@ -33,6 +33,7 @@ import {
 } from "@/lib/step-registry";
 import { deserializeTriggerInput, getErrorMessageAsync } from "@/lib/utils";
 import { hasOwnField, readOwnField } from "@/lib/utils/read-own-field";
+import { markTemplatedNotBefore } from "@/lib/web3/bundles/settings";
 import {
   collectReachable,
   isBackEdge,
@@ -3013,6 +3014,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       processedConfig.code = renderedCode;
     }
     restoreConditionFields(processedConfig, conditionFields);
+    // A templated Not before that renders empty fails the bundle step instead of turning it off.
+    markTemplatedNotBefore(actionType, config, processedConfig);
 
     return processedConfig;
   }

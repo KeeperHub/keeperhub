@@ -391,6 +391,7 @@ describe("workflow runs", () => {
       status: "error",
       error: "On-chain verification failed: no verifiable transaction hashes",
       completedAt: expect.any(Date),
+      billable: expect.anything(),
     });
     expect(mockRecordFinished).toHaveBeenCalledTimes(1);
     expect(mockRecordFinished).toHaveBeenCalledWith({
@@ -410,6 +411,8 @@ describe("workflow runs", () => {
       status: "success",
       error: null,
       completedAt: expect.any(Date),
+      errorCode: null,
+      billable: expect.anything(),
     });
     expect(mockRecordFinished).toHaveBeenCalledTimes(1);
     expect(mockRecordFinished).toHaveBeenCalledWith({
@@ -433,6 +436,8 @@ describe("workflow runs", () => {
       status: "not_landed",
       error: expect.stringContaining("Not landed: a bundle in this run"),
       completedAt: expect.any(Date),
+      errorCode: null,
+      billable: expect.anything(),
     });
     expect(mockRecordFinished).toHaveBeenCalledWith({
       status: "not_landed",
@@ -464,6 +469,8 @@ describe("workflow runs", () => {
         status: "success",
         error: null,
         completedAt: expect.any(Date),
+        errorCode: null,
+        billable: expect.anything(),
       });
     });
 
@@ -494,6 +501,29 @@ describe("workflow runs", () => {
       expect(mockRecordFinished).not.toHaveBeenCalled();
     });
 
+    it("settles a waiting run Skipped with its code, unbilled, counted as a waiting skip", async () => {
+      mockLoadSignals.mockResolvedValue({
+        skippedInFlight: false,
+        notIncluded: false,
+        waiting: true,
+        bundleSent: false,
+        otherWork: false,
+      });
+
+      await run([], [workflowRow({ transactionHashes: [] })]);
+
+      expect(workflowUpdates()[0].values).toMatchObject({
+        status: "skipped",
+        error: expect.stringMatching(/^Waiting:/),
+        errorCode: "bundle-waiting",
+        billable: false,
+      });
+      expect(mockRecordSkipped).toHaveBeenCalledWith({
+        orgSlug: "org-a",
+        reason: "bundle_waiting",
+      });
+    });
+
     it("verifies the logged hashes and writes them with the settle", async () => {
       verifyResolves("success");
       const logged = [
@@ -510,6 +540,8 @@ describe("workflow runs", () => {
         status: "success",
         error: null,
         completedAt: expect.any(Date),
+        errorCode: null,
+        billable: expect.anything(),
         transactionHashes: logged,
       });
     });
@@ -528,6 +560,7 @@ describe("workflow runs", () => {
         status: "error",
         error: expect.stringContaining("On-chain verification failed"),
         completedAt: expect.any(Date),
+        billable: expect.anything(),
         transactionHashes: logged,
       });
     });
@@ -548,6 +581,7 @@ describe("workflow runs", () => {
         error:
           "On-chain verification failed: missing chainId for one or more transaction hashes",
         completedAt: expect.any(Date),
+        billable: expect.anything(),
         transactionHashes: logged,
       });
     });
@@ -691,6 +725,7 @@ describe("workflow runs held open by their own failure", () => {
       status: "system_error",
       error: "Step 3 rejected the payload",
       completedAt: expect.any(Date),
+      billable: expect.anything(),
     });
     expect(mockRecordFinished).toHaveBeenCalledWith({
       status: "system_error",
@@ -714,6 +749,7 @@ describe("workflow runs held open by their own failure", () => {
         status: "error",
         error: "Step 3 rejected the payload",
         completedAt: expect.any(Date),
+        billable: expect.anything(),
       });
     });
   });
@@ -740,6 +776,7 @@ describe("workflow runs held open by their own failure", () => {
       status: "system_error",
       error: "Step 3 rejected the payload",
       completedAt: expect.any(Date),
+      billable: expect.anything(),
     });
   });
 
@@ -761,6 +798,7 @@ describe("workflow runs held open by their own failure", () => {
       status: "system_error",
       error: "Step 3 rejected the payload",
       completedAt: expect.any(Date),
+      billable: expect.anything(),
     });
   });
 });

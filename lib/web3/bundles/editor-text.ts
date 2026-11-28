@@ -31,7 +31,12 @@ export function bundleTipsText(input: {
   maxFeeGwei: unknown;
   // The network's tip limit; undefined while the network is not known.
   tipLimitGwei?: number;
+  // With Not before set, the first tip goes to the first allowed block.
+  fromFirstAllowed?: boolean;
 }): string {
+  const counted = input.fromFirstAllowed
+    ? ", counted from the first allowed block"
+    : "";
   const first = plainNumber(input.priorityFeeGwei);
   const cap = plainNumber(input.maxFeeGwei);
   const limit = input.tipLimitGwei;
@@ -62,7 +67,7 @@ export function bundleTipsText(input: {
       input.blocks > 1
         ? `, so the last block's tip is up to ${gwei(growth)}x the first`
         : "";
-    return `Each later block's tip is ${input.increasePercent}% higher than the one before, starting from Priority Fee in Advanced (or the network's default)${last}.${rules}`;
+    return `Each later block's tip is ${input.increasePercent}% higher than the one before, starting from Priority Fee in Advanced (or the network's default)${counted}${last}.${rules}`;
   }
   // As the step plans them: later tips stop at the tip limit (never below the first), then the cap.
   const tipCeiling =
@@ -75,5 +80,5 @@ export function bundleTipsText(input: {
     );
     tips.push(gwei(Math.min(tip, cap ?? MAX_FEE_GWEI)));
   }
-  return `Tips: ${listed(tips)} gwei, from Priority Fee in Advanced.${rules}`;
+  return `Tips: ${listed(tips)} gwei, from Priority Fee in Advanced${counted}.${rules}`;
 }

@@ -40,11 +40,13 @@ export type ReceivedBundle = {
   raw: string;
   hash: string;
   body: string;
+  // Unix seconds: a builder that honours it never builds the bundle into an earlier block.
+  minTimestamp?: number;
 };
 
 type JsonRpcRequest = {
   method?: string;
-  params?: { txs?: string[]; blockNumber?: string }[];
+  params?: { txs?: string[]; blockNumber?: string; minTimestamp?: number }[];
 };
 
 export type FakeBuilder = {
@@ -167,6 +169,9 @@ export async function startFakeBuilder(
       raw,
       hash: ethers.keccak256(raw),
       body,
+      ...(typeof bundle.minTimestamp === "number" && {
+        minTimestamp: bundle.minTimestamp,
+      }),
     });
     await answerTaken(res, builder.mode, body);
   });
@@ -212,6 +217,8 @@ export type Miner = {
   // Runs before a block is built, e.g. to change state under a bundle.
   beforeBlock?: (block: number) => Promise<void>;
   tickMs: number;
+  // Seconds between a block and the one before it; 12 unless a test misses a slot.
+  secondsBefore?: (block: number) => number;
   included: { block: number; hash: string }[];
   // Mine `count` empty blocks now.
   mine: (count?: number) => Promise<void>;
@@ -237,28 +244,37 @@ export function startMiner(
   const call = <T>(method: string, params: unknown[] = []) =>
     anvilRpc<T>(anvilUrl, method, params);
 
+  const gapBefore = (block: number): number =>
+    miner.secondsBefore?.(block) ?? BLOCK_SECONDS;
+
   const mineOne = async (): Promise<number> => {
-    const latest = await call<{ timestamp: string }>("eth_getBlockByNumber", [
-      "latest",
-      false,
-    ]);
-    await call("evm_mine", [Number(latest.timestamp) + BLOCK_SECONDS]);
+    const latest = await call<{ timestamp: string; number: string }>(
+      "eth_getBlockByNumber",
+      ["latest", false]
+    );
+    const next = Number(latest.number) + 1;
+    await call("evm_mine", [Number(latest.timestamp) + gapBefore(next)]);
     return Number(await call<string>("eth_blockNumber"));
   };
 
-  // A builder's own checks for the block it builds: a valid transaction
-  // (nonce, balance for gasLimit x maxFee + value) that does not revert at
-  // that block's number and time. The base fee is left to anvil itself.
+  // A builder's own checks for the block it builds: not before the bundle's
+  // minTimestamp, a valid transaction (nonce, balance for gasLimit x maxFee +
+  // value) that does not revert at that block's number and time. The base fee
+  // is left to anvil itself.
   const rejection = async (
-    raw: string,
+    bundle: ReceivedBundle,
     next: number
   ): Promise<string | undefined> => {
-    const tx = ethers.Transaction.from(raw);
+    const tx = ethers.Transaction.from(bundle.raw);
     const from = tx.from ?? "";
     const latest = await call<Header>("eth_getBlockByNumber", [
       "latest",
       false,
     ]);
+    const time = Number(latest.timestamp) + gapBefore(next);
+    if (bundle.minTimestamp !== undefined && time < bundle.minTimestamp) {
+      return "before minTimestamp";
+    }
     const nonce = Number(
       await call<string>("eth_getTransactionCount", [from, "latest"])
     );
@@ -285,7 +301,7 @@ export function startMiner(
         {},
         {
           number: ethers.toQuantity(next),
-          time: ethers.toQuantity(Number(latest.timestamp) + BLOCK_SECONDS),
+          time: ethers.toQuantity(time),
         },
       ]);
       return;
@@ -330,7 +346,7 @@ export function startMiner(
     );
     let sent: string | undefined;
     for (const bundle of candidates) {
-      const reason = await rejection(bundle.raw, next);
+      const reason = await rejection(bundle, next);
       if (reason) {
         miner.rejected.push({ hash: bundle.hash, reason });
         continue;

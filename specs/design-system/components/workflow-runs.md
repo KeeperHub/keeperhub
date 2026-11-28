@@ -53,6 +53,7 @@ Panel showing workflow execution history and real-time logs. Displays a list of 
 | Run success | Green badge, all steps green |
 | Run error | Red badge, failed step highlighted |
 | Run cancelled | Gray badge, "Cancelled" label |
+| Waiting runs | Back-to-back runs skipped while a bundle step waits for the same Not before share one row (display only): grey dot with a clock, the oldest run's number, a neutral "N waiting" chip and "not before HH:MM" (date added when not today, viewer's zone). Each line is one line with an ellipsis; the tooltip has the full date with zone and the run range. Expanded: the reason, the run range and the latest run's steps |
 
 ## Cross-references
 

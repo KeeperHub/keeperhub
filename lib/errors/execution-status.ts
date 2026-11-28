@@ -60,6 +60,13 @@ export const WORKFLOW_EXECUTION_STATUSES = [
 export type WorkflowExecutionStatus =
   (typeof WORKFLOW_EXECUTION_STATUSES)[number];
 
+/** Not finished yet. 'unconfirmed' is left out: its steps are done, only the receipt is pending. */
+export const ACTIVE_RUN_STATUSES: readonly WorkflowExecutionStatus[] = [
+  "phantom",
+  "pending",
+  "running",
+];
+
 /**
  * Status of a single node inside a run, as stored on
  * `workflow_execution_logs.status`. Deliberately narrower than

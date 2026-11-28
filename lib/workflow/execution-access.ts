@@ -13,7 +13,7 @@ import {
 } from "@/lib/middleware/auth-helpers";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { boundedJsonb } from "@/lib/workflow/bounded-jsonb";
-import type { StepOutcome } from "@/lib/workflow/executor/run-outcome-keys";
+import type { NodeOutcome } from "@/lib/workflow/executor/run-outcome-keys";
 import { canShareExecutionStatus } from "@/lib/workflow/share-execution-status";
 
 type AuthenticatedContext = Exclude<DualAuthContext, { error: string }>;
@@ -52,7 +52,7 @@ type NodeStatus = {
   nodeId: string;
   status: NodeExecutionStatus;
   // A successful bundle step whose bundle did not land, or that sent nothing.
-  outcome?: StepOutcome;
+  outcome?: NodeOutcome;
 };
 
 export type ExecutionStatusPayload = {

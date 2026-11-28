@@ -1,20 +1,13 @@
 import { and, asc, eq, gt, isNull, lte, type SQL, sql } from "drizzle-orm";
 import type { db as appDb } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
-import type { WorkflowExecutionStatus } from "@/lib/errors/execution-status";
+import { ACTIVE_RUN_STATUSES } from "@/lib/errors/execution-status";
 import { completedStepSince } from "@/lib/reaper/completed-step-since";
 import { staleExecutionThresholdMinutes } from "@/lib/reaper/stale-threshold";
-
-// Not finished yet. 'unconfirmed' is left out: its steps are done, only the receipt is pending.
-const ACTIVE_RUN_STATUSES: readonly WorkflowExecutionStatus[] = [
-  "phantom",
-  "pending",
-  "running",
-];
+import { SKIPPED_WHILE_RUNNING_REASON } from "@/lib/workflow/executor/run-outcome-keys";
 
 // The run page strips the "Execution skipped:" prefix, as for every other skip reason.
-const SKIPPED_WHILE_RUNNING =
-  "Execution skipped: the previous run of this workflow was still running.";
+const SKIPPED_WHILE_RUNNING = SKIPPED_WHILE_RUNNING_REASON;
 
 type Database = typeof appDb;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];

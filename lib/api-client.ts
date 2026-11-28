@@ -14,7 +14,11 @@ import { refetchSidebarIfTriggerChanged } from "@/lib/refetch-sidebar";
 import type { ActorCredential } from "@/lib/security/credential-label";
 import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
-import type { StepOutcome } from "@/lib/workflow/executor/run-outcome-keys";
+import type {
+  NodeOutcome,
+  SkipReason,
+} from "@/lib/workflow/executor/run-outcome-keys";
+import type { WaitingRunInfo } from "@/lib/workflow/executor/waiting-runs";
 import type { WorkflowExportV1 } from "@/lib/workflow/export-schema";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import type { IntegrationConfig, IntegrationType } from "./types/integration";
@@ -140,6 +144,10 @@ export type ExecutionSummary = {
   ranVersion: number | null;
   /** Refusals folded into a skipped run's hourly row; null otherwise. */
   refusals: number | null;
+  /** Why a bundle step skipped the run (in flight or waiting); null otherwise. */
+  skipReason?: SkipReason | null;
+  /** A waiting run's Not before and its first allowed block; null otherwise. */
+  waiting?: WaitingRunInfo | null;
 };
 
 export type ExecutionSummaryPage = {
@@ -978,8 +986,8 @@ export const workflowApi = {
       nodeStatuses: Array<{
         nodeId: string;
         status: NodeExecutionStatus;
-        // A successful bundle step that missed, sent nothing, or landed late.
-        outcome?: StepOutcome;
+        // A successful bundle step that missed, sent nothing, landed late, or waited for Not before.
+        outcome?: NodeOutcome;
       }>;
       progress?: {
         totalSteps: number;

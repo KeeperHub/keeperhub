@@ -39,6 +39,9 @@ import {
 import { getRetentionConfig } from "@/lib/retention/config";
 import { getOrgLogRetentionCutoff } from "@/lib/retention/progress";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
+import { skipReasonOf } from "@/lib/workflow/executor/run-outcome-keys";
+import { loadWaitingRunInfo } from "@/lib/workflow/executor/waiting-runs";
+import { skippedRefusalsSql } from "@/lib/workflow/refused-runs";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { attachAlertsSent } from "./alert-sent";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
@@ -1522,13 +1525,29 @@ export async function getUnifiedRuns(
   const nextCursor = hasMore ? (pagedRuns.at(-1)?.startedAt ?? null) : null;
 
   return {
-    runs: await attachAlertsSent(organizationId, pagedRuns),
+    runs: await attachWaitingInfo(
+      await attachAlertsSent(organizationId, pagedRuns)
+    ),
     nextCursor,
     total,
     page,
     pageSize: pageLimit,
     stepLogRetentionCutoff: stepLogRetentionCutoff?.toISOString() ?? null,
   };
+}
+
+/** A waiting run's Not before and blocks, so the table can group back-to-back ones. */
+async function attachWaitingInfo(runs: UnifiedRun[]): Promise<UnifiedRun[]> {
+  const waiting = await loadWaitingRunInfo(
+    runs.map((run) => ({ id: run.id, skipReason: run.skipReason ?? null }))
+  );
+  if (waiting.size === 0) {
+    return runs;
+  }
+  return runs.map((run) => {
+    const info = waiting.get(run.id);
+    return info ? { ...run, waiting: info } : run;
+  });
 }
 
 async function fetchWorkflowRuns(
@@ -1711,6 +1730,7 @@ async function fetchWorkflowRuns(
       errorCode: workflowExecutions.errorCode,
       errorType: workflowExecutions.errorType,
       errorCategory: workflowExecutions.errorCategory,
+      refusals: skippedRefusalsSql(),
     })
     .from(workflowExecutions)
     .leftJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
@@ -1758,6 +1778,8 @@ async function fetchWorkflowRuns(
     errorCode: row.errorCode ?? null,
     errorType: row.errorType ?? null,
     errorCategory: row.errorCategory ?? null,
+    skipReason: skipReasonOf(row),
+    refusals: row.refusals ?? null,
   }));
 }
 

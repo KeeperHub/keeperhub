@@ -54,6 +54,16 @@ const env = vi.hoisted(() => {
 
 vi.mock("server-only", () => ({}));
 vi.unmock("@/lib/db");
+// The fake miner keeps 12 s slots, as Ethereum does; anvil itself only guarantees 1 s.
+vi.mock("@/lib/web3/beacon-slots", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/web3/beacon-slots")>();
+  return {
+    ...actual,
+    minBlockGapSeconds: (chainId: number) =>
+      chainId === 31_337 ? 12 : actual.minBlockGapSeconds(chainId),
+  };
+});
 
 vi.mock("@/lib/web3/resolve-org-context", () => ({
   resolveOrganizationContext: async () => ({
@@ -966,6 +976,204 @@ describe.skipIf(SKIP)("Send as Bundle (anvil, fake builders)", () => {
     expect(result.success ? "" : result.error).toContain("outside KeeperHub");
     expect(await minedNonce()).toBe(nonce + 1);
   }, 90_000);
+
+  describe("Send ahead with Not before", () => {
+    let clock: string;
+    // kick() reverts while block.timestamp < slot 3; slot 1 counts the calls.
+    const CLOCK_RUNTIME = "6003544210601257600154600101600155005b600080fd";
+    type Head = { number: number; timestamp: number };
+
+    async function head(): Promise<Head> {
+      const block = await rpc<{ number: string; timestamp: string }>(
+        "eth_getBlockByNumber",
+        ["latest", false]
+      );
+      return {
+        number: Number(block.number),
+        timestamp: Number(block.timestamp),
+      };
+    }
+
+    async function timeOf(block: number): Promise<number> {
+      const found = await rpc<{ timestamp: string }>("eth_getBlockByNumber", [
+        ethers.toQuantity(block),
+        false,
+      ]);
+      return Number(found.timestamp);
+    }
+
+    const clockKicks = async (): Promise<number> =>
+      Number(await rpc<string>("eth_getStorageAt", [clock, "0x1", "latest"]));
+
+    async function unlockAt(notBefore: number): Promise<void> {
+      await rpc("anvil_setStorageAt", [
+        clock,
+        "0x3",
+        ethers.toBeHex(notBefore, 32),
+      ]);
+    }
+
+    const ahead = (notBefore: number) => ({
+      contractAddress: clock,
+      notBefore: String(notBefore),
+      sendAheadBlocks: 2,
+      bundleTipIncreasePercent: 20,
+    });
+
+    beforeAll(async () => {
+      const deployed = await sendAndMine({
+        data: `0x601780600b6000396000f3${CLOCK_RUNTIME}`,
+        maxFeePerGas: ethers.parseUnits("50", "gwei"),
+        maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
+      });
+      clock = deployed.contractAddress ?? "";
+      // 12 s blocks, so the next-block check measures 12 s slots (not the
+      // 1 s blocks anvil made before this file, which an earlier case cached).
+      await miner.mine(6);
+      const simulation = await import("@/lib/web3/next-block-simulation");
+      simulation.clearSlotSecondsCache();
+    }, 60_000);
+
+    afterEach(() => {
+      miner.secondsBefore = undefined;
+    });
+
+    it("waits while the first allowed block is far, then sends ahead and lands in it, never earlier", async () => {
+      const start = await head();
+      // From the parent (one slot before the head): U = start + 5.
+      const notBefore = start.timestamp + 60;
+      await unlockAt(notBefore);
+
+      const waitingRun = await newRun();
+      const waited = await runStep(waitingRun, ahead(notBefore));
+      expect(waited).toEqual({
+        success: true,
+        route: "waiting",
+        included: false,
+        notBefore,
+        firstAllowedBlock: start.number + 5,
+        latestBlock: start.number,
+        sendAheadBlocks: 2,
+      });
+      expect(builders.every((b) => b.received.length === 0)).toBe(true);
+      const skipped = await finalize(waitingRun);
+      expect(skipped?.status).toBe("skipped");
+      expect(skipped?.billable).toBe(false);
+
+      await miner.mine(2);
+      const before = await clockKicks();
+      const sentRun = await newRun();
+      const result = await runStep(sentRun, ahead(notBefore));
+      const allowed = start.number + 5;
+      expect(result).toMatchObject({
+        success: true,
+        route: "bundle",
+        included: true,
+        includedBlock: allowed,
+        targetBlocks: [allowed, allowed + 1, allowed + 2],
+        targetTipsGwei: ["1", "1.2", "1.44"],
+        notBefore,
+        firstAllowedBlock: allowed,
+        latestBlock: start.number + 2,
+        sendAheadBlocks: 2,
+      });
+      expect(await timeOf(allowed)).toBeGreaterThanOrEqual(notBefore);
+      expect(await clockKicks()).toBe(before + 1);
+      // Every bundle carried Not before, and tips rise from the first allowed block.
+      const received = builders.flatMap((b) => b.received);
+      expect(received.every((r) => r.minTimestamp === notBefore)).toBe(true);
+      const tipAt = (target: number) =>
+        ethers.Transaction.from(
+          received.find((r) => r.target === target)?.raw ?? ""
+        ).maxPriorityFeePerGas;
+      expect([tipAt(allowed), tipAt(allowed + 1), tipAt(allowed + 2)]).toEqual([
+        ethers.parseUnits("1", "gwei"),
+        ethers.parseUnits("1.2", "gwei"),
+        ethers.parseUnits("1.44", "gwei"),
+      ]);
+      expect((await finalize(sentRun))?.status).toBe("success");
+    }, 90_000);
+
+    it("a slot missed after sending only lands the first allowed block later", async () => {
+      const start = await head();
+      const notBefore = start.timestamp + 36;
+      await unlockAt(notBefore);
+      const allowed = start.number + 3;
+      // The slot before the first allowed block is missed.
+      miner.secondsBefore = (block) => (block === allowed - 1 ? 24 : 12);
+      const result = await runStep(await newRun(), ahead(notBefore));
+      expect(result).toMatchObject({
+        success: true,
+        included: true,
+        includedBlock: allowed,
+        firstAllowedBlock: allowed,
+      });
+      expect(await timeOf(allowed)).toBe(notBefore + 12);
+    }, 90_000);
+
+    it("counts from the head's parent: after a missed slot before the head it waits one block more", async () => {
+      // The head comes two slots after its parent.
+      miner.secondsBefore = () => 24;
+      await miner.mine(1);
+      miner.secondsBefore = undefined;
+      const start = await head();
+      const notBefore = start.timestamp + 36;
+      await unlockAt(notBefore);
+      // Counted from the head, U would be start + 3 and the step would send now.
+      const waited = await runStep(await newRun(), ahead(notBefore));
+      expect(waited).toMatchObject({
+        route: "waiting",
+        firstAllowedBlock: start.number + 4,
+      });
+      await miner.mine(1);
+      const result = await runStep(await newRun(), ahead(notBefore));
+      expect(result).toMatchObject({
+        success: true,
+        included: true,
+        includedBlock: start.number + 3,
+        firstAllowedBlock: start.number + 3,
+      });
+      expect(await timeOf(start.number + 3)).toBeGreaterThanOrEqual(notBefore);
+    }, 90_000);
+
+    it("the fake builder never builds a bundle into a block before its minTimestamp", async () => {
+      const { sendBundle } = await import("@/lib/web3/bundles/client");
+      const provider = new ethers.JsonRpcProvider(ANVIL_URL, CHAIN_ID, {
+        staticNetwork: true,
+      });
+      const rich = new ethers.Wallet(RICH_KEY, provider);
+      const start = await head();
+      const raw = await rich.signTransaction({
+        to: rich.address,
+        value: 0,
+        nonce: await provider.getTransactionCount(rich.address, "latest"),
+        gasLimit: 21_000,
+        maxFeePerGas: ethers.parseUnits("100", "gwei"),
+        maxPriorityFeePerGas: ethers.parseUnits("2", "gwei"),
+        chainId: CHAIN_ID,
+        type: 2,
+      });
+      provider.destroy();
+      await sendBundle({
+        builders: [{ name: builders[0].name, url: builders[0].url }],
+        signedTxs: [raw],
+        targetBlock: start.number + 1,
+        searcher,
+        minTimestamp: start.timestamp + 1000,
+      });
+      await vi.waitFor(
+        () =>
+          expect(miner.rejected).toContainEqual({
+            hash: ethers.keccak256(raw),
+            reason: "before minTimestamp",
+          }),
+        { timeout: 20_000, interval: 100 }
+      );
+      expect(
+        await rpc("eth_getTransactionReceipt", [ethers.keccak256(raw)])
+      ).toBeNull();
+    }, 60_000);
+  });
 
   it("never logs a builder URL, the searcher key or its address", () => {
     expect(

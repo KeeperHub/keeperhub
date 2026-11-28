@@ -23,6 +23,7 @@ import type { ErrorCategory } from "../logging";
 import type { PythSignal } from "../pyth/price-trigger";
 import type { IntegrationType } from "../types/integration";
 import { generateId } from "../utils/id";
+import type { RunOutcomeCode } from "../workflow/executor/run-outcome-keys";
 import { countedRunSql } from "./counted-runs";
 
 // These enums are created by @workflow/world-postgres migrations in the public
@@ -734,7 +735,8 @@ export const workflowExecutions = pgTable(
     // to be remembered whenever a category is added.
     errorCategory: text("error_category").$type<ErrorCategory>(),
     errorType: text("error_type").$type<ExecutionErrorType>(),
-    errorCode: text("error_code").$type<ErrorCode>(),
+    // A system error's code, or a waiting run's stable key (RunOutcomeCode).
+    errorCode: text("error_code").$type<ErrorCode | RunOutcomeCode>(),
     startedAt: timestamp("started_at").notNull().defaultNow(),
     completedAt: timestamp("completed_at"),
     duration: numeric("duration"), // Duration in milliseconds

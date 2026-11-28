@@ -232,10 +232,12 @@ Create, update, import and the editor's autosave run the same Send as checks; a 
 - bundles are not turned on for your organization (`bundleSendEnabled` in [Get Organization Features](#get-organization-features)); a step already saved as a bundle keeps saving, even when its settings or network change (its runs are refused);
 - `web3Connection` is a Safe (`"safe:..."`);
 - `bundleBlocks` is not a whole number from 1 to 5, or `bundleTipIncreasePercent` not one from 0 to 100;
+- `notBefore` is neither unix seconds (1000000000 to 9999999999) nor an ISO 8601 date with a time zone, or looks like milliseconds (13 digits; the message gives the seconds to use); a template passes and is read when the run starts;
+- `sendAheadBlocks` is not a whole number from 0 to 3, or, with `notBefore` set, `sendAheadBlocks` + `bundleBlocks` is above 5 (the message names both);
 - the network has no block builders that take bundles, or `bundleBuilders` names one the network does not list (see `bundleBuilders` in the [Chains API](/api/chains));
 - the step sits inside a For Each that is itself inside another For Each.
 
-A step whose action, network, Send as keys and bundle settings are unchanged since it was saved passes, except for the nested For Each rule, which is checked on every save. A step saved as a bundle whose settings or network changed is checked again except for the rollout: the Safe connection, the settings and the network's builders.
+A step whose action, network, Send as keys and bundle settings (`notBefore` and `sendAheadBlocks` included) are unchanged since it was saved passes, except for the nested For Each rule, which is checked on every save. A step saved as a bundle whose settings or network changed is checked again except for the rollout: the Safe connection, the settings and the network's builders.
 
 A copy (duplicate, and so Use template and the MCP `deploy_template` tool) checks every bundle step as new, unchanged or not: the rollout, the Safe connection, the settings and the builders (for `bundleBuilders`, only when the network lists none of the step's builders, since a run sends to the ones still listed). One refused step refuses the whole copy (see [Duplicate Workflow](#duplicate-workflow)).
 

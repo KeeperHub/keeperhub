@@ -23,7 +23,7 @@ function ceilDiv(a: bigint, b: bigint): bigint {
 }
 
 /**
- * The tip for the k-th target (1 = the next block): the first tip raised by
+ * The tip for the k-th target (1 = the first target): the first tip raised by
  * `increasePercent` per block, compounded and rounded up, held to the tip limit and the fee cap.
  */
 function tipForTarget(
@@ -76,10 +76,15 @@ export function maxFeeForTips(options: {
   tipLimit?: bigint;
   // The latest block; its base fee bounds the targets' (planTips skips by the same bound).
   parent?: ParentBlock | null;
+  // The block that gets the plain first tip; default latest + 1.
+  firstTarget?: number;
 }): bigint {
   const { estimatedMaxFee, firstTip } = options;
-  const lastK =
-    Math.max(options.latest + 1, ...options.blocks) - options.latest;
+  const firstTarget = options.firstTarget ?? options.latest + 1;
+  const lastBlock = Math.max(firstTarget, ...options.blocks);
+  // The base fee is projected from latest; the tip rises from the first target.
+  const lastK = lastBlock - options.latest;
+  const lastTipIndex = Math.max(1, lastBlock - firstTarget + 1);
   // The estimate's Max Fee counts the tip once (base-fee room + tip).
   const headroom =
     estimatedMaxFee > firstTip ? estimatedMaxFee - firstTip : BigInt(0);
@@ -88,7 +93,12 @@ export function maxFeeForTips(options: {
     : BigInt(0);
   return (
     (projected > headroom ? projected : headroom) +
-    plannedTip(firstTip, options.increasePercent, lastK, options.tipLimit)
+    plannedTip(
+      firstTip,
+      options.increasePercent,
+      lastTipIndex,
+      options.tipLimit
+    )
   );
 }
 
@@ -128,9 +138,9 @@ function nextBaseFee(parent: ParentBlock): bigint {
 }
 
 /**
- * Tips for the targets `latest + 1 ...` that passed simulation. Target 1's base
- * fee is exact; later ones are the most it can reach. A target whose base fee
- * could exceed Max Fee is skipped, as it could not be included.
+ * Tips for the targets that passed simulation, raised per block from the first
+ * target. Block latest + 1's base fee is exact; later ones are the most it can
+ * reach. A target whose base fee could exceed Max Fee is skipped.
  */
 export function planTips(options: {
   latest: number;
@@ -141,6 +151,8 @@ export function planTips(options: {
   blocks: readonly number[];
   // The chain's tip limit; later tips stop there (the first tip is kept).
   tipLimit?: bigint;
+  // The block that gets the plain first tip; default latest + 1.
+  firstTarget?: number;
 }): {
   targets: PlannedTarget[];
   skipped: SkippedTarget[];
@@ -151,8 +163,10 @@ export function planTips(options: {
   const skipped: SkippedTarget[] = [];
   let lowestSkippedBaseFee: bigint | undefined;
   const next = options.parent && nextBaseFee(options.parent);
+  const firstTarget = options.firstTarget ?? options.latest + 1;
   for (const block of options.blocks) {
     const k = block - options.latest;
+    const tipIndex = Math.max(1, block - firstTarget + 1);
     const baseFee = next === null ? undefined : projectedBaseFee(next, k - 1);
     if (baseFee !== undefined && options.maxFee < baseFee) {
       skipped.push({ block, reason: "max-fee-below-projected-base-fee" });
@@ -170,7 +184,7 @@ export function planTips(options: {
         options.firstTip,
         options.maxFee,
         options.increasePercent,
-        k,
+        tipIndex,
         options.tipLimit
       ),
     });
@@ -186,4 +200,55 @@ export function planTips(options: {
 export function toGwei(wei: bigint): string {
   const text = ethers.formatUnits(wei, "gwei");
   return text.endsWith(".0") ? text.slice(0, -2) : text;
+}
+
+/** A block as the first-allowed-block math reads it. */
+export type BlockStamp = { number: number; timestamp: number };
+
+/**
+ * The first block number that cannot have a timestamp before `notBefore`: every
+ * block is at least `gapSeconds` after its parent, so block N's time is at least
+ * base.timestamp + gapSeconds x (N - base.number). Never before base + 1.
+ */
+export function firstAllowedBlock(
+  notBefore: number,
+  base: BlockStamp,
+  gapSeconds: number
+): number {
+  const ahead = Math.ceil((notBefore - base.timestamp) / gapSeconds);
+  return base.number + Math.max(1, ahead);
+}
+
+/** What a step with Not before does at a block: wait, or send for `targets`. */
+export type SendAheadPlan =
+  | { kind: "waiting"; firstAllowedBlock: number }
+  | { kind: "send"; firstAllowedBlock: number; targets: number[] };
+
+/**
+ * U is counted from the latest block's parent, so a reorg of the head alone
+ * cannot move it early. Sends when U is at most latest + 1 + `sendAheadBlocks`;
+ * targets start at the later of U and latest + 1.
+ */
+export function planSendAhead(options: {
+  notBefore: number;
+  latest: number;
+  parent: BlockStamp;
+  gapSeconds: number;
+  sendAheadBlocks: number;
+  blocks: number;
+}): SendAheadPlan {
+  const allowed = firstAllowedBlock(
+    options.notBefore,
+    options.parent,
+    options.gapSeconds
+  );
+  if (allowed > options.latest + 1 + options.sendAheadBlocks) {
+    return { kind: "waiting", firstAllowedBlock: allowed };
+  }
+  const first = Math.max(allowed, options.latest + 1);
+  return {
+    kind: "send",
+    firstAllowedBlock: allowed,
+    targets: Array.from({ length: options.blocks }, (_, i) => first + i),
+  };
 }

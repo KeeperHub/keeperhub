@@ -390,6 +390,49 @@ describe("readSimulationSettings", () => {
     });
   });
 
+  it("reads At a time only where the step offers it (Read Contract)", () => {
+    expect(
+      readSimulationSettings("time", undefined, undefined, {
+        value: "2026-12-01T12:00:00Z",
+      })
+    ).toEqual({ ok: true, options: { atTime: 1_796_126_400 } });
+    // A resolved template is read leniently: a past time is fine.
+    expect(
+      readSimulationSettings("time", undefined, undefined, { value: "5" })
+    ).toEqual({ ok: true, options: { atTime: 5 } });
+    // A resolved time past 2286 reads as that far future.
+    expect(
+      readSimulationSettings("time", undefined, undefined, {
+        value: "99999999999",
+      })
+    ).toEqual({ ok: true, options: { atTime: 9_999_999_999 } });
+    expect(
+      readSimulationSettings("time", undefined, undefined, { value: "" })
+    ).toMatchObject({
+      ok: false,
+      failure: { error: "Enter a time, or set Simulate at to Latest block." },
+    });
+    expect(
+      readSimulationSettings("time", undefined, undefined, {
+        value: "1796126400000",
+      })
+    ).toMatchObject({
+      ok: false,
+      failure: {
+        error: expect.stringContaining(
+          "This looks like milliseconds. Use seconds: 1796126400."
+        ),
+      },
+    });
+    // Writes do not offer it.
+    expect(readSimulationSettings("time", undefined)).toMatchObject({
+      ok: false,
+      failure: {
+        error: 'Invalid Simulate at "time": expected "latest" or "next-block"',
+      },
+    });
+  });
+
   it("refuses unknown modes and offsets outside 1..60 as user errors naming the field", () => {
     expect(readSimulationSettings("pending", undefined)).toEqual({
       ok: false,
@@ -2125,6 +2168,68 @@ describe("next-block simulation", () => {
       expect(error).toBeInstanceOf(TargetBlockPassedError);
       expect(isNonRetryableError(error)).toBe(true);
       expect(failedNextBlockCheck(error)).toBe(true);
+    });
+  });
+
+  describe("a read at a time (Read Contract)", () => {
+    function readAt(
+      atTime: number
+    ): ReturnType<typeof simulateCallAtNextBlock> {
+      return simulateCallAtNextBlock(managerFor(provider), {
+        chainId: CHAIN_ID,
+        tx: WORKABLE_TX,
+        options: { atTime },
+      });
+    }
+
+    it("answers as of the given time, on the first block that cannot be earlier", async () => {
+      node.unlockAt = node.latestTimestamp + 3600;
+      const before = await readAt(node.latestTimestamp + 3599);
+      expect(IFACE.decodeFunctionResult("workable", before.returnData)[0]).toBe(
+        false
+      );
+      const { returnData, simulation } = await readAt(
+        node.latestTimestamp + 3600
+      );
+      expect(IFACE.decodeFunctionResult("workable", returnData)[0]).toBe(true);
+      expect(simulation).toEqual({
+        mode: "time",
+        baseBlock: 100,
+        // Chain 31337 has no fixed slot: each block at least 1 s after its parent.
+        assumedBlockNumber: 100 + 3600,
+        assumedTimestamp: node.latestTimestamp + 3600,
+        rpcMethod: "eth_simulateV1",
+      });
+      expect(node.seen.at(-1)?.overrides).toEqual({
+        number: ethers.toQuantity(3700),
+        time: ethers.toQuantity(node.latestTimestamp + 3600),
+      });
+    });
+
+    it("checks the next block for a time not after the latest block", async () => {
+      node.unlockAt = node.latestTimestamp + SLOT;
+      const { returnData, simulation } = await readAt(
+        node.latestTimestamp - 50
+      );
+      expect(IFACE.decodeFunctionResult("workable", returnData)[0]).toBe(true);
+      expect(simulation).toMatchObject({
+        mode: "time",
+        baseBlock: 100,
+        assumedBlockNumber: 101,
+      });
+      expect(simulation).not.toHaveProperty("timestampOffsetSec");
+    });
+
+    it("names the time in a failure message", () => {
+      expect(
+        nextBlockFailure("reverted", {
+          mode: "time",
+          baseBlock: 1,
+          assumedBlockNumber: 5,
+          assumedTimestamp: 1_796_126_400,
+          rpcMethod: "eth_call+blockOverrides",
+        }).error
+      ).toBe("reverted (simulated at time 1796126400, block 5)");
     });
   });
 

@@ -22,15 +22,15 @@ import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { checkExecutionStatusRateLimit } from "@/lib/workflow/execution-status-rate-limit";
 import { stepOutcomeKeysSql } from "@/lib/workflow/executor/run-outcome";
 import {
+  type NodeOutcome,
+  nodeOutcomeOf,
   RUN_OUTCOME_OUTPUT,
-  type StepOutcome,
-  stepOutcomeOf,
 } from "@/lib/workflow/executor/run-outcome-keys";
 
 type NodeStatus = {
   nodeId: string;
   status: NodeExecutionStatus;
-  outcome?: StepOutcome;
+  outcome?: NodeOutcome;
 };
 
 // Statuses after which there is nothing left to poll for. Mirrors the set the
@@ -165,7 +165,7 @@ export async function GET(
     });
 
     const nodeStatuses: NodeStatus[] = logs.map((log) => {
-      const outcome = stepOutcomeOf(
+      const outcome = nodeOutcomeOf(
         {
           ...log,
           output: {

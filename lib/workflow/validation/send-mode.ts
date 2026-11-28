@@ -3,11 +3,14 @@ import { db } from "@/lib/db";
 import { chains } from "@/lib/db/schema";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { builderLabels } from "@/lib/rpc/rpc-config";
+import { minBlockGapSeconds } from "@/lib/web3/beacon-slots";
 import { bundleLoopRefusal } from "@/lib/web3/bundles/loop-rule";
 import { isBundleSendEnabledForOrg } from "@/lib/web3/bundles/rollout";
 import {
   BUNDLE_SETTING_KEYS,
   BUNDLE_SETTING_LABELS,
+  isUnset,
+  NOT_BEFORE_UNSUPPORTED_ERROR,
   quoted,
   readBundleSettings,
   shortened,
@@ -122,6 +125,8 @@ function bundleKeysOf(config: Config): string {
     config[BUNDLE_SETTING_KEYS.blocks],
     config[BUNDLE_SETTING_KEYS.tipIncreasePercent],
     config[BUNDLE_SETTING_KEYS.builders],
+    config[BUNDLE_SETTING_KEYS.notBefore],
+    config[BUNDLE_SETTING_KEYS.sendAheadBlocks],
     config.web3Connection,
   ]);
 }
@@ -138,8 +143,43 @@ function unchangedFromSaved(
     Object.is(before[networkField], config[networkField]) &&
     Object.is(before[SEND_MODE_KEY], config[SEND_MODE_KEY]) &&
     Object.is(storedLegacyFlag(before), storedLegacyFlag(config)) &&
+    sendAheadKeysOf(before) === sendAheadKeysOf(config) &&
     (resolveSendMode(config) !== SEND_MODE.BUNDLE ||
       bundleKeysOf(before) === bundleKeysOf(config))
+  );
+}
+
+/** Not before and Send ahead, compared on every Send as: only a bundle may hold them. */
+function sendAheadKeysOf(config: Config): string {
+  return JSON.stringify([
+    config[BUNDLE_SETTING_KEYS.notBefore],
+    config[BUNDLE_SETTING_KEYS.sendAheadBlocks],
+  ]);
+}
+
+/** Not before or Send ahead set on a step that does not send as a bundle, which would ignore them. */
+function strayBundleTimeIssue(
+  index: number,
+  node: Node,
+  config: Config
+): ActionConfigValidationIssue | undefined {
+  const key = [
+    BUNDLE_SETTING_KEYS.notBefore,
+    BUNDLE_SETTING_KEYS.sendAheadBlocks,
+  ].find((field) => !isUnset(config[field]));
+  if (key === undefined) {
+    return;
+  }
+  const label =
+    key === BUNDLE_SETTING_KEYS.notBefore
+      ? BUNDLE_SETTING_LABELS.notBefore
+      : BUNDLE_SETTING_LABELS.sendAheadBlocks;
+  return issueFor(
+    index,
+    node,
+    config[key],
+    `${label} (${key}) only works with ${SET_TO_BUNDLE}. Clear it, or set Send as to Bundle.`,
+    key
   );
 }
 
@@ -210,6 +250,8 @@ type Candidate = {
   storedAsIs?: boolean;
   // Bundle only: checked for a copy (see SendModeSaveOptions.copy).
   copy?: boolean;
+  // Bundle only: Not before is set, which needs a chain with fixed slots.
+  notBefore?: boolean;
 };
 
 function issueFor(
@@ -295,7 +337,7 @@ function bundleNodeIssues(
       "web3Connection"
     );
   }
-  const read = readBundleSettings(config);
+  const read = readBundleSettings(config, "save");
   if (!read.ok) {
     return refuse(read.error, read.field);
   }
@@ -309,6 +351,7 @@ function bundleNodeIssues(
       builders: read.settings.builders,
       storedAsIs: kept.storedAsIs,
       copy: ctx.copy,
+      notBefore: !isUnset(config[BUNDLE_SETTING_KEYS.notBefore]),
     },
   };
 }
@@ -330,6 +373,15 @@ function bundleCandidateIssue(
       candidate.copy
         ? `${SET_TO_BUNDLE} cannot run on ${networkName(chainId, row)}: it has no block builders that take bundles.`
         : `${SET_TO_BUNDLE} is not available on ${networkName(chainId, row)}: it has no block builders that take bundles. ${USE_NORMAL_HINT}`
+    );
+  }
+  if (candidate.notBefore && minBlockGapSeconds(chainId) === undefined) {
+    return issueFor(
+      index,
+      node,
+      node.data?.config?.[BUNDLE_SETTING_KEYS.notBefore],
+      `${NOT_BEFORE_UNSUPPORTED_ERROR} ${networkName(chainId, row)} has no fixed block slots, so KeeperHub cannot tell which blocks would be early. Clear ${BUNDLE_SETTING_LABELS.notBefore} (notBefore).`,
+      BUNDLE_SETTING_KEYS.notBefore
     );
   }
   const listed = row?.bundleBuilders ?? [];
@@ -393,6 +445,12 @@ function nodeIssues(
     };
   }
   const mode = resolveSendMode(config);
+  if (mode !== SEND_MODE.BUNDLE) {
+    const stray = strayBundleTimeIssue(index, node, config);
+    if (stray) {
+      return { issue: stray };
+    }
+  }
   if (mode === SEND_MODE.TRANSACTION) {
     return {};
   }
@@ -515,6 +573,14 @@ export async function validateSendModeForSave(
       options.recheckBundles === true &&
       resolveSendMode(config) === SEND_MODE.BUNDLE;
     const unchanged = unchangedFromSaved(config, before, networkField);
+    // validate_workflow also flags a stored Not before / Send ahead a non-bundle step ignores.
+    if (options.recheckBundles === true && !ctx.copy && !recheck && unchanged) {
+      const stray = strayBundleTimeIssue(index, node, config);
+      if (stray) {
+        issues.push(stray);
+      }
+      continue;
+    }
     if (!recheck && unchanged) {
       continue;
     }

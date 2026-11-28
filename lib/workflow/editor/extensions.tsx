@@ -51,6 +51,7 @@ import {
 } from "@/components/workflow/config/send-mode-field";
 import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
+import { UnixTimeField } from "@/components/workflow/config/unix-time-field";
 import { integrationsAtom } from "@/lib/integrations-store";
 import {
   normalizeProtocolArrayValue,
@@ -734,6 +735,27 @@ registerFieldRenderer(
 
 // Bundle settings: drawn by Send as in one box under it, so nothing here.
 registerFieldRenderer("bundle-setting", () => null);
+
+// Read Contract's "At a time": the time with what it reads as, its hint under it.
+const SIMULATE_TIME_HINT =
+  "Unix seconds, such as 1796126400, or a date with a time zone, such as 2026-12-01T12:00:00Z. Can be a template, such as {{Next work time.result}}. The check runs on the latest state with this time as the block time, and the first block number that cannot be earlier. Transactions sent before then are not seen. A time in the past checks the next block.";
+
+registerFieldRenderer(
+  "unix-time",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <UnixTimeField
+      disabled={disabled}
+      emptyError="Enter a time, or set Simulate at to Latest block."
+      fieldKey={field.key}
+      hints={[SIMULATE_TIME_HINT]}
+      key={field.key}
+      label={field.label}
+      onChange={(next) => onUpdateConfig(field.key, next)}
+      placeholder={field.placeholder}
+      value={config[field.key]}
+    />
+  )
+);
 
 // ============================================================================
 // Register Custom Integration Form Handlers
