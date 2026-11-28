@@ -17,6 +17,7 @@ import {
   isPreBroadcastNetworkError,
 } from "@/lib/web3/submit-signed";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { userOrSystemErrorClass } from "@/lib/errors/classify";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
@@ -39,6 +40,7 @@ import {
   getOrganizationWalletAddress,
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
+import { web3ConnectionFailure } from "@/lib/safe/sender-not-chosen";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { type RpcProviderManager, rpcRelayErrorClass } from "@/lib/rpc/providers";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
@@ -666,17 +668,14 @@ async function batchWriteContractCoreImpl(
   try {
     signerMode = await resolveSignerForNode({ organizationId, chainId, web3Connection });
   } catch (error) {
-    return {
-      success: false,
-      error: `Failed to resolve Web3 Connection: ${getErrorMessage(error)}`,
-      errorClass: ExecutionErrorType.SYSTEM,
-    };
+    // A class keeps failOnError=false from softening it; USER or SYSTEM by message.
+    return web3ConnectionFailure(error, userOrSystemErrorClass);
   }
   if (signerMode.kind !== SIGNER_MODE.EOA) {
     return {
       success: false,
       error:
-        "Batch Write Contract only supports the default EOA Web3 Connection. Safe/Role routing would change msg.sender for every batched call, which is not supported here. Use individual Write Contract nodes for Safe execution instead.",
+        "Batch Write Contract sends every call from your EOA, but this step resolves to a Safe. Pick EOA in its Web3 Connection, or use Write Contract steps to send from the Safe.",
       errorClass: ExecutionErrorType.USER,
     };
   }

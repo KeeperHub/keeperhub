@@ -27,6 +27,7 @@ Returns execution history for a workflow.
     "output": {...},
     "startedAt": "2024-01-01T00:00:00Z",
     "completedAt": "2024-01-01T00:00:05Z",
+    "stepCount": 3,
     "transactionHashes": [
       {
         "hash": "0x111...",
@@ -39,6 +40,8 @@ Returns execution history for a workflow.
   }
 ]
 ```
+
+`stepCount` is the number of distinct steps the run has logged so far, the trigger included, among the entries the [logs](#get-execution-logs) endpoint returns. A step that runs once per loop pass counts once. Unlike `completedSteps`, it also counts failed and still-running steps.
 
 A run's `input` or `output` larger than 1 MiB is returned as `{ "_truncated": true, "originalSize": <bytes>, "preview": "<first 1024 characters>" }` in place of the value.
 
@@ -63,6 +66,7 @@ Add `view=summary` for a lighter, paginated list. Each run omits `input`, `outpu
       "completedAt": "2024-01-01T00:00:05Z",
       "totalSteps": 3,
       "completedSteps": 3,
+      "stepCount": 3,
       "transactionHashes": [...],
       "ranVersion": 2
     }

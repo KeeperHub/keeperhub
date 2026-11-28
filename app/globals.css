@@ -163,6 +163,12 @@
   --header-height: 60px;
   /* The top banner slot; --app-banner-height takes it while one shows. */
   --app-banner-slot-height: 36px;
+  /* The editor's side panel from md to lg, where it opens over the canvas. */
+  --editor-panel-tablet-width: 360px;
+  /* The narrowest the side panel gets from lg, however far it is dragged. */
+  --editor-panel-min-width: 320px;
+  /* Sonner's toast width; editor toasts shrink below it to fit the panel. */
+  --toast-width: 356px;
   /* Above modals, below toasts. */
   --z-banner: 55;
   --radius: 0.625rem;
@@ -518,6 +524,55 @@
   }
 }
 
+/* From md to lg the side panel opens over the canvas: the zoom controls and
+   the AI prompt stay in the part it leaves (--right-panel-cover, on the canvas). */
+@media (48rem <= width < 64rem) {
+  .workflow-controls-panel {
+    right: var(--right-panel-cover, 0px) !important;
+  }
+  .workflow-prompt {
+    left: calc((100% - var(--right-panel-cover, 0px)) / 2);
+    max-width: calc(100% - var(--right-panel-cover, 0px));
+  }
+}
+
+/* Editor toasts stay clear of the zoom controls. Sonner sets its offsets and
+   width inline, hence !important. Open: inside the panel, left of which the
+   controls sit (--editor-panel-width is its measured width, set by the page). */
+@media (width >= 48rem) {
+  body:has([data-editor-side-panel="open"]) [data-sonner-toaster] {
+    --offset-right: 1rem !important;
+    --width: min(
+      var(--toast-width),
+      calc(var(--editor-panel-width, var(--editor-panel-tablet-width)) - 2rem)
+    ) !important;
+  }
+}
+@media (width >= 64rem) {
+  body:has([data-editor-side-panel="open"]) [data-sonner-toaster] {
+    --width: min(
+      var(--toast-width),
+      calc(var(--editor-panel-width, var(--editor-panel-min-width)) - 2rem)
+    ) !important;
+  }
+}
+/* Closed, or on a phone, the controls are at the canvas's right edge: toasts
+   stay left of them. */
+body:has([data-editor-side-panel="closed"]) [data-sonner-toaster] {
+  --offset-right: 4.5rem !important;
+}
+@media (width < 48rem) {
+  body:has([data-editor-toolbar]) [data-sonner-toaster] {
+    --offset-right: 4.5rem !important;
+  }
+}
+/* Up to 600px sonner spans the toast across the window instead. */
+@media (width <= 600px) {
+  body:has([data-editor-toolbar]) [data-sonner-toaster] [data-sonner-toast] {
+    width: calc(100% - var(--mobile-offset-left) - 4.5rem) !important;
+  }
+}
+
 /* The Use template bar lifts the zoom controls and toasts that come near
    its card (data-lifts-*, measured in workflow-toolbar.tsx). */
 body:has([data-lifts-controls]) .workflow-controls-panel {
@@ -737,6 +792,21 @@ body:has([data-lifts-toasts]) [data-sonner-toaster] {
   @variant touch-ui {
     height: --spacing(9);
     padding-inline: --spacing(3);
+  }
+}
+
+/* A toast's close button on a touch screen: 24px, with a 44px target. */
+[data-sonner-toaster]
+  [data-sonner-toast][data-styled="true"]
+  [data-close-button] {
+  @variant touch {
+    height: --spacing(6);
+    width: --spacing(6);
+    &::after {
+      content: "";
+      position: absolute;
+      inset: calc(--spacing(2.5) * -1);
+    }
   }
 }
 

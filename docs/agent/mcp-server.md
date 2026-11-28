@@ -287,7 +287,7 @@ and the authoritative safe first-write sequence.
 | Tool | Description |
 |------|-------------|
 | `search_templates` | Search pre-built workflow templates. |
-| `deploy_template` | Clone a public template into the organization as a new workflow. |
+| `deploy_template` | Clone a public template into the organization as a new workflow. A step that sent through a Safe your organization does not own has no sender in the clone and does not run until you pick one (your Default Sender, your EOA or one of your Safes); `stepsNeedingSender` in the result lists those steps. |
 | `get_template` | Deprecated. Use `get_workflow` instead. |
 
 ### Marketplace Listings
@@ -296,9 +296,9 @@ and the authoritative safe first-write sequence.
 |------|-------------|
 | `search_workflows` | Search listed workflows callable by external agents. Returns slug, description, input schema, and price. |
 | `call_workflow` | Invoke a listed workflow. Read workflows execute and return a result; write workflows return unsigned calldata. Paid listings return an x402 challenge (this tool does not auto-pay). |
-| `list_workflow` | Publish a workflow to the marketplace catalog. Idempotent. |
+| `list_workflow` | Publish a workflow to the marketplace catalog. Idempotent. Refused for API key and OAuth callers while the workflow has a step that sends from the EOA. |
 | `unlist_workflow` | Remove a workflow from the catalog. The slug is preserved for re-listing. |
-| `update_workflow_listing` | Edit listing metadata (description, tags, category, chain, schemas). |
+| `update_workflow_listing` | Edit listing metadata (description, tags, category, chain, schemas). Changing the price or schemas is refused for API key and OAuth callers while the workflow has a step that sends from the EOA. |
 | `get_workflow_listing` | Read a workflow's public listing metadata by slug. No auth required. |
 
 ### Integrations
@@ -428,14 +428,76 @@ The `network` field accepts chain IDs as strings: `"1"` (Ethereum mainnet), `"11
 
 ### `web3Connection` field
 
-Write actions take an optional `web3Connection` that selects which of the
-organization's signers the transaction is sent from:
+`web3/write-contract`, `web3/batch-write-contract`, `web3/approve-token`,
+`web3/transfer-funds`, `web3/transfer-token` and `robinhood/trade-stock-token`
+take an optional `web3Connection` that selects which of the organization's
+signers the transaction is sent from:
 
 | Value | Signer |
 |-------|--------|
 | omitted, `""`, or `"default"` | Organization policy for that chain: the configured Safe with its active role, the configured Safe owner-signed when no role is active, or the organization EOA when no Safe is active there. All three values are the same branch. |
 | `"eoa"` | The Turnkey EOA directly, bypassing the organization's Safe policy. |
-| `"safe:<safeWalletId>"` | A specific Safe belonging to the organization. |
+| `"safe:<safeWalletId>"` | A specific Safe belonging to the organization, with its Sender toggle on. No MCP tool lists Safe ids: pick a Safe in the editor, or use `"default"`. |
+| `"needs-sender"` | None: set by a copy or import on a step whose Safe the organization does not own. The step does not run until you set one of the values above. |
+
+Any other value is refused at save, and so is a template: the sender must be a
+fixed value. `web3/batch-write-contract`
+sends every call from the EOA, so it refuses `"safe:<safeWalletId>"`, and its
+run fails when the organization's Default Sender on that chain is a Safe.
+`web3/transfer-funds` reads the field on EVM networks only; on a Solana network
+it is treated like the actions below.
+
+No other action reads the field. A value already stored on one is dropped when
+the workflow is saved. A new value other than empty or `"default"` from an API
+key or MCP (OAuth) caller is refused with `INVALID_FIELD_VALUE`; the editor
+drops it instead:
+
+- protocol write actions (Aave, Lido, Morpho, Uniswap and the rest) always send
+  from the Default Sender under organization policy;
+- `web3/sign-typed-data` always signs with the organization's EOA;
+- the Solana write actions always use the organization's Solana wallet.
+
+Only someone in the editor can set or change a step that sends from the EOA.
+An API key or MCP (OAuth) caller that sends `"eoa"` on a new step, or on a
+stored EOA step whose config differs in any key (action, network, contract,
+function, arguments or any other) or that it enables or disables, gets
+`INVALID_FIELD_VALUE`. A step that sets `web3Connection` must not share its
+`id` with another step.
+
+While a workflow has a step that sends from the EOA, an API key or MCP caller
+cannot change the workflow at all:
+
+- Every node (its type, label, config and `enabled` flag) and every edge (its
+  source, target and handles) must stay as stored. Labels are locked because
+  template references resolve by label. Only node descriptions and positions,
+  and edge ids and labels, may differ.
+- It can send the workflow back exactly as stored. Or, in a request of its own
+  that changes nothing else, it can remove the EOA choice: set those steps to
+  `"default"` or a Safe (`web3/batch-write-contract` takes `"default"` only),
+  or delete them. That changes the wallet the steps send from, so ask the user
+  before doing it. Once no step sends from the EOA, later requests are free.
+- It cannot widen who can trigger the workflow or with what: listing it
+  (`isListed: true`, the go-live endpoint, or `list_workflow` and
+  `update_workflow_listing` at `/api/mcp/workflows/{id}/listing`), changing
+  `priceUsdcPerCall`, `inputSchema` or `outputMapping`, or making it more
+  visible (private to unlisted or public).
+- These stay free: renaming the workflow, turning it on or off, unlisting it,
+  making it private, and changing its tags or project.
+
+Anything else gets `INVALID_FIELD_VALUE`, naming the EOA step. Ask the user to
+make the change in the editor.
+
+In an organization whose Default Sender is a Safe, an API or MCP caller
+therefore cannot make a new `web3/batch-write-contract` step run: pick EOA in
+the editor, or use `web3/write-contract` steps.
+
+A copy within the same organization keeps every value, `"eoa"` included, the
+same as the original. A workflow copied from another organization, or imported
+from a file, drops `"eoa"` and `"default"`, so the new organization's own policy
+applies. It keeps a `"safe:<safeWalletId>"` value only where that organization
+owns the Safe, on a step that takes a Safe. A step on any other Safe is left
+with `"needs-sender"` and does not run until one is set; it never falls back to
+the Default Sender. A step that does not read the field loses it.
 
 Leave it unset unless you intend to override organization policy for that
 node. There is no other per-node signer field: `integrationId` is a database

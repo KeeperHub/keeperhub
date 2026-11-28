@@ -52,6 +52,7 @@ vi.mock("next/cache", () => ({
 }));
 
 import { PUT } from "@/app/api/workflows/[workflowId]/go-live/route";
+import { eoaWorkflowLockedMessage } from "@/lib/workflow/validation/eoa-workflow-lock";
 
 const WORKFLOW = {
   id: "wf_1",
@@ -130,5 +131,74 @@ describe("PUT /api/workflows/[workflowId]/go-live viewer check", () => {
     expect(mockRecordAuditEvent).toHaveBeenCalledWith(
       expect.objectContaining({ action: "workflow.listed" })
     );
+  });
+});
+
+describe("PUT /api/workflows/[workflowId]/go-live with an EOA step", () => {
+  const EOA_WORKFLOW = {
+    ...WORKFLOW,
+    nodes: [
+      {
+        id: "step-1",
+        type: "action",
+        data: {
+          type: "action",
+          label: "Send",
+          config: {
+            actionType: "web3/write-contract",
+            network: "1",
+            web3Connection: "eoa",
+          },
+        },
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkflowsFindFirst.mockResolvedValue(EOA_WORKFLOW);
+    mockGetWorkflowAccess.mockResolvedValue({
+      hasFullAccess: true,
+      canEdit: true,
+      isDeleted: false,
+    });
+    mockTransaction.mockResolvedValue(undefined);
+    mockRecordAuditEvent.mockResolvedValue(undefined);
+  });
+
+  it("refuses an API key", async () => {
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user_1",
+      organizationId: "org_1",
+      authMethod: "api-key",
+      apiKeyId: "key_1",
+    });
+
+    const response = await callGoLive();
+
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as {
+      invalidFields: { message: string; path: string }[];
+    };
+    expect(body.invalidFields).toEqual([
+      expect.objectContaining({
+        path: "isListed",
+        message: eoaWorkflowLockedMessage(["step-1"], true),
+      }),
+    ]);
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it("lists it for an editor session", async () => {
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user_1",
+      organizationId: "org_1",
+      authMethod: "session",
+    });
+
+    const response = await callGoLive();
+
+    expect(response.status).toBe(200);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 });

@@ -189,6 +189,9 @@ Never reference directly in components. These are raw values.
 | `--ds-sidebar-strip-width` | 32px | Collapsed sidebar strip |
 | `--ds-flyout-width` | 280px | Flyout panel width |
 | `--ds-drawer-width` | 220px | Analytics drawer width |
+| `--ds-editor-panel-tablet-width` | 360px | Editor side panel (Properties / Runs / History) from 768 to 1023 px, over the canvas |
+| `--ds-editor-panel-min-width` | 320px | Narrowest the editor side panel gets from 1024 px, however far it is dragged |
+| `--ds-toast-width` | 356px | Toast width (Sonner's default); editor toasts shrink below it to fit the open side panel |
 
 ---
 
@@ -219,6 +222,9 @@ These are what components should reference. See `specs/design-system/tokens.css`
 | Template badge text | `--color-badge-blue-text` | -- (use var()) |
 | Header offset | `--header-height` | `top-[var(--header-height)]` |
 | Flyout width | `--flyout-width` | `w-[var(--flyout-width)]` |
+| Editor side panel, tablet | `--editor-panel-tablet-width` | `w-(--editor-panel-tablet-width)` |
+| Editor side panel floor, from lg | `--editor-panel-min-width` | `max(<n>%, var(--editor-panel-min-width))` |
+| Toast width | `--toast-width` | `min(var(--toast-width), ...)` |
 
 ### Tokens Not Yet in Tailwind Theme
 

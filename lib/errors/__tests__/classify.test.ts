@@ -3,6 +3,7 @@ import {
   applyErrorClassHint,
   classifyExecutionError,
   isDefaultClassification,
+  userOrSystemErrorClass,
 } from "@/lib/errors/classify";
 import { DEFAULT_SYSTEM_ERROR_CODE } from "@/lib/errors/error-codes";
 import { ErrorCategory } from "@/lib/logging";
@@ -90,6 +91,28 @@ describe("classifyExecutionError", () => {
       const r = classifyExecutionError("Invalid contract address: ");
       expect(r.errorCategory).toBe(ErrorCategory.VALIDATION);
       expect(r.errorType).toBe("user");
+    });
+
+    it.each([
+      "Failed to resolve Web3 Connection: web3Connection refers to unknown Safe 's1'",
+      "Failed to resolve Web3 Connection: web3Connection Safe 's1' is on chain 8453, but this node runs on chain 1",
+      "Failed to resolve Web3 Connection: web3Connection Safe 's1' is not deployed yet (status=pending)",
+      "Failed to resolve Web3 Connection: web3Connection Safe 's1' has its Sender toggle off in Wallet settings. Turn it on, or pick another Web3 Connection.",
+      "Failed to resolve Web3 Connection: Invalid web3Connection value 'x'",
+    ])(
+      "a picked sender the run cannot use: configuration + user: %s",
+      (msg) => {
+        const r = classifyExecutionError(msg);
+        expect(r.errorCategory).toBe(ErrorCategory.CONFIGURATION);
+        expect(r.errorType).toBe("user");
+      }
+    );
+
+    it("a resolver fault stays system", () => {
+      const r = classifyExecutionError(
+        "Failed to resolve Web3 Connection: connection terminated"
+      );
+      expect(r.errorType).toBe("system");
     });
 
     it("Invalid function arguments: validation + user", () => {
@@ -657,5 +680,21 @@ describe("applyErrorClassHint", () => {
     );
     expect(uncoded.errorType).toBe("system");
     expect(uncoded.code).toBe(DEFAULT_SYSTEM_ERROR_CODE);
+  });
+});
+
+describe("userOrSystemErrorClass", () => {
+  it("is user for an author's mistake and system otherwise, never external", () => {
+    expect(
+      userOrSystemErrorClass(
+        "Failed to resolve Web3 Connection: web3Connection refers to unknown Safe 's1'"
+      )
+    ).toBe("user");
+    expect(
+      userOrSystemErrorClass(
+        "Failed to resolve Web3 Connection: connection terminated"
+      )
+    ).toBe("system");
+    expect(userOrSystemErrorClass("request timed out")).not.toBe("external");
   });
 });

@@ -34,6 +34,7 @@ import {
   executeContractCallAsRole,
   executeContractCallAsSafe,
 } from "@/lib/safe/execute-as-safe";
+import { web3ConnectionFailure } from "@/lib/safe/sender-not-chosen";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import {
   preflightGasBalance,
@@ -401,10 +402,7 @@ async function transferTokenCoreImpl(
       web3Connection,
     });
   } catch (error) {
-    return {
-      success: false,
-      error: `Failed to resolve Web3 Connection: ${getErrorMessage(error)}`,
-    };
+    return web3ConnectionFailure(error);
   }
 
   // Get workflow ID for transaction tracking. The executor already puts

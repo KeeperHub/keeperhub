@@ -41,6 +41,8 @@ import { GoLiveOverlay } from "@/components/overlays/go-live-overlay";
 import { ListingOverlay } from "@/components/overlays/listing-overlay";
 import { ManualRunInputOverlay } from "@/components/overlays/manual-run-input-overlay";
 import { WalletToolbarButton } from "@/components/workflow/wallet-toolbar-button";
+import { toastStepsNeedingSender } from "@/lib/client/needs-sender-toast";
+import { stepNeedsSender } from "@/lib/workflow/web3-connection";
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
 import { useAuthPrompt } from "@/components/auth/provider";
 import { isAnonymousUser } from "@/lib/is-anonymous";
@@ -398,7 +400,16 @@ function getNodeMissingFields(
       )
     );
 
-  const allMissingFields = [...missingFields, ...missingEntryFields];
+  // A copy off a Safe the organization does not own has no sender yet.
+  const missingSender = stepNeedsSender(config)
+    ? [{ fieldKey: "web3Connection", fieldLabel: "Sender (Web3 Connection)" }]
+    : [];
+
+  const allMissingFields = [
+    ...missingFields,
+    ...missingEntryFields,
+    ...missingSender,
+  ];
 
   if (allMissingFields.length === 0) {
     return null;
@@ -1514,6 +1525,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
       const newWorkflow = await api.workflow.duplicate(currentWorkflowId);
       refetchSidebar({ workflowCreated: true });
       toast.success("Template ready in your workflows");
+      toastStepsNeedingSender(newWorkflow);
       router.push(`/workflows/${newWorkflow.id}`);
     } catch (error) {
       console.error("Failed to duplicate workflow:", error);

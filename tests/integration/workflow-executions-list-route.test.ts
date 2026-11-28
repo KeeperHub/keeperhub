@@ -58,10 +58,13 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 import { PgDialect } from "drizzle-orm/pg-core";
+import { drizzle } from "drizzle-orm/postgres-js";
 import {
   GET,
   MAX_COUNTED_RUNS,
 } from "@/app/api/workflows/[workflowId]/executions/route";
+import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
+import { stepCountExtra } from "@/lib/workflow/execution-step-count";
 import { decodeExecutionsCursor } from "@/lib/workflow/executions-cursor";
 
 const WORKFLOW_ID = "wf_1";
@@ -88,6 +91,7 @@ function makeRow(index: number, overrides: Partial<Row> = {}): Row {
     duration: null,
     totalSteps: "3",
     completedSteps: "2",
+    stepCount: 2,
     error: null,
     ...overrides,
   };
@@ -212,6 +216,7 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
         executionTrace: ["trigger", "action"],
         totalSteps: 3,
         completedSteps: 2,
+        stepCount: 2,
         ranVersion: 3,
       });
       expect(response.headers.get("etag")).toBeNull();
@@ -225,6 +230,7 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
         expect(Object.keys(args.extras as object).sort()).toEqual([
           "input",
           "output",
+          "stepCount",
         ]);
       });
     });
@@ -266,8 +272,20 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
         id: "exec_59",
         totalSteps: 3,
         completedSteps: 2,
+        stepCount: 2,
         ranVersion: 3,
       });
+    });
+
+    it("counts each run's steps in the list query, a closed run's too", async () => {
+      setRows([makeRow(59, { stepCount: 4 }), makeRow(58, { stepCount: 0 })]);
+      const response = await call("?view=summary");
+      const body = (await response.json()) as {
+        executions: Array<{ id: string; stepCount: number }>;
+      };
+      expect(body.executions.map((e) => e.stepCount)).toEqual([4, 0]);
+      const [args] = mockFindMany.mock.calls[0] as [Record<string, unknown>];
+      expect(args.extras).toHaveProperty("stepCount");
     });
 
     it("excludes the heavy columns at the query and over-fetches one row", async () => {
@@ -474,5 +492,26 @@ describe("GET /api/workflows/[workflowId]/executions", () => {
       };
       expect(body.executions[0]?.status).toBe("error");
     });
+  });
+});
+
+describe("stepCountExtra", () => {
+  // The relational query renders the SQL the route runs; no connection is made.
+  const queryDb = drizzle.mock({
+    schema: { workflowExecutions, workflowExecutionLogs },
+  });
+
+  it("correlates the live step logs with the run of each row", () => {
+    const { sql } = queryDb.query.workflowExecutions
+      .findMany({
+        columns: { id: true },
+        extras: { stepCount: stepCountExtra() },
+        limit: 1,
+      })
+      .toSQL();
+    expect(sql).toContain(
+      '(SELECT count(DISTINCT step_logs.node_id) FROM "workflow_execution_logs" AS step_logs WHERE step_logs.execution_id = "workflowExecutions"."id" AND step_logs.deleted_at IS NULL)::int as "step_count"'
+    );
+    expect(sql).toContain('from "workflow_executions" "workflowExecutions"');
   });
 });

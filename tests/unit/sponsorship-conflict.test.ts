@@ -23,6 +23,17 @@ describe("isIgnoredWhileSponsored", () => {
     vi.unstubAllEnvs();
   });
 
+  it("warns despite a stale Safe sender on a step that never reads it", () => {
+    expect(
+      isIgnoredWhileSponsored(GAS_LIMIT_FIELD, {
+        actionType: "aave-v3/supply",
+        network: SPONSORED_NETWORK,
+        gasLimitMultiplier: GAS_LIMIT,
+        web3Connection: "safe:abc",
+      })
+    ).toBe(true);
+  });
+
   it("warns for a set gas limit while Sponsor gas is on by default", () => {
     expect(
       isIgnoredWhileSponsored(GAS_LIMIT_FIELD, {
@@ -68,6 +79,7 @@ describe("isIgnoredWhileSponsored", () => {
     [
       "the node sends through an explicit Safe",
       {
+        actionType: "web3/write-contract",
         network: SPONSORED_NETWORK,
         gasLimitMultiplier: GAS_LIMIT,
         web3Connection: "safe:abc",

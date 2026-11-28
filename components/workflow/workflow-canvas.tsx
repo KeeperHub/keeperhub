@@ -10,6 +10,7 @@ import {
   type OnConnectStartParams,
   useOnViewportChange,
   useReactFlow,
+  useStoreApi,
   useUpdateNodeInternals,
   type Connection as XYFlowConnection,
   type EdgeChange,
@@ -17,13 +18,24 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { usePathname } from "next/navigation";
 import { Canvas } from "@/components/ai-elements/canvas";
 import { Connection } from "@/components/ai-elements/connection";
 import { Controls } from "@/components/ai-elements/controls";
 import { AIPrompt } from "@/components/ai-elements/prompt";
-import { useIsMobile } from "@/hooks/use-mobile";
+import {
+  BELOW_LG_QUERY,
+  mediaQueryMatches,
+  useIsMobile,
+} from "@/hooks/use-mobile";
 import "@xyflow/react/dist/style.css";
 
 import { PlayCircle, Zap } from "lucide-react";
@@ -56,6 +68,7 @@ import {
   type WorkflowNodeType,
 } from "@/lib/workflow/store";
 import { hasDuplicateEdge } from "@/lib/workflow/editor/edge-helpers";
+import { readSidePanelCollapsed } from "@/lib/workflow/editor/side-panel-state";
 import { Edge } from "../ai-elements/edge";
 import { Panel } from "../ai-elements/panel";
 import { ActionNode } from "./nodes/action-node";
@@ -101,6 +114,24 @@ function getActionType(node: { data?: unknown }): string | undefined {
 
 const VIEWPORT_STORAGE_PREFIX = "wf-viewport-";
 const FIT_VIEW_DEFAULTS = { maxZoom: 1, minZoom: 0.1, padding: 0.2, duration: 0 } as const;
+
+// One side's share of FIT_VIEW_DEFAULTS.padding in px, as React Flow reads a number.
+function fitSidePaddingPx(width: number): number {
+  return Math.floor((width - width / (1 + FIT_VIEW_DEFAULTS.padding)) * 0.5);
+}
+
+function rootTokenPx(name: string): number {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name);
+  return Number.parseFloat(value) || 0;
+}
+
+// The px the open side panel covers: below lg it lies over the canvas; from lg
+// the canvas is already narrowed by it, so nothing.
+function sidePanelCoverPx(): number {
+  return mediaQueryMatches(BELOW_LG_QUERY)
+    ? rootTokenPx("--editor-panel-tablet-width")
+    : 0;
+}
 
 export function WorkflowCanvas() {
   const pathname = usePathname();
@@ -156,6 +187,7 @@ export function WorkflowCanvas() {
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
   const { screenToFlowPosition, fitView, getViewport, setViewport } =
     useReactFlow();
+  const flowStore = useStoreApi();
   const updateNodeInternals = useUpdateNodeInternals();
 
   const connectingNodeId = useRef<string | null>(null);
@@ -213,36 +245,29 @@ export function WorkflowCanvas() {
     ),
   });
 
-  // Sidebar-aware fit view: fit then shift viewport left to account for sidebar
+  // Fit view leaves the open side panel's px clear on the right below lg.
   const fitViewSidebarAware = useCallback(
     (options?: { duration?: number; nodes?: { id: string }[] }) => {
       const duration = options?.duration ?? 300;
+      const coverPx =
+        isSidebarCollapsed || !rightPanelWidth ? 0 : sidePanelCoverPx();
+      const canvasWidth = flowStore.getState().width;
       fitView({
         ...FIT_VIEW_DEFAULTS,
         duration,
         ...(options?.nodes ? { nodes: options.nodes } : {}),
+        ...(coverPx > 0
+          ? {
+              padding: {
+                x: FIT_VIEW_DEFAULTS.padding,
+                y: FIT_VIEW_DEFAULTS.padding,
+                right: `${fitSidePaddingPx(canvasWidth) + coverPx}px`,
+              },
+            }
+          : {}),
       });
-
-      if (isSidebarCollapsed || !rightPanelWidth) {
-        return;
-      }
-
-      const panelPercent = Number.parseFloat(rightPanelWidth);
-      if (Number.isNaN(panelPercent) || panelPercent <= 0) {
-        return;
-      }
-
-      const shiftPx = (window.innerWidth * panelPercent) / 100 / 2;
-      const shiftDelay = duration > 0 ? duration + 50 : 0;
-      setTimeout(() => {
-        const vp = getViewport();
-        setViewport(
-          { ...vp, x: vp.x - shiftPx },
-          { duration: duration > 0 ? 200 : 0 }
-        );
-      }, shiftDelay);
     },
-    [fitView, getViewport, setViewport, isSidebarCollapsed, rightPanelWidth]
+    [fitView, flowStore, isSidebarCollapsed, rightPanelWidth]
   );
 
   const fitViewSidebarAwareRef = useRef(fitViewSidebarAware);
@@ -291,10 +316,10 @@ export function WorkflowCanvas() {
       hasPreShiftedRef.current = true;
 
       // Check if sidebar is collapsed from cookie (atom may not be initialized yet)
-      const collapsedCookie = document.cookie
-        .split("; ")
-        .find((row) => row.startsWith("sidebar-collapsed="));
-      const isCollapsed = collapsedCookie?.split("=")[1] === "true";
+      const isCollapsed = readSidePanelCollapsed(
+        document.cookie,
+        mediaQueryMatches(BELOW_LG_QUERY)
+      );
 
       // Skip if sidebar is collapsed - content should stay centered
       if (isCollapsed) {
@@ -808,19 +833,22 @@ export function WorkflowCanvas() {
 
   return (
     <div
-      className="relative h-full bg-background"
+      className="relative h-full w-full bg-background lg:w-[calc(100%-var(--right-panel-cover))]"
       data-testid="workflow-canvas"
       data-ready={isCanvasReady}
       data-preview-request={previewRequests
         .map((entry) => `${entry.version}:${entry.status}`)
         .join(" ")}
-      style={{
-        opacity: isCanvasReady ? 1 : 0,
-        width: rightPanelWidth ? `calc(100% - ${rightPanelWidth})` : "100%",
-        transition: isPanelAnimating
-          ? "width 300ms ease-out, opacity 300ms"
-          : "opacity 300ms",
-      }}
+      style={
+        {
+          // From lg the panel takes this width; below it the panel is over the canvas.
+          "--right-panel-cover": rightPanelWidth ?? "0px",
+          opacity: isCanvasReady ? 1 : 0,
+          transition: isPanelAnimating
+            ? "width 300ms ease-out, opacity 300ms"
+            : "opacity 300ms",
+        } as CSSProperties
+      }
     >
       {/* React Flow Canvas */}
       <Canvas

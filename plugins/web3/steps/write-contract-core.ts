@@ -8,6 +8,7 @@
 import "server-only";
 import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { userOrSystemErrorClass } from "@/lib/errors/classify";
 
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
@@ -42,6 +43,7 @@ import {
   executeContractCallAsRole,
   executeContractCallAsSafe,
 } from "@/lib/safe/execute-as-safe";
+import { web3ConnectionFailure } from "@/lib/safe/sender-not-chosen";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import {
   preflightGasBalance,
@@ -546,11 +548,8 @@ async function writeContractCoreImpl(
       web3Connection,
     });
   } catch (error) {
-    return {
-      success: false,
-      error: `Failed to resolve Web3 Connection: ${getErrorMessage(error)}`,
-      errorClass: ExecutionErrorType.SYSTEM,
-    };
+    // A class keeps failOnError=false from softening it; USER or SYSTEM by message.
+    return web3ConnectionFailure(error, userOrSystemErrorClass);
   }
 
   if (payerParam !== undefined) {

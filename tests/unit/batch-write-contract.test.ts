@@ -893,6 +893,38 @@ describe("batch-write-contract - failOnError softening", () => {
     expect(notSoftened).toBe(hardFailure);
   });
 
+  it("does not soften a picked sender the run cannot use", async () => {
+    mockResolveSignerForNode.mockRejectedValueOnce(
+      new Error("web3Connection refers to unknown Safe 'gone'")
+    );
+
+    const result = applyBatchFailOnError(
+      await batchWriteContractCore(baseInput({ web3Connection: "safe:gone" })),
+      false
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+  });
+
+  it("does not soften a resolver fault, and classes it SYSTEM", async () => {
+    mockResolveSignerForNode.mockRejectedValueOnce(
+      new Error("connection terminated")
+    );
+
+    const result = applyBatchFailOnError(
+      await batchWriteContractCore(baseInput({})),
+      false
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.SYSTEM,
+    });
+  });
+
   it("softens a genuine broadcast failure only when failOnError is false", async () => {
     mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
     mockExecuteContractCall.mockRejectedValueOnce(new Error("nonce too low"));

@@ -29,6 +29,8 @@ export const VALIDATION_ERROR_CODES = {
   TRIGGER_ABI_EVENT_MISSING_INPUTS: "trigger-abi-event-missing-inputs",
   TRIGGER_EVENT_NOT_IN_ABI: "trigger-event-not-in-abi",
   TRIGGER_EVENT_NAME_AMBIGUOUS: "trigger-event-name-ambiguous",
+  // A copied step whose Safe the organization does not own has no sender yet.
+  SENDER_NOT_CHOSEN: "sender-not-chosen",
 } as const;
 
 export const VALIDATION_WARNING_CODES = {

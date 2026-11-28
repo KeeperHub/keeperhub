@@ -25,6 +25,7 @@ import {
   workflowExportV1Schema,
 } from "@/lib/workflow/export-schema";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
+import { releaseUnownedSafes } from "@/lib/workflow/release-unowned-safes";
 import {
   formatActionConfigValidationResponse,
   validateWorkflowActionConfigs,
@@ -126,10 +127,15 @@ export async function POST(request: Request): Promise<NextResponse> {
     const exportPayload = parsed.data;
 
     const importNodes = stripIntegrationsFromImportNodes(exportPayload.nodes);
-    const sanitized = sanitizeWorkflowData(
+    const sanitizedImport = sanitizeWorkflowData(
       importNodes,
       exportPayload.edges as Record<string, unknown>[]
     );
+    // An export can come from any organization: a step on a Safe this one does
+    // not own has no sender until one is picked.
+    const { nodes: importedNodes, needingSender: stepsNeedingSender } =
+      await releaseUnownedSafes(sanitizedImport.nodes, organizationId);
+    const sanitized = { ...sanitizedImport, nodes: importedNodes };
 
     // Org principal: the imported workflow is org-owned (matches runtime).
     const validation = await validateWorkflowIntegrations(
@@ -213,6 +219,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       createdAt: newWorkflow.createdAt.toISOString(),
       updatedAt: newWorkflow.updatedAt.toISOString(),
       integrationBindings: exportPayload.integrationBindings,
+      stepsNeedingSender,
     });
   } catch (error) {
     logSystemError(ErrorCategory.DATABASE, "Failed to import workflow", error, {

@@ -64,6 +64,11 @@ vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: (...args: unknown[]) => mockGetRpcProvider(...args),
 }));
 
+vi.mock("@/lib/logging", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/logging")>()),
+  logSystemError: vi.fn(),
+}));
+
 const mockResolveSignerForNode = vi.fn();
 vi.mock("@/lib/safe/signer-resolver", () => ({
   SIGNER_MODE: { EOA: "eoa", SAFE: "safe", SAFE_ROLE: "safe-role" },
@@ -72,6 +77,12 @@ vi.mock("@/lib/safe/signer-resolver", () => ({
 }));
 
 import { POST } from "@/app/api/gas/estimate/route";
+import { logSystemError } from "@/lib/logging";
+import {
+  SENDER_NOT_CHOSEN,
+  SENDER_NOT_CHOSEN_MESSAGE,
+  SenderNotChosenError,
+} from "@/lib/safe/sender-not-chosen";
 
 const WORK_ABI = JSON.stringify([
   {
@@ -266,6 +277,74 @@ describe("POST /api/gas/estimate - batch-write-contract", () => {
     expect(data.error).toContain("EOA");
     expect(mockBuildCallsWithMeta).not.toHaveBeenCalled();
     expect(mockEstimateGas).not.toHaveBeenCalled();
+  });
+
+  it("answers a step with no sender with a 400, before any RPC or failover", async () => {
+    mockResolveSignerForNode.mockRejectedValueOnce(new SenderNotChosenError());
+
+    const response = await POST(
+      makeRequest({
+        chainId: 1,
+        actionSlug: "batch-write-contract",
+        config: {
+          calls: JSON.stringify(SAMPLE_CALLS),
+          web3Connection: SENDER_NOT_CHOSEN,
+        },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const data = (await response.json()) as { error: string };
+    expect(data.error).toBe(SENDER_NOT_CHOSEN_MESSAGE);
+    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(mockEstimateGas).not.toHaveBeenCalled();
+    expect(logSystemError).not.toHaveBeenCalled();
+  });
+
+  it("answers any other sender lookup failure with a 400, not a 500", async () => {
+    mockResolveSignerForNode.mockRejectedValueOnce(
+      new Error("web3Connection names a Safe that is not deployed")
+    );
+
+    const response = await POST(
+      makeRequest({
+        chainId: 1,
+        actionSlug: "batch-write-contract",
+        config: {
+          calls: JSON.stringify(SAMPLE_CALLS),
+          web3Connection: "safe:gone",
+        },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    const data = (await response.json()) as { error: string };
+    expect(data.error).toBe(
+      "Failed to resolve Web3 Connection: web3Connection names a Safe that is not deployed"
+    );
+    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(logSystemError).not.toHaveBeenCalled();
+  });
+
+  it("keeps a fault in the sender lookup on the 500 path, logged", async () => {
+    mockResolveSignerForNode.mockRejectedValueOnce(
+      new Error("connection terminated unexpectedly")
+    );
+
+    const response = await POST(
+      makeRequest({
+        chainId: 1,
+        actionSlug: "batch-write-contract",
+        config: {
+          calls: JSON.stringify(SAMPLE_CALLS),
+          web3Connection: "safe:abc",
+        },
+      })
+    );
+
+    expect(response.status).toBe(500);
+    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    expect(logSystemError).toHaveBeenCalled();
   });
 
   it("passes chainId and the node's web3Connection to resolveSignerForNode", async () => {

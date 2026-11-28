@@ -19,6 +19,7 @@ import {
 import { WorkflowMiniMap } from "@/components/hub/workflow-mini-map";
 import { api, type SavedWorkflow } from "@/lib/api-client";
 import { signInAnonymously, useSession } from "@/lib/auth-client";
+import { toastStepsNeedingSender } from "@/lib/client/needs-sender-toast";
 import { useDebounce } from "@/lib/hooks/use-debounce";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 
@@ -81,6 +82,7 @@ export function FeaturedOverlay({ overlayId }: FeaturedOverlayProps) {
       const duplicated = await api.workflow.duplicate(workflowId);
       refetchSidebar({ workflowCreated: true });
       toast.success("Template applied successfully");
+      toastStepsNeedingSender(duplicated);
       closeAll();
       router.push(`/workflows/${duplicated.id}`);
     } catch (error) {

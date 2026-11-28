@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { parseGasLimitConfig } from "@/lib/web3/gas-defaults";
 import { hasTemplateToken } from "@/lib/workflow/template-ref";
+import { actionTakesWeb3Connection } from "@/lib/workflow/web3-connection";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 
 type GasLimitMultiplierFieldProps = {
@@ -48,6 +49,10 @@ export function GasLimitMultiplierField({
   const chainIdRaw = config[networkField];
   const chainId = chainIdRaw ? Number(chainIdRaw) : undefined;
   const actionSlug = field.actionSlug;
+  // A stale value on a step that ignores it must not change the estimate.
+  const web3Connection = actionTakesWeb3Connection(config.actionType)
+    ? config.web3Connection
+    : undefined;
 
   // Parse the current value — always treat as maxGasLimit mode
   const parsed = useMemo(() => parseGasLimitConfig(value), [value]);
@@ -68,7 +73,7 @@ export function GasLimitMultiplierField({
         tokenConfig: config.tokenConfig,
         calls: config.calls,
         isolateCallFailures: config.isolateCallFailures,
-        web3Connection: config.web3Connection,
+        web3Connection,
       }),
     [
       config.contractAddress,
@@ -80,7 +85,7 @@ export function GasLimitMultiplierField({
       config.tokenConfig,
       config.calls,
       config.isolateCallFailures,
-      config.web3Connection,
+      web3Connection,
     ]
   );
 

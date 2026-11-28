@@ -29,6 +29,7 @@ import { parsePythTriggerConfig } from "@/lib/pyth/price-trigger";
 import { findPythTriggerNode } from "@/lib/pyth/trigger-config";
 import { executionPriorityWarning } from "@/lib/workflow/execution-priority";
 import { findStoredRef } from "@/lib/workflow/template-ref";
+import { stepNeedsSender } from "@/lib/workflow/web3-connection";
 
 export type ValidationIssue = {
   code: ValidationErrorCode | ValidationWarningCode;
@@ -129,6 +130,9 @@ export function validateWorkflow(
   // Signer-routing hint: a signed write names an integration with a key the
   // runtime does not read for routing.
   runSignerRoutingCheck(workflow, warnings);
+
+  // A step left with no sender (a copy off another organization's Safe).
+  runSenderChoiceCheck(workflow, errors);
 
   // VALID-05: chain ID existence — only when caller pre-fetched chainIds.
   // Per-node check mitigates Pitfall 12 (multi-chain WETH false positives).
@@ -750,6 +754,27 @@ function runSignerRoutingCheck(
       code: VALIDATION_WARNING_CODES.SIGNER_ROUTING_KEY_IGNORED,
       message: `nodes[${idx}].config sets "integrationId", which no web3 step reads. The signer for a signed write is resolved from "web3Connection" only, so this value has no effect on which wallet signs; remove it. Use "web3Connection" only when this node needs a signer other than the one organization policy would pick; leaving it absent, empty or "default" routes the node through that policy.`,
       parameterPath: `nodes[${idx}].config.integrationId`,
+    });
+  }
+}
+
+function runSenderChoiceCheck(
+  workflow: ValidatorWorkflow,
+  errors: ValidationIssue[]
+): void {
+  if (!Array.isArray(workflow.nodes)) {
+    return;
+  }
+  for (const [idx, node] of workflow.nodes.entries()) {
+    const data = (node as { data?: { enabled?: unknown; config?: unknown } })
+      ?.data;
+    if (data?.enabled === false || !stepNeedsSender(data?.config)) {
+      continue;
+    }
+    errors.push({
+      code: VALIDATION_ERROR_CODES.SENDER_NOT_CHOSEN,
+      message: `nodes[${idx}] has no sender: this step used a Safe your organization does not own. It won't run until you pick a sender. Set "web3Connection" to "default" (the Default Sender), or pick EOA or one of the organization's Safes in the editor.`,
+      parameterPath: `nodes[${idx}].data.config.web3Connection`,
     });
   }
 }

@@ -16,6 +16,7 @@ import {
   shareExecutionStatusUpdate,
 } from "@/lib/workflow/share-execution-status";
 import { workflowNotDeleted } from "@/lib/workflow/soft-delete";
+import type { StoredExposure } from "@/lib/workflow/validation/eoa-workflow-lock";
 
 export type ListingErrorCode =
   | "NOT_FOUND"
@@ -155,6 +156,32 @@ type ListingRow = {
 function isSlugConflict(err: unknown): boolean {
   const cause = (err as { cause?: { code?: string } }).cause;
   return cause?.code === "23505";
+}
+
+/** What the EOA exposure lock reads, or null when the workflow is not found. */
+export async function getWorkflowExposure(
+  workflowId: string,
+  orgId: string
+): Promise<StoredExposure | null> {
+  const rows = await db
+    .select({
+      nodes: workflows.nodes,
+      isListed: workflows.isListed,
+      priceUsdcPerCall: workflows.priceUsdcPerCall,
+      inputSchema: workflows.inputSchema,
+      outputMapping: workflows.outputMapping,
+      visibility: workflows.visibility,
+    })
+    .from(workflows)
+    .where(
+      and(
+        eq(workflows.id, workflowId),
+        eq(workflows.organizationId, orgId),
+        workflowNotDeleted()
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function listWorkflow(

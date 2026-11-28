@@ -7,7 +7,11 @@ import {
   type ValidatorWorkflow,
   validateWorkflow,
 } from "@/lib/mcp/validate-workflow";
-import { VALIDATION_WARNING_CODES } from "@/lib/mcp/validate-workflow-codes";
+import {
+  VALIDATION_ERROR_CODES,
+  VALIDATION_WARNING_CODES,
+} from "@/lib/mcp/validate-workflow-codes";
+import { SENDER_NOT_CHOSEN } from "@/lib/safe/sender-not-chosen";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -280,5 +284,83 @@ describe("validateWorkflow — signer routing, malformed nodes", () => {
         })
       )
     ).toEqual([]);
+  });
+});
+
+describe("validateWorkflow - step with no sender chosen", () => {
+  const senderErrors = (wf: ValidatorWorkflow) =>
+    validateWorkflow(wf).errors.filter(
+      (issue) => issue.code === VALIDATION_ERROR_CODES.SENDER_NOT_CHOSEN
+    );
+
+  it("reports it as an error on the node's web3Connection", () => {
+    const wf = makeWorkflow({
+      nodes: [
+        triggerNode(),
+        writeNode("write-1", { web3Connection: SENDER_NOT_CHOSEN }),
+      ],
+    });
+    const result = validateWorkflow(wf);
+    expect(result.valid).toBe(false);
+    expect(senderErrors(wf)).toEqual([
+      expect.objectContaining({
+        parameterPath: "nodes[1].data.config.web3Connection",
+      }),
+    ]);
+    // An API caller cannot set "eoa", so the fix it names is the editor.
+    const [issue] = senderErrors(wf);
+    expect(issue.message).not.toContain('"eoa"');
+    expect(issue.message).toContain("in the editor");
+  });
+
+  it("does not report Transfer Native Token on a Solana network", () => {
+    const wf = makeWorkflow({
+      nodes: [
+        triggerNode(),
+        writeNode(
+          "sol-1",
+          { web3Connection: SENDER_NOT_CHOSEN, network: "101" },
+          "web3/transfer-funds"
+        ),
+      ],
+    });
+    expect(senderErrors(wf)).toEqual([]);
+  });
+
+  it("does not report a chosen sender or a disabled step", () => {
+    const disabled = writeNode("write-2", {
+      web3Connection: SENDER_NOT_CHOSEN,
+    });
+    disabled.data = {
+      ...disabled.data,
+      enabled: false,
+    } as typeof disabled.data;
+    const wf = makeWorkflow({
+      nodes: [
+        triggerNode(),
+        writeNode("write-1", { web3Connection: "default" }),
+        disabled,
+      ],
+    });
+    expect(senderErrors(wf)).toEqual([]);
+  });
+
+  it("does not report a step whose action never reads its Web3 Connection", () => {
+    const wf = makeWorkflow({
+      nodes: [
+        triggerNode(),
+        writeNode(
+          "supply-1",
+          { web3Connection: SENDER_NOT_CHOSEN },
+          "aave-v3/supply"
+        ),
+        writeNode(
+          "sign-1",
+          { web3Connection: SENDER_NOT_CHOSEN },
+          "web3/sign-typed-data"
+        ),
+      ],
+    });
+    expect(senderErrors(wf)).toEqual([]);
   });
 });

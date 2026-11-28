@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { type MouseEvent, useState } from "react";
 import { toast } from "sonner";
 import { api, type SavedWorkflow } from "@/lib/api-client";
+import { toastStepsNeedingSender } from "@/lib/client/needs-sender-toast";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
 import type { VoteOverridesMap } from "./use-vote-overrides";
@@ -41,6 +42,7 @@ export function WorkflowTemplateGrid({
       const duplicated = await api.workflow.duplicate(workflowId);
       refetchSidebar({ workflowCreated: true });
       toast.success("Template duplicated");
+      toastStepsNeedingSender(duplicated);
       router.push(`/workflows/${duplicated.id}`);
     } catch (error) {
       toast.error(

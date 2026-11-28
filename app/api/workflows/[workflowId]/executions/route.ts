@@ -10,6 +10,7 @@ import { workflowExecutions, workflowHistory, workflows } from "@/lib/db/schema"
 import { parsePageLimit } from "@/lib/pagination";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { boundedJsonb } from "@/lib/workflow/bounded-jsonb";
+import { stepCountExtra } from "@/lib/workflow/execution-step-count";
 import {
   decodeExecutionsCursor,
   encodeExecutionsCursor,
@@ -184,6 +185,7 @@ async function summaryResponse(
           sql<number | null>`CASE WHEN ${workflowExecutions.status} = 'skipped' THEN (${workflowExecutions.output}->>'refusals')::int END`.as(
             "refusals"
           ),
+        stepCount: stepCountExtra(),
       },
       orderBy: [desc(workflowExecutions.startedAt), desc(workflowExecutions.id)],
       limit: limit + 1,
@@ -294,6 +296,7 @@ export async function GET(
       extras: {
         input: boundedJsonb(workflowExecutions.input).as("input"),
         output: boundedJsonb(workflowExecutions.output).as("output"),
+        stepCount: stepCountExtra(),
       },
       orderBy: [desc(workflowExecutions.startedAt)],
       limit: 50,

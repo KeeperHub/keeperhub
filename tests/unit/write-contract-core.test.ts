@@ -329,6 +329,11 @@ import {
   executeContractCallAsRole,
   executeContractCallAsSafe,
 } from "@/lib/safe/execute-as-safe";
+import {
+  SENDER_NOT_CHOSEN,
+  SENDER_NOT_CHOSEN_MESSAGE,
+  SenderNotChosenError,
+} from "@/lib/safe/sender-not-chosen";
 import { resolveSignerForNode } from "@/lib/safe/signer-resolver";
 import { NextBlockSimulationUnsupportedError } from "@/lib/web3/next-block-simulation";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
@@ -433,6 +438,45 @@ describe("writeContractCore stablecoin ceiling", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe("writeContractCore step with no sender chosen", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    registry.safeRows = [];
+  });
+
+  it("refuses with a user error before anything is signed", async () => {
+    vi.mocked(resolveSignerForNode).mockRejectedValueOnce(
+      new SenderNotChosenError()
+    );
+
+    const result = await writeContractCore({
+      contractAddress: USDC_CONTRACT,
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      functionArgs: JSON.stringify([
+        "0x1111111111111111111111111111111111111111",
+        "1000",
+      ]),
+      web3Connection: SENDER_NOT_CHOSEN,
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: SENDER_NOT_CHOSEN_MESSAGE,
+      errorClass: ExecutionErrorType.USER,
+    });
+    expect(resolveSignerForNode).toHaveBeenCalledWith(
+      expect.objectContaining({ web3Connection: SENDER_NOT_CHOSEN })
+    );
+    expect(initializeWalletSigner).not.toHaveBeenCalled();
+    expect(mockExecuteSponsoredContractTransaction).not.toHaveBeenCalled();
   });
 });
 
@@ -1077,6 +1121,48 @@ describe("writeContractCore RPC resolution failure", () => {
     if (!result.success) {
       expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
+  });
+});
+
+describe("writeContractCore Web3 Connection resolution failure", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+  });
+
+  const input = {
+    contractAddress: "0x1234567890123456789012345678901234567890",
+    network: "ethereum",
+    abi: VALID_ABI,
+    abiFunction: "transfer",
+    web3Connection: "safe:gone",
+    _context: { organizationId: "org-1" },
+  };
+
+  it("hard-fails a picked sender the run cannot use, even with failOnError off", async () => {
+    vi.mocked(resolveSignerForNode).mockRejectedValueOnce(
+      new Error("web3Connection refers to unknown Safe 'gone'")
+    );
+
+    const result = applyFailOnError(await writeContractCore(input), false);
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+  });
+
+  it("hard-fails a resolver fault as SYSTEM, even with failOnError off", async () => {
+    vi.mocked(resolveSignerForNode).mockRejectedValueOnce(
+      new Error("connection terminated")
+    );
+
+    const result = applyFailOnError(await writeContractCore(input), false);
+
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.SYSTEM,
+    });
   });
 });
 

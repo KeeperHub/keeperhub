@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type SavedWorkflow } from "@/lib/api-client";
 import { signInAnonymously, useSession } from "@/lib/auth-client";
 import { getChainName, getExplorerUrl } from "@/lib/chain-utils";
+import { toastStepsNeedingSender } from "@/lib/client/needs-sender-toast";
 import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import {
   buildEventAbiFragment,
@@ -260,6 +261,7 @@ export function ProtocolDetail({
       const duplicated = await api.workflow.duplicate(workflowId);
       refetchSidebar({ workflowCreated: true });
       toast.success("Workflow duplicated successfully");
+      toastStepsNeedingSender(duplicated);
       router.push(`/workflows/${duplicated.id}`);
     } catch (error) {
       toast.error(

@@ -19,6 +19,10 @@ import { RPC_ENDPOINT } from "@/lib/rpc/rpc-endpoint";
 // need the signer-mode resolution. Static imports here pull defi-kit into
 // every API route that does a workflow write, which trips a recursive
 // mapSdk overflow during Next.js page-data collection.
+import {
+  SENDER_NOT_CHOSEN,
+  SenderNotChosenError,
+} from "@/lib/safe/sender-not-chosen";
 import { orgAutomationRoleKey } from "@/lib/safe/zodiac-contracts";
 import {
   findRolesModifierForSafe,
@@ -353,6 +357,8 @@ export async function resolveWalletAndSignerMode(
  *   - "safe:<safeWalletId>"  : pin a specific Safe row. Resolver validates the
  *                              Safe belongs to the org, is deployed, and lives
  *                              on the same chain as the node.
+ *   - "needs-sender"         : a copy whose Safe the org does not own; refused
+ *                              until a sender is picked (SenderNotChosenError).
  *
  * Two-segment string keeps the field human-inspectable in `workflows.nodes`
  * JSONB and lint-friendly (no nested objects) without sacrificing typing.
@@ -370,6 +376,9 @@ export function parseWeb3Connection(
   }
   if (value === SIGNER_MODE.EOA) {
     return { kind: SIGNER_MODE.EOA };
+  }
+  if (value === SENDER_NOT_CHOSEN) {
+    throw new SenderNotChosenError();
   }
   if (value.startsWith("safe:")) {
     const safeWalletId = value.slice("safe:".length);
@@ -396,7 +405,8 @@ type ResolveSignerForNodeInput = {
  *   - "default" / missing -> delegates to `resolveSignerMode` (org-policy path).
  *   - "eoa"               -> short-circuits to EOA mode. The org Safe (and its
  *                             Zodiac Role, if any) is intentionally bypassed.
- *   - "safe:<id>"         -> validates the Safe (same org, same chain, deployed),
+ *   - "safe:<id>"         -> validates the Safe (same org, same chain, deployed,
+ *                             Sender toggle on),
  *                             then resolves its role state the same way the
  *                             policy path does. If a Roles modifier is active
  *                             (DB row or chain probe) the resolver upgrades to
@@ -442,14 +452,10 @@ export async function resolveSignerForNode(
     .limit(1);
 
   const safe = rows[0];
-  if (!safe) {
+  // One message for both, so the error never reveals another org's Safe ids.
+  if (!safe || safe.organizationId !== input.organizationId) {
     throw new Error(
       `web3Connection refers to unknown Safe '${parsed.safeWalletId}'`
-    );
-  }
-  if (safe.organizationId !== input.organizationId) {
-    throw new Error(
-      `web3Connection refers to a Safe '${parsed.safeWalletId}' that does not belong to this organization`
     );
   }
   if (safe.chainId !== input.chainId) {
@@ -460,6 +466,12 @@ export async function resolveSignerForNode(
   if (safe.status !== "deployed") {
     throw new Error(
       `web3Connection Safe '${parsed.safeWalletId}' is not deployed yet (status=${safe.status})`
+    );
+  }
+  // The policy path never routes through a Safe whose Sender toggle is off.
+  if (!safe.isSigningActive) {
+    throw new Error(
+      `web3Connection Safe '${parsed.safeWalletId}' has its Sender toggle off in Wallet settings. Turn it on, or pick another Web3 Connection.`
     );
   }
 

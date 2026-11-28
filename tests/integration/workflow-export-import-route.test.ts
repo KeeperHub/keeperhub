@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
+import { SENDER_NOT_CHOSEN } from "@/lib/safe/sender-not-chosen";
 import {
   buildWorkflowExportV1,
   WORKFLOW_EXPORT_VERSION,
@@ -99,17 +99,23 @@ const mockDbQuery = {
 
 const mockMemberLimit = vi.fn();
 const mockIncrementCounter = vi.fn();
+// The importing organization's Safes among those the steps name.
+const mockOwnedSafes = vi.fn();
+const isSafeWallets = (table: unknown): boolean =>
+  (table as Record<symbol, unknown> | undefined)?.[
+    Symbol.for("drizzle:Name")
+  ] === "safe_wallets";
 
 vi.mock("@/lib/db", () => ({
   db: {
     query: mockDbQuery,
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
+      from: vi.fn((table: unknown) => ({
         innerJoin: vi.fn(() => ({
           where: vi.fn(() => ({ limit: mockMemberLimit })),
         })),
         where: vi.fn(() => ({
-          limit: mockMemberLimit,
+          limit: isSafeWallets(table) ? mockOwnedSafes : mockMemberLimit,
         })),
       })),
     })),
@@ -312,6 +318,117 @@ describe("POST /api/workflows/import", () => {
     insertedRows.length = 0;
     mockDbQuery.workflows.findFirst.mockResolvedValue(storedWorkflow);
     mockMemberLimit.mockResolvedValue([{ id: "member-1" }]);
+    mockOwnedSafes.mockResolvedValue([]);
+  });
+
+  it("leaves a step on a Safe this organization does not own with no sender", async () => {
+    const transferOn = (id: string, web3Connection: string) => ({
+      id,
+      type: "action",
+      position: { x: 200, y: 0 },
+      data: {
+        label: `Pay from ${id}`,
+        type: "action",
+        config: {
+          actionType: "web3/transfer-funds",
+          network: "1",
+          amount: "0.1",
+          recipientAddress: "0x1111111111111111111111111111111111111111",
+          web3Connection,
+        },
+        status: "idle",
+      },
+    });
+    mockOwnedSafes.mockResolvedValue([{ id: "own-safe" }]);
+    const exportPayload = buildWorkflowExportV1({
+      name: "imported wf",
+      description: null,
+      nodes: [
+        storedWorkflow.nodes[0] as unknown as WorkflowNode,
+        transferOn("foreign", "safe:foreign-safe") as unknown as WorkflowNode,
+        transferOn("own", "safe:own-safe") as unknown as WorkflowNode,
+      ],
+      edges: [],
+    });
+
+    const { POST } = await import("@/app/api/workflows/import/route");
+    const response = await POST(
+      new Request("http://localhost/api/workflows/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(exportPayload),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      stepsNeedingSender: Array<{ nodeId: string; label: string }>;
+    };
+    expect(body.stepsNeedingSender).toEqual([
+      { nodeId: "foreign", label: "Pay from foreign" },
+    ]);
+    const stored = insertedRows[0].nodes as Array<{
+      id: string;
+      data: { config?: Record<string, unknown> };
+    }>;
+    const connection = (id: string): unknown =>
+      stored.find((node) => node.id === id)?.data.config?.web3Connection;
+    expect(connection("foreign")).toBe(SENDER_NOT_CHOSEN);
+    expect(connection("own")).toBe("safe:own-safe");
+    // Checked even when the export may come from this same organization.
+    expect(mockOwnedSafes).toHaveBeenCalledWith(2);
+  });
+
+  it("drops a protocol step's foreign Safe instead of marking it", async () => {
+    const target = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+    const exportPayload = buildWorkflowExportV1({
+      name: "imported wf",
+      description: null,
+      nodes: [
+        storedWorkflow.nodes[0] as unknown as WorkflowNode,
+        {
+          id: "supply",
+          type: "action",
+          position: { x: 200, y: 0 },
+          data: {
+            label: "Supply USDC",
+            type: "action",
+            config: {
+              actionType: "aave-v3/supply",
+              network: "1",
+              asset: target,
+              amount: "1",
+              onBehalfOf: target,
+              web3Connection: "safe:foreign-safe",
+            },
+            status: "idle",
+          },
+        } as unknown as WorkflowNode,
+      ],
+      edges: [],
+    });
+
+    const { POST } = await import("@/app/api/workflows/import/route");
+    const response = await POST(
+      new Request("http://localhost/api/workflows/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(exportPayload),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      stepsNeedingSender: Array<{ nodeId: string; label: string }>;
+    };
+    expect(body.stepsNeedingSender).toEqual([]);
+    const stored = insertedRows[0].nodes as Array<{
+      id: string;
+      data: { config?: Record<string, unknown> };
+    }>;
+    const supply = stored.find((node) => node.id === "supply");
+    expect(supply?.data.config).not.toHaveProperty("web3Connection");
+    expect(mockOwnedSafes).not.toHaveBeenCalled();
   });
 
   it("creates a new workflow row owned by the caller", async () => {
@@ -345,6 +462,93 @@ describe("POST /api/workflows/import", () => {
     expect(insertedRows[0].organizationId).toBe(orgId);
 
     expect(mockIncrementCounter).toHaveBeenCalledWith("workflow.imports.total");
+  });
+
+  it("marks a Safe the importer does not own and drops eoa, so no step falls back to another sender", async () => {
+    const target = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+    const writeNode = {
+      id: "action-2",
+      type: "action",
+      position: { x: 400, y: 0 },
+      data: {
+        label: "Write",
+        type: "action",
+        config: {
+          actionType: "web3/write-contract",
+          network: "1",
+          contractAddress: target,
+          abi: JSON.stringify([
+            {
+              inputs: [],
+              name: "run",
+              outputs: [],
+              stateMutability: "nonpayable",
+              type: "function",
+            },
+          ]),
+          abiFunction: "run",
+          web3Connection: "safe:safe-1",
+        },
+        status: "idle",
+      },
+    };
+    const exportPayload = buildWorkflowExportV1({
+      name: "sender import",
+      description: null,
+      nodes: [
+        storedWorkflow.nodes[0],
+        writeNode,
+        {
+          ...writeNode,
+          id: "action-3",
+          data: {
+            ...writeNode.data,
+            config: {
+              actionType: "aave-v3/supply",
+              network: "1",
+              asset: target,
+              amount: "1",
+              onBehalfOf: target,
+              web3Connection: "eoa",
+            },
+          },
+        },
+        {
+          ...writeNode,
+          id: "action-4",
+          data: {
+            ...writeNode.data,
+            config: { ...writeNode.data.config, web3Connection: "eoa" },
+          },
+        },
+      ] as WorkflowNode[],
+      edges: [],
+    });
+    // The export file itself keeps every value; the import decides what each becomes.
+    expect(exportPayload.nodes[1].data.config).toHaveProperty(
+      "web3Connection",
+      "safe:safe-1"
+    );
+
+    const { POST } = await import("@/app/api/workflows/import/route");
+    const response = await POST(
+      new Request("http://localhost/api/workflows/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(exportPayload),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const nodes = insertedRows[0].nodes as {
+      data: { config: Record<string, unknown> };
+    }[];
+    expect(nodes[1].data.config.actionType).toBe("web3/write-contract");
+    expect(nodes[1].data.config.web3Connection).toBe(SENDER_NOT_CHOSEN);
+    // Aave never reads it, so it is dropped as on save.
+    expect(nodes[2].data.config).not.toHaveProperty("web3Connection");
+    expect(nodes[3].data.config.actionType).toBe("web3/write-contract");
+    expect(nodes[3].data.config).not.toHaveProperty("web3Connection");
   });
 
   it("rejects invalid action configs before importing workflow", async () => {

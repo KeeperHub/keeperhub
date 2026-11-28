@@ -83,6 +83,11 @@ import {
   type WorkflowNode,
 } from "@/lib/workflow/store";
 import {
+  actionTakesSafeSender,
+  actionTakesWeb3Connection,
+  fixedSenderNote,
+} from "@/lib/workflow/web3-connection";
+import {
   findActionById,
   getActionsByCategory,
   getAllIntegrations,
@@ -1251,10 +1256,24 @@ export function ActionConfig({
   );
   const requiresCredentials = connectionMode === "required";
   const optionalConnection = connectionMode === "optional";
+  // Every step that reads the picked sender shows the picker, whatever its
+  // integration (Robinhood Trade Stock Token included).
+  const takesWeb3Connection = actionTakesWeb3Connection(actionType);
+  const connectionType: IntegrationType | undefined = takesWeb3Connection
+    ? "web3"
+    : integrationType;
+  // Protocol writes, typed-data signing and Solana writes never read it, so
+  // they say who sends instead. Signed-out viewers keep the sign-in prompt.
+  const senderNote =
+    connectionType === "web3"
+      ? fixedSenderNote(actionType, config?.network)
+      : null;
+  const showsSenderNote =
+    senderNote !== null && !(isAnonymous && requiresCredentials);
 
   let connectionLabel = "Connection";
   let connectionHelp = "API key or OAuth credentials for this service";
-  if (integrationType === "web3") {
+  if (connectionType === "web3") {
     connectionLabel = "Web3 Connection";
     connectionHelp =
       "Which wallet is the sender (msg.sender) for this transaction. Your EOA always signs the outer tx and pays gas.";
@@ -1374,12 +1393,14 @@ export function ActionConfig({
         </div>
       </div>
 
-      {integrationType &&
+      {connectionType &&
         isOwner &&
         (requiresCredentials ||
           SYSTEM_ACTION_INTEGRATIONS[actionType] ||
-          (optionalConnection && !isAnonymous)) &&
-        (isAnonymous && requiresCredentials ? (
+          ((optionalConnection || takesWeb3Connection) && !isAnonymous)) &&
+        (showsSenderNote ? (
+          <p className="ml-1 text-muted-foreground text-sm">{senderNote}</p>
+        ) : isAnonymous && requiresCredentials ? (
           <div className="rounded-lg border bg-muted/50 p-3">
             <p className="text-muted-foreground text-sm">
               Please sign in to add a connection.
@@ -1389,7 +1410,13 @@ export function ActionConfig({
           <div className="space-y-2">
             <div className="ml-1 flex items-center justify-between">
               <div className="flex items-center gap-1">
-                <Label>{connectionLabel}</Label>
+                <Label
+                  htmlFor={
+                    integrationType === "web3" ? "web3Connection" : undefined
+                  }
+                >
+                  {connectionLabel}
+                </Label>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -1401,9 +1428,9 @@ export function ActionConfig({
                   </Tooltip>
                 </TooltipProvider>
               </div>
-              {integrationType !== "web3" &&
+              {connectionType !== "web3" &&
                 hasExistingConnections &&
-                !getIntegration(integrationType)?.singleConnection && (
+                !getIntegration(connectionType)?.singleConnection && (
                   <Button
                     className="size-6"
                     disabled={disabled}
@@ -1415,17 +1442,18 @@ export function ActionConfig({
                   </Button>
                 )}
             </div>
-            {integrationType === "web3" ? (
+            {connectionType === "web3" ? (
               <Web3ConnectionSelect
                 disabled={disabled}
                 network={(config?.network as string) || undefined}
                 onChange={(val) => onUpdateConfig("web3Connection", val)}
+                safesAllowed={actionTakesSafeSender(actionType)}
                 value={(config?.web3Connection as string) || undefined}
               />
             ) : (
               <IntegrationSelector
                 disabled={disabled}
-                integrationType={integrationType}
+                integrationType={connectionType}
                 onChange={(id) => onUpdateConfig("integrationId", id)}
                 optional={optionalConnection}
                 value={(config?.integrationId as string) || ""}
