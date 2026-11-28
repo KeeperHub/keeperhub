@@ -209,13 +209,14 @@ describe("waiting runs in the Runs panel", () => {
     const details = byTestId("waiting-run-details")?.textContent ?? "";
     expect(details).toContain("Waiting for Not before: ");
     expect(details).toContain(
-      "The Write Contract step sent nothing and did not touch the wallet."
+      "The waiting Write Contract step sent nothing and did not touch the wallet."
     );
     expect(details).toContain("3 waiting, #2 to #4, from ");
     expect(details).toContain(
       "A waiting run counts toward your plan's runs like any other run."
     );
     expect(details).not.toContain("not billed");
+    expect(details).not.toContain("other steps still ran");
     expect(details).toContain(
       "First allowed block 21,400,421, 262 blocks away. The step sends 2 blocks before it (Send ahead)."
     );
@@ -314,5 +315,24 @@ describe("waiting runs in the Runs panel", () => {
     await flush();
     expect(byTestId("waiting-run-count")?.textContent).toBe("3 waiting");
     expect(byTestId("waiting-run-details")).not.toBeNull();
+  });
+
+  it("says when a grouped run's other steps sent transactions", async () => {
+    const mixed =
+      "The runs' other steps still ran; some sent transactions. Only the latest run's steps are shown.";
+    getExecutions.mockResolvedValueOnce({
+      executions: [
+        waitingRun("w3", 1),
+        { ...waitingRun("w2", 2), gasUsedWei: "21000000000000" },
+      ],
+      nextCursor: null,
+      total: 2,
+    });
+    await render();
+    await act(async () => {
+      byTestId("waiting-run-row")?.click();
+    });
+    await flush();
+    expect(byTestId("waiting-run-details")?.textContent).toContain(mixed);
   });
 });

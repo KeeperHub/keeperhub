@@ -731,7 +731,7 @@ describe.skipIf(SKIP)(
             block,
             async () => publicSends() > sendsBefore && (await poolPending()) > 0
           );
-          // Above the 5 gwei cap the copy was signed with: anvil keeps it in the pool.
+          // Above the 5 gwei cap the copy was signed with: it is not mined.
           miner.baseFee = ethers.parseUnits("20", "gwei");
         }
       };
@@ -750,6 +750,11 @@ describe.skipIf(SKIP)(
 
       miner.beforeBlock = undefined;
       miner.baseFee = ethers.parseUnits("1", "gwei");
+      // Anvil evicts a tx whose fee cap is below the base fee, while geth keeps it: send the copy again.
+      await rpc("anvil_setNextBlockBaseFeePerGas", [
+        ethers.toQuantity(miner.baseFee),
+      ]);
+      await rpc("eth_sendRawTransaction", [rawFor(start.number + 1)]);
       await expect
         .poll(
           async () =>

@@ -24,7 +24,6 @@ import {
   NEVER_MINED_RUN_ERROR,
   NOT_INCLUDED_REASON_TEXT,
   nodeOutcomeOf,
-  PUBLIC_COPY_DROPPED_REASON,
   PUBLIC_COPY_ERRORS,
   PUBLIC_COPY_EXPIRED_TEXT,
   publicCopyNotLandedReason,
@@ -333,7 +332,7 @@ describe("Bundle and public outputs", () => {
       expect(STEP_OUTCOME_TEXT["public-pending"]).toEqual({
         label: "Unconfirmed",
         sentence:
-          "this step's transaction was sent publicly and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts.",
+          "this step's transaction was sent publicly and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts. If it stays unmined, most often its fee cap is below the base fee; it clears when the base fee falls back under it. KeeperHub does not replace it; raise Max Fee or leave it empty for later runs.",
       });
     });
   });
@@ -498,7 +497,7 @@ describe("run views reading a not landed run again", () => {
 });
 
 describe("waiting runs: skip reason, metrics, node outcome", () => {
-  it("keys a skipped run by its code first, then its exact reason (rows stored before the code)", () => {
+  it("keys a waiting run by its code alone; the reason text without the code is not waiting", () => {
     // The code wins over the text, so a reworded reason keeps its key.
     expect(
       skipReasonOf({
@@ -509,7 +508,10 @@ describe("waiting runs: skip reason, metrics, node outcome", () => {
     ).toBe(SKIP_REASON.bundleWaiting);
     expect(
       skipReasonOf({ status: "skipped", error: RUN_OUTCOME_REASON.waiting })
-    ).toBe(SKIP_REASON.bundleWaiting);
+    ).toBeNull();
+    expect(skippedMetricReason(null, RUN_OUTCOME_REASON.waiting)).toBe(
+      "bundle_in_flight"
+    );
     expect(
       skipReasonOf({
         status: "skipped",
@@ -535,11 +537,8 @@ describe("waiting runs: skip reason, metrics, node outcome", () => {
     ).toBeNull();
   });
 
-  it("labels the skipped metric by code or reason", () => {
+  it("labels the skipped metric by its code", () => {
     expect(skippedMetricReason("bundle-waiting", "x")).toBe("bundle_waiting");
-    expect(skippedMetricReason(null, RUN_OUTCOME_REASON.waiting)).toBe(
-      "bundle_waiting"
-    );
     expect(skippedMetricReason(null, RUN_OUTCOME_REASON.skipped)).toBe(
       "bundle_in_flight"
     );
@@ -582,9 +581,9 @@ describe("review round 1 texts", () => {
     expect(fallbackNotSentText({})).toBeUndefined();
   });
 
-  it("says a dropped public copy's nonce is used again", () => {
+  it("says a dropped public copy's nonce is free for the wallet's next transaction", () => {
     expect(NOT_INCLUDED_REASON_TEXT["public-copy-dropped"]).toBe(
-      "Its public copy was not found on any RPC for three checks, so KeeperHub treats it as dropped; nothing was mined and the nonce is used again. Most often its fee cap was below the base fee, or an RPC rejected it (for example for too little balance): raise Max Fee or leave it empty, and check the wallet's balance."
+      "Its public copy was not found on any RPC for three checks, so KeeperHub treats it as dropped. Most often its fee cap was below the base fee, or an RPC rejected it (for example for too little balance): raise Max Fee or leave it empty, and check the wallet's balance. Nothing was mined, and the nonce is free for the wallet's next transaction."
     );
   });
 
@@ -592,6 +591,9 @@ describe("review round 1 texts", () => {
     expect(skippedStepSentence({ inFlightHash: "0xab" })).toBe(
       "an earlier run's public copy (0xab) is not mined yet, so this step sent nothing; no gas was paid. KeeperHub checks it every few minutes and stops waiting after a day."
     );
+    expect(
+      skippedStepSentence({ inFlightHash: "0xab" }, "the bundle step")
+    ).toContain("is not mined yet, so the bundle step sent nothing;");
     expect(skippedStepSentence({ inFlightUntilBlock: 5 })).toBe(
       STEP_OUTCOME_TEXT["skipped-in-flight"].sentence
     );
@@ -674,10 +676,10 @@ describe("review round 2 texts and outcomes", () => {
       STEP_OUTCOME_TEXT["public-pending"].sentence
     );
     expect(publicPendingSentence(unclear)).toBe(
-      "this step's transaction was sent publicly (no RPC confirmed taking it) and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts."
+      "this step's transaction was sent publicly (no RPC confirmed taking it) and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts. If it stays unmined, most often its fee cap is below the base fee; it clears when the base fee falls back under it. KeeperHub does not replace it; raise Max Fee or leave it empty for later runs."
     );
     expect(unconfirmedRunNote([{ triggered: true }, sure])).toBe(
-      `A transaction (${COPY}) was sent and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts.`
+      `A transaction (${COPY}) was sent and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts. If it stays unmined, most often its fee cap is below the base fee; it clears when the base fee falls back under it. KeeperHub does not replace it; raise Max Fee or leave it empty for later runs.`
     );
     expect(unconfirmedRunNote([unclear])).toContain(
       `A transaction (${COPY}) was sent (no RPC confirmed taking it) and`
@@ -710,7 +712,7 @@ describe("review round 2 texts and outcomes", () => {
     expect(
       settledPendingReason(pending, {
         status: "not_landed",
-        error: PUBLIC_COPY_DROPPED_REASON,
+        error: publicCopyNotLandedReason("public-copy-dropped"),
       })
     ).toBe(NOT_INCLUDED_REASON_TEXT["public-copy-dropped"]);
     expect(
@@ -737,7 +739,10 @@ describe("review round 2 texts and outcomes", () => {
     expect(
       settledPendingReason(
         { notIncludedReason: "not-picked" },
-        { status: "not_landed", error: PUBLIC_COPY_DROPPED_REASON }
+        {
+          status: "not_landed",
+          error: publicCopyNotLandedReason("public-copy-dropped"),
+        }
       )
     ).toBeUndefined();
   });

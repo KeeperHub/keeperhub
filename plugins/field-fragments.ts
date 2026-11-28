@@ -371,7 +371,7 @@ export function bundleOutputFields(): OutputField[] {
     },
     {
       field: "notIncludedReason",
-      description: `Bundle or Bundle and public only: why the bundle did not land in any of its blocks. not-picked: no builder included it, though the call would still succeed. no-longer-needed: the call would now revert, so no builder could include it. not-checked: KeeperHub could not tell whether it landed (the network could not be read in time, or this step ran again after sending its bundle); it may still land. With it, success is true, included is false, there is no transactionHash, and the run ends Not landed. No gas is paid unless it lands. ${NOT_LANDED_LATER} This step's output is not updated.`,
+      description: `Bundle or Bundle and public only: why the bundle did not land in any of its blocks. not-picked: no builder included it, though the call would still succeed. no-longer-needed: the call would now revert, so no builder could include it. not-checked: KeeperHub could not tell whether it landed (the network could not be read in time, this step ran again after sending its bundle, or another transaction not mined yet holds its nonce); it may still land. With it, success is true, included is false, there is no transactionHash, and the run ends Not landed. No gas is paid unless it lands. ${NOT_LANDED_LATER} This step's output is not updated.`,
     },
     {
       field: "pending",
@@ -425,22 +425,22 @@ export function bundleOutputFields(): OutputField[] {
     {
       field: "notBefore",
       description:
-        "Bundle with Not before only: the Not before time the step used, in unix seconds (a value past 9999999999 counts as 9999999999).",
+        "Bundle or Bundle and public, with Not before only: the Not before time the step used, in unix seconds (a value past 9999999999 counts as 9999999999).",
     },
     {
       field: "firstAllowedBlock",
       description:
-        'Bundle with Not before only: the first block number that cannot have a timestamp before Not before. On route "waiting" it was still more than Send ahead + 1 blocks after latestBlock, so nothing was sent; otherwise the targets start at it (or at the next block, if it has passed).',
+        'Bundle or Bundle and public, with Not before only: the first block number that cannot have a timestamp before Not before. On route "waiting" it was still more than Send ahead + 1 blocks after latestBlock, so nothing was sent; otherwise the targets start at it (or at the next block, if it has passed).',
     },
     {
       field: "latestBlock",
       description:
-        "Bundle with Not before only: the latest block KeeperHub read when it decided to wait or planned the targets.",
+        "Bundle or Bundle and public, with Not before only: the latest block KeeperHub read when it decided to wait or planned the targets.",
     },
     {
       field: "sendAheadBlocks",
       description:
-        "Bundle with Not before only: the Send ahead setting the step used (how many blocks before firstAllowedBlock it may send).",
+        "Bundle or Bundle and public, with Not before only: the Send ahead setting the step used (how many blocks before firstAllowedBlock it may send).",
     },
   ];
 }

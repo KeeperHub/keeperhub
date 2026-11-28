@@ -569,6 +569,8 @@ export type BundlePublicCopy = {
   accepted?: boolean;
   misses?: number;
   unclear?: number;
+  // When the sweep last examined it (ms): the oldest checked go first, so rows that never drop cannot hold the slots.
+  checkedAt?: number;
 };
 
 /** A bundle miss its step decided: no builder picked it, it now reverts, none accepted it, or no public RPC took its fallback. */

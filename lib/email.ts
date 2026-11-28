@@ -6,7 +6,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLANS } from "@/lib/billing/plans";
-import { NOT_LANDED_LATER } from "@/lib/errors/execution-status";
+import {
+  NOT_LANDED_LATER,
+  SKIPPED_BILLING_TEXT,
+} from "@/lib/errors/execution-status";
 import {
   ErrorCategory,
   logSystemError,
@@ -838,6 +841,10 @@ function formatWeiToEth(weiStr: string): string {
   return eth < 0.0001 ? "<0.0001" : eth.toFixed(4);
 }
 
+// The digest's skipped causes, in the text and HTML bodies alike.
+const SKIPPED_CAUSES_TEXT =
+  "refused, skipped behind a previous run still running, or whose bundle step sent no transaction: an earlier run's bundle was still in flight, an earlier run's public copy was not mined yet, or the bundle step was waiting for its Not before time";
+
 /**
  * Send a scheduled (daily/weekly) workflow execution digest to a
  * subscribed org member.
@@ -912,7 +919,7 @@ export async function sendWorkflowExecutionDigestEmail(
   // Omitted entirely when nothing was refused, which is the normal case.
   const skippedText = stats.skipped
     ? `
-Skipped: ${stats.skipped} (refused, a previous run was still running, or a bundle step sent no transaction because an earlier run's bundle was still in flight; not failures)
+Skipped: ${stats.skipped} (runs ${SKIPPED_CAUSES_TEXT}; not failures. ${SKIPPED_BILLING_TEXT})
 ${topSkipped
   .map(
     (w) =>
@@ -927,7 +934,7 @@ ${topSkipped
   const notLanded = stats.notLanded ?? 0;
   const notLandedText = notLanded
     ? `
-Not landed: ${notLanded} (a bundle was not seen in its target blocks; not failures, but they count towards your usage. ${NOT_LANDED_LATER})
+Not landed: ${notLanded} (a bundle was not seen in its target blocks; not failures, but they count toward your plan's runs. ${NOT_LANDED_LATER})
 `
     : "";
 
@@ -1053,8 +1060,8 @@ ${socialText}
 
   const skippedSection = stats.skipped
     ? `<div style="text-align:left; margin-top:28px;">
-      <p style="margin:0 0 4px;"><span style="color:#666; font-weight:bold; font-size:17px;">Skipped: ${stats.skipped}</span> <span style="color:#999; font-size:13px;">- Runs refused, skipped behind a previous run still running, or whose bundle step sent no transaction because an earlier run's bundle was still in flight</span></p>
-      <p style="margin:0 0 10px; color:#999; font-size:12px;">These runs are not failures and do not count towards your success rate. They count towards your usage only when an earlier run's bundle was still in flight.</p>
+      <p style="margin:0 0 4px;"><span style="color:#666; font-weight:bold; font-size:17px;">Skipped: ${stats.skipped}</span> <span style="color:#999; font-size:13px;">- Runs ${SKIPPED_CAUSES_TEXT}</span></p>
+      <p style="margin:0 0 10px; color:#999; font-size:12px;">These runs are not failures and do not count toward your success rate. ${SKIPPED_BILLING_TEXT}</p>
       <table style="width:100%; border-collapse:collapse;">${tableHeader("Skipped")}${skippedRows}</table>
     </div>`
     : "";
@@ -1093,7 +1100,7 @@ ${socialText}
     ${
       notLanded
         ? `<div style="text-align:left; margin-top:28px;">
-      <p style="margin:0;"><span style="color:#666; font-weight:bold; font-size:17px;">Not landed: ${notLanded}</span> <span style="color:#999; font-size:13px;">- Runs where a bundle was not seen in its target blocks. Not failures, but they count towards your usage. ${NOT_LANDED_LATER}</span></p>
+      <p style="margin:0;"><span style="color:#666; font-weight:bold; font-size:17px;">Not landed: ${notLanded}</span> <span style="color:#999; font-size:13px;">- Runs where a bundle was not seen in its target blocks. Not failures, but they count toward your plan's runs. ${NOT_LANDED_LATER}</span></p>
     </div>`
         : ""
     }

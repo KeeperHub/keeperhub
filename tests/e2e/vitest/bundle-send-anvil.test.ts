@@ -1058,7 +1058,8 @@ describe.skipIf(SKIP)("Send as Bundle (anvil, fake builders)", () => {
       expect(builders.every((b) => b.received.length === 0)).toBe(true);
       const skipped = await finalize(waitingRun);
       expect(skipped?.status).toBe("skipped");
-      expect(skipped?.billable).toBe(false);
+      // A waiting run is billed like any other run.
+      expect(skipped?.billable).toBe(true);
 
       await miner.mine(2);
       const before = await clockKicks();

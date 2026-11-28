@@ -22,6 +22,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { parseWei } from "@/lib/analytics/format-gas";
 import { buildRunsQuery, runsPageCount } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
@@ -50,7 +51,10 @@ import {
 } from "@/lib/atoms/analytics";
 import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
-import { NOT_LANDED_LATER } from "@/lib/errors/execution-status";
+import {
+  NOT_LANDED_LATER,
+  SKIPPED_BILLING_TEXT,
+} from "@/lib/errors/execution-status";
 import type { ChainDisplay } from "@/lib/hooks/use-chain-display";
 import {
   ChainDisplayProvider,
@@ -66,7 +70,6 @@ import {
 } from "@/lib/workflow/executor/run-outcome-keys";
 import {
   groupWaitingRuns,
-  SKIPPED_BILLING_TEXT,
   type WaitingGroup,
   waitingChipText,
   waitingDetails,
@@ -197,9 +200,12 @@ function composedGasNetworks(run: UnifiedRun): string[] {
 function ComposedGasCell({
   chains,
   run,
+  grouped,
 }: {
   chains: ChainDisplay;
   run: UnifiedRun;
+  // A waiting row's sum over its runs, which cannot be expanded one by one.
+  grouped: boolean;
 }): ReactNode {
   const names = CHAIN_LIST.format(composedGasNetworks(run).map(chains.name));
   return (
@@ -210,7 +216,9 @@ function ComposedGasCell({
         </span>
       </TooltipTrigger>
       <TooltipContent className={cn(TOOLTIP_SURFACE, "max-w-xs text-left")}>
-        {`This run spent gas on ${names}. Those networks have different native tokens, so there is no single total to show. Expand the run for the amount on each.`}
+        {grouped
+          ? `These runs spent gas on ${names}. Those networks have different native tokens, so there is no single total to show.`
+          : `This run spent gas on ${names}. Those networks have different native tokens, so there is no single total to show. Expand the run for the amount on each.`}
       </TooltipContent>
     </Tooltip>
   );
@@ -222,20 +230,50 @@ function ComposedGasCell({
 // ledger would drop the rest.
 export function runGasDisplay(
   run: UnifiedRun,
-  chains: ChainDisplay = FALLBACK_CHAIN_DISPLAY
+  chains: ChainDisplay = FALLBACK_CHAIN_DISPLAY,
+  grouped = false
 ): ReactNode {
   const wei = run.gasUsedWei ?? run.gasCostWei;
   if (!wei) {
     return NO_VALUE;
   }
   if (runGasComposed(run)) {
-    return <ComposedGasCell chains={chains} run={run} />;
+    return <ComposedGasCell chains={chains} grouped={grouped} run={run} />;
   }
   return formatGasNative(
     wei,
     run.gasNetworks[0] ?? run.networks[0] ?? run.network,
     chains
   );
+}
+
+/** A waiting row's gas: the group's runs summed, on the union of their gas chains. */
+function groupGasRun(runs: readonly UnifiedRun[]): UnifiedRun {
+  let total = BigInt(0);
+  const gasNetworks = new Set<string>();
+  const networks = new Set<string>();
+  for (const run of runs) {
+    const wei = parseWei(run.gasUsedWei ?? run.gasCostWei) ?? BigInt(0);
+    total += wei;
+    for (const network of run.networks) {
+      networks.add(network);
+    }
+    // A ledger-only leg names no gas chain, so it borrows the run's own.
+    const paidOn =
+      run.gasNetworks.length > 0 || wei === BigInt(0)
+        ? run.gasNetworks
+        : run.networks;
+    for (const network of paidOn) {
+      gasNetworks.add(network);
+    }
+  }
+  return {
+    ...runs[0],
+    gasUsedWei: total > BigInt(0) ? total.toString() : null,
+    gasCostWei: null,
+    gasNetworks: [...gasNetworks],
+    networks: [...networks],
+  };
 }
 
 function formatTimeAgo(dateString: string): string {
@@ -759,6 +797,12 @@ function WaitingGroupRow({
   const runName = latest.workflowName ?? "Unnamed Workflow";
   const isDeleted = latest.workflowName === "(Deleted)";
   const ChevronIcon = expanded ? ChevronDown : ChevronRight;
+  const gasRun = groupGasRun(group.runs);
+  // A total only names a single-chain amount, not "-" or Composed.
+  const gasTitle =
+    gasRun.gasUsedWei && !runGasComposed(gasRun)
+      ? `Total for the ${group.runs.length} ${group.runs.length === 1 ? "run" : "runs"} in this row`
+      : undefined;
   return (
     <>
       <tr
@@ -817,7 +861,13 @@ function WaitingGroupRow({
         >
           {formatNetworks(latest.networks, chains)}
         </td>
-        <td className="py-3 pr-3 text-muted-foreground text-sm">{NO_VALUE}</td>
+        <td
+          className="whitespace-nowrap py-3 pr-3 text-muted-foreground text-sm"
+          data-testid="analytics-waiting-gas"
+          title={gasTitle}
+        >
+          {runGasDisplay(gasRun, chains, true)}
+        </td>
         <td className="whitespace-nowrap py-3 pr-3 text-right text-muted-foreground text-sm">
           {formatTimeAgo(latest.startedAt)}
         </td>

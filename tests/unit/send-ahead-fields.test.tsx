@@ -159,8 +159,14 @@ describe("Not before in the bundle box", () => {
     expect(label?.textContent).toBe("Not before");
     expect(describedBy(box)).toEqual([
       "Optional. The bundle never lands in a block before this time. Unix seconds, such as 1796126400, or a date with a time zone, such as 2026-12-01T12:00:00Z. Can be a template, such as {{Read Contract.result}}. Empty: sends for the next blocks.",
-      "A run that is too early sends nothing and ends Skipped (Waiting). A waiting run counts toward your plan's runs like any other run.",
+      "A run that is too early sends nothing and ends Skipped (Waiting). A waiting run counts toward your plan's runs like any other run. With a Block trigger at every block, that is about 7,200 runs a day; to run fewer, use a Block Interval of up to Send ahead + 1. See Schedule advice.",
     ]);
+    const advice = [...document.querySelectorAll("a")].find(
+      (link) => link.textContent === "Schedule advice"
+    );
+    expect(advice?.getAttribute("href")).toBe(
+      "https://docs.keeperhub.com/plugins/web3#send-ahead-with-not-before"
+    );
     expect(setting("sendAheadBlocks")).toBeNull();
     expect(boxText()).toContain(
       "Tries 3 blocks in a row, starting with the next one"

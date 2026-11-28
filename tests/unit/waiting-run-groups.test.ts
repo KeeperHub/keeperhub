@@ -361,9 +361,9 @@ describe("the waiting row's words", () => {
 
   it("explains the wait when expanded", () => {
     expect(waitingDetails(group, options)).toEqual([
-      "Waiting for Not before: 1 Dec 2026, 12:00:00 UTC. The Write Contract step sent nothing and did not touch the wallet.",
+      "Waiting for Not before: 1 Dec 2026, 12:00:00 UTC. The waiting Write Contract step sent nothing and did not touch the wallet.",
       "2 waiting, #3158 to #3159, from 12:00:36 to 12:07:48, shown as one row. Waiting runs end Skipped and do not count as failures.",
-      "A waiting run counts toward your plan's runs like any other run.",
+      "A waiting run counts toward your plan's runs like any other run. With a Block trigger at every block, that is about 7,200 runs a day; to run fewer, use a Block Interval of up to Send ahead + 1.",
       "First allowed block 21,400,421, 262 blocks away. The step sends 2 blocks before it (Send ahead).",
     ]);
   });
@@ -382,9 +382,46 @@ describe("the waiting row's words", () => {
     ]);
     expect(waitingDetails(single, options).slice(1)).toEqual([
       "One run, #1, at 12:00:36. Waiting runs end Skipped and do not count as failures.",
-      "A waiting run counts toward your plan's runs like any other run.",
+      "A waiting run counts toward your plan's runs like any other run. With a Block trigger at every block, that is about 7,200 runs a day; to run fewer, use a Block Interval of up to Send ahead + 1.",
       "First allowed block 101, 1 block away. The step sends once it is the next block (Send ahead 0).",
     ]);
+  });
+
+  it("says a mixed group's other steps sent transactions, from hashes or gas", () => {
+    const sent = {
+      ...waiting("w2", "2026-12-01T12:07:48Z"),
+      transactionHashes: [{ hash: "0x1" }],
+    };
+    const paid = {
+      ...waiting("w2", "2026-12-01T12:07:48Z"),
+      gasUsedWei: "21000",
+    };
+    const zero = {
+      ...waiting("w2", "2026-12-01T12:07:48Z"),
+      gasUsedWei: "0",
+      transactionHashes: [],
+    };
+    const older = waiting("w1", "2026-12-01T12:00:36Z");
+    const mixedLine =
+      "The runs' other steps still ran; some sent transactions. Only the latest run's steps are shown.";
+    for (const run of [sent, paid]) {
+      const lines = waitingDetails(
+        onlyGroup([older, run].reverse(), 2),
+        options
+      );
+      expect(lines[1]).toBe(mixedLine);
+      expect(lines).toHaveLength(5);
+    }
+    // An older run's work counts too, and a lone run is worded on its own.
+    expect(waitingDetails(onlyGroup([older, sent], 2), options)[1]).toBe(
+      mixedLine
+    );
+    expect(waitingDetails(onlyGroup([sent], 1), options)[1]).toBe(
+      "The run's other steps still ran and sent transactions."
+    );
+    expect(waitingDetails(onlyGroup([zero, older], 2), options)).not.toContain(
+      mixedLine
+    );
   });
 
   it("leaves the block line out when the outputs are missing", () => {
@@ -394,7 +431,7 @@ describe("the waiting row's words", () => {
     expect(waitingRowLine(bare, options)).toBe("waiting for Not before");
     expect(waitingDetails(bare, options)).toHaveLength(3);
     expect(waitingDetails(bare, options)[0]).toBe(
-      "Waiting for Not before. The Write Contract step sent nothing and did not touch the wallet."
+      "Waiting for Not before. The waiting Write Contract step sent nothing and did not touch the wallet."
     );
   });
 });

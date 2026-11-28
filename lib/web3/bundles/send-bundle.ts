@@ -1030,6 +1030,10 @@ async function afterRecord(
   if (isPublicMode(input)) {
     // The first target's transaction, once its block is next; its result decides even with no builder.
     const copy = await sendPublicCopy(input, recorded, "with-bundle", 0);
+    // Another transaction holds the nonce and no builder has the bundle: nothing to watch for.
+    if (copy.kind === "nonce-used" && noneAccepted) {
+      return await settleUsedElsewhere(input, recorded);
+    }
     // Another pooled transaction may hold the nonce while builders still hold the bundle: the watch decides.
     if (copy.kind === "out" || copy.kind === "nonce-used") {
       return await watchAndSettle(input, recorded);

@@ -128,7 +128,7 @@ describe("a bundle step's public copy on the canvas node", () => {
     const pill = container.querySelector('[data-testid="node-public-pending"]');
     expect(pill?.textContent).toBe("Unconfirmed");
     expect(pill?.getAttribute("title")).toBe(
-      "Unconfirmed: this step's transaction was sent publicly and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts."
+      "Unconfirmed: this step's transaction was sent publicly and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts. If it stays unmined, most often its fee cap is below the base fee; it clears when the base fee falls back under it. KeeperHub does not replace it; raise Max Fee or leave it empty for later runs."
     );
     // Not the Waiting clock.
     const icon = pill?.querySelector("svg")?.getAttribute("class") ?? "";

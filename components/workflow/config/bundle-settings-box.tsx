@@ -13,7 +13,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { bundleTipsText } from "@/lib/web3/bundles/editor-text";
-import { WAITING_RUN_COUNTS_TEXT } from "@/lib/workflow/waiting-run-groups";
+import {
+  WAITING_RUN_COUNTS_TEXT,
+  WAITING_RUN_FEWER_TEXT,
+} from "@/lib/workflow/waiting-run-groups";
 import {
   BUNDLE_FALLBACK,
   BUNDLE_SETTING_KEYS,
@@ -226,9 +229,24 @@ function FallbackSetting({
   );
 }
 
+// The Schedule advice sits in the Send ahead with Not before section.
+const SCHEDULE_ADVICE_URL =
+  "https://docs.keeperhub.com/plugins/web3#send-ahead-with-not-before";
+
 const NOT_BEFORE_HINTS = [
   "Optional. The bundle never lands in a block before this time. Unix seconds, such as 1796126400, or a date with a time zone, such as 2026-12-01T12:00:00Z. Can be a template, such as {{Read Contract.result}}. Empty: sends for the next blocks.",
-  `A run that is too early sends nothing and ends Skipped (Waiting). ${WAITING_RUN_COUNTS_TEXT}`,
+  <>
+    {`A run that is too early sends nothing and ends Skipped (Waiting). ${WAITING_RUN_COUNTS_TEXT} ${WAITING_RUN_FEWER_TEXT} See `}
+    <a
+      className="underline hover:text-primary"
+      href={SCHEDULE_ADVICE_URL}
+      rel="noopener noreferrer"
+      target="_blank"
+    >
+      Schedule advice
+    </a>
+    .
+  </>,
 ] as const;
 
 function isSetText(value: unknown): boolean {

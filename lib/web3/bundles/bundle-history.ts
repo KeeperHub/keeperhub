@@ -137,6 +137,23 @@ export type RowKey = {
   txHash: string;
 };
 
+/** A row's primary key: one nonce of one wallet on one chain. */
+export type NonceKey = Pick<RowKey, "walletAddress" | "chainId" | "nonce">;
+
+/** The row read, while it still holds its hash (and this status, when given). */
+export function rowAsRead(
+  row: RowKey,
+  status?: "dropped" | "pending"
+): SQL | undefined {
+  return and(
+    eq(pendingTransactions.walletAddress, row.walletAddress),
+    eq(pendingTransactions.chainId, row.chainId),
+    eq(pendingTransactions.nonce, row.nonce),
+    eq(pendingTransactions.txHash, row.txHash),
+    status ? eq(pendingTransactions.status, status) : undefined
+  );
+}
+
 /** The oldest entry holding this hash: two runs signing the same call share it, and only one executed. */
 export function ownerOf(
   bundleRuns: readonly BundleRun[],
@@ -157,15 +174,7 @@ export async function confirmRow(
   const updated = await db
     .update(pendingTransactions)
     .set({ status: "confirmed", confirmedAt: new Date(), txHash: minedHash })
-    .where(
-      and(
-        eq(pendingTransactions.walletAddress, key.walletAddress),
-        eq(pendingTransactions.chainId, key.chainId),
-        eq(pendingTransactions.nonce, key.nonce),
-        eq(pendingTransactions.txHash, key.txHash),
-        fromStatus ? eq(pendingTransactions.status, fromStatus) : undefined
-      )
-    )
+    .where(rowAsRead(key, fromStatus))
     .returning({ nonce: pendingTransactions.nonce });
   return updated.length > 0;
 }
@@ -245,6 +254,92 @@ export async function minedBundleHashFor(
     }
   }
   return;
+}
+
+/** A copy's signed hashes, at the row (primary key) that holds them. */
+export type CopyHashes = { row: NonceKey; hashes: readonly string[] };
+
+/** How a run's public copy ended, with its row's key and the entry's signed hashes. */
+export type EndedPublicCopy = CopyHashes & { end: "dropped" | "replaced" };
+
+/** How this run's public copy with this hash ended: its row dropped or replaced, or its nonce used by another send; else undefined. */
+export async function endedPublicCopyFor(
+  executionId: string,
+  chainId: number,
+  hash: string
+): Promise<EndedPublicCopy | undefined> {
+  const rows = await db
+    .select({
+      walletAddress: pendingTransactions.walletAddress,
+      nonce: pendingTransactions.nonce,
+      status: pendingTransactions.status,
+      txHash: pendingTransactions.txHash,
+      executionId: pendingTransactions.executionId,
+      bundleRuns: pendingTransactions.bundleRuns,
+    })
+    .from(pendingTransactions)
+    .where(
+      and(
+        eq(pendingTransactions.chainId, chainId),
+        sql`${pendingTransactions.bundleRuns} @> ${JSON.stringify([{ executionId, public: { hash } }])}::jsonb`
+      )
+    );
+  for (const row of rows) {
+    // A copy that never went out (accepted false) was never the run's to wait on.
+    const entry = row.bundleRuns.find(
+      (run) =>
+        run.executionId === executionId &&
+        run.public?.hash === hash &&
+        run.public.accepted !== false
+    );
+    if (!entry) {
+      continue;
+    }
+    const ended = (end: "dropped" | "replaced"): EndedPublicCopy => ({
+      end,
+      row: { walletAddress: row.walletAddress, chainId, nonce: row.nonce },
+      hashes: entry.hashes,
+    });
+    if (row.status === "dropped" || row.status === "replaced") {
+      return ended(row.status);
+    }
+    const ours = entry.hashes.some(
+      (signed) => signed.toLowerCase() === row.txHash.toLowerCase()
+    );
+    // Mined with a hash the entry never signed (any run's re-send): the copy cannot be mined.
+    if (row.status === "confirmed" && !ours) {
+      return ended("replaced");
+    }
+    // Another run's send now holds the nonce (a reuse merged into the dropped row).
+    if (row.executionId !== executionId && !ours) {
+      return ended("dropped");
+    }
+  }
+  return;
+}
+
+/** True unless a copy's row (by primary key) is confirmed with one of its hashes, i.e. mined after it was read as ended. */
+export function noneConfirmedSql(copies: readonly CopyHashes[]): SQL {
+  const checks: SQL[] = [];
+  for (const { row, hashes } of copies) {
+    const lowered = [...new Set(hashes.map((hash) => hash.toLowerCase()))];
+    if (lowered.length === 0) {
+      continue;
+    }
+    // Aliased, so it reads the same inside an UPDATE of another table.
+    checks.push(sql`NOT EXISTS (SELECT 1 FROM pending_transactions confirmed_tx
+      WHERE confirmed_tx.wallet_address = ${row.walletAddress}
+      AND confirmed_tx.chain_id = ${row.chainId}
+      AND confirmed_tx.nonce = ${row.nonce}
+      AND confirmed_tx.status = 'confirmed'
+      AND lower(confirmed_tx.tx_hash) IN (${sql.join(
+        lowered.map((hash) => sql`${hash}`),
+        sql`, `
+      )}))`);
+  }
+  return checks.length === 0
+    ? sql`true`
+    : sql`(${sql.join(checks, sql` AND `)})`;
 }
 
 /** Every hash still worth a receipt read at this nonce, newest first. */

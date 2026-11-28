@@ -1,5 +1,6 @@
 // Display only: back-to-back runs that waited for the same Not before share one
 // Runs panel row. Each run stays its own stored run.
+import { parseWei } from "@/lib/analytics/format-gas";
 import { ACTIVE_RUN_STATUSES } from "@/lib/errors/execution-status";
 import {
   formatDateTimeWithZone,
@@ -22,6 +23,10 @@ export type GroupableRun = {
   workflowId?: string | null;
   // A same-workflow run still active may yet end waiting, so it does not anchor a row's key.
   status?: string | null;
+  // What the run's other steps sent, so a waiting row can say they did work.
+  transactionHashes?: readonly unknown[] | null;
+  gasUsedWei?: string | null;
+  gasCostWei?: string | null;
 };
 
 /** One row of the list: a run with its number, or a group of waiting runs. */
@@ -149,9 +154,18 @@ type TextOptions = { now: Date; timeZone?: string; numbered?: boolean };
 export const WAITING_RUN_COUNTS_TEXT =
   "A waiting run counts toward your plan's runs like any other run.";
 
-/** Which skipped runs count, for the Analytics Skipped tooltips. */
-export const SKIPPED_BILLING_TEXT =
-  "Most skipped runs do not count toward your plan's runs; a run skipped because an earlier run's bundle (or public copy) was in flight does, and so does a waiting run.";
+/** How to run fewer waiting runs, as the editor hint and the waiting row say it. */
+export const WAITING_RUN_FEWER_TEXT =
+  "With a Block trigger at every block, that is about 7,200 runs a day; to run fewer, use a Block Interval of up to Send ahead + 1.";
+
+/** Whether a run's other steps sent transactions or paid gas. */
+function sentTransactions(run: GroupableRun): boolean {
+  return (
+    (run.transactionHashes?.length ?? 0) > 0 ||
+    (parseWei(run.gasUsedWei) ?? BigInt(0)) > BigInt(0) ||
+    (parseWei(run.gasCostWei) ?? BigInt(0)) > BigInt(0)
+  );
+}
 
 function secondsOf(value: Date | string): number {
   return Math.floor(new Date(value).getTime() / 1000);
@@ -250,10 +264,19 @@ export function waitingDetails(
       ? "Waiting for Not before."
       : `Waiting for Not before: ${formatDateTimeWithZone(group.notBefore, options)}.`;
   const lines = [
-    `${time} The Write Contract step sent nothing and did not touch the wallet.`,
-    `${runSpan(group, options)}${group.runs.length === 1 ? "" : ", shown as one row"}. Waiting runs end Skipped and do not count as failures.`,
-    WAITING_RUN_COUNTS_TEXT,
+    `${time} The waiting Write Contract step sent nothing and did not touch the wallet.`,
   ];
+  if (group.runs.some(sentTransactions)) {
+    lines.push(
+      group.runs.length === 1
+        ? "The run's other steps still ran and sent transactions."
+        : "The runs' other steps still ran; some sent transactions. Only the latest run's steps are shown."
+    );
+  }
+  lines.push(
+    `${runSpan(group, options)}${group.runs.length === 1 ? "" : ", shown as one row"}. Waiting runs end Skipped and do not count as failures.`,
+    `${WAITING_RUN_COUNTS_TEXT} ${WAITING_RUN_FEWER_TEXT}`
+  );
   // The latest run's view of the chain: the newest first allowed block and head.
   const info = group.runs[0]?.waiting;
   if (info?.firstAllowedBlock != null && info.latestBlock != null) {

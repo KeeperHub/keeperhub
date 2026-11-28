@@ -278,7 +278,11 @@ describe("GET /api/workflows/executions/[executionId]/status public access", () 
         status: true,
         iterationIndex: true,
       });
-      expect(Object.keys(query.extras)).toEqual(["route", "notIncludedReason"]);
+      expect(Object.keys(query.extras)).toEqual([
+        "route",
+        "notIncludedReason",
+        "pending",
+      ]);
       // Rows of other step types never touch (detoast) their output.
       const dialect = new PgDialect();
       for (const extra of Object.values(query.extras)) {

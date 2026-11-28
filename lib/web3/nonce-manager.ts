@@ -670,7 +670,10 @@ export class NonceManager {
       return { reconciled: true, warnings: [] };
     }
     if (replaced) {
-      if (await this.updateRow(tx, { status: "replaced" })) {
+      // Guarded on the row read: a sweep or session that changed it meanwhile wins.
+      if (
+        await this.updateRow(tx, { status: "replaced" }, "pending", tx.txHash)
+      ) {
         await this.settleReplacedCopy(tx);
       }
       return {
@@ -765,6 +768,7 @@ export class NonceManager {
       );
       await settleDroppedPublicCopy(
         entry.executionId,
+        tx,
         entry.hashes,
         "public-copy-replaced"
       );
@@ -776,11 +780,12 @@ export class NonceManager {
     }
   }
 
-  /** Update the row at this nonce, only while it is still `fromStatus` when given. */
+  /** Update the row at this nonce, only while it is still `fromStatus` (and holds `txHash`) when given. */
   private async updateRow(
     tx: Pick<PendingTransaction, "walletAddress" | "chainId" | "nonce">,
     set: Pick<PendingTransaction, "status">,
-    fromStatus?: "dropped"
+    fromStatus?: "dropped" | "pending",
+    txHash?: string
   ): Promise<boolean> {
     const updated = await db
       .update(pendingTransactions)
@@ -790,7 +795,8 @@ export class NonceManager {
           eq(pendingTransactions.walletAddress, tx.walletAddress),
           eq(pendingTransactions.chainId, tx.chainId),
           eq(pendingTransactions.nonce, tx.nonce),
-          fromStatus ? eq(pendingTransactions.status, fromStatus) : undefined
+          fromStatus ? eq(pendingTransactions.status, fromStatus) : undefined,
+          txHash ? eq(pendingTransactions.txHash, txHash) : undefined
         )
       )
       .returning({ nonce: pendingTransactions.nonce });

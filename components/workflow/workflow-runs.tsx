@@ -984,7 +984,7 @@ function skippedRunNote(error: string, logs: readonly ExecutionLog[]): string {
   );
   return behindCopy === undefined
     ? shownRefusal(error)
-    : skippedStepSentence(behindCopy);
+    : skippedStepSentence(behindCopy, "the bundle step");
 }
 
 // A bundle skip's run note names later steps only when one of them ran.

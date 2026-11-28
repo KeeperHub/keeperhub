@@ -59,6 +59,7 @@ const rows = () => [
     workflowId: "wf_1",
     status: "skipped",
     error: RUN_OUTCOME_REASON.waiting,
+    errorCode: "bundle-waiting",
   },
   {
     id: "skip_1",

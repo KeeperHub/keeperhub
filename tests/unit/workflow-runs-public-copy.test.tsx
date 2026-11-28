@@ -27,7 +27,6 @@ vi.mock("@/lib/api-client", async (importOriginal) => ({
 import { WorkflowRuns } from "@/components/workflow/workflow-runs";
 import {
   NEVER_MINED_RUN_ERROR,
-  PUBLIC_COPY_DROPPED_REASON,
   publicCopyNotLandedReason,
   RUN_OUTCOME_REASON,
 } from "@/lib/workflow/executor/run-outcome-keys";
@@ -170,12 +169,12 @@ describe("a bundle step's public copy in the Runs panel", () => {
     );
     await openRun("Run #1");
     expect(byTestId("run-outcome-reason")?.textContent).toBe(
-      `A transaction (${HASH}) was sent and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts.`
+      `A transaction (${HASH}) was sent and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts. If it stays unmined, most often its fee cap is below the base fee; it clears when the base fee falls back under it. KeeperHub does not replace it; raise Max Fee or leave it empty for later runs.`
     );
     const chip = byTestId("step-public-pending");
     expect(chip?.textContent).toBe("Unconfirmed");
     expect(chip?.getAttribute("title")).toBe(
-      "Unconfirmed: this step's transaction was sent publicly and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts."
+      "Unconfirmed: this step's transaction was sent publicly and is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts. If it stays unmined, most often its fee cap is below the base fee; it clears when the base fee falls back under it. KeeperHub does not replace it; raise Max Fee or leave it empty for later runs."
     );
     // Never the green "Completed successfully".
     expect(
@@ -217,13 +216,16 @@ describe("a bundle step's public copy in the Runs panel", () => {
 
   it("a run whose public copy was dropped: Not landed with the reason, the step Not included", async () => {
     only([
-      run("d1", 1, { status: "not_landed", error: PUBLIC_COPY_DROPPED_REASON }),
+      run("d1", 1, {
+        status: "not_landed",
+        error: publicCopyNotLandedReason("public-copy-dropped"),
+      }),
     ]);
     getExecutionLogs.mockResolvedValue({
       execution: {
         id: "d1",
         status: "not_landed",
-        error: PUBLIC_COPY_DROPPED_REASON,
+        error: publicCopyNotLandedReason("public-copy-dropped"),
         transactionHashes: [],
       },
       logs: [
@@ -242,7 +244,7 @@ describe("a bundle step's public copy in the Runs panel", () => {
       "Its public copy was not found on any RPC for three checks"
     );
     expect(byTestId("step-not-included")?.getAttribute("title")).toBe(
-      `Not included: this step's bundle was not seen in any of its target blocks. Its public copy was not found on any RPC for three checks, so KeeperHub treats it as dropped; nothing was mined and the nonce is used again. Most often its fee cap was below the base fee, or an RPC rejected it (for example for too little balance): raise Max Fee or leave it empty, and check the wallet's balance.`
+      `Not included: this step's bundle was not seen in any of its target blocks. Its public copy was not found on any RPC for three checks, so KeeperHub treats it as dropped. Most often its fee cap was below the base fee, or an RPC rejected it (for example for too little balance): raise Max Fee or leave it empty, and check the wallet's balance. Nothing was mined, and the nonce is free for the wallet's next transaction.`
     );
   });
 
@@ -270,7 +272,7 @@ describe("a bundle step's public copy in the Runs panel", () => {
       `Skipped: an earlier run's public copy (${HASH}) is not mined yet, so this step sent nothing; no gas was paid. KeeperHub checks it every few minutes and stops waiting after a day.`
     );
     expect(byTestId("run-outcome-reason")?.textContent).toBe(
-      `An earlier run's public copy (${HASH}) is not mined yet, so this step sent nothing; no gas was paid. KeeperHub checks it every few minutes and stops waiting after a day.`
+      `An earlier run's public copy (${HASH}) is not mined yet, so the bundle step sent nothing; no gas was paid. KeeperHub checks it every few minutes and stops waiting after a day.`
     );
   });
 

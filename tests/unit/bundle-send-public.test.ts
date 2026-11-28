@@ -900,6 +900,29 @@ describe("review round 1", () => {
     });
   });
 
+  it("Bundle and public: a nonce conflict with no builder accepting settles at once, without a watch", async () => {
+    h.sendBundle.mockImplementation(refuse);
+    // The other transaction is still pooled: nothing proves the nonce used yet.
+    h.rawSend.mockImplementation(async (raw: string) => {
+      throw new NonceConflictError(
+        hashOf(raw),
+        NONCE,
+        new Error("replacement transaction underpriced")
+      );
+    });
+    const outcome = expectKind(
+      await sendBundleInSession(bundleAndPublic()),
+      "not-included"
+    );
+    // A watch would have held the wallet past the targets and read the miss as not picked.
+    expect(outcome.reason).toBe("not-checked");
+    expect(outcome.report.publicCopy).toMatchObject({
+      accepted: false,
+      error: "another transaction holds this nonce",
+    });
+    expect(h.events.some((e) => e.startsWith("dropped"))).toBe(false);
+  });
+
   it("fallback: a nonce conflict is nonce-used, not sent", async () => {
     h.rawSend.mockImplementation(async (raw: string) => {
       chain.minedCount = NONCE + 1;

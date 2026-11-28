@@ -4,6 +4,7 @@
  */
 
 import type { PlanName } from "@/lib/billing/plans";
+import type { TransactionHashEntry } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import type {
   NodeExecutionStatus,
@@ -148,6 +149,9 @@ export type ExecutionSummary = {
   skipReason?: SkipReason | null;
   /** A waiting run's Not before and its first allowed block; null otherwise. */
   waiting?: WaitingRunInfo | null;
+  /** What the run's steps sent, so a waiting row can say other steps did work. */
+  transactionHashes?: TransactionHashEntry[];
+  gasUsedWei?: string | null;
 };
 
 export type ExecutionSummaryPage = {

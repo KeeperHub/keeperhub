@@ -91,7 +91,7 @@ export const NO_RUN_OUTCOME_SIGNALS: RunOutcomeSignals = {
 };
 
 /** A step output's fields when it is an object, else undefined. */
-export function fieldsOf(output: unknown): Record<string, unknown> | undefined {
+function fieldsOf(output: unknown): Record<string, unknown> | undefined {
   return output === null || typeof output !== "object" || Array.isArray(output)
     ? undefined
     : (output as Record<string, unknown>);
@@ -227,9 +227,13 @@ export function nodeOutcomeOf(
     : undefined;
 }
 
-/** What every not-mined-yet text ends with: how the run settles, and that a mined copy is paid for. */
+/** What every not-mined-yet text says: how the run settles, and that a mined copy is paid for. */
 export const NOT_MINED_YET_TEXT =
   "is not mined yet; KeeperHub settles the run once it is mined or dropped. If it is mined, the wallet pays its gas, even if it reverts.";
+
+/** Appended only where a public copy is known to be pending: its usual cause and fix. */
+const PUBLIC_COPY_STUCK_TEXT =
+  "If it stays unmined, most often its fee cap is below the base fee; it clears when the base fee falls back under it. KeeperHub does not replace it; raise Max Fee or leave it empty for later runs.";
 
 /** Each outcome's label and sentence, shared by the canvas and the Runs panel. */
 export const STEP_OUTCOME_TEXT: Readonly<
@@ -256,7 +260,7 @@ export const STEP_OUTCOME_TEXT: Readonly<
   },
   "public-pending": {
     label: "Unconfirmed",
-    sentence: `this step's transaction was sent publicly and ${NOT_MINED_YET_TEXT}`,
+    sentence: `this step's transaction was sent publicly and ${NOT_MINED_YET_TEXT} ${PUBLIC_COPY_STUCK_TEXT}`,
   },
 };
 
@@ -271,7 +275,7 @@ function publicCopyUnclear(output: unknown): boolean {
 /** A pending step's sentence; it says so when no RPC confirmed taking the copy. */
 export function publicPendingSentence(output: unknown): string {
   return publicCopyUnclear(output)
-    ? `this step's transaction was sent publicly${NO_RPC_CONFIRMED} and ${NOT_MINED_YET_TEXT}`
+    ? `this step's transaction was sent publicly${NO_RPC_CONFIRMED} and ${NOT_MINED_YET_TEXT} ${PUBLIC_COPY_STUCK_TEXT}`
     : STEP_OUTCOME_TEXT["public-pending"].sentence;
 }
 
@@ -288,14 +292,17 @@ export function unconfirmedRunNote(outputs: readonly unknown[]): string {
     return `A transaction was sent and ${NOT_MINED_YET_TEXT}`;
   }
   const unclear = publicCopyUnclear(pending) ? NO_RPC_CONFIRMED : "";
-  return `A transaction (${String(pending.transactionHash)}) was sent${unclear} and ${NOT_MINED_YET_TEXT}`;
+  return `A transaction (${String(pending.transactionHash)}) was sent${unclear} and ${NOT_MINED_YET_TEXT} ${PUBLIC_COPY_STUCK_TEXT}`;
 }
 
-/** A skipped step's sentence; behind a public copy (inFlightHash) it names the copy. */
-export function skippedStepSentence(output: unknown): string {
+/** A skipped step's sentence; behind a public copy (inFlightHash) it names the copy. A run's note names "the bundle step". */
+export function skippedStepSentence(
+  output: unknown,
+  subject: "this step" | "the bundle step" = "this step"
+): string {
   const hash = fieldsOf(output)?.inFlightHash;
   return typeof hash === "string"
-    ? `an earlier run's public copy (${hash}) is not mined yet, so this step sent nothing; no gas was paid. KeeperHub checks it every few minutes and stops waiting after a day.`
+    ? `an earlier run's public copy (${hash}) is not mined yet, so ${subject} sent nothing; no gas was paid. KeeperHub checks it every few minutes and stops waiting after a day.`
     : STEP_OUTCOME_TEXT["skipped-in-flight"].sentence;
 }
 
@@ -355,7 +362,7 @@ export const NOT_INCLUDED_REASON_TEXT: Readonly<Record<string, string>> = {
   "not-checked":
     "It could not be checked yet, and it may still land within about a day.",
   "public-copy-dropped":
-    "Its public copy was not found on any RPC for three checks, so KeeperHub treats it as dropped; nothing was mined and the nonce is used again. Most often its fee cap was below the base fee, or an RPC rejected it (for example for too little balance): raise Max Fee or leave it empty, and check the wallet's balance.",
+    "Its public copy was not found on any RPC for three checks, so KeeperHub treats it as dropped. Most often its fee cap was below the base fee, or an RPC rejected it (for example for too little balance): raise Max Fee or leave it empty, and check the wallet's balance. Nothing was mined, and the nonce is free for the wallet's next transaction.",
   "public-copy-replaced":
     "Another transaction from the wallet used its nonce first, so its public copy can no longer be mined; no gas was paid for it.",
 };
@@ -377,11 +384,6 @@ export type PublicCopyEnd = "public-copy-dropped" | "public-copy-replaced";
 export function publicCopyNotLandedReason(end: PublicCopyEnd): string {
   return `Not landed: a bundle in this run was not seen in any of the blocks it was sent for. ${NOT_INCLUDED_REASON_TEXT[end]}`;
 }
-
-/** A not landed run's reason when the sweep found its public copy on no RPC and dropped it. */
-export const PUBLIC_COPY_DROPPED_REASON = publicCopyNotLandedReason(
-  "public-copy-dropped"
-);
 
 /** For a public copy dropped from the mempools: the usual causes and what to change. */
 export const PUBLIC_COPY_DROPPED_NEXT_STEP =
@@ -485,7 +487,6 @@ export function notIncludedReasonText(output: unknown): string | undefined {
 
 /** The stable key a skipped run stores in `errorCode` when a bundle step waited for Not before. */
 export const RUN_OUTCOME_CODE = {
-  // Billed like any other run.
   waiting: "bundle-waiting",
 } as const;
 
@@ -514,12 +515,8 @@ type SkippedRow = {
   errorCode?: string | null;
 };
 
-// The code; rows stored before it fall back to the exact reason text.
 function isWaitingRow(run: SkippedRow): boolean {
-  return (
-    run.errorCode === RUN_OUTCOME_CODE.waiting ||
-    (run.errorCode == null && run.error === RUN_OUTCOME_REASON.waiting)
-  );
+  return run.errorCode === RUN_OUTCOME_CODE.waiting;
 }
 
 /** The skip reason key of a run row; null when none applies. */

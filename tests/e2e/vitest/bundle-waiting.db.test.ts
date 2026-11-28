@@ -4,7 +4,7 @@
  * each one's reason key and waiting outputs back. Needs Postgres (DATABASE_URL, migrated).
  */
 import "dotenv/config";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -13,7 +13,10 @@ vi.mock("server-only", () => ({}));
 vi.unmock("@/lib/db");
 // Every hash a run reports reads back as mined and successful (no RPC here), unless a test says otherwise.
 const receipts = vi.hoisted(() => ({
-  status: {} as Record<string, "success" | "reverted" | "not_found">,
+  status: {} as Record<
+    string,
+    "success" | "reverted" | "not_found" | "timeout"
+  >,
 }));
 vi.mock("@/lib/web3/verify-receipt", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/web3/verify-receipt")>()),
@@ -26,7 +29,7 @@ vi.mock("@/lib/web3/verify-receipt", async (importOriginal) => ({
         ...entry,
         verified: status === "success",
         status,
-        ...(status !== "not_found" && {
+        ...((status === "success" || status === "reverted") && {
           blockNumber: 21_400_500,
           gasUsed: "50000",
         }),
@@ -698,6 +701,324 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
       expect(row.transactionHashes?.map((entry) => entry.hash)).toEqual([
         minedHash,
       ]);
+    });
+
+    /** The copy's row as the sweep or a session ended it; older than a day, so the late sweep leaves it alone. */
+    async function endedCopyRow(
+      executionId: string,
+      status: "dropped" | "replaced" | "pending",
+      nonce: number,
+      copy: { accepted?: boolean } = {},
+      hash = PUBLIC_HASH
+    ): Promise<void> {
+      const ext = await import("@/lib/db/schema-extensions");
+      await db.insert(ext.pendingTransactions).values({
+        walletAddress: PUBLIC_WALLET,
+        chainId: 1,
+        nonce,
+        txHash: hash,
+        executionId,
+        status,
+        lastTargetBlock: 100,
+        submittedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+        bundleRuns: [
+          {
+            executionId,
+            hashes: [hash],
+            signedAt: Date.now(),
+            public: {
+              hash,
+              kind: "with-bundle",
+              at: Date.now(),
+              ...copy,
+            },
+          },
+        ],
+      });
+    }
+
+    it.each([
+      ["dropped", "public-copy-dropped"],
+      ["replaced", "public-copy-replaced"],
+    ] as const)(
+      "ends Not landed when its only unread hash is its own %s public copy, the other hash kept with its receipt",
+      async (status, end) => {
+        const run = await pendingRun();
+        const other = `0x${"c4".repeat(32)}`;
+        const [listed] = (await rowOf(run)).transactionHashes ?? [];
+        await db
+          .update(schema.workflowExecutions)
+          .set({
+            transactionHashes: [
+              listed,
+              { ...listed, hash: other, nodeId: "write-2", verified: false },
+            ],
+          })
+          .where(eq(schema.workflowExecutions.id, run));
+        await endedCopyRow(run, status, 10 + seq);
+        await reconcile();
+        const row = await rowOf(run);
+        expect(row).toMatchObject({
+          status: "not_landed",
+          error: keys.publicCopyNotLandedReason(end),
+        });
+        expect(row.transactionHashes).toEqual([
+          expect.objectContaining({
+            hash: other,
+            verified: true,
+            receiptStatus: "success",
+          }),
+        ]);
+      }
+    );
+
+    it("stays open when the ended copy row is another run's, a copy that never went out, or still pending", async () => {
+      const run = await pendingRun();
+      const other = await newRun();
+      await endedCopyRow(other, "dropped", 30 + seq);
+      await endedCopyRow(run, "dropped", 31 + seq, { accepted: false });
+      await endedCopyRow(run, "pending", 32 + seq);
+      // Pending under another run but still holding the copy's hash, or under this run with a new hash not mined yet.
+      await endedCopyRow(run, "pending", 33 + seq);
+      await setCopyRow(33 + seq, { executionId: other });
+      await endedCopyRow(run, "pending", 34 + seq);
+      await setCopyRow(34 + seq, { txHash: `0x${"c6".repeat(32)}` });
+      await reconcile();
+      expect((await rowOf(run)).status).toBe("unconfirmed");
+    });
+
+    it("ends Not landed (replaced) when the run's own re-send at the copy's nonce was mined with a hash the copy never signed", async () => {
+      const run = await pendingRun();
+      const nonce = 35 + seq;
+      await endedCopyRow(run, "pending", nonce);
+      await setCopyRow(nonce, {
+        status: "confirmed",
+        txHash: `0x${"c9".repeat(32)}`,
+      });
+      await reconcile();
+      expect(await rowOf(run)).toMatchObject({
+        status: "not_landed",
+        error: keys.publicCopyNotLandedReason("public-copy-replaced"),
+      });
+    });
+
+    /** Change the copy row at this nonce. */
+    async function setCopyRow(
+      nonce: number,
+      fields: Partial<
+        typeof import("@/lib/db/schema-extensions").pendingTransactions.$inferInsert
+      >
+    ): Promise<void> {
+      const ext = await import("@/lib/db/schema-extensions");
+      await db
+        .update(ext.pendingTransactions)
+        .set(fields)
+        .where(
+          and(
+            eq(ext.pendingTransactions.walletAddress, PUBLIC_WALLET),
+            eq(ext.pendingTransactions.nonce, nonce)
+          )
+        );
+    }
+
+    it.each([
+      ["pending", "public-copy-dropped"],
+      ["confirmed", "public-copy-replaced"],
+    ] as const)(
+      "ends Not landed when another run's send reused the dropped copy's nonce (now %s)",
+      async (status, end) => {
+        const run = await pendingRun();
+        const other = await newRun();
+        const nonce = 40 + seq;
+        await endedCopyRow(run, "dropped", nonce);
+        const ext = await import("@/lib/db/schema-extensions");
+        const [row] = await db
+          .select()
+          .from(ext.pendingTransactions)
+          .where(
+            and(
+              eq(ext.pendingTransactions.walletAddress, PUBLIC_WALLET),
+              eq(ext.pendingTransactions.nonce, nonce)
+            )
+          );
+        // As the nonce manager's upsert merges a reuse send: new hash and run, the old entry kept.
+        const reused = `0x${"c5".repeat(32)}`;
+        await setCopyRow(nonce, {
+          status,
+          txHash: reused,
+          executionId: other,
+          bundleRuns: [
+            ...row.bundleRuns,
+            { executionId: other, hashes: [reused], signedAt: Date.now() },
+          ],
+        });
+        await reconcile();
+        expect(await rowOf(run)).toMatchObject({
+          status: "not_landed",
+          error: keys.publicCopyNotLandedReason(end),
+        });
+      }
+    );
+
+    it("a run held open by its own failure never ends Not landed by its copy: it stays open, then fails with its own error", async () => {
+      const run = await pendingRun();
+      await db
+        .update(schema.workflowExecutions)
+        .set({ errorType: "user", error: "Step Pay failed: boom" })
+        .where(eq(schema.workflowExecutions.id, run));
+      await endedCopyRow(run, "dropped", 50 + seq);
+      await reconcile();
+      expect(await rowOf(run)).toMatchObject({
+        status: "unconfirmed",
+        error: "Step Pay failed: boom",
+      });
+      // Past the day, it settles with the failure it had.
+      await db
+        .update(schema.workflowExecutions)
+        .set({ startedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) })
+        .where(eq(schema.workflowExecutions.id, run));
+      await reconcile();
+      expect(await rowOf(run)).toMatchObject({
+        status: "error",
+        error: "Step Pay failed: boom",
+      });
+    });
+
+    it("an ended copy of a run started over a day ago is not read: the run fails as never mined", async () => {
+      const run = await pendingRun();
+      await db
+        .update(schema.workflowExecutions)
+        .set({ startedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) })
+        .where(eq(schema.workflowExecutions.id, run));
+      await endedCopyRow(run, "dropped", 60 + seq);
+      await reconcile();
+      const row = await rowOf(run);
+      expect(row.status).toBe("error");
+      expect(row.error).toContain(keys.NEVER_MINED_RUN_ERROR);
+    });
+
+    it("a copy whose receipt read timed out stays open, even with its row dropped beside another dropped copy", async () => {
+      const run = await pendingRun();
+      // A second Bundle and public step's copy, not found and dropped too.
+      const second = `0x${"c8".repeat(32)}`;
+      const [listed] = (await rowOf(run)).transactionHashes ?? [];
+      await db
+        .update(schema.workflowExecutions)
+        .set({
+          transactionHashes: [
+            listed,
+            { ...listed, hash: second, nodeId: "write-2" },
+          ],
+        })
+        .where(eq(schema.workflowExecutions.id, run));
+      receipts.status[second] = "not_found";
+      await endedCopyRow(run, "dropped", 70 + seq, {}, second);
+      receipts.status[PUBLIC_HASH] = "timeout";
+      await endedCopyRow(run, "dropped", 71 + seq);
+      try {
+        await reconcile();
+      } finally {
+        receipts.status[PUBLIC_HASH] = "not_found";
+      }
+      expect((await rowOf(run)).status).toBe("unconfirmed");
+    });
+
+    it("writes nothing when the copy's row is confirmed between the reconciler's read and its write", async () => {
+      const run = await pendingRun();
+      const nonce = 80 + seq;
+      await endedCopyRow(run, "dropped", nonce);
+      const ext = await import("@/lib/db/schema-extensions");
+      // The entry also signed a bundle hash; the row is confirmed with it, upper-cased.
+      const bundleHash = `0x${"ca".repeat(32)}`;
+      const [copy] = await db
+        .select()
+        .from(ext.pendingTransactions)
+        .where(
+          and(
+            eq(ext.pendingTransactions.walletAddress, PUBLIC_WALLET),
+            eq(ext.pendingTransactions.nonce, nonce)
+          )
+        );
+      await setCopyRow(nonce, {
+        bundleRuns: copy.bundleRuns.map((entry) => ({
+          ...entry,
+          hashes: [...entry.hashes, bundleHash],
+        })),
+      });
+      // The read sees the dropped row; the sweep confirms the copy mined before the write.
+      const realSelect = db.select.bind(db);
+      let raced = false;
+      const select = vi.spyOn(db, "select").mockImplementation(((
+        fields: never
+      ) => {
+        const query = realSelect(fields);
+        if (raced) {
+          return query;
+        }
+        return {
+          from: (table: never) => {
+            const built = query.from(table);
+            if (table !== ext.pendingTransactions) {
+              return built;
+            }
+            return {
+              where: async (condition: never) => {
+                const rows = (await built.where(condition)) as {
+                  status?: string | null;
+                  bundleRuns?: { executionId: string }[];
+                }[];
+                // Only this run's read: earlier tests' runs are reconciled too.
+                const ours = rows.some(
+                  (r) =>
+                    r.status === "dropped" &&
+                    r.bundleRuns?.some((entry) => entry.executionId === run)
+                );
+                if (!raced && ours) {
+                  raced = true;
+                  await setCopyRow(nonce, {
+                    status: "confirmed",
+                    txHash: `0x${"CA".repeat(32)}`,
+                  });
+                }
+                return rows;
+              },
+            };
+          },
+        };
+      }) as never);
+      try {
+        await reconcile();
+      } finally {
+        select.mockRestore();
+      }
+      expect(raced).toBe(true);
+      expect((await rowOf(run)).status).toBe("unconfirmed");
+    });
+
+    it("ends Not landed though another nonce's row is confirmed with the copy's hash: the guard reads only the copy's row", async () => {
+      const run = await pendingRun();
+      const other = await newRun();
+      const elsewhere = 90 + seq;
+      const ext = await import("@/lib/db/schema-extensions");
+      await db.insert(ext.pendingTransactions).values({
+        walletAddress: PUBLIC_WALLET,
+        chainId: 1,
+        nonce: elsewhere,
+        txHash: PUBLIC_HASH,
+        executionId: other,
+        status: "confirmed",
+      });
+      try {
+        await endedCopyRow(run, "dropped", elsewhere + 1);
+        await reconcile();
+      } finally {
+        // Not left for later tests' reads of the copy's hash.
+        await setCopyRow(elsewhere, { txHash: `0x${"c7".repeat(32)}` });
+      }
+      expect(await rowOf(run)).toMatchObject({
+        status: "not_landed",
+        error: keys.publicCopyNotLandedReason("public-copy-dropped"),
+      });
     });
 
     it("does not swap to a confirmed row of another run, or a hash the run never signed", async () => {

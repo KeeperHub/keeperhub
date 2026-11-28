@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, isNotNull, lt } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, lt, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   type DirectExecution,
@@ -23,7 +23,13 @@ import {
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
 import { DAY_MS } from "@/lib/utils/duration";
-import { minedBundleHashFor } from "@/lib/web3/bundles/bundle-history";
+import {
+  type CopyHashes,
+  type EndedPublicCopy,
+  endedPublicCopyFor,
+  minedBundleHashFor,
+  noneConfirmedSql,
+} from "@/lib/web3/bundles/bundle-history";
 import {
   type LateBundleSweep,
   sweepLateBundles,
@@ -33,6 +39,7 @@ import {
   hasUnreadableReceipt,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
+import { mergeReceiptResults } from "@/lib/workflow/executor/logging";
 import {
   type RunOutcome,
   type RunOutcomeSignals,
@@ -43,6 +50,8 @@ import {
 } from "@/lib/workflow/executor/run-outcome";
 import {
   NEVER_MINED_RUN_ERROR,
+  type PublicCopyEnd,
+  publicCopyNotLandedReason,
   type RunOutcomeCode,
 } from "@/lib/workflow/executor/run-outcome-keys";
 import { loadSuccessLogFacts } from "@/lib/workflow/executor/success-log-facts";
@@ -329,7 +338,9 @@ async function settleWorkflow(
   error: string | null,
   transactionHashes?: TransactionHashEntry[],
   // Settled by its outcome: the waiting code, or null; else the row's code is kept.
-  code?: RunOutcomeCode | null
+  code?: RunOutcomeCode | null,
+  // An extra condition the write must still meet.
+  guard?: SQL
 ): Promise<void> {
   const updated = await db
     .update(workflowExecutions)
@@ -343,7 +354,8 @@ async function settleWorkflow(
     .where(
       and(
         eq(workflowExecutions.id, execution.id),
-        eq(workflowExecutions.status, "unconfirmed")
+        eq(workflowExecutions.status, "unconfirmed"),
+        guard
       )
     )
     .returning({ id: workflowExecutions.id });
@@ -465,6 +477,28 @@ async function reconcileWorkflow(
 
   const stillUnreadable = hasUnreadableReceipt(results);
   const age = now.getTime() - execution.startedAt.getTime();
+  // Within the day, unread hashes that are all this run's dropped or replaced public copies: Not landed, as the sweep says.
+  const copies =
+    bundleSent && !failureOrigin && age < DROPPED_AFTER_MS
+      ? await endedCopiesOnly(execution.id, results)
+      : undefined;
+  if (copies) {
+    await settleWorkflow(
+      execution,
+      "not_landed",
+      publicCopyNotLandedReason(copies.end),
+      mergeReceiptResults(
+        (settledHashes ?? entries).filter(
+          (entry) => !copies.hashes.has(entry.hash.toLowerCase())
+        ),
+        results
+      ),
+      undefined,
+      // Not if a copy was mined (its row confirmed) after it was read as ended.
+      noneConfirmedSql(copies.guards)
+    );
+    return "completed";
+  }
   if (stillUnreadable && age < DROPPED_AFTER_MS) {
     return "unconfirmed";
   }
@@ -492,6 +526,48 @@ async function reconcileWorkflow(
 }
 
 type Verified = Awaited<ReturnType<typeof verifyExecutionReceipts>>;
+
+/** The end of the run's public copies when every hash not verified is one of them, not found, its row dropped or replaced (or its nonce reused). */
+async function endedCopiesOnly(
+  executionId: string,
+  results: Verified["results"]
+): Promise<
+  { end: PublicCopyEnd; hashes: Set<string>; guards: CopyHashes[] } | undefined
+> {
+  const unread = results.filter((result) => !result.verified);
+  if (
+    unread.length === 0 ||
+    unread.some((result) => result.status !== "not_found")
+  ) {
+    return;
+  }
+  const ends: EndedPublicCopy[] = [];
+  for (const result of unread) {
+    let end: EndedPublicCopy | undefined;
+    try {
+      end = await endedPublicCopyFor(executionId, result.chainId, result.hash);
+    } catch (error) {
+      logSystemWarn(
+        ErrorCategory.DATABASE,
+        "[Reconcile] Could not read a run's public copy row",
+        error,
+        { execution_id: executionId }
+      );
+    }
+    if (!end) {
+      return;
+    }
+    ends.push(end);
+  }
+  return {
+    end: ends.every(({ end }) => end === "replaced")
+      ? "public-copy-replaced"
+      : "public-copy-dropped",
+    hashes: new Set(unread.map((result) => result.hash.toLowerCase())),
+    // Every matched entry's signed hashes, each at its own row, as the sweep guards.
+    guards: ends.map(({ row, hashes }) => ({ row, hashes })),
+  };
+}
 
 function needsBundleCheck(results: Verified["results"]): boolean {
   return results.some(

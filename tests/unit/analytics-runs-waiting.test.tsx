@@ -242,4 +242,87 @@ describe("waiting runs in the Analytics runs table", () => {
       "@container"
     );
   });
+
+  it("sums the group's gas and says the other steps sent transactions", async () => {
+    const gas = (wei: string) => ({
+      gasUsedWei: wei,
+      networks: ["1"],
+      gasNetworks: ["1"],
+      transactionHashes: [{ hash: "0x1", nodeId: "n", nodeName: "Pay" }],
+    });
+    await render([
+      { ...waiting("w3", 1), ...gas("1000000000000000") },
+      waiting("w2", 2),
+      { ...waiting("w1", 3), ...gas("2000000000000000") },
+    ]);
+    const cell = () =>
+      container.querySelector('[data-testid="analytics-waiting-gas"]')
+        ?.textContent ?? "";
+    expect(cell()).toMatch(/^0\.003\b/);
+    const title = () =>
+      container
+        .querySelector('[data-testid="analytics-waiting-gas"]')
+        ?.getAttribute("title");
+    // A single-chain total names how many runs it sums.
+    expect(title()).toBe("Total for the 3 runs in this row");
+    await act(async () => {
+      groups()[0].querySelector("button")?.click();
+    });
+    expect(
+      container.querySelector('[data-testid="analytics-waiting-details"]')
+        ?.textContent
+    ).toContain(
+      "The runs' other steps still ran; some sent transactions. Only the latest run's steps are shown."
+    );
+    // No run paid: the cell stays empty.
+    await render([waiting("v2", 1), waiting("v1", 2)]);
+    expect(cell()).toBe("-");
+    expect(title()).toBeNull();
+    await render([{ ...waiting("s1", 1), ...gas("1000000000000000") }]);
+    expect(title()).toBe("Total for the 1 run in this row");
+  });
+
+  it("shows Composed for a group that paid gas on two chains, its tooltip about these runs", async () => {
+    const paid = (chain: string) => ({
+      gasUsedWei: "1000000000000000",
+      networks: [chain],
+      gasNetworks: [chain],
+    });
+    await render([
+      { ...waiting("x2", 1), ...paid("1") },
+      { ...waiting("x1", 2), ...paid("137") },
+    ]);
+    const gas = container.querySelector<HTMLElement>(
+      '[data-testid="analytics-waiting-gas"]'
+    );
+    expect(gas?.textContent).toBe("Composed");
+    // Composed has no single total, so no total title.
+    expect(gas?.getAttribute("title")).toBeNull();
+    // The focused trigger opens its tooltip, which Radix measures with an observer jsdom lacks.
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe(): void {
+          // jsdom does no layout
+        }
+        unobserve(): void {
+          // jsdom does no layout
+        }
+        disconnect(): void {
+          // jsdom does no layout
+        }
+      }
+    );
+    await act(async () => {
+      gas
+        ?.querySelector<HTMLElement>("span")
+        ?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    const tip = document.body.textContent ?? "";
+    expect(tip).toContain("These runs spent gas on ");
+    expect(tip).toContain(
+      "Those networks have different native tokens, so there is no single total to show."
+    );
+    expect(tip).not.toContain("Expand the run");
+  });
 });

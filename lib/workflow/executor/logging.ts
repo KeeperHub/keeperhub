@@ -313,7 +313,8 @@ function recordFinishedSample(
   recordWorkflowExecutionFinished({ status, orgSlug, errorType });
 }
 
-function mergeReceiptResults(
+/** Each entry with its receipt read, when one was. */
+export function mergeReceiptResults(
   entries: TransactionHashEntry[],
   results: ReceiptVerificationResult[]
 ): TransactionHashEntry[] {

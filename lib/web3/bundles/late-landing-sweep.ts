@@ -1,6 +1,18 @@
 import "server-only";
 
-import { and, desc, eq, gt, isNotNull, lt, ne, not, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  isNotNull,
+  lt,
+  ne,
+  not,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { ethers } from "ethers";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
@@ -12,6 +24,7 @@ import { logInfo, logWarn } from "@/lib/logging";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { extraRpcHasTransaction } from "@/lib/web3/extra-broadcast";
+import type { PublicCopyEnd } from "@/lib/workflow/executor/run-outcome-keys";
 import {
   confirmRow,
   findMinedHash,
@@ -25,6 +38,7 @@ import {
   provedReplaced,
   type ReceiptView,
   type RowKey,
+  rowAsRead,
 } from "./bundle-history";
 import {
   LATE_REVERT_ERROR,
@@ -304,7 +318,13 @@ async function sweepPublicCopies(
         gt(pendingTransactions.submittedAt, cutoff)
       )
     )
-    .orderBy(desc(pendingTransactions.submittedAt))
+    // Round robin: least recently checked first, so copies that never drop cannot starve the rest.
+    .orderBy(
+      asc(
+        sql`coalesce((${pendingTransactions.bundleRuns} -> -1 -> 'public' ->> 'checkedAt')::bigint, 0)`
+      ),
+      asc(pendingTransactions.submittedAt)
+    )
     .limit(SWEEP_ROWS);
   for (const row of rows) {
     if (Date.now() >= deadline) {
@@ -312,6 +332,7 @@ async function sweepPublicCopies(
     }
     reads.summary.examined += 1;
     try {
+      await markChecked(row, now);
       await checkPublicCopy(row, now, deadline, reads);
     } catch (error) {
       logWarn("[Bundle] Public copy check failed; retried next run", {
@@ -421,15 +442,7 @@ async function settleUsedNonce(
     (await markReplaced(row, "pending"))
   ) {
     reads.summary.replaced += 1;
-    // The row's newest entry is its run's (livePublicCopy).
-    const entry = row.bundleRuns.at(-1);
-    if (entry) {
-      await settleDroppedPublicCopy(
-        entry.executionId,
-        entry.hashes,
-        "public-copy-replaced"
-      );
-    }
+    await settleCopyRun(row, "public-copy-replaced");
   }
 }
 
@@ -473,6 +486,21 @@ async function publicCopySeen(
   return managed.includes(undefined) || failedOver ? "unclear" : "missing";
 }
 
+const stillPending = (row: RowKey): SQL | undefined =>
+  rowAsRead(row, "pending");
+
+/** Stamp the copy as examined now, on the row read while it is still pending. */
+async function markChecked(row: PublicRow, now: Date): Promise<void> {
+  const runs = pendingTransactions.bundleRuns;
+  const last = sql`(jsonb_array_length(${runs}) - 1)::text`;
+  await db
+    .update(pendingTransactions)
+    .set({
+      bundleRuns: sql`jsonb_set(${runs}, ARRAY[${last}, 'public', 'checkedAt'], ${String(now.getTime())}::jsonb)`,
+    })
+    .where(stillPending(row));
+}
+
 /** Store the miss and unclear counts; at the miss limit the row is dropped and its run settled. Guarded on the row read. */
 async function recordCounts(
   row: PublicRow,
@@ -487,15 +515,7 @@ async function recordCounts(
       bundleRuns: sql`jsonb_set(jsonb_set(${runs}, ARRAY[${last}, 'public', 'misses'], ${String(counts.misses)}::jsonb), ARRAY[${last}, 'public', 'unclear'], ${String(counts.unclear)}::jsonb)`,
       ...(drop && { status: "dropped" }),
     })
-    .where(
-      and(
-        eq(pendingTransactions.walletAddress, row.walletAddress),
-        eq(pendingTransactions.chainId, row.chainId),
-        eq(pendingTransactions.nonce, row.nonce),
-        eq(pendingTransactions.txHash, row.txHash),
-        eq(pendingTransactions.status, "pending")
-      )
-    )
+    .where(stillPending(row))
     .returning({ nonce: pendingTransactions.nonce });
   if (!(drop && updated.length > 0)) {
     return;
@@ -504,14 +524,28 @@ async function recordCounts(
     chain_id: String(row.chainId),
     tx_hash: row.txHash,
   });
-  // The row's newest entry is its run's (livePublicCopy); a later landing re-settles it.
+  // A later landing re-settles it.
+  await settleCopyRun(row, "public-copy-dropped");
+}
+
+/** Settle the run of a copy whose row was just dropped or replaced; nothing retries it, so a throw is the reconciler's. */
+async function settleCopyRun(
+  row: PublicRow,
+  end: PublicCopyEnd
+): Promise<void> {
+  // The row's newest entry is its run's (livePublicCopy).
   const entry = row.bundleRuns.at(-1);
-  if (entry) {
-    await settleDroppedPublicCopy(
-      entry.executionId,
-      entry.hashes,
-      "public-copy-dropped"
-    );
+  if (!entry) {
+    return;
+  }
+  try {
+    await settleDroppedPublicCopy(entry.executionId, row, entry.hashes, end);
+  } catch (error) {
+    logWarn("[Bundle] Public copy run not settled; left to the reconciler", {
+      chain_id: String(row.chainId),
+      reason: end,
+      error: error instanceof Error ? error.name : "unknown",
+    });
   }
 }
 
@@ -549,15 +583,7 @@ async function markReplaced(
   const updated = await db
     .update(pendingTransactions)
     .set({ status: "replaced" })
-    .where(
-      and(
-        eq(pendingTransactions.walletAddress, row.walletAddress),
-        eq(pendingTransactions.chainId, row.chainId),
-        eq(pendingTransactions.nonce, row.nonce),
-        eq(pendingTransactions.txHash, row.txHash),
-        eq(pendingTransactions.status, fromStatus)
-      )
-    )
+    .where(rowAsRead(row, fromStatus))
     .returning({ nonce: pendingTransactions.nonce });
   return updated.length > 0;
 }

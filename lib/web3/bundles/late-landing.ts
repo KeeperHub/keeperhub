@@ -28,6 +28,8 @@ import {
 import {
   type MinedHash,
   minedOf,
+  type NonceKey,
+  noneConfirmedSql,
   ownerOf,
   type ReceiptView,
 } from "./bundle-history";
@@ -481,6 +483,7 @@ function hashEntry(
  */
 export async function settleDroppedPublicCopy(
   executionId: string,
+  row: NonceKey,
   stepHashes: readonly string[],
   end: PublicCopyEnd
 ): Promise<boolean> {
@@ -517,7 +520,9 @@ export async function settleDroppedPublicCopy(
       and(
         unconfirmed,
         // Unchanged since read: a hash verified meanwhile is not lost.
-        sql`coalesce(${workflowExecutions.transactionHashes}, '[]'::jsonb) = ${JSON.stringify(listed)}::jsonb`
+        sql`coalesce(${workflowExecutions.transactionHashes}, '[]'::jsonb) = ${JSON.stringify(listed)}::jsonb`,
+        // Not if one of its hashes was mined (its row confirmed) meanwhile.
+        noneConfirmedSql([{ row, hashes: stepHashes }])
       )
     )
     .returning({ workflowId: workflowExecutions.workflowId });

@@ -20,6 +20,10 @@ export type ErrorStatus = (typeof ERROR_STATUSES)[number];
 export const NOT_LANDED_LATER =
   "A bundle that could not be checked can still land within about a day; then the run changes to Success, or to Error if the call reverted.";
 
+/** Which skipped runs count, for the Analytics Skipped tooltips and the digest email. */
+export const SKIPPED_BILLING_TEXT =
+  "Skipped runs do not count toward your plan's runs, except waiting runs and runs skipped because an earlier run's bundle (or public copy) was in flight.";
+
 /** True when an execution status is one of the two failure statuses. */
 export function isErrorStatus(status: string): status is ErrorStatus {
   return (ERROR_STATUSES as readonly string[]).includes(status);
@@ -34,10 +38,11 @@ export function isErrorStatus(status: string): status is ErrorStatus {
  * `skipped` is a run refused before it started (over the plan's execution
  * limit, a gated action, or an unpaid pay-as-you-go charge), a Block trigger
  * dispatch skipped while a previous run was still live, or a run whose bundle
- * step found an earlier run's bundle in flight and sent nothing (its other
- * steps still ran and may have sent transactions). It is
- * terminal and not a failure, so it belongs outside both the error count and
- * the success-rate denominator; only the in-flight kind is billable.
+ * step found an earlier run's bundle in flight, or a bundle step waiting for
+ * Not before, and sent nothing (its other steps still ran and may have sent
+ * transactions). It is terminal and not a failure, so it belongs outside both
+ * the error count and the success-rate denominator; the in-flight and waiting
+ * kinds are billable.
  *
  * `not_landed` is a run that finished but where a transaction in it did not
  * land in a block (for example a bundle no builder picked). Terminal, billable,
