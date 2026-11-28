@@ -314,7 +314,7 @@ describe("submitAndConfirm", () => {
         options
       )
     ).rejects.toThrow(
-      "Transaction 0xreverted reverted on-chain (status 0, block 500)"
+      "Transaction 0xreverted reverted on-chain (execution reverted, status 0, block 500)"
     );
 
     expect(mockConfirmTransaction).not.toHaveBeenCalled();
@@ -411,7 +411,7 @@ describe("executeTransaction", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe(
-      "Transaction 0xreverted reverted on-chain (status 0, block 500)"
+      "Transaction 0xreverted reverted on-chain (execution reverted, status 0, block 500)"
     );
     expect(result.nonce).toBe(42);
     expect(mockRecordTransaction).toHaveBeenCalledOnce();
@@ -435,7 +435,9 @@ describe("executeTransaction", () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain("reverted on-chain (status 0");
+    expect(result.error).toContain(
+      "reverted on-chain (execution reverted, status 0"
+    );
     expect(mockConfirmTransaction).not.toHaveBeenCalled();
   });
 
@@ -503,7 +505,7 @@ describe("executeContractTransaction", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe(
-      "Transaction 0xreverted reverted on-chain (status 0, block 500)"
+      "Transaction 0xreverted reverted on-chain (execution reverted, status 0, block 500)"
     );
     expect(mockConfirmTransaction).not.toHaveBeenCalled();
     expect(logUserError).toHaveBeenCalledOnce();
@@ -548,7 +550,9 @@ describe("executeContractTransaction", () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain("reverted on-chain (status 0");
+    expect(result.error).toContain(
+      "reverted on-chain (execution reverted, status 0"
+    );
     expect(mockConfirmTransaction).not.toHaveBeenCalled();
   });
 

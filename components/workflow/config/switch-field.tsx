@@ -12,10 +12,25 @@ import { readToggle, type ToggleRule } from "@/plugins/registry";
 const SHOWN_VALUE_MAX_CHARS = 60;
 
 // What the step does with a value that is neither on nor off.
-function strayAtRun(rule: ToggleRule): string {
+function strayAtRun(rule: ToggleRule, shownAfterReset?: boolean): string {
+  if (rule === "default-on" && shownAfterReset === false) {
+    // Another setting holds it off (e.g. Sponsor gas on a private relay step).
+    return "When the step runs, it is off with these settings.";
+  }
   return rule === "default-on"
     ? "When the step runs, it is on unless this resolves to false."
     : "When the step runs, it fails unless this resolves to true, false or nothing.";
+}
+
+/** Whether the switch draws on: a stray value held off by another setting draws as that. */
+export function drawnToggle(
+  rule: ToggleRule,
+  value: unknown,
+  shownAfterReset?: boolean
+): boolean {
+  return !isToggleValue(value) && shownAfterReset !== undefined
+    ? shownAfterReset
+    : readToggle(rule, value);
 }
 
 // The stored value as the hint quotes it: visible characters, shortened.
@@ -55,6 +70,14 @@ type SwitchFieldProps = {
   // Shown only so a stray value can be cleared (isShownOnlyToFix): the switch
   // is locked and Reset is the only action. Required so no caller forgets it.
   resetOnly: boolean;
+  // Replaces the step wording of the stray hint; save then always refuses the value.
+  strayHint?: string;
+  // Locked (reset-only) wording, replacing the stray hint, e.g. "Not used on this network.".
+  lockedHint?: string;
+  // Selector of the field that takes focus after a locked switch is reset and hides.
+  focusOnLockedReset?: string;
+  // What the switch shows once reset, when the form shows it other than the rule's default.
+  shownAfterReset?: boolean;
 };
 
 /**
@@ -70,6 +93,10 @@ export function SwitchField({
   onChange,
   disabled,
   resetOnly,
+  strayHint,
+  lockedHint,
+  focusOnLockedReset,
+  shownAfterReset,
 }: SwitchFieldProps) {
   const switchRef = useRef<HTMLButtonElement>(null);
   const resetButtonRef = useRef<HTMLButtonElement>(null);
@@ -92,13 +119,25 @@ export function SwitchField({
     }
   }, [stray]);
 
+  // The nearest field matching the selector, searching outwards from the reset button.
+  const nearest = (selector: string): HTMLElement | null => {
+    let scope = resetButtonRef.current?.parentElement ?? null;
+    while (scope && !scope.querySelector(selector)) {
+      scope = scope.parentElement;
+    }
+    return scope?.querySelector<HTMLElement>(selector) ?? null;
+  };
+
   const reset = () => {
-    // A locked field hides once reset, so focus its group's header instead.
-    const header = locked
-      ? resetButtonRef.current
-          ?.closest<HTMLElement>("[data-field-group]")
-          ?.querySelector<HTMLButtonElement>("button")
-      : undefined;
+    // A locked field hides once reset, so focus its group's header (or the named field) instead.
+    let header: HTMLElement | null | undefined;
+    if (locked) {
+      header = focusOnLockedReset
+        ? nearest(focusOnLockedReset)
+        : resetButtonRef.current
+            ?.closest<HTMLElement>("[data-field-group]")
+            ?.querySelector<HTMLButtonElement>("button");
+    }
     if (header) {
       header.focus();
     } else {
@@ -118,14 +157,24 @@ export function SwitchField({
         )}
         {stray && (
           <div className="space-y-1">
-            <p className="break-words text-destructive text-xs" id={strayId}>
-              Holds {shownValue(value)}, which is neither on nor off.{" "}
-              {strayAtRun(rule)}
-              {!disabled && saveSentence(value)}
-              {locked &&
-                !disabled &&
-                " Hidden with these settings; reset it here."}
-            </p>
+            {locked && lockedHint ? (
+              <p className="break-words text-destructive text-xs" id={strayId}>
+                {lockedHint} It holds {shownValue(value)}, which is neither on
+                nor off.
+              </p>
+            ) : (
+              <p className="break-words text-destructive text-xs" id={strayId}>
+                Holds {shownValue(value)}, which is neither on nor off.{" "}
+                {strayHint ?? strayAtRun(rule, shownAfterReset)}
+                {!disabled &&
+                  (strayHint
+                    ? " A save refuses it, so reset it to save."
+                    : saveSentence(value))}
+                {locked &&
+                  !disabled &&
+                  " Hidden with these settings; reset it here."}
+              </p>
+            )}
             {!disabled && (
               <Button
                 aria-describedby={strayId}
@@ -135,7 +184,8 @@ export function SwitchField({
                 type="button"
                 variant="link"
               >
-                Reset to default ({readToggle(rule, undefined) ? "on" : "off"})
+                Reset to default (
+                {(shownAfterReset ?? readToggle(rule, undefined)) ? "on" : "off"})
                 <span className="sr-only">, {label}</span>
               </Button>
             )}
@@ -144,7 +194,7 @@ export function SwitchField({
       </div>
       <Switch
         aria-describedby={describedBy || undefined}
-        checked={readToggle(rule, value)}
+        checked={drawnToggle(rule, value, shownAfterReset)}
         disabled={disabled || locked}
         id={id}
         onCheckedChange={onChange}

@@ -4,6 +4,7 @@
  */
 
 import type { PlanName } from "@/lib/billing/plans";
+import type { TransactionHashEntry } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import type {
   NodeExecutionStatus,
@@ -14,6 +15,11 @@ import { refetchSidebarIfTriggerChanged } from "@/lib/refetch-sidebar";
 import type { ActorCredential } from "@/lib/security/credential-label";
 import type { HeldPaymentView } from "@/lib/tempo/held-payment-view";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
+import type {
+  NodeOutcome,
+  SkipReason,
+} from "@/lib/workflow/executor/run-outcome-keys";
+import type { WaitingRunInfo } from "@/lib/workflow/executor/waiting-runs";
 import type { WorkflowExportV1 } from "@/lib/workflow/export-schema";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow/store";
 import type { IntegrationConfig, IntegrationType } from "./types/integration";
@@ -139,6 +145,13 @@ export type ExecutionSummary = {
   ranVersion: number | null;
   /** Refusals folded into a skipped run's hourly row; null otherwise. */
   refusals: number | null;
+  /** Why a bundle step skipped the run (in flight or waiting); null otherwise. */
+  skipReason?: SkipReason | null;
+  /** A waiting run's Not before and its first allowed block; null otherwise. */
+  waiting?: WaitingRunInfo | null;
+  /** What the run's steps sent, so a waiting row can say other steps did work. */
+  transactionHashes?: TransactionHashEntry[];
+  gasUsedWei?: string | null;
 };
 
 export type ExecutionSummaryPage = {
@@ -186,6 +199,22 @@ export function workflowSaveErrorMessage(
     error.detail
     ? error.detail
     : fallback;
+}
+
+// Every copy failure toast: held as long as a save failure's, to read the steps and reasons.
+export const DUPLICATE_ERROR_TOAST = {
+  duration: WORKFLOW_SAVE_ERROR_TOAST.duration,
+} as const;
+
+// A refused copy names the step and why; any other failure keeps its own text.
+export function duplicateErrorMessage(
+  error: unknown,
+  fallback: string
+): string {
+  return workflowSaveErrorMessage(
+    error,
+    error instanceof Error ? error.message : fallback
+  );
 }
 
 // Helper function to make API calls
@@ -918,6 +947,11 @@ export const workflowApi = {
         startedAt: Date;
         completedAt: Date | null;
         duration: string | null;
+        // Hashes a late landing adds name the step they landed for.
+        transactionHashes?: Array<{
+          nodeId?: string;
+          iterationIndex?: number;
+        }> | null;
         workflow: {
           id: string;
           name: string;
@@ -956,6 +990,8 @@ export const workflowApi = {
       nodeStatuses: Array<{
         nodeId: string;
         status: NodeExecutionStatus;
+        // A successful bundle step that missed, sent nothing, landed late, or waited for Not before.
+        outcome?: NodeOutcome;
       }>;
       progress?: {
         totalSteps: number;

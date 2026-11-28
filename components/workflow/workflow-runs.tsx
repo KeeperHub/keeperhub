@@ -6,10 +6,12 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleOff,
   Clock,
   Copy,
   ExternalLink,
   GitBranch,
+  Hourglass,
   Loader2,
   Play,
   SkipForward,
@@ -19,18 +21,40 @@ import {
 import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { JSX } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toChecksumAddress } from "@/lib/address-utils";
 import { api, type ExecutionSummary } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
-import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
+import {
+  NOT_LANDED_LATER,
+  type NodeExecutionStatus,
+} from "@/lib/errors/execution-status";
 import {
   type RefusalFixLink,
   refusalFixHref,
   refusalFixLink,
   shownRefusal,
 } from "@/lib/notifications/failure-alerts/view-types";
+import {
+  fallbackNotSentText,
+  NOT_LANDED_STEP_POINTER,
+  NOT_MINED_YET_TEXT,
+  type NodeOutcome,
+  nodeOutcomeOf,
+  notIncludedReasonText,
+  publicPendingSentence,
+  STEP_OUTCOME_TEXT,
+  type StepOutcome,
+  settledPendingReason,
+  skippedBehindPublicCopy,
+  skippedStepSentence,
+  skippedStepTitle,
+  stepOutcomeTitle,
+  unconfirmedRunNote,
+  WAITING_STEP_TEXT,
+  waitingStepSentence,
+} from "@/lib/workflow/executor/run-outcome-keys";
 import {
   OUTPUT_DISPLAY_CONFIGS,
   type OutputDisplayConfig,
@@ -59,6 +83,15 @@ import {
   MAX_STORED_OUTPUT_BYTES,
 } from "@/lib/workflow/output-limits";
 import { refusalSummary } from "@/lib/workflow/refusal-summary";
+import { runLogsDue } from "@/lib/workflow/run-polling";
+import {
+  groupWaitingRuns,
+  type WaitingGroup,
+  waitingChipText,
+  waitingDetails,
+  waitingRowLine,
+  waitingRowTitle,
+} from "@/lib/workflow/waiting-run-groups";
 import {
   currentWorkflowIdAtom,
   executionLogsAtom,
@@ -84,6 +117,12 @@ type ExecutionLog = {
   error: string | null;
   iterationIndex: number | null;
   forEachNodeId: string | null;
+  // A bundle step's shown outcome, from its output and its run.
+  outcome?: NodeOutcome;
+  // Another step of the run started after this one.
+  laterStepRan?: boolean;
+  // A pending step's line once its run settled without it (dropped, replaced, a day passed).
+  settledReason?: string;
 };
 
 type WorkflowExecution = ExecutionSummary;
@@ -823,11 +862,142 @@ function getStatusLabel(status: string): string {
     case "cancelled":
       return "Cancelled before it finished";
     case "skipped":
-      return "Skipped - expand for why it did not run";
+      return "Skipped - expand for the reason";
+    case "not_landed":
+      return `Not landed - a bundle was not seen in its target blocks. ${NOT_LANDED_LATER}`;
+    case "unconfirmed":
+      return `Unconfirmed - ${UNCONFIRMED_TEXT}`;
     default:
       return "Pending - has not run yet";
   }
 }
+
+const UNCONFIRMED_TEXT = `a transaction was sent and ${NOT_MINED_YET_TEXT}`;
+
+// A successful bundle step that did not land, or sent nothing: shown neutral.
+const STEP_NOT_INCLUDED = "not_included";
+const STEP_PUBLIC_PENDING = "public_pending";
+const STEP_SKIPPED_IN_FLIGHT = "skipped_in_flight";
+const STEP_WAITING = "waiting_not_before";
+
+type StepDisplay = {
+  status: string;
+  title: string;
+  chip?: { label: string; testId: string; error: boolean };
+};
+
+// The Runs panel's dot status and chip test id for each step outcome.
+const OUTCOME_STEP_STYLE: Record<
+  NodeOutcome,
+  { status: string; testId: string }
+> = {
+  waiting: { status: STEP_WAITING, testId: "step-waiting" },
+  "not-included": {
+    status: STEP_NOT_INCLUDED,
+    testId: "step-not-included",
+  },
+  "skipped-in-flight": {
+    status: STEP_SKIPPED_IN_FLIGHT,
+    testId: "step-skipped-in-flight",
+  },
+  "landed-late": { status: "success", testId: "step-landed-late" },
+  "public-pending": {
+    status: STEP_PUBLIC_PENDING,
+    testId: "step-public-pending",
+  },
+  "landed-late-reverted": {
+    status: "error",
+    testId: "step-landed-late-reverted",
+  },
+};
+
+/** How the Runs panel shows a step: its own status, or its bundle outcome in plain words. */
+function stepDisplay(log: ExecutionLog): StepDisplay {
+  if (!log.outcome) {
+    return { status: log.status, title: getStatusLabel(log.status) };
+  }
+  const style = OUTCOME_STEP_STYLE[log.outcome];
+  if (log.outcome === "waiting") {
+    const title = `${WAITING_STEP_TEXT.label}: ${waitingStepSentence(log.output)}`;
+    return {
+      status: style.status,
+      title,
+      chip: { label: WAITING_STEP_TEXT.label, testId: style.testId, error: false },
+    };
+  }
+  // Only a step that sent nothing that landed has later steps worth naming.
+  const sentNothing =
+    log.outcome === "not-included" || log.outcome === "skipped-in-flight";
+  const later =
+    sentNothing && log.laterStepRan ? "Later steps still ran." : undefined;
+  return {
+    status: style.status,
+    title: outcomeTitle(log, log.outcome, later),
+    chip: {
+      label: STEP_OUTCOME_TEXT[log.outcome].label,
+      testId: style.testId,
+      error: log.outcome === "landed-late-reverted",
+    },
+  };
+}
+
+/** A step outcome's tooltip in the Runs panel, with the words its output and run add. */
+function outcomeTitle(
+  log: ExecutionLog,
+  outcome: StepOutcome,
+  later: string | undefined
+): string {
+  switch (outcome) {
+    case "skipped-in-flight":
+      return [skippedStepTitle(log.output), later].filter(Boolean).join(" ");
+    case "public-pending":
+      return `${STEP_OUTCOME_TEXT[outcome].label}: ${publicPendingSentence(log.output)}`;
+    case "not-included":
+      return stepOutcomeTitle(
+        outcome,
+        notIncludedReasonText(log.output) ?? log.settledReason,
+        later
+      );
+    default:
+      return stepOutcomeTitle(outcome, undefined, later);
+  }
+}
+
+/** The plain reasons a not landed run's steps give, each once, with why a public fallback was not sent. */
+function notLandedReasons(logs: readonly ExecutionLog[]): string[] {
+  const reasons = logs
+    .filter((log) => log.outcome === "not-included")
+    .flatMap((log) => [
+      notIncludedReasonText(log.output),
+      fallbackNotSentText(log.output),
+    ])
+    .filter((text): text is string => text !== undefined);
+  return [...new Set(reasons)];
+}
+
+/** A skipped run's note: behind a public copy, the step's own sentence naming it; else the stored reason. */
+function skippedRunNote(error: string, logs: readonly ExecutionLog[]): string {
+  const behindCopy = skippedBehindPublicCopy(
+    logs
+      .filter((log) => log.outcome === "skipped-in-flight")
+      .map((log) => log.output)
+  );
+  return behindCopy === undefined
+    ? shownRefusal(error)
+    : skippedStepSentence(behindCopy, "the bundle step");
+}
+
+// A bundle skip's run note names later steps only when one of them ran.
+function skippedStepNote(logs: readonly ExecutionLog[]): string {
+  return logs.some(
+    (log) => log.outcome === "skipped-in-flight" && log.laterStepRan
+  )
+    ? " Later steps still ran."
+    : "";
+}
+
+// The run row's status already says Not landed; the reason follows it.
+const NOT_LANDED_PREFIX = /^Not landed:\s*/;
 
 // Component for rendering individual execution log entries
 function ExecutionLogEntry({
@@ -849,6 +1019,7 @@ function ExecutionLogEntry({
   isLast: boolean;
   middleContent?: React.ReactNode;
 }) {
+  const shown = stepDisplay(log);
   return (
     <div className="relative flex gap-3" key={log.id}>
       {/* Timeline connector */}
@@ -859,11 +1030,11 @@ function ExecutionLogEntry({
         <div
           className={cn(
             "z-10 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-0",
-            getStatusDotClass(log.status)
+            getStatusDotClass(shown.status)
           )}
-          title={getStatusLabel(log.status)}
+          title={shown.title}
         >
-          {getStatusIcon(log.status)}
+          {getStatusIcon(shown.status)}
         </div>
         {!isLast && (
           <div className="absolute top-[calc(0.5rem+1.25rem)] bottom-0 w-px bg-border" />
@@ -880,15 +1051,32 @@ function ExecutionLogEntry({
           <div className="flex items-center gap-3">
             {/* Step content */}
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                {isExpanded ? (
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                )}
-                <span className="truncate font-medium text-sm transition-colors group-hover:text-foreground">
-                  {log.nodeName || log.nodeType}
+              {/* Chips wrap under the name in a narrow panel instead of cutting it short. */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="flex min-w-0 items-center gap-2">
+                  {isExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0 truncate font-medium text-sm transition-colors group-hover:text-foreground">
+                    {log.nodeName || log.nodeType}
+                  </span>
                 </span>
+                {shown.chip && (
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-full border px-2 py-0.5 font-medium text-xs",
+                      shown.chip.error
+                        ? "border-destructive/60 bg-destructive/10 text-foreground"
+                        : "border-muted-foreground/50 bg-muted text-foreground"
+                    )}
+                    data-testid={shown.chip.testId}
+                    title={shown.title}
+                  >
+                    {shown.chip.label}
+                  </span>
+                )}
                 {isSponsoredOutput(log.output) && (
                   <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 font-medium text-primary text-xs">
                     Gas sponsored
@@ -1038,9 +1226,13 @@ export function WorkflowRuns({
 
   // Track which execution we've already auto-expanded to prevent loops
   const autoExpandedExecutionRef = useRef<string | null>(null);
+  // The run selected now: logs that load after a click must reach the canvas.
+  const selectedExecutionIdRef = useRef(selectedExecutionId);
+  selectedExecutionIdRef.current = selectedExecutionId;
 
   // Track terminal executions that have had their final log refresh
-  const finalizedExecutionsRef = useRef<Set<string>>(new Set());
+  // The end status each open run's steps were last loaded at.
+  const finalizedExecutionsRef = useRef<Map<string, string>>(new Map());
 
   const loadExecutions = useCallback(
     async (showLoading = true) => {
@@ -1152,25 +1344,45 @@ export function WorkflowRuns({
         iterationIndex?: number | null;
         forEachNodeId?: string | null;
       }>,
-      _workflow?: {
-        nodes: unknown;
-      }
+      run:
+        | (NonNullable<Parameters<typeof nodeOutcomeOf>[1]> & {
+            error?: string | null;
+          })
+        | undefined
     ): ExecutionLog[] =>
-      logEntries.map((log) => ({
-        id: log.id,
-        nodeId: log.nodeId,
-        nodeName: log.nodeName,
-        nodeType: log.nodeType,
-        status: log.status,
-        startedAt: new Date(log.startedAt),
-        completedAt: log.completedAt ? new Date(log.completedAt) : null,
-        duration: log.duration,
-        input: log.input,
-        output: log.output,
-        error: log.error,
-        iterationIndex: log.iterationIndex ?? null,
-        forEachNodeId: log.forEachNodeId ?? null,
-      })),
+      logEntries.map((log) => {
+        const outcome = nodeOutcomeOf(log, run);
+        const started = new Date(log.startedAt).getTime();
+        const settledReason =
+          outcome === "not-included" && run
+            ? settledPendingReason(log.output, run)
+            : undefined;
+        return {
+          outcome,
+          ...(settledReason && { settledReason }),
+          // Another step, not a later iteration of this one.
+          laterStepRan:
+            outcome !== undefined &&
+            logEntries.some(
+              (other) =>
+                other.nodeId !== log.nodeId &&
+                new Date(other.startedAt).getTime() > started
+            ),
+          id: log.id,
+          nodeId: log.nodeId,
+          nodeName: log.nodeName,
+          nodeType: log.nodeType,
+          status: log.status,
+          startedAt: new Date(log.startedAt),
+          completedAt: log.completedAt ? new Date(log.completedAt) : null,
+          duration: log.duration,
+          input: log.input,
+          output: log.output,
+          error: log.error,
+          iterationIndex: log.iterationIndex ?? null,
+          forEachNodeId: log.forEachNodeId ?? null,
+        };
+      }),
     []
   );
 
@@ -1178,14 +1390,14 @@ export function WorkflowRuns({
     async (executionId: string) => {
       try {
         const data = await api.workflow.getExecutionLogs(executionId);
-        const mappedLogs = mapNodeLabels(data.logs, data.execution.workflow);
+        const mappedLogs = mapNodeLabels(data.logs, data.execution);
         setLogs((prev) => ({
           ...prev,
           [executionId]: mappedLogs,
         }));
 
         // Update global execution logs atom if this is the selected execution
-        if (executionId === selectedExecutionId) {
+        if (executionId === selectedExecutionIdRef.current) {
           setExecutionLogs(createExecutionLogsMap(mappedLogs));
         }
       } catch (error) {
@@ -1193,8 +1405,31 @@ export function WorkflowRuns({
         setLogs((prev) => ({ ...prev, [executionId]: [] }));
       }
     },
-    [mapNodeLabels, selectedExecutionId, setExecutionLogs]
+    [mapNodeLabels, setExecutionLogs]
   );
+
+  // Rows of the list: back-to-back waiting runs share one (display only).
+  const runEntries = useMemo(
+    () => groupWaitingRuns(executions, total),
+    [executions, total]
+  );
+  // An open waiting row shows its newest run's steps, also once a newer run joins.
+  const requestedLogsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const entry of runEntries) {
+      if (entry.kind !== "waiting" || !expandedRuns.has(entry.stateKey)) {
+        continue;
+      }
+      const latestId = entry.runs[0].id;
+      if (
+        logs[latestId] === undefined &&
+        !requestedLogsRef.current.has(latestId)
+      ) {
+        requestedLogsRef.current.add(latestId);
+        loadExecutionLogs(latestId);
+      }
+    }
+  }, [runEntries, expandedRuns, logs, loadExecutionLogs]);
 
   // Notify parent when a new execution starts and auto-expand it
   useEffect(() => {
@@ -1237,24 +1472,21 @@ export function WorkflowRuns({
     async (executionId: string) => {
       try {
         const logsData = await api.workflow.getExecutionLogs(executionId);
-        const mappedLogs = mapNodeLabels(
-          logsData.logs,
-          logsData.execution.workflow
-        );
+        const mappedLogs = mapNodeLabels(logsData.logs, logsData.execution);
         setLogs((prev) => ({
           ...prev,
           [executionId]: mappedLogs,
         }));
 
         // Update global execution logs atom if this is the selected execution
-        if (executionId === selectedExecutionId) {
+        if (executionId === selectedExecutionIdRef.current) {
           setExecutionLogs(createExecutionLogsMap(mappedLogs));
         }
       } catch (error) {
         console.error(`Failed to refresh logs for ${executionId}:`, error);
       }
     },
-    [mapNodeLabels, selectedExecutionId, setExecutionLogs]
+    [mapNodeLabels, setExecutionLogs]
   );
 
   // Poll for new executions when tab is active. Only the first page is
@@ -1288,6 +1520,7 @@ export function WorkflowRuns({
           "error",
           "system_error",
           "skipped",
+          "not_landed",
         ]);
         const executionMap = new Map(page.executions.map((e) => [e.id, e]));
         for (const executionId of expandedRuns) {
@@ -1296,15 +1529,18 @@ export function WorkflowRuns({
             continue;
           }
           const isTerminal = terminalStatuses.has(execution.status);
-          const alreadyFinalized =
-            finalizedExecutionsRef.current.has(executionId);
-
-          if (!isTerminal) {
+          if (
+            runLogsDue(
+              execution.status,
+              isTerminal,
+              finalizedExecutionsRef.current.get(executionId)
+            )
+          ) {
+            // While running, and once per end status (cancel cleanup, a late landing).
             await refreshExecutionLogs(executionId);
-          } else if (!alreadyFinalized) {
-            // One final refresh to pick up cancel cleanup, then stop
-            await refreshExecutionLogs(executionId);
-            finalizedExecutionsRef.current.add(executionId);
+            if (isTerminal) {
+              finalizedExecutionsRef.current.set(executionId, execution.status);
+            }
           }
         }
       } catch (error) {
@@ -1347,6 +1583,18 @@ export function WorkflowRuns({
     setExecutionLogs(createExecutionLogsMap(executionLogEntries));
   };
 
+  const toggleWaitingGroup = (key: string) => {
+    setExpandedRuns((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
   const toggleLog = (logId: string) => {
     const newExpanded = new Set(expandedLogs);
     if (newExpanded.has(logId)) {
@@ -1370,6 +1618,16 @@ export function WorkflowRuns({
         return <Ban className="h-3 w-3 text-white" />;
       case "skipped":
         return <SkipForward className="h-3 w-3 text-white" />;
+      case "not_landed":
+      case STEP_NOT_INCLUDED:
+        return <CircleOff className="h-3 w-3 text-white" />;
+      case "unconfirmed":
+      case STEP_PUBLIC_PENDING:
+        return <Hourglass className="h-3 w-3 text-white" />;
+      case STEP_SKIPPED_IN_FLIGHT:
+        return <SkipForward className="h-3 w-3 text-white" />;
+      case STEP_WAITING:
+        return <Clock className="h-3 w-3 text-white" />;
       default:
         return <Clock className="h-3 w-3 text-white" />;
     }
@@ -1387,12 +1645,180 @@ export function WorkflowRuns({
         return "bg-blue-600";
       case "cancelled":
         return "bg-orange-500";
-      // Neutral: refused before it started, not a failure.
+      // Neutral: sent nothing (refused or skipped) or not included, not a failure.
       case "skipped":
+      case "unconfirmed":
+      case STEP_NOT_INCLUDED:
+      case STEP_SKIPPED_IN_FLIGHT:
+      case STEP_WAITING:
+      case STEP_PUBLIC_PENDING:
         return "bg-muted-foreground";
+      // One shade darker than the swatch, like the other dots: the white icon needs 3:1.
+      case "not_landed":
+        return "bg-teal-600";
       default:
         return "bg-muted-foreground";
     }
+  };
+
+  const sortedLogsOf = (executionId: string): ExecutionLog[] =>
+    [...(logs[executionId] ?? [])].sort(
+      (a, b) =>
+        new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+    );
+
+  const renderSteps = (executionLogs: ExecutionLog[]) => {
+    const lookup = buildChildLogsLookup(executionLogs);
+    const grouped = groupLogsByIteration(executionLogs, lookup);
+    return (
+      <div className="p-4">
+        {grouped.map((entry, entryIndex, entries) => {
+          if (entry.type === FOR_EACH_GROUP_TYPE) {
+            return (
+              <ForEachLogGroup
+                collectLog={entry.collectLog}
+                expandedLogs={expandedLogs}
+                forEachLog={entry.forEachLog}
+                getStatusDotClass={getStatusDotClass}
+                getStatusIcon={getStatusIcon}
+                isFirst={entryIndex === 0}
+                isLast={entryIndex === entries.length - 1}
+                iterations={entry.iterations}
+                key={entry.forEachLog.id}
+                lookup={lookup}
+                onToggleLog={toggleLog}
+              />
+            );
+          }
+          return (
+            <ExecutionLogEntry
+              getStatusDotClass={getStatusDotClass}
+              getStatusIcon={getStatusIcon}
+              isExpanded={expandedLogs.has(entry.log.id)}
+              isFirst={entryIndex === 0}
+              isLast={entryIndex === entries.length - 1}
+              key={entry.log.id}
+              log={entry.log}
+              onToggle={() => toggleLog(entry.log.id)}
+            />
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderVersionPill = (ranVersion: number | null) =>
+    ranVersion === null ? null : (
+      <button
+        className="flex shrink-0 items-center gap-1 rounded-full border border-border px-2 py-0.5 font-medium text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
+        onClick={() => openRanVersion(ranVersion)}
+        title={`Ran version ${ranVersion} — open in History`}
+        type="button"
+      >
+        <GitBranch className="size-3" />v{ranVersion}
+      </button>
+    );
+
+  // One row for back-to-back runs that waited for the same Not before.
+  const renderWaitingGroup = (group: WaitingGroup<WorkflowExecution>) => {
+    const latest = group.runs[0];
+    const isExpanded = expandedRuns.has(group.stateKey);
+    const textOptions = { now: new Date() };
+    const latestLogs = sortedLogsOf(latest.id);
+    return (
+      <div
+        className="overflow-hidden rounded-lg border bg-card transition-all"
+        data-testid="waiting-run-group"
+        key={`waiting-${group.stateKey}`}
+      >
+        <div className="flex w-full items-center gap-3 p-4">
+          <button
+            aria-expanded={isExpanded}
+            aria-label={`${isExpanded ? "Collapse" : "Expand"} waiting runs`}
+            className="flex size-5 shrink-0 items-center justify-center rounded-full border-0 transition-colors hover:bg-muted"
+            onClick={() => toggleWaitingGroup(group.stateKey)}
+            type="button"
+          >
+            <div
+              className="flex size-5 items-center justify-center rounded-full border-0 bg-muted-foreground"
+              title="Skipped, waiting for Not before"
+            >
+              <Clock className="h-3 w-3 text-white" />
+            </div>
+          </button>
+          <button
+            aria-expanded={isExpanded}
+            className="min-w-0 flex-1 overflow-hidden text-left transition-colors hover:opacity-80"
+            data-testid="waiting-run-row"
+            onClick={() => {
+              selectRun(latest.id);
+              toggleWaitingGroup(group.stateKey);
+            }}
+            title={waitingRowTitle(group, textOptions)}
+            type="button"
+          >
+            <div className="mb-1 flex min-w-0 items-center gap-2">
+              {/* The chip gives way first; the name is cut only when it alone is too wide. */}
+              <span className="min-w-0 truncate font-semibold text-sm">
+                Run #{group.oldestNumber}
+              </span>
+              <span
+                className="min-w-0 shrink-100 truncate rounded-full border border-muted-foreground/50 bg-muted px-2 py-0.5 font-medium text-foreground text-xs"
+                data-testid="waiting-run-count"
+              >
+                {waitingChipText(group)}
+              </span>
+            </div>
+            <div
+              className="truncate font-mono text-muted-foreground text-xs"
+              data-testid="waiting-run-line"
+            >
+              {waitingRowLine(group, textOptions)}
+            </div>
+          </button>
+          {renderVersionPill(latest.ranVersion)}
+          <button
+            aria-expanded={isExpanded}
+            aria-label={isExpanded ? "Collapse" : "Expand"}
+            className="flex shrink-0 items-center justify-center rounded p-1 transition-colors hover:bg-muted"
+            data-testid="waiting-run-chevron"
+            onClick={() => toggleWaitingGroup(group.stateKey)}
+            type="button"
+          >
+            {isExpanded ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </button>
+        </div>
+        {isExpanded && (
+          <div className="border-t bg-muted/20">
+            <div className={cn("p-4", latestLogs.length > 0 && "pb-0")}>
+              <Alert>
+                <Clock />
+                <AlertDescription
+                  className="flex flex-col items-start gap-1.5"
+                  data-testid="waiting-run-details"
+                >
+                  {waitingDetails(group, textOptions).map((line) => (
+                    <span key={line}>{line}</span>
+                  ))}
+                </AlertDescription>
+              </Alert>
+            </div>
+            {latestLogs.length > 0 && (
+              <>
+                <div className="px-4 pt-4 font-mono text-muted-foreground text-xs">
+                  Steps of the latest waiting run
+                </div>
+                {renderSteps(latestLogs)}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   const isReady = !loading;
@@ -1421,7 +1847,11 @@ export function WorkflowRuns({
 
   return (
     <div data-ready={String(isReady)} data-testid="workflow-runs" className="space-y-3">
-      {executions.map((execution, index) => {
+      {runEntries.map((entry) => {
+        if (entry.kind === "waiting") {
+          return renderWaitingGroup(entry);
+        }
+        const { run: execution, number } = entry;
         const isExpanded = expandedRuns.has(execution.id);
         const executionLogs = (logs[execution.id] || []).sort((a, b) => {
           // Sort by startedAt to ensure first to last order
@@ -1437,11 +1867,25 @@ export function WorkflowRuns({
           (log) => log.status === "error"
         );
         const showRunError = Boolean(runErrorMessage) && !hasFailedStep;
-        // Refused before it started: say why, and how often in its hourly row.
-        const shownReason =
-          execution.status === "skipped" && execution.error
-            ? shownRefusal(execution.error)
-            : null;
+        // Skipped or not landed: say why, and how often a refused row counted it.
+        let shownReason: string | null = null;
+        const stepReasons =
+          execution.status === "not_landed"
+            ? notLandedReasons(executionLogs)
+            : [];
+        if (execution.status === "skipped" && execution.error) {
+          shownReason = `${skippedRunNote(execution.error, executionLogs)}${skippedStepNote(executionLogs)}`;
+        } else if (execution.status === "not_landed" && execution.error) {
+          shownReason = execution.error.replace(NOT_LANDED_PREFIX, "");
+          // The reasons follow below, so the pointer to the step is not needed.
+          if (stepReasons.length > 0) {
+            shownReason = shownReason.replace(NOT_LANDED_STEP_POINTER, ".");
+          }
+        } else if (execution.status === "unconfirmed") {
+          shownReason = unconfirmedRunNote(
+            executionLogs.map((log) => log.output)
+          );
+        }
         const skippedReason = shownReason
           ? `${shownReason.charAt(0).toUpperCase()}${shownReason.slice(1)}`
           : null;
@@ -1486,7 +1930,7 @@ export function WorkflowRuns({
               >
                 <div className="mb-1 flex items-center gap-2">
                   <span className="font-semibold text-sm">
-                    Run #{total - index}
+                    Run #{number}
                   </span>
                 </div>
                 <div className="flex items-center gap-2 font-mono text-muted-foreground text-xs">
@@ -1513,18 +1957,7 @@ export function WorkflowRuns({
                 </div>
               </button>
 
-              {execution.ranVersion !== null && (
-                <button
-                  className="flex shrink-0 items-center gap-1 rounded-full border border-border px-2 py-0.5 font-medium text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
-                  onClick={() =>
-                    openRanVersion(execution.ranVersion as number)
-                  }
-                  title={`Ran version ${execution.ranVersion} — open in History`}
-                  type="button"
-                >
-                  <GitBranch className="size-3" />v{execution.ranVersion}
-                </button>
-              )}
+              {renderVersionPill(execution.ranVersion)}
 
               <button
                 className="flex shrink-0 items-center justify-center rounded p-1 transition-colors hover:bg-muted"
@@ -1549,7 +1982,10 @@ export function WorkflowRuns({
                     >
                       <TriangleAlert />
                       <AlertDescription className="flex flex-col items-start gap-1.5">
-                        <span>{runErrorMessage}</span>
+                        {/* A transaction hash has no break points of its own. */}
+                        <span className="min-w-0 max-w-full wrap-anywhere">
+                          {runErrorMessage}
+                        </span>
                         {fix && organizationId && (
                           <RefusalFixAnchor
                             link={fix}
@@ -1563,9 +1999,28 @@ export function WorkflowRuns({
                 {showSkipped && (
                   <div className={cn("p-4", executionLogs.length > 0 && "pb-0")}>
                     <Alert>
-                      <SkipForward />
+                      {execution.status === "not_landed" && <CircleOff />}
+                      {execution.status === "unconfirmed" && <Hourglass />}
+                      {execution.status !== "not_landed" &&
+                        execution.status !== "unconfirmed" && <SkipForward />}
                       <AlertDescription className="flex flex-col items-start gap-1.5">
-                        {skippedReason && <span>{skippedReason}</span>}
+                        {skippedReason && (
+                          // A transaction hash has no break points of its own.
+                          <span
+                            className="min-w-0 max-w-full wrap-anywhere"
+                            data-testid="run-outcome-reason"
+                          >
+                            {skippedReason}
+                          </span>
+                        )}
+                        {stepReasons.map((reason) => (
+                            <span
+                              data-testid="run-outcome-step-reason"
+                              key={reason}
+                            >
+                              {reason}
+                            </span>
+                          ))}
                         {refusedLine && (
                           <span data-testid="run-refusal-count">
                             {refusedLine}.
@@ -1588,45 +2043,7 @@ export function WorkflowRuns({
                     </div>
                   )
                 ) : (
-                  <div className="p-4">
-                    {(() => {
-                      const lookup = buildChildLogsLookup(executionLogs);
-                      const grouped = groupLogsByIteration(executionLogs, lookup);
-                      return grouped.map(
-                        (entry, entryIndex, entries) => {
-                          if (entry.type === FOR_EACH_GROUP_TYPE) {
-                            return (
-                              <ForEachLogGroup
-                                collectLog={entry.collectLog}
-                                expandedLogs={expandedLogs}
-                                forEachLog={entry.forEachLog}
-                                getStatusDotClass={getStatusDotClass}
-                                getStatusIcon={getStatusIcon}
-                                isFirst={entryIndex === 0}
-                                isLast={entryIndex === entries.length - 1}
-                                iterations={entry.iterations}
-                                key={entry.forEachLog.id}
-                                lookup={lookup}
-                                onToggleLog={toggleLog}
-                              />
-                            );
-                          }
-                          return (
-                            <ExecutionLogEntry
-                              getStatusDotClass={getStatusDotClass}
-                              getStatusIcon={getStatusIcon}
-                              isExpanded={expandedLogs.has(entry.log.id)}
-                              isFirst={entryIndex === 0}
-                              isLast={entryIndex === entries.length - 1}
-                              key={entry.log.id}
-                              log={entry.log}
-                              onToggle={() => toggleLog(entry.log.id)}
-                            />
-                          );
-                        }
-                      );
-                    })()}
-                  </div>
+                  renderSteps(executionLogs)
                 )}
               </div>
             )}

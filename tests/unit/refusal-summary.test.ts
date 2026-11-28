@@ -30,6 +30,15 @@ describe("refusalSummary", () => {
     );
   });
 
+  it("counts skips behind a running run exactly, as skips", () => {
+    expect(
+      refusalSummary(
+        { ...run, errorCategory: null },
+        { locale: "en-GB", timeZone: "UTC" }
+      )
+    ).toBe("Skipped 12 times between 10:05 and 10:40");
+  });
+
   it("says nothing for one refusal, a row without a count, or a run that is not skipped", () => {
     expect(refusalSummary({ ...run, refusals: 1 })).toBeNull();
     expect(refusalSummary({ ...run, refusals: null })).toBeNull();

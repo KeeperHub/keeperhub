@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { type Chain, chains, workflows } from "@/lib/db/schema";
+import { chains, workflows } from "@/lib/db/schema";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
 import type { WorkflowNode } from "@/lib/workflow/store";
@@ -164,7 +164,6 @@ export async function GET(request: Request) {
         defaultFallbackWss: chains.defaultFallbackWss,
         usePrivateMempoolRpc: chains.usePrivateMempoolRpc,
         defaultPrivateRpcUrl: chains.defaultPrivateRpcUrl,
-        builderRpcUrls: chains.builderRpcUrls,
         isTestnet: chains.isTestnet,
         isEnabled: chains.isEnabled,
         status: chains.status,
@@ -175,7 +174,7 @@ export async function GET(request: Request) {
       .from(chains);
 
     // Return a dictionary of chains by chainId to make it easier to lookup
-    const networkMap: Record<number, Chain> = {};
+    const networkMap: Record<number, (typeof networks)[number]> = {};
 
     for (const network of networks) {
       networkMap[network.chainId] = network;

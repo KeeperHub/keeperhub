@@ -2,6 +2,8 @@
  * Integration tests for public execution status access (FRICTION-09).
  */
 
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -213,6 +215,169 @@ describe("GET /api/workflows/executions/[executionId]/status public access", () 
     expect(body.errorContext?.executionTrace).toEqual(["trace"]);
   });
 
+  describe("bundle step outcomes", () => {
+    const WRITE = "web3/write-contract";
+    const missed = {
+      status: "success",
+      nodeType: WRITE,
+      iterationIndex: null,
+      route: "bundle",
+      notIncludedReason: "not-picked",
+    };
+
+    async function statuses(
+      execution: Record<string, unknown>,
+      logs: Record<string, unknown>[],
+      mode: "full" | "publicReadOnly" = "full"
+    ) {
+      mockResolveExecutionViewAccess.mockResolvedValue({
+        mode,
+        execution: { ...makeExecution("public"), ...execution },
+      });
+      mockFindMany.mockResolvedValue(logs);
+      const response = await GET(
+        createRequest({ "x-forwarded-for": "203.0.113.60" }),
+        { params: Promise.resolve({ executionId: EXECUTION_ID }) }
+      );
+      return (
+        (await response.json()) as {
+          nodeStatuses: { nodeId: string; status: string; outcome?: string }[];
+        }
+      ).nodeStatuses;
+    }
+
+    it("marks Write Contract steps that missed or sent nothing, as the finalizer reads them", async () => {
+      const nodeStatuses = await statuses(
+        { status: "not_landed", transactionHashes: [] },
+        [
+          { ...missed, nodeId: "missed" },
+          {
+            ...missed,
+            nodeId: "skip",
+            route: "skipped-in-flight",
+            notIncludedReason: null,
+          },
+          { ...missed, nodeId: "landed", notIncludedReason: null },
+          { ...missed, nodeId: "failed", status: "error" },
+        ]
+      );
+      expect(nodeStatuses).toEqual([
+        { nodeId: "missed", status: "success", outcome: "not-included" },
+        { nodeId: "skip", status: "success", outcome: "skipped-in-flight" },
+        { nodeId: "landed", status: "success" },
+        { nodeId: "failed", status: "error" },
+      ]);
+      // Only the outcome's output keys are read, never the step bodies.
+      const query = mockFindMany.mock.calls[0][0] as {
+        columns: Record<string, boolean>;
+        extras: Record<string, unknown>;
+      };
+      expect(query.columns).toEqual({
+        nodeId: true,
+        nodeType: true,
+        status: true,
+        iterationIndex: true,
+      });
+      expect(Object.keys(query.extras)).toEqual([
+        "route",
+        "notIncludedReason",
+        "pending",
+      ]);
+      // Rows of other step types never touch (detoast) their output.
+      const dialect = new PgDialect();
+      for (const extra of Object.values(query.extras)) {
+        const text = dialect
+          .sqlToQuery((extra as SQL.Aliased).sql)
+          .sql.replace(/\s+/g, " ");
+        const typeCheck = text.indexOf(
+          `CASE WHEN "workflow_execution_logs"."node_type" IN ('web3/write-contract', 'Write Contract') THEN`
+        );
+        expect(typeCheck).toBe(0);
+        expect(text.indexOf('"output"')).toBeGreaterThan(typeCheck);
+      }
+    });
+
+    it("marks a Write Contract step that waited for Not before as waiting", async () => {
+      const nodeStatuses = await statuses(
+        { status: "skipped", transactionHashes: [] },
+        [
+          {
+            ...missed,
+            nodeId: "wait",
+            route: "waiting",
+            notIncludedReason: null,
+          },
+          {
+            ...missed,
+            nodeId: "code",
+            nodeType: "Code",
+            route: "waiting",
+            notIncludedReason: null,
+          },
+        ]
+      );
+      expect(nodeStatuses).toEqual([
+        { nodeId: "wait", status: "success", outcome: "waiting" },
+        { nodeId: "code", status: "success" },
+      ]);
+    });
+
+    it("gives no outcome to a step that is not Write Contract, such as a webhook trigger", async () => {
+      const nodeStatuses = await statuses(
+        { status: "success", transactionHashes: [] },
+        [
+          {
+            ...missed,
+            nodeId: "trigger",
+            nodeType: "Webhook",
+            route: "skipped-in-flight",
+          },
+          { ...missed, nodeId: "code", nodeType: "Code" },
+        ],
+        "publicReadOnly"
+      );
+      expect(nodeStatuses.every((entry) => entry.outcome === undefined)).toBe(
+        true
+      );
+    });
+
+    it("shows a missed step as landed late once its run re-settled", async () => {
+      const nodeStatuses = await statuses(
+        {
+          status: "success",
+          transactionHashes: [
+            { hash: "0xlate", nodeId: "missed", nodeName: "W" },
+          ],
+        },
+        [{ ...missed, nodeId: "missed", notIncludedReason: "not-checked" }]
+      );
+      expect(nodeStatuses).toEqual([
+        { nodeId: "missed", status: "success", outcome: "landed-late" },
+      ]);
+    });
+
+    it("shows a late landing that reverted as landed-late-reverted, also in the public view", async () => {
+      for (const mode of ["full", "publicReadOnly"] as const) {
+        const nodeStatuses = await statuses(
+          {
+            status: "error",
+            transactionHashes: [
+              {
+                hash: "0xlate",
+                nodeId: "missed",
+                nodeName: "W",
+                receiptStatus: "reverted",
+              },
+            ],
+          },
+          [{ ...missed, nodeId: "missed", notIncludedReason: "not-checked" }],
+          mode
+        );
+        expect(nodeStatuses[0]?.outcome, mode).toBe("landed-late-reverted");
+      }
+    });
+  });
+
   it("rate-limits garbage Authorization on the anonymous bucket", async () => {
     mockResolveExecutionViewAccess.mockResolvedValue({
       mode: "publicReadOnly",
@@ -280,6 +445,20 @@ describe("GET /api/workflows/executions/[executionId]/status public access", () 
     expect(data.pollIntervalHint).toBe(
       Number(response.headers.get("X-Poll-Interval-Hint"))
     );
+  });
+
+  it("treats a not landed run as terminal", async () => {
+    mockResolveExecutionViewAccess.mockResolvedValue({
+      mode: "publicReadOnly",
+      execution: { ...makeExecution("public"), status: "not_landed" },
+    });
+
+    const response = await GET(
+      createRequest({ "x-forwarded-for": "203.0.113.60" }),
+      { params: Promise.resolve({ executionId: EXECUTION_ID }) }
+    );
+
+    expect(response.headers.get("X-Poll-Interval-Hint")).toBe("0");
   });
 
   it("keys authenticated callers per principal, not per IP", async () => {

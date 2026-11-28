@@ -16,10 +16,29 @@
  * release path.
  */
 
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  gt,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { ethers } from "ethers";
 import { db } from "@/lib/db";
-import { pendingTransactions, walletLocks } from "@/lib/db/schema-extensions";
+import {
+  type BundleMiss,
+  type BundlePublicCopy,
+  type BundleRun,
+  orgValueReservations,
+  type PendingTransaction,
+  pendingTransactions,
+  walletLocks,
+} from "@/lib/db/schema-extensions";
 import {
   ErrorCategory,
   logSystemWarn,
@@ -28,12 +47,32 @@ import {
 } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { sleep } from "@/lib/sleep";
+import {
+  BUNDLE_PRE_RECORD_MS,
+  BUNDLE_WINDOW_MARGIN_BLOCKS,
+  confirmRow,
+  currentSendHashes,
+  findMinedHash,
+  historyHashes,
+  LATE_BUNDLE_CHECK_MS,
+  LONGEST_BUNDLE_HOLD_MS,
+  laggedMinedCount,
+  livePublicCopy,
+  livePublicCopySql,
+  MAX_BUNDLE_RUNS,
+  MAX_BUNDLE_WINDOW_MS,
+  type MinedHash,
+  provedReplaced,
+  type ReceiptView,
+  SESSION_HISTORY_SCAN_MS,
+} from "@/lib/web3/bundles/bundle-history";
 
 export type NonceSession = {
   walletAddress: string;
   chainId: number;
   executionId: string;
   currentNonce: number;
+  // When the lock was taken; a bundle's pre-send budget runs from it.
   startedAt: Date;
   /**
    * Set once the lock can no longer be proved held: an extension found the row
@@ -59,6 +98,11 @@ export class NonceLockLostError extends Error {
       `Nonce lock for ${session.walletAddress}:${session.chainId} is no longer held by ${session.executionId}; refusing to allocate a nonce.`
     );
   }
+}
+
+/** The lock was still taken at the caller's wait limit: nothing was sent. */
+export class NonceLockWaitEndedError extends Error {
+  override readonly name = "NonceLockWaitEndedError" as const;
 }
 
 /**
@@ -158,10 +202,58 @@ const DEFAULT_OPTIONS: Required<NonceManagerOptions> = {
   // healthy write (seconds) many times over but not a write riding out RPC
   // failover (several 186s rounds); a waiter then fails loudly rather than
   // sharing the holder's nonce. The TTL bounds *dead* holders; the retry
-  // budget bounds the wait for *live* ones.
+  // budget bounds the wait for *live* ones. A bundle holder extends the wait
+  // (see holdWaitEnd); the TTL outlives any bundle window a dead holder left.
   maxLockRetries: 600,
   lockRetryDelayMs: 200,
 };
+
+// Past the longest end of a bundle hold, so a waiter outlasts it.
+const BUNDLE_WAIT_MARGIN_MS = 8000;
+
+// What a waiter already used of its longer waits: one behind a bundle, one behind a holder preparing.
+type HoldWait = { extended: boolean; preparing: boolean };
+
+type BundleWindowState = "open" | "closed" | "unreadable";
+
+async function bundleWindowState(
+  tx: PendingTransaction,
+  now: number,
+  readLatestBlock: () => Promise<number | null>
+): Promise<BundleWindowState> {
+  const sentAt = tx.submittedAt?.getTime() ?? 0;
+  if (tx.lastTargetBlock === null || now - sentAt >= MAX_BUNDLE_WINDOW_MS) {
+    return "closed";
+  }
+  const latest = await readLatestBlock();
+  if (latest === null) {
+    return "unreadable";
+  }
+  return latest <= tx.lastTargetBlock + BUNDLE_WINDOW_MARGIN_BLOCKS
+    ? "open"
+    : "closed";
+}
+
+/**
+ * Store the key a bundle was recorded at on its value reservation, so the
+ * daily cap counts it by that row (value-ledger's linkedRowCounts). Run in the
+ * record's transaction, and by a replay for its own reservation.
+ */
+export async function linkBundleReservation(
+  reservationId: string,
+  key: { chainId: number; walletAddress: string; nonce: number },
+  executor: Pick<typeof db, "update"> = db
+): Promise<void> {
+  await executor
+    .update(orgValueReservations)
+    .set({
+      bundleChainId: key.chainId,
+      bundleWalletAddress: key.walletAddress,
+      bundleNonce: key.nonce,
+      updatedAt: new Date(),
+    })
+    .where(eq(orgValueReservations.id, reservationId));
+}
 
 export class NonceManager {
   private readonly lockTtlMs: number;
@@ -191,12 +283,20 @@ export class NonceManager {
     walletAddress: string,
     chainId: number,
     executionId: string,
-    rpc: RpcProviderManager | ethers.Provider
+    rpc: RpcProviderManager | ethers.Provider,
+    // Stop waiting for the lock at this epoch ms (NonceLockWaitEndedError).
+    options: { waitUntil?: number } = {}
   ): Promise<{ session: NonceSession; validation: ValidationResult }> {
     const normalizedAddress = walletAddress.toLowerCase();
     const reader = chainReader(rpc);
 
-    await this.acquireLock(normalizedAddress, chainId, executionId);
+    await this.acquireLock(
+      normalizedAddress,
+      chainId,
+      executionId,
+      options.waitUntil
+    );
+    const lockedAt = new Date();
 
     const lease: LockLease = {
       walletAddress: normalizedAddress,
@@ -247,7 +347,7 @@ export class NonceManager {
       // caller holds.
       const session: NonceSession = Object.assign(lease, {
         currentNonce: safeNonce,
-        startedAt: new Date(),
+        startedAt: lockedAt,
       });
 
       console.log(
@@ -285,125 +385,234 @@ export class NonceManager {
     const warnings: string[] = [];
     let reconciledCount = 0;
 
-    const pending = await db
+    // Pending rows, plus recent dropped bundles below the chain nonce: their
+    // signed transactions may have been mined after the run gave up on them.
+    const rows = await db
       .select()
       .from(pendingTransactions)
       .where(
         and(
           eq(pendingTransactions.walletAddress, walletAddress),
           eq(pendingTransactions.chainId, chainId),
-          eq(pendingTransactions.status, "pending")
+          or(
+            eq(pendingTransactions.status, "pending"),
+            and(
+              eq(pendingTransactions.status, "dropped"),
+              lt(pendingTransactions.nonce, chainNonce),
+              ne(pendingTransactions.bundleRuns, sql`'[]'::jsonb`),
+              gt(
+                pendingTransactions.submittedAt,
+                new Date(Date.now() - LATE_BUNDLE_CHECK_MS)
+              )
+            )
+          )
         )
       )
       .orderBy(pendingTransactions.nonce);
+    const now = Date.now();
+    const scan = (hashes: readonly string[], deadline?: number) =>
+      this.scanReceipts(hashes, reader, nonceEndpoint, deadline);
+    // History scans run under the lock, so they share one budget.
+    const historyDeadline = now + SESSION_HISTORY_SCAN_MS;
+    // The pending count includes a leaked bundle tx still in the mempool, so `replaced`
+    // needs the nonce endpoint's lagged mined count: read once, before any scan.
+    let minedNonce: Promise<number | null> | undefined;
+    const readMinedNonce = (): Promise<number | null> => {
+      minedNonce ??= reader
+        .read(async (provider) => ({
+          provider,
+          count: await laggedMinedCount(provider, walletAddress),
+        }))
+        .then(({ provider, count }) =>
+          provider === nonceEndpoint ? count : null
+        )
+        .catch(() => null);
+      return minedNonce;
+    };
+    // `replaced` by the sweep's rule (provedReplaced). `current` (a pending row's own
+    // send, at most one bundle's hashes) is read outside the budget.
+    const historyVerdict = async (
+      tx: PendingTransaction,
+      current: readonly string[] = []
+    ): Promise<{ mined?: MinedHash; replaced: boolean }> => {
+      const minedCount = await readMinedNonce();
+      const first = await scan(current);
+      if (first.mined) {
+        return { mined: first.mined, replaced: false };
+      }
+      const scanned = await scan(
+        historyHashes(tx, now).filter((hash) => !current.includes(hash)),
+        historyDeadline
+      );
+      return {
+        mined: scanned.mined,
+        replaced: provedReplaced({
+          scanComplete: scanned.complete,
+          nonceEndpointOnly:
+            first.nonceEndpointOnly && scanned.nonceEndpointOnly,
+          minedCount,
+          nonce: tx.nonce,
+          submittedAt: tx.submittedAt,
+          now,
+        }),
+      };
+    };
+    const pending: PendingTransaction[] = [];
+    for (const tx of rows) {
+      if (tx.status !== "dropped") {
+        pending.push(tx);
+        continue;
+      }
+      // A dropped bundle below the chain nonce: mined late, or the nonce went
+      // to something else. An unfinished scan leaves it for the sweep.
+      try {
+        const { mined, replaced } = await historyVerdict(tx);
+        if (mined) {
+          await this.confirmMined(tx, mined, reader, "dropped");
+          reconciledCount += 1;
+        } else if (replaced) {
+          await this.updateRow(tx, { status: "replaced" }, "dropped");
+          reconciledCount += 1;
+        }
+      } catch {
+        // Its nonce is already used; a failed read must not stop the session.
+        warnings.push(
+          `Dropped bundle at nonce ${tx.nonce} could not be checked; left for the sweep`
+        );
+      }
+    }
+
+    // One block read per session, and a failed one leaves bundle rows pending.
+    let latestBlock: Promise<number | null> | undefined;
+    const readLatestBlock = (): Promise<number | null> => {
+      latestBlock ??= reader
+        .read((provider) => provider.getBlockNumber())
+        .catch(() => null);
+      return latestBlock;
+    };
 
     for (const tx of pending) {
-      if (tx.nonce < chainNonce) {
-        const receipt = await reader.read((provider) =>
-          provider.getTransactionReceipt(tx.txHash)
+      // Before the nonce checks: the "pending" count includes our own pooled copy.
+      const copy = livePublicCopy(tx);
+      if (
+        copy &&
+        (tx.submittedAt?.getTime() ?? 0) > now - LATE_BUNDLE_CHECK_MS
+      ) {
+        const settled = await this.reconcilePublicCopy(tx, copy.hash, {
+          reader,
+          readMinedNonce,
+          historyVerdict,
+        });
+        warnings.push(...settled.warnings);
+        reconciledCount += settled.reconciled ? 1 : 0;
+        continue;
+      }
+      if (tx.nonce < chainNonce && tx.bundleRuns.length > 0) {
+        const { mined, replaced } = await historyVerdict(
+          tx,
+          currentSendHashes(tx)
         );
-
-        if (receipt) {
-          await db
-            .update(pendingTransactions)
-            .set({ status: "confirmed", confirmedAt: new Date() })
-            .where(
-              and(
-                eq(pendingTransactions.walletAddress, tx.walletAddress),
-                eq(pendingTransactions.chainId, tx.chainId),
-                eq(pendingTransactions.nonce, tx.nonce)
-              )
-            );
-          reconciledCount += 1;
-        } else {
-          await db
-            .update(pendingTransactions)
-            .set({ status: "replaced" })
-            .where(
-              and(
-                eq(pendingTransactions.walletAddress, tx.walletAddress),
-                eq(pendingTransactions.chainId, tx.chainId),
-                eq(pendingTransactions.nonce, tx.nonce)
-              )
-            );
+        if (mined) {
+          await this.confirmMined(tx, mined, reader);
+        } else if (replaced) {
+          await this.updateRow(tx, { status: "replaced" });
           warnings.push(
             `Transaction ${tx.txHash} (nonce ${tx.nonce}) was replaced or dropped`
           );
-          reconciledCount += 1;
-        }
-      } else if (tx.nonce === chainNonce) {
-        const mempoolTx = await reader.read((provider) =>
-          provider.getTransaction(tx.txHash)
-        );
-
-        if (mempoolTx) {
-          warnings.push(
-            `Transaction ${tx.txHash} (nonce ${tx.nonce}) still pending in mempool ` +
-              `since ${tx.submittedAt?.toISOString()}`
-          );
-        } else if (reader.lastEndpoint() === nonceEndpoint) {
-          await db
-            .update(pendingTransactions)
-            .set({ status: "dropped" })
-            .where(
-              and(
-                eq(pendingTransactions.walletAddress, tx.walletAddress),
-                eq(pendingTransactions.chainId, tx.chainId),
-                eq(pendingTransactions.nonce, tx.nonce)
-              )
-            );
-          warnings.push(
-            `Transaction ${tx.txHash} (nonce ${tx.nonce}) dropped from mempool`
-          );
-          reconciledCount += 1;
         } else {
+          // Still in a mempool, missed by a lagging node or not scanned in time: the sweep re-checks it.
+          await this.updateRow(tx, { status: "dropped" });
           warnings.push(
-            `Transaction ${tx.txHash} (nonce ${tx.nonce}) not found, but a different ` +
-              "RPC endpoint answered than the one that gave us the chain nonce; " +
-              "left pending rather than treated as dropped"
+            `Transaction ${tx.txHash} (nonce ${tx.nonce}) not proved mined or replaced; marked dropped for a later receipt check`
           );
         }
+        reconciledCount += 1;
+        continue;
+      }
+      if (tx.nonce < chainNonce) {
+        const { mined } = await scan([tx.txHash]);
+        if (mined) {
+          await this.confirmMined(tx, mined, reader);
+        } else {
+          await this.updateRow(tx, { status: "replaced" });
+          warnings.push(
+            `Transaction ${tx.txHash} (nonce ${tx.nonce}) was replaced or dropped`
+          );
+        }
+        reconciledCount += 1;
+        continue;
+      }
+
+      // A bundle is never in the public mempool: inside its window "not
+      // found" says nothing, so the row stays pending.
+      if (tx.lastTargetBlock !== null) {
+        const window = await bundleWindowState(tx, now, readLatestBlock);
+        if (window === "open") {
+          warnings.push(
+            `Bundle ${tx.txHash} (nonce ${tx.nonce}) left pending until block ${tx.lastTargetBlock}`
+          );
+          continue;
+        }
+        if (window === "unreadable") {
+          warnings.push(
+            `Bundle ${tx.txHash} (nonce ${tx.nonce}) left pending: the latest block could not be read`
+          );
+          continue;
+        }
+        // Nothing is mined at this nonce yet by the nonce endpoint; one a block
+        // behind can miss a bundle in its last target, so read its hashes.
+        const { mined } = await scan(currentSendHashes(tx));
+        if (mined) {
+          await this.confirmMined(tx, mined, reader);
+        } else {
+          // Never in a mempool, so no mempool read: the window passed unmined.
+          await this.updateRow(tx, { status: "dropped" });
+          warnings.push(
+            `Bundle ${tx.txHash} (nonce ${tx.nonce}) not included by block ${tx.lastTargetBlock}, marked dropped`
+          );
+        }
+        reconciledCount += 1;
+        continue;
+      }
+
+      const mempoolTx = await reader.read((provider) =>
+        provider.getTransaction(tx.txHash)
+      );
+      const sameEndpoint = reader.lastEndpoint() === nonceEndpoint;
+      const future = tx.nonce > chainNonce;
+
+      if (mempoolTx) {
+        warnings.push(
+          future
+            ? `Future-nonce tx ${tx.txHash} (nonce ${tx.nonce} > chain nonce ${chainNonce}) ` +
+                "still in mempool, queued behind predecessors"
+            : `Transaction ${tx.txHash} (nonce ${tx.nonce}) still pending in mempool ` +
+                `since ${tx.submittedAt?.toISOString()}`
+        );
+      } else if (sameEndpoint) {
+        // Not in the mempool (broadcast failed or evicted): reap it so the
+        // nonce is handed out again.
+        await this.updateRow(tx, { status: "dropped" });
+        warnings.push(
+          future
+            ? `Future-nonce tx ${tx.txHash} (nonce ${tx.nonce} > chain nonce ${chainNonce}) ` +
+                "not in mempool, marked dropped"
+            : `Transaction ${tx.txHash} (nonce ${tx.nonce}) dropped from mempool`
+        );
+        reconciledCount += 1;
       } else {
-        // tx.nonce > chainNonce: row claims a future nonce. If the tx is no
-        // longer in the mempool (broadcast failed / evicted), reap it so the
-        // gap with chainNonce doesn't permanently wedge nonce selection.
-        const mempoolTx = await reader.read((provider) =>
-          provider.getTransaction(tx.txHash)
+        // A node that never saw the broadcast reports every transaction as
+        // absent. Dropping the row on that answer hands nonce N straight back
+        // out, so leave it pending and let safeNonce step past it.
+        warnings.push(
+          future
+            ? `Future-nonce tx ${tx.txHash} (nonce ${tx.nonce} > chain nonce ${chainNonce}) ` +
+                "not found, but a different RPC endpoint answered than the one that " +
+                "gave us the chain nonce; left pending rather than treated as dropped"
+            : `Transaction ${tx.txHash} (nonce ${tx.nonce}) not found, but a different ` +
+                "RPC endpoint answered than the one that gave us the chain nonce; " +
+                "left pending rather than treated as dropped"
         );
-
-        if (mempoolTx) {
-          warnings.push(
-            `Future-nonce tx ${tx.txHash} (nonce ${tx.nonce} > chain nonce ${chainNonce}) ` +
-              "still in mempool, queued behind predecessors"
-          );
-        } else if (reader.lastEndpoint() === nonceEndpoint) {
-          await db
-            .update(pendingTransactions)
-            .set({ status: "dropped" })
-            .where(
-              and(
-                eq(pendingTransactions.walletAddress, tx.walletAddress),
-                eq(pendingTransactions.chainId, tx.chainId),
-                eq(pendingTransactions.nonce, tx.nonce)
-              )
-            );
-          warnings.push(
-            `Future-nonce tx ${tx.txHash} (nonce ${tx.nonce} > chain nonce ${chainNonce}) ` +
-              "not in mempool, marked dropped"
-          );
-          reconciledCount += 1;
-        } else {
-          // A node that never saw the broadcast reports every transaction as
-          // absent. Dropping the row on that answer removes nonce N from
-          // maxDbPending and hands it straight back out, so the safe reading
-          // of "a different endpoint answered" is no reading at all: leave the
-          // row pending and let safeNonce step past it.
-          warnings.push(
-            `Future-nonce tx ${tx.txHash} (nonce ${tx.nonce} > chain nonce ${chainNonce}) ` +
-              "not found, but a different RPC endpoint answered than the one that " +
-              "gave us the chain nonce; left pending rather than treated as dropped"
-          );
-        }
       }
     }
 
@@ -425,6 +634,173 @@ export class NonceManager {
       reconciledCount,
       warnings,
     };
+  }
+
+  /**
+   * A public-copy row stays pending until the mined count passes it, then is confirmed with its mined hash or
+   * marked replaced (provedReplaced). Only the sweep's miss count drops it.
+   */
+  private async reconcilePublicCopy(
+    tx: PendingTransaction,
+    publicHash: string,
+    reads: {
+      reader: SessionReader;
+      readMinedNonce: () => Promise<number | null>;
+      historyVerdict: (
+        tx: PendingTransaction,
+        current: readonly string[]
+      ) => Promise<{ mined?: MinedHash; replaced: boolean }>;
+    }
+  ): Promise<{ reconciled: boolean; warnings: string[] }> {
+    const minedCount = await reads.readMinedNonce();
+    if (minedCount === null || minedCount <= tx.nonce) {
+      return {
+        reconciled: false,
+        warnings: [
+          `Public copy ${publicHash} (nonce ${tx.nonce}) not mined yet; left pending`,
+        ],
+      };
+    }
+    const { mined, replaced } = await reads.historyVerdict(
+      tx,
+      currentSendHashes(tx)
+    );
+    if (mined) {
+      await this.confirmMined(tx, mined, reads.reader);
+      return { reconciled: true, warnings: [] };
+    }
+    if (replaced) {
+      // Guarded on the row read: a sweep or session that changed it meanwhile wins.
+      if (
+        await this.updateRow(tx, { status: "replaced" }, "pending", tx.txHash)
+      ) {
+        await this.settleReplacedCopy(tx);
+      }
+      return {
+        reconciled: true,
+        warnings: [
+          `Public copy ${publicHash} (nonce ${tx.nonce}) was replaced`,
+        ],
+      };
+    }
+    return {
+      reconciled: false,
+      warnings: [
+        `Public copy ${publicHash} (nonce ${tx.nonce}): nonce used, but none of its hashes found yet; left pending`,
+      ],
+    };
+  }
+
+  /**
+   * Receipt reads of these hashes, newest first, one each. `nonceEndpointOnly`
+   * says every read was answered by the endpoint the chain nonce came from.
+   */
+  private async scanReceipts(
+    hashes: readonly string[],
+    reader: SessionReader,
+    nonceEndpoint: ethers.Provider | null,
+    deadline?: number
+  ): Promise<{
+    mined?: MinedHash;
+    nonceEndpointOnly: boolean;
+    complete: boolean;
+  }> {
+    let nonceEndpointOnly = true;
+    const { mined, complete } = await findMinedHash(
+      hashes,
+      async (hash) => {
+        const receipt = await reader.read((provider) =>
+          provider.getTransactionReceipt(hash)
+        );
+        nonceEndpointOnly &&= reader.lastEndpoint() === nonceEndpoint;
+        return receipt;
+      },
+      deadline
+    );
+    return { mined, nonceEndpointOnly, complete };
+  }
+
+  // Confirm with the mined hash; a not landed bundle mined late settles its run.
+  private async confirmMined(
+    tx: PendingTransaction,
+    mined: MinedHash,
+    reader: SessionReader,
+    fromStatus?: "dropped"
+  ): Promise<void> {
+    const confirmed = await confirmRow(tx, mined.hash, fromStatus);
+    if (!confirmed || tx.bundleRuns.length === 0) {
+      return;
+    }
+    try {
+      // Loaded on use: it pulls in server-only modules other importers do not need.
+      const { settleLateLanding } = await import(
+        "@/lib/web3/bundles/late-landing"
+      );
+      await settleLateLanding(
+        tx.bundleRuns,
+        tx.chainId,
+        mined,
+        (chainId, hash): Promise<ReceiptView> =>
+          chainId === tx.chainId
+            ? reader.read((provider) => provider.getTransactionReceipt(hash))
+            : Promise.resolve(null)
+      );
+    } catch (error) {
+      // The row is confirmed; the sweep retries the settle while its run is not landed.
+      logWarn("[NonceManager] Late bundle landing could not settle its run", {
+        tx_hash: mined.hash,
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  }
+
+  /** A replaced public copy's run ends Not landed; a failure leaves it to the reconciler's day limit. */
+  private async settleReplacedCopy(tx: PendingTransaction): Promise<void> {
+    // The row's newest entry is its run's (livePublicCopy).
+    const entry = tx.bundleRuns.at(-1);
+    if (!entry) {
+      return;
+    }
+    try {
+      // Loaded on use, as in confirmMined.
+      const { settleDroppedPublicCopy } = await import(
+        "@/lib/web3/bundles/late-landing"
+      );
+      await settleDroppedPublicCopy(
+        entry.executionId,
+        tx,
+        entry.hashes,
+        "public-copy-replaced"
+      );
+    } catch (error) {
+      logWarn("[NonceManager] A replaced public copy's run could not settle", {
+        tx_hash: tx.txHash,
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  }
+
+  /** Update the row at this nonce, only while it is still `fromStatus` (and holds `txHash`) when given. */
+  private async updateRow(
+    tx: Pick<PendingTransaction, "walletAddress" | "chainId" | "nonce">,
+    set: Pick<PendingTransaction, "status">,
+    fromStatus?: "dropped" | "pending",
+    txHash?: string
+  ): Promise<boolean> {
+    const updated = await db
+      .update(pendingTransactions)
+      .set(set)
+      .where(
+        and(
+          eq(pendingTransactions.walletAddress, tx.walletAddress),
+          eq(pendingTransactions.chainId, tx.chainId),
+          eq(pendingTransactions.nonce, tx.nonce),
+          fromStatus ? eq(pendingTransactions.status, fromStatus) : undefined,
+          txHash ? eq(pendingTransactions.txHash, txHash) : undefined
+        )
+      )
+      .returning({ nonce: pendingTransactions.nonce });
+    return updated.length > 0;
   }
 
   /**
@@ -461,34 +837,12 @@ export class NonceManager {
     workflowId?: string,
     gasPrice?: string
   ): Promise<void> {
-    await db
-      .insert(pendingTransactions)
-      .values({
-        walletAddress: session.walletAddress,
-        chainId: session.chainId,
-        nonce,
-        txHash,
-        executionId: session.executionId,
-        workflowId,
-        gasPrice,
-        status: "pending",
-      })
-      .onConflictDoUpdate({
-        target: [
-          pendingTransactions.walletAddress,
-          pendingTransactions.chainId,
-          pendingTransactions.nonce,
-        ],
-        set: {
-          txHash,
-          executionId: session.executionId,
-          workflowId,
-          gasPrice,
-          status: "pending",
-          submittedAt: new Date(),
-          confirmedAt: sql`null`,
-        },
-      });
+    await this.upsertPending(session, nonce, {
+      txHash,
+      workflowId,
+      gasPrice,
+      bundle: null,
+    });
 
     console.log(
       `[NonceManager] Recorded tx: nonce=${nonce}, hash=${txHash}, ` +
@@ -505,6 +859,263 @@ export class NonceManager {
       .update(pendingTransactions)
       .set({ status: "confirmed", confirmedAt: new Date() })
       .where(eq(pendingTransactions.txHash, txHash));
+  }
+
+  /**
+   * Record a bundle before the first builder request: every signed hash at
+   * this nonce, the last block it targets, and the step that sent it. A crash
+   * mid-send still leaves a row that reconcile respects. Returns every hash
+   * the same step has signed at this nonce, kept history included.
+   */
+  async recordBundle(
+    session: NonceSession,
+    nonce: number,
+    bundle: {
+      hashes: readonly string[];
+      lastTargetBlock: number;
+      workflowId?: string;
+      gasPrice?: string;
+      node?: BundleRun["node"];
+      valueReservationId?: string;
+    }
+  ): Promise<string[]> {
+    const [first] = bundle.hashes;
+    if (!first) {
+      throw new Error("A bundle needs at least one signed transaction");
+    }
+    const row = {
+      txHash: first,
+      workflowId: bundle.workflowId,
+      gasPrice: bundle.gasPrice,
+      bundle: {
+        lastTargetBlock: bundle.lastTargetBlock,
+        run: {
+          executionId: session.executionId,
+          hashes: [...new Set(bundle.hashes)],
+          signedAt: Date.now(),
+          ...(bundle.node && { node: bundle.node }),
+          ...(bundle.valueReservationId && {
+            valueReservationId: bundle.valueReservationId,
+          }),
+        },
+      },
+    };
+    const { valueReservationId } = bundle;
+    // The reservation learns the row's key in the same transaction, so the
+    // cap never sees one without the other.
+    const runs = valueReservationId
+      ? await db.transaction(async (tx) => {
+          await linkBundleReservation(
+            valueReservationId,
+            {
+              chainId: session.chainId,
+              walletAddress: session.walletAddress,
+              nonce,
+            },
+            tx
+          );
+          return await this.upsertPending(session, nonce, row, tx);
+        })
+      : await this.upsertPending(session, nonce, row);
+    const sameStep = runs.filter(
+      (run) =>
+        run.executionId === session.executionId &&
+        run.node?.id === bundle.node?.id &&
+        run.node?.iterationIndex === bundle.node?.iterationIndex
+    );
+    return [...new Set(sameStep.flatMap((run) => run.hashes))];
+  }
+
+  /** Confirm a nonce by key, with the hash that was mined. */
+  async confirmNonce(
+    session: NonceSession,
+    nonce: number,
+    minedHash: string
+  ): Promise<void> {
+    await db
+      .update(pendingTransactions)
+      .set({ status: "confirmed", confirmedAt: new Date(), txHash: minedHash })
+      .where(this.ownRow(session, nonce));
+  }
+
+  /**
+   * Mark a nonce nothing was mined at as dropped, so the next session reuses
+   * it. `missed` marks the row's newest bundle entry as a decided miss.
+   */
+  async markNonceDropped(
+    session: NonceSession,
+    nonce: number,
+    missed?: BundleMiss
+  ): Promise<void> {
+    const runs = pendingTransactions.bundleRuns;
+    await db
+      .update(pendingTransactions)
+      .set({
+        status: "dropped",
+        ...(missed && {
+          bundleRuns: sql`CASE WHEN jsonb_array_length(${runs}) > 0
+            THEN jsonb_set(${runs}, ARRAY[(jsonb_array_length(${runs}) - 1)::text], (${runs} -> -1) || ${JSON.stringify({ missed })}::jsonb)
+            ELSE ${runs} END`,
+        }),
+      })
+      .where(
+        and(
+          this.ownRow(session, nonce),
+          eq(pendingTransactions.status, "pending")
+        )
+      );
+  }
+
+  /**
+   * Record a public copy on this session's pending row before it is sent (the row's hash becomes the copy's).
+   * False when the row is no longer this session's (nothing is sent).
+   */
+  async markPublicCopy(
+    session: NonceSession,
+    nonce: number,
+    copy: Pick<BundlePublicCopy, "hash" | "kind" | "via">
+  ): Promise<boolean> {
+    const runs = pendingTransactions.bundleRuns;
+    const entry: BundlePublicCopy = { ...copy, at: Date.now() };
+    const updated = await db
+      .update(pendingTransactions)
+      .set({
+        txHash: copy.hash,
+        bundleRuns: sql`jsonb_set(${runs}, ARRAY[(jsonb_array_length(${runs}) - 1)::text], (${runs} -> -1) || ${JSON.stringify({ public: entry })}::jsonb)`,
+      })
+      .where(
+        and(
+          this.ownRow(session, nonce),
+          eq(pendingTransactions.status, "pending"),
+          sql`jsonb_array_length(${runs}) > 0`,
+          sql`${runs} -> -1 ->> 'executionId' = ${session.executionId}`
+        )
+      )
+      .returning({ nonce: pendingTransactions.nonce });
+    return updated.length > 0;
+  }
+
+  /** The public copy never went out (no RPC reached, nonce used): the row is a plain bundle row again. */
+  async markPublicCopyRefused(
+    session: NonceSession,
+    nonce: number
+  ): Promise<void> {
+    const runs = pendingTransactions.bundleRuns;
+    await db
+      .update(pendingTransactions)
+      .set({
+        bundleRuns: sql`jsonb_set(${runs}, ARRAY[(jsonb_array_length(${runs}) - 1)::text, 'public', 'accepted'], 'false'::jsonb)`,
+      })
+      .where(
+        and(
+          this.ownRow(session, nonce),
+          eq(pendingTransactions.status, "pending"),
+          sql`${runs} -> -1 ->> 'executionId' = ${session.executionId}`,
+          sql`${runs} -> -1 ? 'public'`
+        )
+      );
+  }
+
+  /** The hash of a live public copy pending at this wallet's nonce, if any. */
+  async pendingPublicCopyHash(
+    walletAddress: string,
+    chainId: number,
+    nonce: number
+  ): Promise<string | undefined> {
+    const [row] = await db
+      .select({ txHash: pendingTransactions.txHash })
+      .from(pendingTransactions)
+      .where(
+        and(
+          eq(pendingTransactions.walletAddress, walletAddress.toLowerCase()),
+          eq(pendingTransactions.chainId, chainId),
+          eq(pendingTransactions.nonce, nonce),
+          eq(pendingTransactions.status, "pending"),
+          livePublicCopySql()
+        )
+      );
+    return row?.txHash;
+  }
+
+  private ownRow(session: NonceSession, nonce: number): SQL | undefined {
+    return and(
+      eq(pendingTransactions.walletAddress, session.walletAddress),
+      eq(pendingTransactions.chainId, session.chainId),
+      eq(pendingTransactions.nonce, nonce),
+      eq(pendingTransactions.executionId, session.executionId)
+    );
+  }
+
+  /**
+   * Upsert on the key, in one statement. A reused nonce replaces the old row,
+   * except that the bundle history of a dropped row, or of the same run's
+   * pending row, is kept (pruned by age, capped): its signed transactions can
+   * be mined until something else is at this nonce.
+   */
+  private async upsertPending(
+    session: NonceSession,
+    nonce: number,
+    row: {
+      txHash: string;
+      workflowId?: string;
+      gasPrice?: string;
+      bundle: { lastTargetBlock: number; run: BundleRun } | null;
+    },
+    executor: Pick<typeof db, "insert"> = db
+  ): Promise<BundleRun[]> {
+    const fields = {
+      txHash: row.txHash,
+      workflowId: row.workflowId,
+      gasPrice: row.gasPrice,
+      lastTargetBlock: row.bundle?.lastTargetBlock ?? null,
+      executionId: session.executionId,
+    };
+    const cutoff = Date.now() - LATE_BUNDLE_CHECK_MS;
+    const upsert = executor
+      .insert(pendingTransactions)
+      .values({
+        walletAddress: session.walletAddress,
+        chainId: session.chainId,
+        nonce,
+        ...fields,
+        bundleRuns: row.bundle ? [row.bundle.run] : [],
+        status: "pending",
+      })
+      .onConflictDoUpdate({
+        target: [
+          pendingTransactions.walletAddress,
+          pendingTransactions.chainId,
+          pendingTransactions.nonce,
+        ],
+        set: {
+          ...fields,
+          bundleRuns: sql`CASE WHEN pending_transactions.status = 'dropped'
+            OR (pending_transactions.status = 'pending'
+              AND pending_transactions.execution_id = excluded.execution_id) THEN (
+            SELECT coalesce(jsonb_agg(kept.run ORDER BY kept.ord), '[]'::jsonb)
+            FROM (
+              SELECT entry.run, entry.ord
+              FROM jsonb_array_elements(pending_transactions.bundle_runs || excluded.bundle_runs)
+                WITH ORDINALITY AS entry(run, ord)
+              WHERE (entry.run->>'signedAt')::numeric > ${cutoff}
+              ORDER BY entry.ord DESC
+              LIMIT ${MAX_BUNDLE_RUNS}
+            ) kept
+          ) ELSE excluded.bundle_runs END`,
+          status: "pending",
+          submittedAt: new Date(),
+          confirmedAt: sql`null`,
+        },
+      });
+    if (!row.bundle) {
+      await upsert;
+      return [];
+    }
+    // Only a bundle reads its row back: the history its step signed at this nonce.
+    const [written] = await upsert.returning({
+      bundleRuns: pendingTransactions.bundleRuns,
+    });
+    return written?.bundleRuns ?? [];
   }
 
   /**
@@ -663,9 +1274,17 @@ export class NonceManager {
   private async acquireLock(
     walletAddress: string,
     chainId: number,
-    executionId: string
+    executionId: string,
+    waitUntil?: number
   ): Promise<void> {
-    for (let attempt = 0; attempt < this.maxLockRetries; attempt++) {
+    let retries = this.maxLockRetries;
+    const holdWait: HoldWait = { extended: false, preparing: false };
+    for (let attempt = 0; attempt < retries; attempt++) {
+      if (attempt > 0 && waitUntil !== undefined && Date.now() >= waitUntil) {
+        throw new NonceLockWaitEndedError(
+          `The wallet ${walletAddress}:${chainId} was still in use at the wait limit`
+        );
+      }
       const now = new Date();
       const expiresAt = new Date(now.getTime() + this.lockTtlMs);
 
@@ -762,6 +1381,19 @@ export class NonceManager {
       }
 
       await sleep(this.lockRetryDelayMs);
+      if (attempt + 1 === retries) {
+        const waitEnd = await this.holdWaitEnd(
+          walletAddress,
+          chainId,
+          holdWait
+        );
+        if (waitEnd !== undefined) {
+          retries += Math.max(
+            0,
+            Math.ceil((waitEnd - Date.now()) / this.lockRetryDelayMs)
+          );
+        }
+      }
     }
 
     // Exhausting the budget means the wallet is oversubscribed, not that the
@@ -769,11 +1401,9 @@ export class NonceManager {
     // lock is the only thing that measures the overload. Reported as a user
     // error so it carries an actionable message and counts a metric without
     // paging, and phrased so the author knows which lever to pull.
-    const waitSeconds = Math.round(
-      (this.maxLockRetries * this.lockRetryDelayMs) / 1000
-    );
+    const waitSeconds = Math.round((retries * this.lockRetryDelayMs) / 1000);
     const failure = new Error(
-      `Wallet is saturated: could not acquire the nonce lock for ${walletAddress}:${chainId} after ${waitSeconds}s. Transactions from one wallet are sent one at a time, so reduce this workflow's trigger rate or spread writes across additional wallets.`
+      `Wallet is saturated: could not acquire the nonce lock for ${walletAddress}:${chainId} after ${waitSeconds}s. Transactions from one wallet are sent one at a time (a bundle step holds its wallet until its outcome is decided), so reduce this workflow's trigger rate or spread writes across additional wallets.`
     );
     logUserError(
       ErrorCategory.CONFIGURATION,
@@ -783,10 +1413,128 @@ export class NonceManager {
         wallet_address: walletAddress,
         chain_id: String(chainId),
         execution_id: executionId,
-        max_retries: String(this.maxLockRetries),
+        max_retries: String(retries),
       }
     );
     throw failure;
+  }
+
+  /**
+   * Where a waiter whose budget ran out keeps waiting to, read from the live
+   * holder: behind a bundle (a pending bundle row recorded under its lock),
+   * to its longest hold's end; on a wallet that sends bundles here, behind a
+   * holder still inside the pre-record budget with no row yet (a bundle may
+   * be preparing), to that budget's end, then it checks again, whoever holds
+   * the lock then. At most one of each, so the wait stays bounded.
+   */
+  private async holdWaitEnd(
+    walletAddress: string,
+    chainId: number,
+    wait: HoldWait
+  ): Promise<number | undefined> {
+    if (wait.extended) {
+      return;
+    }
+    const holder = await this.lockHolder(walletAddress, chainId);
+    if (!holder) {
+      return;
+    }
+    // Holder pod and waiter clocks differ by less than the margin.
+    if (holder.bundle) {
+      wait.extended = true;
+      return holder.lockedAt + LONGEST_BUNDLE_HOLD_MS + BUNDLE_WAIT_MARGIN_MS;
+    }
+    const prepared =
+      holder.lockedAt + BUNDLE_PRE_RECORD_MS + BUNDLE_WAIT_MARGIN_MS;
+    if (
+      wait.preparing ||
+      prepared <= Date.now() ||
+      !(await this.sendsBundles(walletAddress, chainId))
+    ) {
+      return;
+    }
+    wait.preparing = true;
+    return prepared;
+  }
+
+  /** Whether this wallet sent a bundle on this chain within the late-landing window. */
+  private async sendsBundles(
+    walletAddress: string,
+    chainId: number
+  ): Promise<boolean> {
+    try {
+      const [row] = await db
+        .select({ submittedAt: pendingTransactions.submittedAt })
+        .from(pendingTransactions)
+        .where(
+          and(
+            eq(pendingTransactions.walletAddress, walletAddress),
+            eq(pendingTransactions.chainId, chainId),
+            ne(pendingTransactions.bundleRuns, sql`'[]'::jsonb`),
+            gt(
+              pendingTransactions.submittedAt,
+              new Date(Date.now() - LATE_BUNDLE_CHECK_MS)
+            )
+          )
+        )
+        .limit(1);
+      return row !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The live holder's lock time, and whether it recorded a pending bundle row
+   * here under this lock; undefined when the lock is free or unreadable.
+   */
+  private async lockHolder(
+    walletAddress: string,
+    chainId: number
+  ): Promise<{ lockedAt: number; bundle: boolean } | undefined> {
+    try {
+      const [holder] = await db
+        .select({
+          lockedBy: walletLocks.lockedBy,
+          lockedAt: walletLocks.lockedAt,
+        })
+        .from(walletLocks)
+        .where(
+          and(
+            eq(walletLocks.walletAddress, walletAddress),
+            eq(walletLocks.chainId, chainId),
+            gt(walletLocks.expiresAt, sql`NOW()`)
+          )
+        )
+        .limit(1);
+      if (!(holder?.lockedBy && holder.lockedAt)) {
+        return;
+      }
+      const lockedAt = holder.lockedAt.getTime();
+      // Since the lock (less clock skew): an earlier step's stale row of the same run does not count.
+      const since = Math.max(
+        lockedAt - BUNDLE_WAIT_MARGIN_MS,
+        Date.now() - MAX_BUNDLE_WINDOW_MS
+      );
+      const [bundle] = await db
+        .select({ nonce: pendingTransactions.nonce })
+        .from(pendingTransactions)
+        .where(
+          and(
+            eq(pendingTransactions.walletAddress, walletAddress),
+            eq(pendingTransactions.chainId, chainId),
+            eq(pendingTransactions.status, "pending"),
+            eq(pendingTransactions.executionId, holder.lockedBy),
+            isNotNull(pendingTransactions.lastTargetBlock),
+            gt(pendingTransactions.submittedAt, new Date(since))
+          )
+        )
+        .limit(1);
+      return { lockedAt, bundle: bundle !== undefined };
+    } catch {
+      // Unreadable: the plain budget stands, and the waiter fails loudly.
+      return;
+    }
   }
 
   /**

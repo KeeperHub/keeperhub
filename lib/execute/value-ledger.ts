@@ -1,13 +1,16 @@
 import "server-only";
 
-import { and, eq, gte, ne, sql } from "drizzle-orm";
-import { formatUnits } from "viem";
+import { and, eq, gte, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { formatEther, formatUnits } from "viem";
 import { db } from "@/lib/db";
+import { chains } from "@/lib/db/schema";
 import {
   directExecutions,
   organizationSpendCaps,
   orgValueReservations,
+  pendingTransactions,
 } from "@/lib/db/schema-extensions";
+import { DAILY_CAP_EXCEEDED } from "@/lib/execute/daily-cap-text";
 import {
   isOrgHalted,
   ORG_HALTED_REASON,
@@ -27,6 +30,87 @@ import { logSecurityEvent } from "@/lib/logging";
 // the funds, so it keeps counting until the reconciler settles it.
 const STALE_INFLIGHT_MINUTES = 15;
 
+// A reservation with no bundle nonce: settled all day, reserved within the stale
+// window. A held one without a nonce is never written; it counts all day.
+const unlinkedRowCounts = sql`CASE
+  WHEN ${orgValueReservations.status} IN ('settled', 'held') THEN true
+  WHEN ${orgValueReservations.status} = 'reserved' THEN ${orgValueReservations.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes'
+  ELSE false END`;
+
+/**
+ * A reservation whose bundle was recorded at (chain, wallet, nonce) counts,
+ * at any age, while that bundle may still move value: its row is pending or
+ * dropped, or confirmed with a hash of the reservation's run. Once another
+ * transaction uses the nonce it counts 0. Only one of them can be mined, so
+ * the reservations at one nonce count once, as the largest (bundleNonceTotals).
+ * Residuals that count 0: a landing whose entry was pruned from bundle_runs,
+ * and a reorg that changes which transaction holds the nonce (both rare).
+ */
+const linkedRowCounts = sql`(${pendingTransactions.status} IS NULL
+  OR ${pendingTransactions.status} IN ('pending', 'dropped')
+  OR (${pendingTransactions.status} = 'confirmed' AND EXISTS (
+    SELECT 1 FROM jsonb_array_elements(${pendingTransactions.bundleRuns}) AS entry(run)
+    WHERE entry.run->'hashes' ? ${pendingTransactions.txHash}
+      AND entry.run->>'executionId' = ${orgValueReservations.ref})))`;
+
+/** One nonce's bundle value today: the largest reservation, and whether it may still land. */
+type BundleNonceTotal = {
+  chainId: number | null;
+  walletAddress: string | null;
+  valueWei: string;
+  rowStatus: string | null;
+  networkName: string | null;
+  symbol: string | null;
+};
+
+/** Today's bundle reservations that count, one total per (chain, wallet, nonce). */
+function bundleNonceTotals(
+  executor: Executor,
+  organizationId: string,
+  todayStart: Date
+): Promise<BundleNonceTotal[]> {
+  const reservations = orgValueReservations;
+  return executor
+    .select({
+      chainId: reservations.bundleChainId,
+      walletAddress: reservations.bundleWalletAddress,
+      valueWei: sql<string>`MAX(CAST(${reservations.valueWei} AS NUMERIC))::text`,
+      rowStatus: pendingTransactions.status,
+      networkName: chains.name,
+      symbol: chains.symbol,
+    })
+    .from(reservations)
+    .leftJoin(
+      pendingTransactions,
+      and(
+        eq(pendingTransactions.walletAddress, reservations.bundleWalletAddress),
+        eq(pendingTransactions.chainId, reservations.bundleChainId),
+        eq(pendingTransactions.nonce, reservations.bundleNonce)
+      )
+    )
+    .leftJoin(chains, eq(chains.chainId, reservations.bundleChainId))
+    .where(
+      and(
+        eq(reservations.organizationId, organizationId),
+        ne(reservations.status, "released"),
+        gte(reservations.createdAt, todayStart),
+        isNotNull(reservations.bundleNonce),
+        linkedRowCounts
+      )
+    )
+    .groupBy(
+      reservations.bundleChainId,
+      reservations.bundleWalletAddress,
+      reservations.bundleNonce,
+      pendingTransactions.status,
+      chains.name,
+      chains.symbol
+    );
+}
+
+const sumWei = (totals: readonly { valueWei: string }[]): bigint =>
+  totals.reduce((sum, total) => sum + BigInt(total.valueWei), BigInt(0));
+
 // biome-ignore lint/suspicious/noExplicitAny: accept either the app db or a tx
 type Executor = any;
 
@@ -37,7 +121,8 @@ type Executor = any;
  * ledger (`org_value_reservations`, set by workflow + protocol executions).
  *
  * Settled/completed rows count for the whole UTC day; in-flight (pending/running
- * or reserved) rows only within the stale window, so a stuck row ages out.
+ * or reserved) rows only within the stale window, so a stuck row ages out. A
+ * reservation whose bundle was recorded follows its nonce instead (linkedRowCounts).
  * Runs inside the caller's transaction so it is consistent with the FOR UPDATE.
  */
 export async function sumOrgValueTodayWei(
@@ -71,13 +156,75 @@ export async function sumOrgValueTodayWei(
         eq(orgValueReservations.organizationId, organizationId),
         ne(orgValueReservations.status, "released"),
         gte(orgValueReservations.createdAt, todayStart),
-        sql`(${orgValueReservations.status} = 'settled' OR ${orgValueReservations.createdAt} > now() - interval '${sql.raw(String(STALE_INFLIGHT_MINUTES))} minutes')`
+        isNull(orgValueReservations.bundleNonce),
+        unlinkedRowCounts
       )
     );
+  const bundles = await bundleNonceTotals(executor, organizationId, todayStart);
 
   const direct = BigInt(directRows[0]?.totalWei ?? "0");
   const ledger = BigInt(ledgerRows[0]?.totalWei ?? "0");
-  return direct + ledger;
+  return direct + ledger + sumWei(bundles);
+}
+
+// The wallets a refusal names at most; the rest are counted.
+const MAX_NAMED_HOLDS = 3;
+
+/** Bundle value that may still land, per wallet and network. */
+function heldByWallet(totals: readonly BundleNonceTotal[]): {
+  label: string;
+  valueWei: bigint;
+  symbol: string | null;
+}[] {
+  const held = new Map<
+    string,
+    { label: string; valueWei: bigint; symbol: string | null }
+  >();
+  for (const total of totals) {
+    if (total.rowStatus === "confirmed") {
+      continue;
+    }
+    const network = total.networkName ?? `chain ${total.chainId}`;
+    const key = `${total.chainId}:${total.walletAddress}`;
+    const entry = held.get(key) ?? {
+      label: `wallet ${total.walletAddress} on ${network}`,
+      valueWei: BigInt(0),
+      symbol: total.symbol,
+    };
+    entry.valueWei += BigInt(total.valueWei);
+    held.set(key, entry);
+  }
+  return [...held.values()];
+}
+
+/**
+ * The wei cap's refusal. When bundles that have not been mined but may still
+ * land hold part of the day's total, it says how much, on which wallet and
+ * network, and how the hold ends.
+ */
+export async function dailyValueCapRefusal(
+  executor: Executor,
+  organizationId: string
+): Promise<string> {
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const holds = heldByWallet(
+    await bundleNonceTotals(executor, organizationId, todayStart)
+  );
+  if (holds.length === 0) {
+    return DAILY_CAP_EXCEEDED;
+  }
+  const named = holds
+    .slice(0, MAX_NAMED_HOLDS)
+    .map(
+      (hold) =>
+        `${formatEther(hold.valueWei)} ${hold.symbol ?? "(native token)"} from ${hold.label}`
+    );
+  const more =
+    holds.length > MAX_NAMED_HOLDS
+      ? ` and ${holds.length - MAX_NAMED_HOLDS} more`
+      : "";
+  return `${DAILY_CAP_EXCEEDED}: part of today's total is held by Send as Bundle steps whose signed transactions have not been mined (${named.join("; ")}${more}). They can still be mined, so that value counts until another transaction from the same wallet on the same network uses their nonce (for example a Normal transaction with no value, sent once the bundle step has finished) or the UTC day ends, whichever comes first.`;
 }
 
 /**
@@ -383,7 +530,10 @@ export async function reserveOrgValue(
     }
 
     if (exceeded) {
-      return { allowed: false, reason: "Daily spending cap exceeded" } as const;
+      return {
+        allowed: false,
+        reason: await dailyValueCapRefusal(tx, params.organizationId),
+      } as const;
     }
 
     const [row] = await tx
@@ -489,6 +639,20 @@ export async function settleReservation(reservationId: string): Promise<void> {
     .where(eq(orgValueReservations.id, reservationId));
 }
 
+/**
+ * Hold a reservation: a bundle step's miss whose signed transactions can
+ * still be mined. Its recorded nonce decides whether it counts (linkedRowCounts).
+ */
+export async function holdReservation(reservationId: string): Promise<void> {
+  if (!reservationId) {
+    return;
+  }
+  await db
+    .update(orgValueReservations)
+    .set({ status: "held", updatedAt: new Date() })
+    .where(eq(orgValueReservations.id, reservationId));
+}
+
 /** Release a reservation (denied or failed); it drops out of the cap SUM. */
 export async function releaseReservation(reservationId: string): Promise<void> {
   if (!reservationId) {
@@ -500,15 +664,24 @@ export async function releaseReservation(reservationId: string): Promise<void> {
     .where(eq(orgValueReservations.id, reservationId));
 }
 
+/** How a result ends its reservation: settled, released, or held (see holdReservation). */
+export type ReservationEnd = "settle" | "release" | "hold";
+
+const endBySuccess = (result: { success: boolean }): ReservationEnd =>
+  result.success ? "settle" : "release";
+
 /**
  * Wrap a value-moving execution so it is charged against the org's daily cap.
- * Reserves `valueWei` before running `run`, then settles on a successful result
- * or releases on a failed result or a thrown error. A zero value skips the cap.
- * Returns the run result, or a cap-exceeded failure without running.
+ * Reserves `valueWei` before running `run` (which gets the reservation id),
+ * then settles on a successful result or releases on a failed result or a
+ * thrown error. A zero value skips the cap. `ends` overrides how a result
+ * ends its reservation. Returns the run result, or a cap-exceeded failure
+ * without running.
  */
 export async function withValueCap<T extends { success: boolean }>(
   params: ReserveParams,
-  run: () => Promise<T>
+  run: (reservationId?: string) => Promise<T>,
+  ends: (result: T) => ReservationEnd = endBySuccess
 ): Promise<T | { success: false; error: string }> {
   if (params.valueWei === "0" || BigInt(params.valueWei) <= BigInt(0)) {
     return await run();
@@ -521,14 +694,17 @@ export async function withValueCap<T extends { success: boolean }>(
 
   let result: T;
   try {
-    result = await run();
+    result = await run(reservation.reservationId);
   } catch (error) {
     await releaseReservation(reservation.reservationId);
     throw error;
   }
 
-  if (result.success) {
+  const end = ends(result);
+  if (end === "settle") {
     await settleReservation(reservation.reservationId);
+  } else if (end === "hold") {
+    await holdReservation(reservation.reservationId);
   } else {
     await releaseReservation(reservation.reservationId);
   }
@@ -587,6 +763,9 @@ type StepValueCapArgs = {
   valueCapReserved?: boolean;
 };
 
+/** How an EVM result ends its reservation; default: settled on success. */
+type Ends<T> = (result: T) => ReservationEnd;
+
 /**
  * Charge a workflow/protocol step's native value against the org's daily cap.
  * Routes Solana steps to the lamports cap and EVM steps to the wei cap via
@@ -595,7 +774,8 @@ type StepValueCapArgs = {
  */
 export function withStepValueCap<T extends { success: boolean }>(
   args: StepValueCapArgs,
-  run: () => Promise<T>
+  run: (reservationId?: string) => Promise<T>,
+  ends?: Ends<T>
 ): Promise<T | { success: false; error: string }> {
   if (args.valueCapReserved || !args.organizationId) {
     return run();
@@ -633,6 +813,7 @@ export function withStepValueCap<T extends { success: boolean }>(
       source: args.source ?? "workflow",
       ref: args.executionId,
     },
-    run
+    run,
+    ends
   );
 }

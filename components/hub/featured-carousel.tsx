@@ -18,7 +18,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { api, type SavedWorkflow } from "@/lib/api-client";
+import {
+  api,
+  DUPLICATE_ERROR_TOAST,
+  duplicateErrorMessage,
+  type SavedWorkflow,
+} from "@/lib/api-client";
 import { signInAnonymously, useSession } from "@/lib/auth-client";
 import { useOrgAccess } from "@/lib/hooks/use-org-access";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
@@ -88,7 +93,8 @@ export function FeaturedCarousel({ workflows }: FeaturedCarouselProps) {
     } catch (error) {
       console.error("Failed to duplicate workflow:", error);
       toast.error(
-        error instanceof Error ? error.message : "Failed to duplicate workflow"
+        duplicateErrorMessage(error, "Failed to duplicate workflow"),
+        DUPLICATE_ERROR_TOAST
       );
     } finally {
       setDuplicatingIds((prev) => {

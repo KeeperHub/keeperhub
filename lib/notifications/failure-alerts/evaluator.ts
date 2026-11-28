@@ -19,6 +19,7 @@ import {
   failureAlertHeartbeat,
   organization,
   orgFailureAlertSettings,
+  pendingTransactions,
   workflowExecutions,
   workflowFailureAlertQueue,
   workflowFailureIncidents,
@@ -33,6 +34,7 @@ import {
   loadOrgMembers,
   type OrgMember,
 } from "@/lib/notifications/org-recipients";
+import { isBundleSendEnabledForOrg } from "@/lib/web3/bundles/rollout";
 import { workflowExecutableConditions } from "@/lib/workflow/executable";
 import { acceptedRunSql } from "@/lib/workflow/refused-runs";
 import { WorkflowTriggerEnum } from "@/lib/workflow/store";
@@ -91,7 +93,13 @@ import {
 import { isFailureAlertsEnabledForOrg, splitByRollout } from "./rollout";
 import { lockOrgSettings } from "./settings";
 import { SKIP_REASON } from "./stored-reasons";
-import { decide, summarizeStreak } from "./streak";
+import {
+  decide,
+  landedSince,
+  type StreakRun,
+  summarizeNotLanding,
+  summarizeStreak,
+} from "./streak";
 import {
   AUTOMATED_RUN_SQL,
   beforeBucket,
@@ -361,14 +369,24 @@ export function inactiveResolution(
   return null;
 }
 
-/** Reopen the incident a recent success (or, for a refused one, an accepted run) closed, unless its recovery went out. */
+/** Which incidents continue one another inside the recovery hold. */
+type HoldKind = "failure" | "refused" | "not_landing";
+
+const holdKindOf = (openedBy: string): HoldKind =>
+  openedBy === "refused" || openedBy === "not_landing" ? openedBy : "failure";
+
+/**
+ * Reopen the incident of this kind a recent success (or, for a refused one, an
+ * accepted run) closed, unless its recovery went out.
+ */
 async function reopenRecovered(
   workflowId: string,
   failedAt: Date,
   now: Date,
-  closedBy: "success" | "ran" = "success"
+  kind: HoldKind = "failure"
 ): Promise<IncidentRow | null> {
-  const refused = closedBy === "ran";
+  const refused = kind === "refused";
+  const closedBy = refused ? "ran" : "success";
   const [last] = await db
     .select()
     .from(workflowFailureIncidents)
@@ -383,13 +401,14 @@ async function reopenRecovered(
   if (
     !last?.resolvedAt ||
     last.resolvedReason !== closedBy ||
-    (last.openedBy === "refused") !== refused ||
+    // Bundles that missed are their own condition: a failure never continues it.
+    holdKindOf(last.openedBy) !== kind ||
     failedAt.getTime() >= last.resolvedAt.getTime() + RECOVERY_HOLD_MS
   ) {
     return null;
   }
-  // Only a refusal after the run that closed it reopens it.
-  if (refused && last.resolvingExecutionId) {
+  // Only a refusal (a miss) after the run that closed it reopens it.
+  if (kind !== "failure" && last.resolvingExecutionId) {
     const [ran] = await db
       .select({ startedAt: workflowExecutions.startedAt })
       .from(workflowExecutions)
@@ -819,7 +838,7 @@ async function openIfRefused(
     workflow.id,
     newest.refusedAt,
     now,
-    "ran"
+    "refused"
   );
   if (reopened) {
     await db
@@ -862,6 +881,177 @@ async function openIfRefused(
     });
   }
   return null;
+}
+
+// Pod clocks differ: a row a run wrote is never this much older than its start.
+const BUNDLE_CLOCK_SLACK_MS = 60_000;
+
+/**
+ * Whether a bundle this run sent was mined: a confirmed row whose mined hash
+ * this run signed, even if a later run sent at that nonce since. Only rows
+ * written since the run started (less pod clock skew) are read.
+ */
+async function bundleLandedIn(landed: {
+  id: string;
+  startedAt: Date;
+}): Promise<boolean> {
+  const executionId = landed.id;
+  const rows = await db
+    .select({
+      txHash: pendingTransactions.txHash,
+      bundleRuns: pendingTransactions.bundleRuns,
+    })
+    .from(pendingTransactions)
+    .where(
+      and(
+        eq(pendingTransactions.status, "confirmed"),
+        gt(
+          pendingTransactions.submittedAt,
+          new Date(landed.startedAt.getTime() - BUNDLE_CLOCK_SLACK_MS)
+        ),
+        sql`${pendingTransactions.bundleRuns} @> ${JSON.stringify([{ executionId }])}::jsonb`
+      )
+    );
+  return rows.some((row) =>
+    row.bundleRuns.some(
+      (run) =>
+        run.executionId === executionId && run.hashes.includes(row.txHash)
+    )
+  );
+}
+
+/** An open not-landing incident ends with a run that landed or failed (true: evaluate again). */
+async function followNotLanding(
+  incident: IncidentRow,
+  runs: readonly StreakRun[],
+  policy: EffectivePolicy,
+  notifyRecovery: boolean,
+  now: Date,
+  stats: EvaluationStats
+): Promise<boolean> {
+  const landed = landedSince(runs, incident.firstFailedAt);
+  if (landed) {
+    let recoveryContext: Record<string, unknown> | undefined;
+    if (landed.status !== "success") {
+      recoveryContext = ranContext(landed);
+    } else if (await bundleLandedIn(landed)) {
+      // "Landing again" only when this run's own bundle was mined.
+      recoveryContext = { bundleLanded: true };
+    }
+    await closeIncident({
+      incident,
+      reason: landed.status === "success" ? "success" : "ran",
+      resolvingExecutionId: landed.id,
+      notifyRecovery,
+      now,
+      stats,
+      ...(recoveryContext && { recoveryContext }),
+    });
+    return true;
+  }
+  const streak = summarizeNotLanding(runs, policy.countingSince, 1);
+  if (streak) {
+    await db
+      .update(workflowFailureIncidents)
+      .set({
+        failureCount: Math.max(incident.failureCount, streak.count),
+        lastFailedAt: streak.lastFailedAt,
+        lastFailedExecutionId: streak.lastRunId,
+        lastError: streak.lastError,
+      })
+      .where(
+        and(
+          eq(workflowFailureIncidents.id, incident.id),
+          isNull(workflowFailureIncidents.resolvedAt)
+        )
+      );
+  }
+  return false;
+}
+
+/**
+ * Its newest `threshold` runs all ended not landed: a "not_landing" incident,
+ * held by an org or workflow pause. It neither counts toward nor ends the
+ * failure streak, and never turns the workflow off.
+ */
+async function openIfNotLanding(
+  workflow: WorkflowRow,
+  policy: EffectivePolicy,
+  runs: readonly StreakRun[],
+  now: Date,
+  opened: OpenedIncident[],
+  stats: EvaluationStats
+): Promise<Date | null> {
+  const missing = summarizeNotLanding(runs, policy.countingSince, 1);
+  if (!missing) {
+    return null;
+  }
+  const orgPause = activePause(policy.orgPausedUntil, now);
+  if (orgPause) {
+    return orgPause;
+  }
+  if (isWorkflowAlertsPaused(policy, now)) {
+    return policy.workflowPausedUntil;
+  }
+  // Missing again inside the recovery hold: the incident a landing closed continues.
+  const reopened = await reopenRecovered(
+    workflow.id,
+    missing.firstFailedAt,
+    now,
+    "not_landing"
+  );
+  if (reopened) {
+    await db
+      .update(workflowFailureIncidents)
+      .set({
+        failureCount: Math.max(reopened.failureCount, missing.count),
+        lastFailedAt: missing.lastFailedAt,
+        lastFailedExecutionId: missing.lastRunId,
+        lastError: missing.lastError,
+      })
+      .where(eq(workflowFailureIncidents.id, reopened.id));
+    return null;
+  }
+  if (missing.count < policy.threshold) {
+    return null;
+  }
+  const streak = missing;
+  const [row] = await db
+    .insert(workflowFailureIncidents)
+    .values({
+      organizationId: workflow.organizationId,
+      workflowId: workflow.id,
+      openedBy: "not_landing",
+      threshold: policy.threshold,
+      failureCount: streak.count,
+      firstFailedAt: streak.firstFailedAt,
+      lastFailedAt: streak.lastFailedAt,
+      lastFailedExecutionId: streak.lastRunId,
+      openingExecutionId: streak.lastRunId,
+      lastError: streak.lastError,
+      lastNotifiedAt: now,
+    })
+    .onConflictDoNothing()
+    .returning({ id: workflowFailureIncidents.id });
+  if (row) {
+    stats.incidentsOpened += 1;
+    opened.push({
+      id: row.id,
+      organizationId: workflow.organizationId,
+      workflowId: workflow.id,
+    });
+  }
+  return null;
+}
+
+function earliest(...dates: (Date | null)[]): Date | null {
+  let first: Date | null = null;
+  for (const date of dates) {
+    if (date && (!first || date < first)) {
+      first = date;
+    }
+  }
+  return first;
 }
 
 /** Evaluate one workflow; returns when to recheck without a new run, or null. */
@@ -959,6 +1149,26 @@ async function evaluateWorkflow(
     return null;
   }
 
+  if (open?.openedBy === "not_landing") {
+    const landingRuns = await loadStreakRuns(workflowId, window, {
+      notLanded: true,
+    });
+    if (
+      await followNotLanding(
+        open,
+        landingRuns,
+        policy,
+        policy.notifyRecovery && !orgPause,
+        now,
+        stats
+      )
+    ) {
+      // Now closed: the run that ended it may itself start a failing streak.
+      return await evaluateWorkflow(workflowId, now, opened, stats);
+    }
+    return null;
+  }
+
   // A failure inside the recovery hold continues that incident: no new alert or page.
   if (!open && summary.firstFailedAt) {
     open = await reopenRecovered(workflowId, summary.firstFailedAt, now);
@@ -1017,10 +1227,23 @@ async function evaluateWorkflow(
     workflowTriggerType(workflow.nodes) === WorkflowTriggerEnum.SCHEDULE
       ? null
       : await openIfRefused(workflow, policy, now, opened, stats);
+  // Bundles that keep missing: only where bundles are on, and while no other
+  // incident is open or opening.
+  const landingRecheck =
+    open ||
+    decision.kind === "open" ||
+    !isBundleSendEnabledForOrg(workflow.organizationId)
+      ? null
+      : await openIfNotLanding(
+          workflow,
+          policy,
+          await loadStreakRuns(workflowId, window, { notLanded: true }),
+          now,
+          opened,
+          stats
+        );
   if (decision.kind === "recheck") {
-    return refusedRecheck && refusedRecheck < decision.at
-      ? refusedRecheck
-      : decision.at;
+    return earliest(refusedRecheck, landingRecheck, decision.at);
   }
   if (decision.kind === "resolve" && open) {
     await closeIncident({
@@ -1034,7 +1257,7 @@ async function evaluateWorkflow(
     return null;
   }
   if (decision.kind !== "open") {
-    return refusedRecheck;
+    return earliest(refusedRecheck, landingRecheck);
   }
   // Only the count and out-of-funds rules turn a workflow off; the time rule only tells.
   const disables = policy.disableWorkflow && decision.by !== "time";
@@ -1821,7 +2044,9 @@ async function latestRefusals(
         // Index bound: a row's newest refusal is under an hour after its start.
         gte(workflowExecutions.startedAt, beforeBucket(since)),
         isNull(workflowExecutions.deletedAt),
-        REFUSED_RUN_SQL
+        REFUSED_RUN_SQL,
+        // A skip with no category (previous run still running, expired signal) is not a refusal.
+        isNotNull(workflowExecutions.errorCategory)
       )
     )
     .orderBy(workflowExecutions.workflowId, desc(refusedAt));

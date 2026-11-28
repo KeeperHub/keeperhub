@@ -179,7 +179,7 @@ The server registers more than 30 tools. Call `tools_documentation` (or `list_ac
 | `create_workflow` | Create a workflow with nodes and edges. Created disabled by default; pass `enabled=true` to make schedule, event, block, or webhook triggers fire immediately. Pass `idempotency_key` so cold-start retries are safe. |
 | `update_workflow` | Update a workflow's name, description, nodes, edges, project/tag assignment, or enabled state. Set `enabled=false` to stop triggers without deleting the workflow. |
 | `delete_workflow` | Permanently delete a workflow. This action is irreversible. |
-| `validate_workflow` | Check a workflow's structural and Web3-specific correctness before creating or executing it. |
+| `validate_workflow` | Check a workflow's structural and Web3-specific correctness before creating or executing it. Send as problems come back as `invalid-send-mode`, including a Send as Bundle step's `notBefore` (unix seconds or an ISO 8601 date with a time zone; 13, 16 or 19 digits are refused; only on networks with fixed slots) and `sendAheadBlocks` (0 to 3, and at most 5 with `bundleBlocks`), and either one set on a step whose `sendMode` is not `"bundle"`; see [Send ahead with Not before](/plugins/web3#send-ahead-with-not-before). |
 | `prepare_test_pin_data` | Return the JSON Schema each node expects as pin data, so an agent can construct valid test inputs. |
 | `validate_cron` | Validate a cron expression or interval schedule before wiring a schedule trigger. |
 
@@ -287,7 +287,7 @@ and the authoritative safe first-write sequence.
 | Tool | Description |
 |------|-------------|
 | `search_templates` | Search pre-built workflow templates. |
-| `deploy_template` | Clone a public template into the organization as a new workflow. |
+| `deploy_template` | Clone a public template into the organization as a new workflow. Refused with nothing copied when a Send as Bundle step cannot be used by your organization (see [Duplicate Workflow](/api/workflows#duplicate-workflow)). |
 | `get_template` | Deprecated. Use `get_workflow` instead. |
 
 ### Marketplace Listings

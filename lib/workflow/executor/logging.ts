@@ -20,7 +20,6 @@ import { db } from "@/lib/db";
 import {
   extractLogGasUsedWei,
   extractLogNetwork,
-  logOutputField,
 } from "@/lib/db/execution-log-fields";
 import {
   type TransactionHashEntry,
@@ -38,6 +37,7 @@ import {
   type ErrorStatus,
   isErrorStatus,
   statusForErrorType,
+  type WorkflowExecutionStatus,
 } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemError, logSystemWarn } from "@/lib/logging";
 import { getMetricsCollector } from "@/lib/metrics";
@@ -45,6 +45,7 @@ import {
   recordWorkflowExecutionError,
   recordWorkflowExecutionFinished,
   recordWorkflowExecutionHealed,
+  recordWorkflowExecutionSkipped,
 } from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
@@ -57,21 +58,44 @@ import {
 } from "@/lib/web3/verify-receipt";
 import { pollForCompletedOutput } from "@/lib/workflow/executor/poll-for-output";
 import {
+  mergeSignals,
+  NO_RUN_OUTCOME_SIGNALS,
+  type RunOutcome,
+  runOutcomeCode,
+  runOutcomeOf,
+  runOutcomeReason,
+  skippedMetricReason,
+} from "@/lib/workflow/executor/run-outcome";
+import type { RunOutcomeCode } from "@/lib/workflow/executor/run-outcome-keys";
+import {
   EXCEEDED_MAX_RETRIES_REGEX,
   FAILED_AFTER_RETRIES_REGEX,
   NO_STEP_COMPLETION_REGEX,
 } from "@/lib/workflow/executor/runner-error-patterns";
 import { clearStepClaims } from "@/lib/workflow/executor/step-claim";
 import {
+  getRunOutcomeSignals,
   getTransactionHashes,
-  isRecordableTransactionHash,
 } from "@/lib/workflow/executor/step-success-tracker";
 import { boundStoredOutput } from "@/lib/workflow/executor/stored-output-cap";
+import {
+  type FinishLogFacts,
+  loadFinishLogFacts,
+  loadSuccessLogFacts,
+  type SuccessLogFacts,
+  toHashEntry,
+} from "@/lib/workflow/executor/success-log-facts";
 import { computeTrulyFailedNodes } from "@/lib/workflow/executor/truly-failed-nodes";
 
 // Statuses a late step write must never resurrect: the user stopped the run,
-// or the platform refused it before it started.
-const TERMINAL_STATUSES = new Set(["cancelled", "skipped"]);
+// it never started (refused, or skipped behind a live run), or it ended as
+// not landed. Every guard below reads this one list.
+const TERMINAL_STATUS_LIST: WorkflowExecutionStatus[] = [
+  "cancelled",
+  "skipped",
+  "not_landed",
+];
+const TERMINAL_STATUSES = new Set<string>(TERMINAL_STATUS_LIST);
 
 /**
  * KEEP-431 follow-up: matches the same SDK spurious error shapes that the
@@ -114,118 +138,6 @@ async function listTrulyFailedNodes(executionId: string): Promise<string[]> {
   });
 
   return computeTrulyFailedNodes(allLogs);
-}
-
-/**
- * Cross-pod fallback for TransactionHashEntry reconstruction.
- *
- * The in-memory tracker in step-success-tracker.ts is local to the Node
- * process that ran each step. When the SDK resumes a workflow on a different
- * pod, the tracker on the finalizing pod is empty. Reconstruct entries from
- * the durable workflow_execution_logs rows so success terminations can still
- * persist the full list.
- *
- * Ordered by started_at ASC so the array matches submission order even when
- * an SDK fan-out completes out of submit order. Deduped by hash string so SDK
- * retries that re-broadcast (same logical step, two distinct hashes) keep the
- * first-seen entry. nodeId-keyed dedupe would incorrectly collapse legitimate
- * For-Each iterations that share a nodeId.
- *
- * Optional fields are omitted from the entry when not present in output_raw
- * (or, for iterationIndex, when the log row is for a non-loop node), matching
- * the in-process harvester's shape so consumers see a uniform JSON regardless
- * of which path populated the column.
- *
- * Returns [] on query failure -- losing the hash list is preferable to
- * failing the UPDATE that flips status to success.
- *
- * Success rows only: this list feeds the KEEP-966 reconciliation gate, which
- * re-verifies every entry as an expected SUCCESSFUL receipt. A failing run's
- * broadcasts are harvested separately by loadFailureBroadcasts, which must not
- * feed that gate.
- *
- * The transactionHash IS NOT NULL filter is pushed into Postgres so a workflow
- * that runs a non-tx step many times (e.g. a For-Each over hundreds of HTTP
- * calls) does not stream every row back to Node just to discard it in JS.
- * The JS-side type guard below stays as the authoritative check: SQL only
- * confirms the key exists in output_raw, not that the value is shaped like a
- * hash for the chain the step reported. That shape check is shared with the
- * in-memory tracker (isRecordableTransactionHash) so the two reconstructions
- * of the same list cannot drift apart.
- */
-type HashLogRow = {
-  nodeId: string;
-  nodeName: string;
-  iterationIndex: number | null;
-  outputRaw: unknown;
-};
-
-/** Shared so both harvests build identically shaped entries. */
-function toHashEntry(row: HashLogRow): TransactionHashEntry | null {
-  const o = row.outputRaw as {
-    transactionHash?: unknown;
-    chainId?: unknown;
-    network?: unknown;
-  } | null;
-  if (
-    o === null ||
-    typeof o !== "object" ||
-    typeof o.transactionHash !== "string" ||
-    !isRecordableTransactionHash(o.transactionHash, o.chainId)
-  ) {
-    return null;
-  }
-  return {
-    hash: o.transactionHash,
-    nodeId: row.nodeId,
-    nodeName: row.nodeName,
-    ...(typeof o.chainId === "number" && { chainId: o.chainId }),
-    ...(typeof o.network === "string" && { network: o.network }),
-    ...(row.iterationIndex !== null && {
-      iterationIndex: row.iterationIndex,
-    }),
-  };
-}
-
-async function loadHashesFromLogs(
-  executionId: string
-): Promise<TransactionHashEntry[]> {
-  try {
-    const rows = await db.query.workflowExecutionLogs.findMany({
-      where: and(
-        eq(workflowExecutionLogs.executionId, executionId),
-        eq(workflowExecutionLogs.status, "success"),
-        sql`${workflowExecutionLogs.outputRaw}->>'transactionHash' IS NOT NULL`
-      ),
-      columns: {
-        nodeId: true,
-        nodeName: true,
-        iterationIndex: true,
-        outputRaw: true,
-      },
-      orderBy: [asc(workflowExecutionLogs.startedAt)],
-    });
-
-    const seen = new Set<string>();
-    const entries: TransactionHashEntry[] = [];
-    for (const row of rows) {
-      const entry = toHashEntry(row);
-      if (!entry || seen.has(entry.hash)) {
-        continue;
-      }
-      seen.add(entry.hash);
-      entries.push(entry);
-    }
-    return entries;
-  } catch (queryError) {
-    logSystemError(
-      ErrorCategory.WORKFLOW_ENGINE,
-      "[Workflow Logging] Failed to load transaction hashes from logs",
-      queryError,
-      { execution_id: executionId }
-    );
-    return [];
-  }
 }
 
 /**
@@ -324,23 +236,85 @@ async function loadFailureBroadcasts(executionId: string): Promise<{
   }
 }
 
-/**
- * Resolve the TransactionHashEntry list to persist when a workflow finalizes
- * as success. Prefers the in-memory tracker (populated by withStepLoggingInner
- * during step execution); falls back to scanning workflow_execution_logs.outputRaw
- * when the tracker is empty (cross-pod resume case).
- */
-async function resolveTransactionHashesForSuccess(
+// Losing the hash list is preferable to failing the UPDATE that ends the run.
+async function loadSuccessFactsOrEmpty(
   executionId: string
-): Promise<TransactionHashEntry[]> {
-  const tracked = getTransactionHashes(executionId);
-  if (tracked.length > 0) {
-    return tracked;
+): Promise<Pick<SuccessLogFacts, "hashes" | "signals"> & { read: boolean }> {
+  try {
+    return { ...(await loadSuccessLogFacts(executionId, true)), read: true };
+  } catch (queryError) {
+    logSystemError(
+      ErrorCategory.WORKFLOW_ENGINE,
+      "[Workflow Logging] Failed to load transaction hashes and run outcome from logs",
+      queryError,
+      { execution_id: executionId }
+    );
+    return { hashes: [], signals: NO_RUN_OUTCOME_SIGNALS, read: false };
   }
-  return await loadHashesFromLogs(executionId);
 }
 
-function mergeReceiptResults(
+/**
+ * The hashes and run outcome of a run finalizing as success. Hashes prefer the
+ * in-memory tracker (populated by withStepLoggingInner) and fall back to the
+ * logs on a cross-pod resume. The outcome merges this pod's tracker with the
+ * signals the finish aggregate read from every pod's logs; when that aggregate
+ * failed, the log scan reads them. `outcomeKnown` is false when both failed.
+ */
+async function resolveSuccessFacts(
+  executionId: string,
+  finish: Pick<ResolvedFinishFacts, "signals" | "signalsKnown">
+): Promise<{
+  hashes: TransactionHashEntry[];
+  outcome: RunOutcome | undefined;
+  // The reason the run's row shows when the outcome applies.
+  outcomeReason: string | undefined;
+  // Its stable code (a waiting run), stored in errorCode.
+  outcomeCode: RunOutcomeCode | null;
+  outcomeKnown: boolean;
+}> {
+  const tracked = getTransactionHashes(executionId);
+  const logged =
+    tracked.length > 0 && finish.signalsKnown
+      ? undefined
+      : await loadSuccessFactsOrEmpty(executionId);
+  const hashes = tracked.length > 0 ? tracked : (logged?.hashes ?? []);
+  const signals = mergeSignals(
+    mergeSignals(getRunOutcomeSignals(executionId), finish.signals),
+    logged?.signals ?? NO_RUN_OUTCOME_SIGNALS
+  );
+  const outcome = runOutcomeOf(signals);
+  const outcomeKnown = finish.signalsKnown || logged?.read === true;
+  // Unread logs may hold another pod's missed bundle, so only not_landed is safe to keep.
+  const kept = outcomeKnown || outcome === "not_landed" ? outcome : undefined;
+  return {
+    hashes,
+    outcome: kept,
+    outcomeReason: kept && runOutcomeReason(kept, signals),
+    outcomeCode: kept ? runOutcomeCode(kept, signals) : null,
+    outcomeKnown,
+  };
+}
+
+/** Counter for a run that reached a terminal status other than unconfirmed. */
+function recordFinishedSample(
+  status: "success" | ErrorStatus | RunOutcome,
+  orgSlug: string,
+  errorType: ExecutionErrorType | typeof NA_ERROR_TYPE,
+  error: string | null | undefined,
+  errorCode: string | null | undefined
+): void {
+  if (status === "skipped") {
+    recordWorkflowExecutionSkipped({
+      orgSlug,
+      reason: skippedMetricReason(errorCode, error),
+    });
+    return;
+  }
+  recordWorkflowExecutionFinished({ status, orgSlug, errorType });
+}
+
+/** Each entry with its receipt read, when one was. */
+export function mergeReceiptResults(
   entries: TransactionHashEntry[],
   results: ReceiptVerificationResult[]
 ): TransactionHashEntry[] {
@@ -482,6 +456,9 @@ async function inspectFailureBroadcasts(
   }
 }
 
+// `signalsKnown` is false when the aggregate failed: the outcome is then unread.
+type ResolvedFinishFacts = FinishLogFacts & { signalsKnown: boolean };
+
 /**
  * Resolve the run-total gas (sum of per-step `gasUsed`, in wei) to persist when
  * a workflow reaches a terminal state.
@@ -501,32 +478,26 @@ async function inspectFailureBroadcasts(
  * logged `output`; using it would fork gas computation into two paths and let
  * writer-populated rows disagree with backfilled ones. A single extraction
  * path - this query, shared with the backfill and the reads - is worth one
- * indexed single-execution aggregate per finalize.
+ * indexed single-execution aggregate per finalize. The same aggregate reads
+ * the run-outcome signals, so a success finalize needs no extra query for them.
  */
-async function resolveGasTotal(executionId: string): Promise<string | null> {
+async function resolveFinishFacts(
+  executionId: string
+): Promise<ResolvedFinishFacts> {
   try {
-    const rows = await db
-      .select({
-        gasUsedWei: sql<
-          string | null
-        >`SUM(CAST(${logOutputField("gasUsed")} AS NUMERIC))`,
-      })
-      .from(workflowExecutionLogs)
-      .where(
-        and(
-          eq(workflowExecutionLogs.executionId, executionId),
-          sql`${logOutputField("gasUsed")} IS NOT NULL`
-        )
-      );
-    return rows[0]?.gasUsedWei ?? null;
+    return { ...(await loadFinishLogFacts(executionId)), signalsKnown: true };
   } catch (queryError) {
     logSystemError(
       ErrorCategory.WORKFLOW_ENGINE,
-      "[Workflow Logging] Failed to resolve gas total at finalize",
+      "[Workflow Logging] Failed to read gas and run outcome at finalize",
       queryError,
       { execution_id: executionId }
     );
-    return null;
+    return {
+      gasUsedWei: null,
+      signals: NO_RUN_OUTCOME_SIGNALS,
+      signalsKnown: false,
+    };
   }
 }
 
@@ -614,11 +585,21 @@ async function selfHealWorkflowAfterLateStepCommit(
   // earlier logWorkflowCompleteDb call left transaction_hashes='[]'. Resolve
   // them now from durable logs so the success terminal state carries the
   // hashes that ran. Tracker may have been cleared on the originating pod;
-  // loadHashesFromLogs is the durable source of truth at this point.
-  const [resolvedHashes, gasUsedWei] = await Promise.all([
-    resolveTransactionHashesForSuccess(executionId),
-    resolveGasTotal(executionId),
-  ]);
+  // the logs are the durable source of truth at this point.
+  const finishFacts = await resolveFinishFacts(executionId);
+  const { gasUsedWei } = finishFacts;
+  const {
+    hashes: resolvedHashes,
+    outcome: runOutcome,
+    outcomeReason,
+    outcomeCode,
+    outcomeKnown,
+  } = await resolveSuccessFacts(executionId, finishFacts);
+  // A success written without the outcome could hide a send that did not land.
+  if (!(runOutcome || outcomeKnown)) {
+    emitEarlyExit("outcome_unknown");
+    return;
+  }
 
   // KEEP-966: self-heal only ever flips error -> success, so it must pass the
   // same on-chain reconciliation gate as logWorkflowCompleteDb before it's
@@ -637,14 +618,14 @@ async function selfHealWorkflowAfterLateStepCommit(
   const result = await db
     .update(workflowExecutions)
     .set({
-      status: "success",
-      error: null,
+      status: runOutcome ?? "success",
+      error: outcomeReason ?? null,
       // The classification columns are written alongside `error` at finalize.
       // Clearing only the message left a success row still labelled with the
       // spurious failure (e.g. E-0002), which the UI reads as a failed run.
       errorCategory: null,
       errorType: null,
-      errorCode: null,
+      errorCode: outcomeCode,
       completedAt: new Date(),
       duration: newDuration,
       currentNodeId: null,
@@ -699,9 +680,13 @@ async function selfHealWorkflowAfterLateStepCommit(
     // at finalize time and cannot be decremented; emit the org-labelled healed
     // series so per-org success-rate dashboards can compensate.
     try {
-      recordWorkflowExecutionHealed({
-        orgSlug: await resolveOrgSlugForCounter(execution.workflowId),
-      });
+      // The compensation series counts successes; a not landed or skipped
+      // outcome is not one.
+      if (!runOutcome) {
+        recordWorkflowExecutionHealed({
+          orgSlug: await resolveOrgSlugForCounter(execution.workflowId),
+        });
+      }
     } catch {
       // Counter emission must never break the self-heal path.
     }
@@ -1129,13 +1114,25 @@ export async function logWorkflowCompleteDb(
   // same way as the hashes, so the /analytics summary and spend-cap reads can
   // aggregate a first-class column instead of re-scanning the logs JSONB.
   // Hashes are success-only (error rows keep '[]'), but gas is resolved on
-  // error finalizes too - see resolveGasTotal for why.
-  const [transactionHashes, gasUsedWei] = await Promise.all([
-    resolvedStatus === "success"
-      ? resolveTransactionHashesForSuccess(params.executionId)
-      : Promise.resolve<TransactionHashEntry[]>([]),
-    resolveGasTotal(params.executionId),
-  ]);
+  // error finalizes too - see resolveFinishFacts for why. The same aggregate
+  // carries the run-outcome signals of every pod's steps.
+  const finishFacts = await resolveFinishFacts(params.executionId);
+  const { gasUsedWei } = finishFacts;
+  const {
+    hashes: transactionHashes,
+    outcome: runOutcome,
+    outcomeReason,
+    outcomeCode,
+    outcomeKnown,
+  } = resolvedStatus === "success"
+    ? await resolveSuccessFacts(params.executionId, finishFacts)
+    : {
+        hashes: [],
+        outcome: undefined,
+        outcomeReason: undefined,
+        outcomeCode: null,
+        outcomeKnown: true,
+      };
 
   // KEEP-966: independently reconcile every claimed hash against the chain
   // before "success" can be written. Runs after the KEEP-1549 spurious-error
@@ -1219,7 +1216,9 @@ export async function logWorkflowCompleteDb(
   // the non-success branches.
   const persistedClassification = unreadableReceipts ? null : classification;
 
-  let executionStatus: "success" | "unconfirmed" | ErrorStatus =
+  // A waiting run's stable code, stored in errorCode.
+  let resolvedCode: RunOutcomeCode | null = null;
+  let executionStatus: "success" | "unconfirmed" | ErrorStatus | RunOutcome =
     resolvedStatus === "error"
       ? statusForErrorType(
           classification && !isDefaultClassification(classification)
@@ -1235,6 +1234,14 @@ export async function logWorkflowCompleteDb(
   // fail). reconcileWorkflow reads error_type back to decide which way the row
   // may settle, so a run that failed is never resolved into a success.
   if (unreadableReceipts || failureOriginUnconfirmed) {
+    executionStatus = "unconfirmed";
+  } else if (executionStatus === "success" && runOutcome) {
+    // Only a success becomes not landed or skipped; any error wins.
+    executionStatus = runOutcome;
+    resolvedError = outcomeReason;
+    resolvedCode = outcomeCode;
+  } else if (executionStatus === "success" && !outcomeKnown) {
+    // The logs could not be read: the reconciler reads the outcome later.
     executionStatus = "unconfirmed";
   }
 
@@ -1256,7 +1263,7 @@ export async function logWorkflowCompleteDb(
       error: resolvedError,
       errorCategory: persistedClassification?.errorCategory ?? null,
       errorType: persistedClassification?.errorType ?? null,
-      errorCode: persistedClassification?.code ?? null,
+      errorCode: persistedClassification?.code ?? resolvedCode,
       completedAt: new Date(),
       duration: duration.toString(),
       // Clear current step on completion
@@ -1270,7 +1277,7 @@ export async function logWorkflowCompleteDb(
       and(
         eq(workflowExecutions.id, params.executionId),
         eq(prevExecution.id, workflowExecutions.id),
-        notInArray(workflowExecutions.status, ["cancelled", "skipped"]),
+        notInArray(workflowExecutions.status, TERMINAL_STATUS_LIST),
         // KEEP-431 follow-up: defense in depth. If selfHealWorkflowAfterLateStepCommit
         // already CAS-flipped status to 'success', a stray late call to
         // logWorkflowCompleteDb (e.g. a duplicate triggerStep _workflowComplete from
@@ -1321,11 +1328,13 @@ export async function logWorkflowCompleteDb(
           errorType: persistedClassification.errorType,
         });
       }
-      recordWorkflowExecutionFinished({
-        status: executionStatus,
+      recordFinishedSample(
+        executionStatus,
         orgSlug,
-        errorType: persistedClassification?.errorType ?? NA_ERROR_TYPE,
-      });
+        persistedClassification?.errorType ?? NA_ERROR_TYPE,
+        resolvedError,
+        persistedClassification?.code ?? resolvedCode
+      );
     } catch {
       // Counter emission must never break finalization.
     }
@@ -1384,7 +1393,7 @@ export async function updateCurrentStep(
     .where(
       and(
         eq(workflowExecutions.id, params.executionId),
-        notInArray(workflowExecutions.status, ["cancelled", "skipped"])
+        notInArray(workflowExecutions.status, TERMINAL_STATUS_LIST)
       )
     );
 }
@@ -1429,7 +1438,7 @@ export async function incrementCompletedSteps(
     .where(
       and(
         eq(workflowExecutions.id, params.executionId),
-        notInArray(workflowExecutions.status, ["cancelled", "skipped"])
+        notInArray(workflowExecutions.status, TERMINAL_STATUS_LIST)
       )
     );
 }

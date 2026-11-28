@@ -138,6 +138,7 @@ vi.mock("@/lib/rpc/config-service", () => ({
 
 vi.mock("@/lib/rpc/provider-factory", () => ({
   getRpcProvider: vi.fn().mockResolvedValue({
+    hasPrivateRelayPrimary: () => false,
     resolveActiveRpcUrl: vi.fn().mockResolvedValue("https://rpc.example.com"),
   }),
 }));
@@ -293,6 +294,36 @@ vi.mock("@/lib/web3/trace-executed-call", () => ({
     mockTraceExecutedCall(...args),
 }));
 
+// The bundle route and send, stubbed per test; the real ones otherwise.
+const bundleStub = vi.hoisted(() => ({
+  prepare: undefined as ((...args: unknown[]) => unknown) | undefined,
+  write: undefined as ((...args: unknown[]) => unknown) | undefined,
+}));
+vi.mock(
+  "@/plugins/web3/steps/write-contract-bundle",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/plugins/web3/steps/write-contract-bundle")
+      >();
+    return {
+      ...actual,
+      prepareBundleRoute: (...args: unknown[]) =>
+        bundleStub.prepare
+          ? bundleStub.prepare(...args)
+          : actual.prepareBundleRoute(
+              ...(args as Parameters<typeof actual.prepareBundleRoute>)
+            ),
+      writeAsBundle: (...args: unknown[]) =>
+        bundleStub.write
+          ? bundleStub.write(...args)
+          : actual.writeAsBundle(
+              ...(args as Parameters<typeof actual.writeAsBundle>)
+            ),
+    };
+  }
+);
+
 // Capture txContext passed to withNonceSession
 let capturedTxContext: Record<string, unknown> | null = null;
 const walletLock = vi.hoisted(() => ({ held: false }));
@@ -321,16 +352,23 @@ vi.mock("@/lib/web3/transaction-manager", () => ({
 }));
 
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
-import { logUserError } from "@/lib/logging";
+import { ErrorCategory, logSystemWarn, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
-import { RpcRelayTransportError } from "@/lib/rpc/providers/transport-error";
+import {
+  PrivateRelayUnavailableError,
+  RpcRelayTransportError,
+} from "@/lib/rpc/providers/transport-error";
 import {
   executeContractCallAsRole,
   executeContractCallAsSafe,
 } from "@/lib/safe/execute-as-safe";
 import { resolveSignerForNode } from "@/lib/safe/signer-resolver";
-import { NextBlockSimulationUnsupportedError } from "@/lib/web3/next-block-simulation";
+import { GasLimitTooLowError } from "@/lib/web3/gas-limit-error";
+import {
+  NextBlockSimulationUnsupportedError,
+  tagNextBlockSimulation,
+} from "@/lib/web3/next-block-simulation";
 import { OnChainPendingError } from "@/lib/web3/onchain-revert";
 import { PreBroadcastNetworkError } from "@/lib/web3/submit-signed";
 // Import mocks for assertion
@@ -460,6 +498,37 @@ describe("writeContractCore executedCall on direct send", () => {
     if (result.success) {
       expect(result.executedCall).toEqual(MOCK_EXECUTED_CALL);
     }
+  });
+
+  it("sends even when the trace's read RPC cannot be resolved", async () => {
+    // A relay manager sends; the public read RPC for the trace fails to resolve.
+    vi.mocked(getRpcProvider)
+      .mockResolvedValueOnce({
+        hasPrivateRelayPrimary: () => true,
+        resolveActiveRpcUrl: vi.fn().mockResolvedValue("https://relay.example"),
+      } as never)
+      .mockRejectedValueOnce(new Error("database blip"));
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.executedCall).toBeUndefined();
+    }
+    expect(vi.mocked(getRpcProvider)).toHaveBeenCalledTimes(2);
+    expect(mockTraceExecutedCall).not.toHaveBeenCalled();
+    expect(vi.mocked(logSystemWarn)).toHaveBeenCalledWith(
+      ErrorCategory.NETWORK_RPC,
+      "[Write Contract] Read RPC unavailable after the send, trace skipped",
+      expect.any(Error),
+      expect.objectContaining({ action_name: "write-contract" })
+    );
   });
 
   it("runs the call trace after the wallet lock is released", async () => {
@@ -735,6 +804,41 @@ describe("writeContractCore maxFeeGwei cap", () => {
     };
     expect(optionsArg.gasOverrides.maxFeeOverride).toBeUndefined();
   });
+
+  it("leaves a bundle step's cap check to the bundle send, after its replay and in-flight checks", async () => {
+    mockMaxFeeBelowBaseFeeError.mockResolvedValue(
+      "Max fee 1 gwei is below the next block's base fee of 2 gwei"
+    );
+    const write = vi.fn(async () => ({
+      success: true,
+      route: "skipped-in-flight",
+    }));
+    bundleStub.prepare = async () => ({ ok: true, route: {} });
+    bundleStub.write = write;
+    try {
+      const result = await writeContractCore({
+        contractAddress: "0x1234567890123456789012345678901234567890",
+        network: "16602",
+        abi: VALID_ABI,
+        abiFunction: "transfer",
+        maxFeeGwei: "1",
+        sendMode: "bundle",
+        allowBundle: true,
+        _context: { organizationId: "org-1" },
+      });
+      expect(result).toEqual({ success: true, route: "skipped-in-flight" });
+      expect(mockMaxFeeBelowBaseFeeError).not.toHaveBeenCalled();
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({
+          gas: expect.objectContaining({ maxFeeOverride: BigInt(1e9) }),
+        })
+      );
+    } finally {
+      bundleStub.prepare = undefined;
+      bundleStub.write = undefined;
+      mockMaxFeeBelowBaseFeeError.mockResolvedValue(undefined);
+    }
+  });
 });
 
 describe("writeContractCore simulateAt next-block", () => {
@@ -850,6 +954,54 @@ describe("writeContractCore simulateAt next-block", () => {
     expect(options?.simulation).toEqual({});
   });
 
+  it("selects the relay from sendMode alone", async () => {
+    await writeContractCore({ ...baseInput, sendMode: "private-relay" });
+
+    expect(vi.mocked(getRpcProvider).mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+    });
+  });
+
+  it("asks for the relay only where there is one for an old non-boolean flag", async () => {
+    await writeContractCore({
+      ...baseInput,
+      usePrivateMempool: "false" as unknown as boolean,
+    });
+    expect(vi.mocked(getRpcProvider).mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+  });
+
+  it("refuses an unknown sendMode as a user error before any RPC", async () => {
+    vi.mocked(getRpcProvider).mockClear();
+    const result = await writeContractCore({
+      ...baseInput,
+      sendMode: "Private-Relay",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+    expect(vi.mocked(getRpcProvider)).not.toHaveBeenCalled();
+  });
+
+  it("refuses a bundle unless the caller is the Write Contract step (a protocol write), before any RPC", async () => {
+    vi.mocked(getRpcProvider).mockClear();
+    const result = await writeContractCore({
+      ...baseInput,
+      sendMode: "bundle",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+      error: expect.stringContaining(
+        "bundles are only available on Write Contract steps"
+      ),
+    });
+    expect(vi.mocked(getRpcProvider)).not.toHaveBeenCalled();
+  });
+
   it("looks up block builders for a next-block send and reports the broadcast", async () => {
     const builderRpcUrls = { titan: "https://titan.example" };
     const broadcast = {
@@ -926,6 +1078,31 @@ describe("writeContractCore simulateAt next-block", () => {
       broadcastAttempted: false,
     });
     expect(mockExecuteContractCall).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stale Simulate at on a bundle step and passes the trigger block to the bundle send", async () => {
+    const triggerBlock = { chainId: 16_602, number: 101 };
+    const write = vi.fn(async () => ({ success: true }));
+    bundleStub.prepare = async () => ({ ok: true, route: {} });
+    bundleStub.write = write;
+    try {
+      const result = await writeContractCore({
+        ...baseInput,
+        sendMode: "bundle",
+        allowBundle: true,
+        // An offset that fails a normal step's check.
+        simulateAt: "next-block",
+        simulateTimestampOffsetSec: "0",
+        _context: { organizationId: "org-1", triggerBlock },
+      });
+      expect(result).toEqual({ success: true });
+      expect(write).toHaveBeenCalledWith(
+        expect.objectContaining({ triggerBlock })
+      );
+    } finally {
+      bundleStub.prepare = undefined;
+      bundleStub.write = undefined;
+    }
   });
 
   it("recognises the unsupported error from another module copy", async () => {
@@ -1057,6 +1234,7 @@ describe("writeContractCore RPC resolution failure", () => {
 
   it("forwards the relay's fault domain when the private-mempool endpoint never answered", async () => {
     vi.mocked(getRpcProvider).mockResolvedValueOnce({
+      hasPrivateRelayPrimary: () => false,
       resolveActiveRpcUrl: vi
         .fn()
         .mockRejectedValue(
@@ -1077,6 +1255,27 @@ describe("writeContractCore RPC resolution failure", () => {
     if (!result.success) {
       expect(result.errorClass).toBe(ExecutionErrorType.EXTERNAL);
     }
+  });
+
+  it("classifies a missing private relay as a USER error", async () => {
+    vi.mocked(getRpcProvider).mockRejectedValueOnce(
+      new PrivateRelayUnavailableError("no relay")
+    );
+
+    const result = await writeContractCore({
+      contractAddress: "0x1234567890123456789012345678901234567890",
+      network: "ethereum",
+      abi: VALID_ABI,
+      abiFunction: "transfer",
+      sendMode: "private-relay",
+      _context: { organizationId: "org-1" },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "no relay",
+      errorClass: ExecutionErrorType.USER,
+    });
   });
 });
 
@@ -1534,6 +1733,55 @@ describe("writeContractCore functionArgs shape (#2359)", () => {
   });
 });
 
+describe("writeContractCore Gas Limit too low", () => {
+  const input = {
+    contractAddress: "0x1234567890123456789012345678901234567890",
+    network: "ethereum",
+    abi: VALID_ABI,
+    abiFunction: "transfer",
+    _context: { organizationId: "org-1" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    registry.safeRows = [];
+  });
+
+  it.each([
+    ["Latest", () => new GasLimitTooLowError(BigInt(20_000), {})],
+    [
+      "Next block",
+      () =>
+        tagNextBlockSimulation(
+          new GasLimitTooLowError(BigInt(20_000), { needs: BigInt(43_000) }),
+          {
+            mode: "next-block",
+            baseBlock: 100,
+            assumedBlockNumber: 101,
+            assumedTimestamp: 1_000_012,
+            timestampOffsetSec: 12,
+            rpcMethod: "eth_estimateGas+blockOverrides",
+          }
+        ),
+    ],
+  ])(
+    "reports nothing sent (%s), so the idempotency key is released",
+    async (_mode, makeError) => {
+      mockExecuteContractCall.mockRejectedValueOnce(makeError());
+
+      const result = await writeContractCore(input);
+
+      expect(result).toMatchObject({
+        success: false,
+        broadcastAttempted: false,
+      });
+      expect("route" in result).toBe(false);
+    }
+  );
+});
+
 describe("writeContractCore broadcastAttempted evidence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1895,5 +2143,142 @@ describe("writeContractCore payerParam (#2470)", () => {
       args: unknown[];
     };
     expect(sent.args).toEqual([ORG_WALLET, RECIPIENT, "1000"]);
+  });
+});
+
+describe("writeContractCore route and included", () => {
+  const RECEIPT = {
+    hash: "0xhash",
+    gasUsed: BigInt(21_000),
+    effectiveGasPrice: BigInt(1_000_000_000),
+    blockNumber: 1,
+  };
+  const input = {
+    contractAddress: "0x1234567890123456789012345678901234567890",
+    network: "ethereum",
+    abi: VALID_ABI,
+    abiFunction: "transfer",
+    _context: { organizationId: "org-1" },
+  };
+  type Report = { route?: string; included?: boolean };
+
+  // Stands in for the adapter / Safe helper filling the report as it sends.
+  function sendsVia(route: string, included: boolean, failWith?: Error) {
+    return (...args: unknown[]): Promise<typeof RECEIPT> => {
+      const report = (args[3] as { sendReport: Report }).sendReport;
+      report.route = route;
+      report.included = included;
+      return failWith ? Promise.reject(failWith) : Promise.resolve(RECEIPT);
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedTxContext = null;
+    registry.tokenRows = [];
+    registry.safeRows = [];
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "eoa",
+      ownerAddress: "0xwalletaddress",
+    });
+  });
+
+  afterEach(() => {
+    mockIsGasSponsorshipEnabled.mockReturnValue(false);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue(null);
+    mockExecuteContractCall.mockResolvedValue(RECEIPT);
+  });
+
+  it("reports the route the adapter broadcast on", async () => {
+    mockExecuteContractCall.mockImplementationOnce(
+      sendsVia("private-relay", true)
+    );
+
+    const result = await writeContractCore(input);
+
+    expect(result).toMatchObject({
+      success: true,
+      route: "private-relay",
+      included: true,
+    });
+  });
+
+  it("reports included for an on-chain revert", async () => {
+    mockExecuteContractCall.mockImplementationOnce(
+      sendsVia("public", true, new Error("reverted"))
+    );
+
+    const result = await writeContractCore(input);
+
+    expect(result).toMatchObject({
+      success: false,
+      route: "public",
+      included: true,
+    });
+  });
+
+  it("reports neither field when nothing was sent", async () => {
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new PreBroadcastNetworkError("ECONNREFUSED", new Error("ECONNREFUSED"))
+    );
+
+    const result = await writeContractCore(input);
+
+    expect(result.success).toBe(false);
+    expect("route" in result).toBe(false);
+    expect("included" in result).toBe(false);
+  });
+
+  it("reports the outer transaction's route for a Safe send", async () => {
+    vi.mocked(resolveSignerForNode).mockResolvedValue({
+      kind: "safe",
+      ownerAddress: "0xwalletaddress",
+      safeAddress: "0x9999999999999999999999999999999999999999",
+      safeWalletId: "safe-1",
+    });
+    vi.mocked(executeContractCallAsSafe).mockImplementationOnce(
+      sendsVia("public", true)
+    );
+
+    const result = await writeContractCore(input);
+
+    expect(result).toMatchObject({ route: "public", included: true });
+  });
+
+  it("reports sponsored for a gas-sponsored send", async () => {
+    mockIsGasSponsorshipEnabled.mockReturnValue(true);
+    mockExecuteSponsoredContractTransaction.mockResolvedValue({
+      transactionHash: "0xsponsored",
+      gasUsed: "21000",
+      gasUsedUnits: "21000",
+      effectiveGasPrice: "1000000000",
+    });
+
+    const result = await writeContractCore(input);
+
+    expect(result).toMatchObject({
+      success: true,
+      sponsored: true,
+      route: "sponsored",
+      included: true,
+    });
+  });
+
+  it("keeps route and included on a softened failure", () => {
+    const softened = applyFailOnError(
+      {
+        success: false,
+        error: "reverted",
+        route: "public",
+        included: true,
+      },
+      false
+    );
+
+    expect(softened).toMatchObject({
+      success: true,
+      route: "public",
+      included: true,
+    });
   });
 });

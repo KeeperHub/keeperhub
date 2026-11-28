@@ -2,11 +2,12 @@ import "server-only";
 
 import { ethers } from "ethers";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { rawToUi, resolveForDisplay } from "@/lib/web3/ui-multiplier";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { declaredErrorClass, type RpcProviderManager } from "@/lib/rpc/providers";
 import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
@@ -34,7 +35,11 @@ type CheckTokenBalanceResult =
       addressLink: string;
       error?: string;
     }
-  | (ReadDestinationFailure & { success: false; error: string });
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 export type CheckTokenBalanceCoreInput = TokenConfigSource &
   ReadFailOnErrorInput & {
@@ -172,7 +177,7 @@ async function checkEvmTokenBalance(
       }
     );
     const message = `Failed to check token balance: ${getErrorMessage(error)}`;
-    return { success: false, error: message };
+    return { success: false, error: message, ...declaredErrorClass(error) };
   }
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { useMemo } from "react";
 import {
   Select,
   SelectContent,
@@ -9,7 +9,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { EditorChangeNotice } from "@/components/workflow/config/send-mode-field";
 import { sortChainsByName } from "@/lib/chains/sort-chains";
+import { useSendModeChains } from "@/lib/hooks/use-send-mode-chains";
 import type { ActionConfigFieldBase } from "@/plugins/registry";
 
 type Chain = {
@@ -23,12 +25,6 @@ type Chain = {
   usePrivateMempoolRpc: boolean;
 };
 
-// KEEP-137: Suffix appended to chainId for the private mempool variant.
-// The select stores compound values like "1:private" internally, but we
-// split them back into config.network (the clean chainId) and
-// config.usePrivateMempool (boolean) via onSelectChain.
-const PRIVATE_SUFFIX = ":private";
-
 type ChainSelectFieldProps = {
   field: ActionConfigFieldBase;
   value: string;
@@ -39,17 +35,8 @@ type ChainSelectFieldProps = {
    * If not specified, all chain types are shown.
    */
   chainTypeFilter?: string | string[];
-  /**
-   * KEEP-137: When true, chains with usePrivateMempoolRpc render a second
-   * "ChainName (Flashbots)" entry. On selection, both config.network and
-   * config.usePrivateMempool are set via onUpdateConfig.
-   */
-  showPrivateVariants?: boolean;
-  /**
-   * Required when showPrivateVariants is true. Writes arbitrary config
-   * keys (used to set usePrivateMempool alongside network).
-   */
-  onUpdateConfig?: (key: string, value: unknown) => void;
+  /** Called with the chosen chain right after `onChange`, in the same tick. */
+  onChainChosen?: (chain: Chain) => void;
   /**
    * Restrict to specific chain IDs (e.g., ["1", "8453"]).
    * Used by protocol actions to show only chains where the contract is deployed.
@@ -57,94 +44,66 @@ type ChainSelectFieldProps = {
   allowedChainIds?: string[];
 };
 
-/**
- * Compute the display value for the select trigger. When a private variant is
- * active (config.usePrivateMempool is truthy), the select's stored value
- * includes the :private suffix so the trigger shows the right label.
- */
-function resolveSelectValue(
-  networkValue: string,
-  config: Record<string, unknown>,
-  showPrivateVariants: boolean
-): string {
-  if (showPrivateVariants && config.usePrivateMempool) {
-    return `${networkValue}${PRIVATE_SUFFIX}`;
-  }
-  return networkValue;
-}
-
 export function ChainSelectField({
   field,
   value,
   onChange,
   disabled,
   chainTypeFilter,
-  showPrivateVariants,
-  onUpdateConfig,
+  onChainChosen,
   allowedChainIds,
 }: ChainSelectFieldProps) {
-  const [chains, setChains] = useState<Chain[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // One shared /api/chains load for every network field and Send as reader.
+  const { chains: rows, failed, retry } = useSendModeChains();
 
   // Collapse the (string | string[]) filter into a stable primitive so an
-  // inline array (e.g. ["evm", "solana"]) does not retrigger the fetch effect
-  // every render via a changing array identity.
+  // inline array (e.g. ["evm", "solana"]) does not recompute every render.
   const chainTypeKey = Array.isArray(chainTypeFilter)
     ? chainTypeFilter.join(",")
     : (chainTypeFilter ?? "");
 
-  useEffect(() => {
-    async function fetchChains() {
-      try {
-        setIsLoading(true);
-        setError(null);
+  const chains = useMemo(() => {
+    // The store holds the raw /api/chains rows, which carry every Chain field.
+    const data = (rows ?? []) as readonly Chain[];
+    const allowedTypes = chainTypeKey ? chainTypeKey.split(",") : null;
+    const allowed =
+      allowedChainIds && allowedChainIds.length > 0
+        ? new Set(allowedChainIds)
+        : null;
+    return data.filter(
+      (chain) =>
+        (!allowedTypes || allowedTypes.includes(chain.chainType)) &&
+        (!allowed || allowed.has(String(chain.chainId)))
+    );
+  }, [rows, chainTypeKey, allowedChainIds]);
 
-        const response = await fetch("/api/chains");
-        if (!response.ok) {
-          throw new Error("Failed to fetch chains");
-        }
-
-        const data = (await response.json()) as Chain[];
-
-        const allowedTypes = chainTypeKey ? chainTypeKey.split(",") : null;
-        let filteredChains = allowedTypes
-          ? data.filter((chain) => allowedTypes.includes(chain.chainType))
-          : data;
-
-        if (allowedChainIds && allowedChainIds.length > 0) {
-          const allowed = new Set(allowedChainIds);
-          filteredChains = filteredChains.filter((chain) =>
-            allowed.has(String(chain.chainId))
-          );
-        }
-
-        setChains(filteredChains);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load chains");
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
-    fetchChains();
-  }, [chainTypeKey, allowedChainIds]);
-
-  if (isLoading) {
+  // Each state carries the field's id, so focus stays on the field across a Retry.
+  if (failed) {
+    // The same look as Send as's notice for this failure.
     return (
-      <div className="flex h-10 items-center justify-center rounded-md border">
-        <Spinner className="h-4 w-4" />
-        <span className="ml-2 text-muted-foreground text-sm">
-          Loading chains...
-        </span>
+      <div id={field.key} role="status" tabIndex={-1}>
+        <EditorChangeNotice
+          action={{ label: "Retry", onClick: () => retry(field.key) }}
+          testId="network-chains-error"
+          text="The network list did not load."
+          tone="warning"
+        />
       </div>
     );
   }
 
-  if (error) {
+  if (rows === undefined) {
     return (
-      <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-destructive text-sm">
-        {error}
+      <div
+        className="flex h-10 items-center justify-center rounded-md border"
+        id={field.key}
+        role="status"
+        tabIndex={-1}
+      >
+        <Spinner aria-hidden="true" className="h-4 w-4" />
+        <span className="ml-2 text-muted-foreground text-sm">
+          Loading chains...
+        </span>
       </div>
     );
   }
@@ -168,18 +127,11 @@ export function ChainSelectField({
     (chain) => chain.name
   );
 
-  function onSelectChain(selectValue: string): void {
-    const isPrivateVariant = selectValue.endsWith(PRIVATE_SUFFIX);
-    const chainId = isPrivateVariant
-      ? selectValue.slice(0, -PRIVATE_SUFFIX.length)
-      : selectValue;
-
-    // Always write the clean chainId to config.network
+  function onSelectChain(chainId: string): void {
     onChange(chainId);
-
-    // When showing private variants, also manage config.usePrivateMempool
-    if (showPrivateVariants && onUpdateConfig) {
-      onUpdateConfig("usePrivateMempool", isPrivateVariant);
+    const chain = chains.find((row) => String(row.chainId) === chainId);
+    if (chain) {
+      onChainChosen?.(chain);
     }
   }
 
@@ -188,20 +140,6 @@ export function ChainSelectField({
       <SelectItem key={chain.chainId} value={String(chain.chainId)}>
         <div className="flex items-center gap-2">
           <span>{chain.name}</span>
-          <span className="text-muted-foreground text-xs">({chain.symbol})</span>
-        </div>
-      </SelectItem>
-    );
-  }
-
-  function renderPrivateVariant(chain: Chain): React.ReactNode {
-    return (
-      <SelectItem
-        key={`${chain.chainId}-private`}
-        value={`${chain.chainId}${PRIVATE_SUFFIX}`}
-      >
-        <div className="flex items-center gap-2">
-          <span>{chain.name} (Flashbots)</span>
           <span className="text-muted-foreground text-xs">({chain.symbol})</span>
         </div>
       </SelectItem>
@@ -219,14 +157,7 @@ export function ChainSelectField({
             <div className="px-2 py-1.5 font-semibold text-muted-foreground text-xs">
               Mainnets
             </div>
-            {mainnets.map((chain) => (
-              <Fragment key={chain.chainId}>
-                {renderChainItem(chain)}
-                {showPrivateVariants &&
-                  chain.usePrivateMempoolRpc &&
-                  renderPrivateVariant(chain)}
-              </Fragment>
-            ))}
+            {mainnets.map(renderChainItem)}
           </>
         )}
         {testnets.length > 0 && (
@@ -234,14 +165,7 @@ export function ChainSelectField({
             <div className="mt-1 px-2 py-1.5 font-semibold text-muted-foreground text-xs">
               Testnets
             </div>
-            {testnets.map((chain) => (
-              <Fragment key={chain.chainId}>
-                {renderChainItem(chain)}
-                {showPrivateVariants &&
-                  chain.usePrivateMempoolRpc &&
-                  renderPrivateVariant(chain)}
-              </Fragment>
-            ))}
+            {testnets.map(renderChainItem)}
           </>
         )}
       </SelectContent>
@@ -249,4 +173,3 @@ export function ChainSelectField({
   );
 }
 
-export { resolveSelectValue };

@@ -25,10 +25,7 @@ import { AbiWithAutoFetchField } from "@/components/workflow/config/abi-with-aut
 import { ArgsListField } from "@/components/workflow/config/args-list-field";
 import { ArrayInputField } from "@/components/workflow/config/array-input-field";
 import { CallListField } from "@/components/workflow/config/call-list-field";
-import {
-  ChainSelectField,
-  resolveSelectValue,
-} from "@/components/workflow/config/chain-select-field";
+import { ChainSelectField } from "@/components/workflow/config/chain-select-field";
 import { CodeEditorField } from "@/components/workflow/config/code-editor-field";
 import { EventListField } from "@/components/workflow/config/event-list-field";
 import { GasLimitMultiplierField } from "@/components/workflow/config/gas-limit-multiplier-field";
@@ -47,8 +44,14 @@ import {
   ProtocolBoolField,
   protocolBoolFieldValue,
 } from "@/components/workflow/config/protocol-fields/protocol-bool-field";
+import {
+  EditorChangeNotice,
+  SendModeField,
+  useEditorNotice,
+} from "@/components/workflow/config/send-mode-field";
 import { TOGGLE_FIELD_RENDERERS } from "@/components/workflow/config/toggle-field-renderers";
 import { TokenSelectField } from "@/components/workflow/config/token-select-field";
+import { UnixTimeField } from "@/components/workflow/config/unix-time-field";
 import { integrationsAtom } from "@/lib/integrations-store";
 import {
   normalizeProtocolArrayValue,
@@ -56,10 +59,12 @@ import {
   solidityArrayItemType,
 } from "@/lib/protocol-array-value";
 import {
+  type FieldRendererContext,
   registerBranding,
   registerFieldRenderer,
   registerIntegrationFormHandler,
 } from "@/lib/workflow/editor/extension-registry";
+import { chooseNetwork } from "@/lib/workflow/editor/send-mode-editor";
 import { evaluateShowWhen } from "@/lib/workflow/editor/show-when";
 import { nodesAtom } from "@/lib/workflow/store";
 
@@ -112,42 +117,57 @@ registerFieldRenderer(
   }
 );
 
-/**
- * Chain Select Field
- * Dynamic dropdown that fetches enabled chains from /api/chains
- * Respects isEnabled flag from the database
- */
-registerFieldRenderer(
-  "chain-select",
-  ({ field, config, onUpdateConfig, disabled }) => {
-    const rawValue =
-      (config[field.key] as string | undefined) || field.defaultValue || "";
+/** A network select; a network without the current Send as choice sets it to Normal, with Undo. */
+function NetworkSelectField({
+  field,
+  config,
+  onUpdateConfig,
+  disabled,
+}: FieldRendererContext) {
+  const { notice, apply, undo, canUndo, close } = useEditorNotice(
+    "network",
+    config,
+    onUpdateConfig,
+    field.key
+  );
+  const value =
+    (config[field.key] as string | undefined) || field.defaultValue || "";
 
-    // KEEP-137: when showPrivateVariants is active, resolve the display value
-    // to include the :private suffix so the select trigger matches the right label.
-    const value = field.showPrivateVariants
-      ? resolveSelectValue(rawValue, config, true)
-      : rawValue;
-
-    return (
-      <div className="space-y-2" key={field.key}>
-        <ProtocolFieldLabel field={field} />
-        <ChainSelectField
-          allowedChainIds={field.allowedChainIds}
-          chainTypeFilter={field.chainTypeFilter}
-          disabled={disabled}
-          field={field}
-          onChange={(val: unknown) => onUpdateConfig(field.key, val)}
-          onUpdateConfig={
-            field.showPrivateVariants ? onUpdateConfig : undefined
-          }
-          showPrivateVariants={field.showPrivateVariants}
-          value={value}
-        />
+  return (
+    <div className="space-y-2">
+      <ProtocolFieldLabel field={field} />
+      <ChainSelectField
+        allowedChainIds={field.allowedChainIds}
+        chainTypeFilter={field.chainTypeFilter}
+        disabled={disabled}
+        field={field}
+        onChainChosen={(chain) =>
+          apply(chooseNetwork(config, chain, field.key))
+        }
+        onChange={(val: unknown) => onUpdateConfig(field.key, val)}
+        value={value}
+      />
+      <div aria-atomic="false" aria-live="polite" role="status">
+        {notice && (
+          <EditorChangeNotice
+            action={
+              disabled || !canUndo
+                ? undefined
+                : { label: "Undo", onClick: undo }
+            }
+            onClose={close}
+            testId="network-send-mode-notice"
+            text={notice.text}
+          />
+        )}
       </div>
-    );
-  }
-);
+    </div>
+  );
+}
+
+registerFieldRenderer("chain-select", (context) => (
+  <NetworkSelectField key={context.field.key} {...context} />
+));
 
 /**
  * Token Select Field
@@ -698,6 +718,44 @@ registerFieldRenderer(
 for (const [type, renderer] of Object.entries(TOGGLE_FIELD_RENDERERS)) {
   registerFieldRenderer(type, renderer);
 }
+
+// "Send as" on write steps: a select drawn with chain-aware options.
+registerFieldRenderer(
+  "send-mode",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <SendModeField
+      config={config}
+      disabled={disabled}
+      field={field}
+      key={field.key}
+      onUpdateConfig={onUpdateConfig}
+    />
+  )
+);
+
+// Bundle settings: drawn by Send as in one box under it, so nothing here.
+registerFieldRenderer("bundle-setting", () => null);
+
+// Read Contract's "At a time": the time with what it reads as, its hint under it.
+const SIMULATE_TIME_HINT =
+  "Unix seconds, such as 1796126400, or a date with a time zone, such as 2026-12-01T12:00:00Z. Can be a template, such as {{Next work time.result}}. The check runs on the latest state with this time as the block time, and the first block number that cannot be earlier. Transactions sent before then are not seen. A time in the past checks the next block.";
+
+registerFieldRenderer(
+  "unix-time",
+  ({ field, config, onUpdateConfig, disabled }) => (
+    <UnixTimeField
+      disabled={disabled}
+      emptyError="Enter a time, or set Simulate at to Latest block."
+      fieldKey={field.key}
+      hints={[SIMULATE_TIME_HINT]}
+      key={field.key}
+      label={field.label}
+      onChange={(next) => onUpdateConfig(field.key, next)}
+      placeholder={field.placeholder}
+      value={config[field.key]}
+    />
+  )
+);
 
 // ============================================================================
 // Register Custom Integration Form Handlers

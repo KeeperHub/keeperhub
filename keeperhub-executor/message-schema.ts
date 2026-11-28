@@ -38,6 +38,11 @@ const blockMessageSchema = z.object({
     blockHash: z.string(),
     blockTimestamp: z.number(),
     parentHash: z.string(),
+    // Block Trigger "Also run when a slot is missed": set on every run while it applies.
+    missedSlot: z.boolean().optional(),
+    slotTimestamp: z.number().optional(),
+    targetSlot: z.number().optional(),
+    targetSlotTimestamp: z.number().optional(),
   }),
 });
 

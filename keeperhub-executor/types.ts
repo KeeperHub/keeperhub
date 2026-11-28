@@ -24,6 +24,11 @@ export type BlockMessage = {
     blockHash: string;
     blockTimestamp: number;
     parentHash: string;
+    // With runOnMissedSlot only; on a missed-slot run the block fields are the latest block.
+    missedSlot?: boolean;
+    slotTimestamp?: number;
+    targetSlot?: number;
+    targetSlotTimestamp?: number;
   };
 };
 

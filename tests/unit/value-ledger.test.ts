@@ -11,6 +11,15 @@ const state = vi.hoisted(() => ({
   }>,
   directSum: [{ totalWei: "0" }] as Array<{ totalWei: string }>,
   ledgerSum: [{ totalWei: "0" }] as Array<{ totalWei: string }>,
+  // Today's bundle totals, one per recorded nonce (the sum and the refusal read them).
+  bundleTotals: [] as Array<{
+    chainId: number | null;
+    walletAddress: string | null;
+    valueWei: string;
+    rowStatus: string | null;
+    networkName: string | null;
+    symbol: string | null;
+  }>,
   directLamportsSum: [{ totalLamports: "0" }] as Array<{
     totalLamports: string;
   }>,
@@ -70,6 +79,17 @@ vi.mock("@/lib/db", () => ({
                 }),
               }),
             };
+          }
+          // The bundle totals: grouped per recorded nonce, joined to its row and chain.
+          if (columns.includes("rowStatus")) {
+            const grouped = {
+              groupBy: () => Promise.resolve(state.bundleTotals),
+            };
+            const joined = {
+              leftJoin: () => joined,
+              where: () => grouped,
+            };
+            return { from: () => joined };
           }
           sumCall += 1;
           let rows: Array<{ totalWei: string } | { totalLamports: string }>;
@@ -156,6 +176,7 @@ beforeEach(() => {
   state.caps = [];
   state.directSum = [{ totalWei: "0" }];
   state.ledgerSum = [{ totalWei: "0" }];
+  state.bundleTotals = [];
   state.directLamportsSum = [{ totalLamports: "0" }];
   state.ledgerLamportsSum = [{ totalLamports: "0" }];
   state.inserted = [];
@@ -352,6 +373,145 @@ describe("withValueCap", () => {
     expect(state.updates).toEqual([
       expect.objectContaining({ status: "released" }),
     ]);
+  });
+
+  it("releases a success the caller says moved nothing", async () => {
+    state.caps = [{ dailyValueCapWei: "1000" }];
+    const run = vi
+      .fn<() => Promise<{ success: boolean; moved: boolean }>>()
+      .mockResolvedValue({ success: true, moved: false });
+
+    await withValueCap(
+      { organizationId: "org_1", valueWei: "100" },
+      run,
+      (result) => (result.moved ? "settle" : "release")
+    );
+
+    expect(state.updates).toEqual([
+      expect.objectContaining({ status: "released" }),
+    ]);
+  });
+
+  it("passes the reservation id to the run and holds when the caller says so", async () => {
+    state.caps = [{ dailyValueCapWei: "1000" }];
+    state.returningId = "res_9";
+    const run = vi
+      .fn<(id?: string) => Promise<{ success: boolean }>>()
+      .mockResolvedValue({ success: true });
+
+    await withValueCap(
+      { organizationId: "org_1", valueWei: "100" },
+      run,
+      () => "hold"
+    );
+
+    expect(run).toHaveBeenCalledWith("res_9");
+    expect(state.updates).toEqual([
+      expect.objectContaining({ status: "held" }),
+    ]);
+  });
+
+  it("adds today's bundle totals, one per recorded nonce, to the sum", async () => {
+    state.caps = [{ dailyValueCapWei: "1000" }];
+    state.ledgerSum = [{ totalWei: "300" }];
+    state.bundleTotals = [
+      {
+        chainId: 1,
+        walletAddress: "0xaa",
+        valueWei: "400",
+        rowStatus: "dropped",
+        networkName: "Ethereum",
+        symbol: "ETH",
+      },
+      {
+        chainId: 1,
+        walletAddress: "0xaa",
+        valueWei: "300",
+        rowStatus: "confirmed",
+        networkName: "Ethereum",
+        symbol: "ETH",
+      },
+    ];
+
+    expect(
+      await reserveOrgValue({ organizationId: "org_1", valueWei: "1" })
+    ).toMatchObject({ allowed: false });
+    expect(
+      await reserveOrgValue({ organizationId: "org_1", valueWei: "0" })
+    ).toMatchObject({ allowed: true });
+  });
+
+  it("names the value held by bundles not included in the refusal: unit, wallet, network and how it ends", async () => {
+    state.caps = [{ dailyValueCapWei: ONE_ETH_WEI }];
+    state.ledgerSum = [{ totalWei: ONE_ETH_WEI }];
+    state.bundleTotals = [
+      {
+        chainId: 1,
+        walletAddress: "0xaa",
+        valueWei: "300000000000000000",
+        rowStatus: "dropped",
+        networkName: "Ethereum",
+        symbol: "ETH",
+      },
+      {
+        chainId: 1,
+        walletAddress: "0xaa",
+        valueWei: "200000000000000000",
+        rowStatus: "pending",
+        networkName: "Ethereum",
+        symbol: "ETH",
+      },
+      // Landed: real spend, not held.
+      {
+        chainId: 8453,
+        walletAddress: "0xbb",
+        valueWei: "100000000000000000",
+        rowStatus: "confirmed",
+        networkName: "Base",
+        symbol: "ETH",
+      },
+    ];
+
+    const result = await reserveOrgValue({
+      organizationId: "org_1",
+      valueWei: "1",
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      reason:
+        "Daily spending cap exceeded: part of today's total is held by Send as Bundle steps whose signed transactions have not been mined (0.5 ETH from wallet 0xaa on Ethereum). They can still be mined, so that value counts until another transaction from the same wallet on the same network uses their nonce (for example a Normal transaction with no value, sent once the bundle step has finished) or the UTC day ends, whichever comes first.",
+    });
+  });
+
+  it("names at most three wallets, and an unknown network by its chain id", async () => {
+    state.caps = [{ dailyValueCapWei: "1" }];
+    state.bundleTotals = [1, 2, 3, 4].map((n) => ({
+      chainId: n,
+      walletAddress: `0x0${n}`,
+      valueWei: "1000000000000000000",
+      rowStatus: "dropped",
+      networkName: n === 4 ? null : `Net ${n}`,
+      symbol: n === 4 ? null : "ETH",
+    }));
+
+    const result = await reserveOrgValue({
+      organizationId: "org_1",
+      valueWei: "1",
+    });
+
+    const reason = result.allowed ? "" : result.reason;
+    expect(reason).toContain(
+      "(1 ETH from wallet 0x01 on Net 1; 1 ETH from wallet 0x02 on Net 2; 1 ETH from wallet 0x03 on Net 3 and 1 more)"
+    );
+    state.bundleTotals = state.bundleTotals.slice(3);
+    const unknown = await reserveOrgValue({
+      organizationId: "org_1",
+      valueWei: "1",
+    });
+    expect(unknown.allowed ? "" : unknown.reason).toContain(
+      "(1 (native token) from wallet 0x04 on chain 4)"
+    );
   });
 
   it("releases and rethrows when the run throws", async () => {

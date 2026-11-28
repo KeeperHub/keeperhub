@@ -3,23 +3,42 @@
  * block's predicted time) via RPC block overrides. Only the go / no-go decision and
  * the gas estimate use it; the signed transaction is unchanged.
  */
-import { AbiCoder, type ethers, isError, makeError, toQuantity } from "ethers";
+import {
+  AbiCoder,
+  type ethers,
+  type Interface,
+  isError,
+  makeError,
+  toQuantity,
+} from "ethers";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { simulateV1Params, txForNode } from "@/lib/execute/node-call";
 import { ErrorCategory, logUserError } from "@/lib/logging";
-import type { RpcOperationType, RpcProviderManager } from "@/lib/rpc/providers";
+import {
+  lastEndpointErrorOf,
+  type RpcOperationType,
+  type RpcProviderManager,
+} from "@/lib/rpc/providers";
 import { scrubRpcUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
+import { beaconSlotSeconds, minBlockGapSeconds } from "@/lib/web3/beacon-slots";
+import { firstAllowedBlock } from "@/lib/web3/bundles/plan";
+import { decodeRevertReason } from "@/lib/web3/decode-revert-error";
+import {
+  assertGasLimitFits,
+  GasLimitTooLowError,
+  hasOutOfGasEvidence,
+} from "@/lib/web3/gas-limit-error";
 import {
   MAX_SIMULATE_TIMESTAMP_OFFSET_SEC,
   MIN_SIMULATE_TIMESTAMP_OFFSET_SEC,
   parseSimulationSettings,
   type TriggerBlock,
 } from "@/lib/web3/next-block-limits";
-import { extractRevertData } from "@/lib/web3/revert-data";
+import { extractRevertData, rpcErrorOf } from "@/lib/web3/revert-data";
 
-export type SimulateAt = "latest" | "next-block";
+export type SimulateAt = "latest" | "next-block" | "time";
 
 export type NextBlockSimulationOptions = {
   // Unset = the chain's observed block time.
@@ -29,14 +48,21 @@ export type NextBlockSimulationOptions = {
   basedOn?: NextBlockSimulation;
   // The block that triggered the run: the check waits for the RPC to reach it.
   triggerBlock?: TriggerBlock;
+  // Simulate this block number instead of the next one, on the latest state;
+  // its time is one slot per block after the next block's. Ignores basedOn.
+  targetBlock?: number;
+  // Read Contract "At a time" (unix seconds): this block time, and the first
+  // block number that cannot be earlier. A time not after latest checks the next block.
+  atTime?: number;
 };
 
 export type NextBlockSimulation = {
-  mode: "next-block";
+  mode: "next-block" | "time";
   baseBlock: number;
   assumedBlockNumber: number;
   assumedTimestamp: number;
-  timestampOffsetSec: number;
+  // Next block only: the block time the prediction used.
+  timestampOffsetSec?: number;
   rpcMethod:
     | "eth_estimateGas+blockOverrides"
     | "eth_simulateV1"
@@ -114,14 +140,6 @@ const RETRY_HINT =
   "a temporary RPC error, retried automatically; the next run or a re-run tries again";
 const DETAIL_MAX_CHARS = 200;
 
-function rpcErrorOf(error: unknown): { code?: number; message?: string } {
-  const e = error as {
-    info?: { error?: { code?: number; message?: string } };
-    error?: { code?: number; message?: string };
-  };
-  return e.info?.error ?? e.error ?? {};
-}
-
 // The node's own message (also from an HTTP 4xx body), else ethers' short
 // message, which unlike the full one carries no request URL. Any URL a relay
 // echoes is masked before the cap, so a cut cannot leave half of one.
@@ -169,9 +187,15 @@ type SettingsResult =
 export function readSimulationSettings(
   simulateAt: unknown,
   timestampOffsetSec: unknown,
-  triggerBlock?: TriggerBlock
+  triggerBlock?: TriggerBlock,
+  // Read Contract only: the "At a time" value, as the template resolved it.
+  simulateTime?: { value: unknown }
 ): SettingsResult {
-  const parsed = parseSimulationSettings(simulateAt, timestampOffsetSec);
+  const parsed = parseSimulationSettings(
+    simulateAt,
+    timestampOffsetSec,
+    simulateTime && { value: simulateTime.value, strict: false }
+  );
   if (parsed.ok) {
     return parsed.options && triggerBlock
       ? { ok: true, options: { ...parsed.options, triggerBlock } }
@@ -363,10 +387,10 @@ function nodeAnswer(error: unknown): NodeAnswer {
       viaHttp: true,
     };
   }
-  const { code, message = "" } = rpcErrorOf(error);
+  const { code, message } = rpcErrorOf(error) ?? {};
   return {
     code,
-    message,
+    message: typeof message === "string" ? message : "",
     revertData: extractRevertData(error),
     viaHttp: false,
   };
@@ -533,10 +557,11 @@ export function nextBlockFailure(
   if (!simulation) {
     return { error: message };
   }
-  return {
-    error: `${message} (simulated as of next block ${simulation.assumedBlockNumber}, timestamp ${simulation.assumedTimestamp})`,
-    simulation,
-  };
+  const when =
+    simulation.mode === "time"
+      ? `simulated at time ${simulation.assumedTimestamp}, block ${simulation.assumedBlockNumber}`
+      : `simulated as of next block ${simulation.assumedBlockNumber}, timestamp ${simulation.assumedTimestamp}`;
+  return { error: `${message} (${when})`, simulation };
 }
 
 type Overrides = { number: string; time: string };
@@ -545,6 +570,8 @@ type Overrides = { number: string; time: string };
 // simulated block always follows its base.
 type Prepared = {
   blockTag: string;
+  // The latest block's gas limit, when this check read it.
+  blockGasLimit?: bigint;
   overrides: Overrides;
   time: number;
   simulation: NextBlockSimulation;
@@ -705,16 +732,6 @@ function preparedFrom(simulation: NextBlockSimulation): Prepared {
 }
 
 const MS_PER_SECOND = 1000;
-// Beacon chains keep to fixed wall-clock slots and leave a missed slot's
-// timestamp unused: Ethereum, Sepolia, Holesky, Hoodi (12 s), Gnosis, Chiado (5 s).
-const BEACON_SLOT_SECONDS = new Map<number, number>([
-  [1, 12],
-  [11_155_111, 12],
-  [17_000, 12],
-  [560_048, 12],
-  [100, 5],
-  [10_200, 5],
-]);
 // An older head means a lagging RPC, a wrong server clock or missing slots.
 const STALE_HEAD_SLOTS = 5;
 
@@ -740,7 +757,7 @@ function predictedTime(
   offsetSeconds: number,
   nowSeconds: number
 ): number {
-  const slot = BEACON_SLOT_SECONDS.get(chainId);
+  const slot = beaconSlotSeconds(chainId);
   if (slot === undefined) {
     return latestTimestamp + offsetSeconds;
   }
@@ -763,14 +780,39 @@ const currentSeconds = (): number => Math.floor(Date.now() / MS_PER_SECOND);
 const TRIGGER_WAIT_READS = 8;
 const TRIGGER_WAIT_MS = 250;
 
-type TriggerWait = { readsLeft: number };
+export type TriggerWait = { readsLeft: number };
 
-const newTriggerWait = (): TriggerWait => ({
+export const newTriggerWait = (): TriggerWait => ({
   readsLeft: TRIGGER_WAIT_READS,
 });
 
+const TRIGGER_NOT_REACHED_NAME = "TriggerBlockNotReachedError";
+
+/** The RPC stayed below the block that triggered the run for the whole wait. */
+export class TriggerBlockNotReachedError extends Error {
+  override readonly name = TRIGGER_NOT_REACHED_NAME;
+  // The node answered but is behind: the failover reports lag, not an outage.
+  readonly rpcLagging = true;
+}
+
+/**
+ * Whether the error is, or wraps, a trigger-block wait that ran out. Follows
+ * `cause` and the RPC failover's last endpoint error; duck-typed across module copies.
+ */
+export function isTriggerBlockNotReached(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current; depth++) {
+    if ((current as { name?: unknown }).name === TRIGGER_NOT_REACHED_NAME) {
+      return true;
+    }
+    current =
+      lastEndpointErrorOf(current) ?? (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 // The RPC's latest block, once it has reached the block that triggered the run.
-async function latestReaching(
+export async function latestReaching(
   provider: ethers.JsonRpcProvider,
   chainId: number,
   trigger: TriggerBlock | undefined,
@@ -788,11 +830,24 @@ async function latestReaching(
     }
     wait.readsLeft -= 1;
     if (wait.readsLeft <= 0) {
-      throw new Error(
+      throw new TriggerBlockNotReachedError(
         `Next-block simulation: the RPC has not reached the block that triggered the run (${RETRY_HINT}). If this keeps happening, the RPC lags the block trigger: use another RPC for this network (see "RPC Preferences" in the API docs), or set "Simulate at" back to "Latest block"`
       );
     }
     await sleep(TRIGGER_WAIT_MS);
+  }
+}
+
+/** The target block was already mined when its simulation ran. */
+export class TargetBlockPassedError extends Error {
+  override readonly name = "TargetBlockPassedError" as const;
+  // A later read only finds the chain further on.
+  readonly nonRetryable = true;
+  readonly targetBlock: number;
+
+  constructor(targetBlock: number) {
+    super(`Block ${targetBlock} was already mined before it could be checked`);
+    this.targetBlock = targetBlock;
   }
 }
 
@@ -808,11 +863,12 @@ async function prepare(
     options.triggerBlock,
     wait
   );
-  const { basedOn } = options;
+  const basedOn =
+    options.targetBlock === undefined ? options.basedOn : undefined;
   // Reuse an earlier check's prediction only while nothing moved, so a wait
   // never sends on a stale check.
   if (
-    basedOn &&
+    basedOn?.timestampOffsetSec !== undefined &&
     latest.number === basedOn.baseBlock &&
     predictedTime(
       chainId,
@@ -821,16 +877,77 @@ async function prepare(
       currentSeconds()
     ) === basedOn.assumedTimestamp
   ) {
-    return preparedFrom(basedOn);
+    return { ...preparedFrom(basedOn), blockGasLimit: latest.gasLimit };
   }
   if (basedOn && latest.number < basedOn.baseBlock) {
     throw new Error(
       `Next-block simulation: the RPC is behind the block the check ran on (${RETRY_HINT})`
     );
   }
+  if (options.atTime !== undefined && options.atTime > latest.timestamp) {
+    return preparedAtTime(latest, chainId, options.atTime);
+  }
+  const prepared = await preparedForNextBlock(
+    provider,
+    chainId,
+    options,
+    latest
+  );
+  // At a time in the past checks the next block, reported as a time check.
+  return options.atTime === undefined
+    ? prepared
+    : {
+        ...prepared,
+        simulation: timeSimulation(prepared.simulation),
+      };
+}
+
+function timeSimulation(simulation: NextBlockSimulation): NextBlockSimulation {
+  return {
+    mode: "time",
+    baseBlock: simulation.baseBlock,
+    assumedBlockNumber: simulation.assumedBlockNumber,
+    assumedTimestamp: simulation.assumedTimestamp,
+    rpcMethod: simulation.rpcMethod,
+  };
+}
+
+// The given time as the block time, on the first block number that cannot be earlier.
+function preparedAtTime(
+  latest: ethers.Block,
+  chainId: number,
+  atTime: number
+): Prepared {
+  // Read only: off beacon chains the block number is an estimate (1 s per block).
+  const number = firstAllowedBlock(
+    atTime,
+    { number: latest.number, timestamp: latest.timestamp },
+    minBlockGapSeconds(chainId) ?? 1
+  );
+  return {
+    blockTag: toQuantity(latest.number),
+    blockGasLimit: latest.gasLimit,
+    time: atTime,
+    overrides: { number: toQuantity(number), time: toQuantity(atTime) },
+    simulation: {
+      mode: "time",
+      baseBlock: latest.number,
+      assumedBlockNumber: number,
+      assumedTimestamp: atTime,
+      rpcMethod: "eth_call+blockOverrides",
+    },
+  };
+}
+
+async function preparedForNextBlock(
+  provider: ethers.JsonRpcProvider,
+  chainId: number,
+  options: NextBlockSimulationOptions,
+  latest: ethers.Block
+): Promise<Prepared> {
   // On a beacon chain the fixed slot is the block time; a set offset can only
   // raise it, so the reported value is the one the prediction used.
-  const beaconSlot = BEACON_SLOT_SECONDS.get(chainId);
+  const beaconSlot = beaconSlotSeconds(chainId);
   const offset =
     beaconSlot === undefined
       ? (options.timestampOffsetSec ??
@@ -841,23 +958,25 @@ async function prepare(
       'Next-block simulation cannot predict the next block\'s time on this network: recent blocks share a timestamp. Set "Next block timestamp offset" to 1 (the call may then pass a few blocks early), or set "Simulate at" back to "Latest block".'
     );
   }
-  const time = predictedTime(
-    chainId,
-    latest.timestamp,
-    offset,
-    currentSeconds()
-  );
+  const number = options.targetBlock ?? latest.number + 1;
+  if (number <= latest.number) {
+    throw new TargetBlockPassedError(number);
+  }
+  const time =
+    predictedTime(chainId, latest.timestamp, offset, currentSeconds()) +
+    (number - latest.number - 1) * offset;
   return {
     blockTag: toQuantity(latest.number),
+    blockGasLimit: latest.gasLimit,
     time,
     overrides: {
-      number: toQuantity(latest.number + 1),
+      number: toQuantity(number),
       time: toQuantity(time),
     },
     simulation: {
       mode: "next-block",
       baseBlock: latest.number,
-      assumedBlockNumber: latest.number + 1,
+      assumedBlockNumber: number,
       assumedTimestamp: time,
       timestampOffsetSec: offset,
       rpcMethod: "eth_call+blockOverrides",
@@ -901,26 +1020,101 @@ export async function simulateCallAtNextBlock(
   }, request.operationType ?? "read");
 }
 
+type SendCheckRequest = NextBlockRequest & {
+  gasLimit?: bigint;
+  // Names a custom error in the Gas Limit message, as at `latest`.
+  contractInterface?: Interface;
+};
+
 /**
  * The revert check and gas estimate for a send, as of the next block:
- * eth_estimateGas with block overrides, else eth_simulateV1 gas.
+ * eth_estimateGas with block overrides, else eth_simulateV1 gas. With a fixed
+ * Gas Limit: above the network's limit is too high (by numbers, in sendCheck);
+ * a capped failure with out-of-gas evidence is run uncapped (a real revert
+ * throws there) and capped again: failing again means too low. Any other
+ * failure is the node's own error, unchanged.
  */
 export async function simulateSendAtNextBlock(
   rpcManager: RpcProviderManager,
-  request: NextBlockRequest
+  request: SendCheckRequest
 ): Promise<{ gasEstimate: bigint; simulation: NextBlockSimulation }> {
+  const { gasLimit } = request;
+  // One trigger-block wait budget across the capped and uncapped re-checks.
+  const wait = newTriggerWait();
+  let cappedError: unknown;
   try {
-    return await sendCheck(rpcManager, request);
+    return await sendCheck(rpcManager, request, gasLimit, wait);
   } catch (error) {
-    throw markCheckFailed(error);
+    if (gasLimit === undefined || !outOfGasCandidate(error)) {
+      throw markCheckFailed(error);
+    }
+    cappedError = error;
+  }
+  const sameBlock = (
+    basedOn: NextBlockSimulation | undefined
+  ): SendCheckRequest => ({
+    ...request,
+    options: {
+      ...request.options,
+      basedOn: basedOn ?? request.options.basedOn,
+    },
+  });
+  let uncapped: { gasEstimate: bigint; simulation: NextBlockSimulation };
+  try {
+    uncapped = await sendCheck(
+      rpcManager,
+      sameBlock(getNextBlockSimulation(cappedError)),
+      undefined,
+      wait
+    );
+  } catch (uncappedError) {
+    throw markCheckFailed(uncappedError);
+  }
+  try {
+    // Passing now means the first failure was a one-off node answer.
+    return await sendCheck(
+      rpcManager,
+      sameBlock(uncapped.simulation),
+      gasLimit,
+      wait
+    );
+  } catch (again) {
+    if (!outOfGasCandidate(again)) {
+      throw markCheckFailed(again);
+    }
+    // eth_simulateV1's figure is padded, so only a real estimate is quoted.
+    const needs =
+      uncapped.simulation.rpcMethod === "eth_estimateGas+blockOverrides"
+        ? uncapped.gasEstimate
+        : undefined;
+    throw markCheckFailed(
+      tagNextBlockSimulation(
+        new GasLimitTooLowError(
+          gasLimit,
+          {
+            needs,
+            revertedWith: decodeRevertReason(again, request.contractInterface),
+          },
+          { cause: again }
+        ),
+        uncapped.simulation
+      )
+    );
   }
 }
 
+function outOfGasCandidate(error: unknown): boolean {
+  return isError(error, "CALL_EXCEPTION") && hasOutOfGasEvidence(error);
+}
+
+// With a gas limit, the node tests that limit directly: the estimate cannot
+// go above it and eth_simulateV1 runs the call with it.
 async function sendCheck(
   rpcManager: RpcProviderManager,
-  request: NextBlockRequest
+  request: NextBlockRequest,
+  gasLimit: bigint | undefined,
+  wait: TriggerWait
 ): Promise<{ gasEstimate: bigint; simulation: NextBlockSimulation }> {
-  const wait = newTriggerWait();
   return await rpcManager.executeWithFailover(async (provider) => {
     const base = await prepare(
       provider,
@@ -928,7 +1122,17 @@ async function sendCheck(
       request.options,
       wait
     );
-    const tx = txForNode(request.tx.from, request.tx);
+    if (gasLimit !== undefined) {
+      try {
+        assertGasLimitFits(gasLimit, request.chainId, base.blockGasLimit);
+      } catch (tooHigh) {
+        throw tagNextBlockSimulation(tooHigh, base.simulation);
+      }
+    }
+    const tx = {
+      ...txForNode(request.tx.from, request.tx),
+      ...(gasLimit === undefined ? {} : { gas: toQuantity(gasLimit) }),
+    };
     const estimating: Prepared = {
       ...base,
       simulation: {

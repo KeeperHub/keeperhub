@@ -50,6 +50,8 @@ type CapControlProps = {
   decimals: number;
   cap: string | null;
   used: string;
+  // A short line on what "used" includes, under the usage line.
+  usedNote?: string;
   disabled: boolean;
   saving: boolean;
   onSave: (base: string | null) => void;
@@ -62,6 +64,7 @@ function CapControl({
   decimals,
   cap,
   used,
+  usedNote,
   disabled,
   saving,
   onSave,
@@ -111,6 +114,9 @@ function CapControl({
           ? `Current cap: ${formatBase(cap, decimals)} ${symbol}/day - used ${usedDisplay} ${symbol} today`
           : `No cap set - the platform default applies - used ${usedDisplay} ${symbol} today`}
       </p>
+      {usedNote ? (
+        <p className="text-muted-foreground text-xs">{usedNote}</p>
+      ) : null}
       <div className="flex gap-2">
         <Button
           className="flex-1"
@@ -245,6 +251,7 @@ export function SpendCapSection(): React.ReactElement {
         saving={saving}
         symbol="ETH"
         used={usedWei}
+        usedNote="Used includes value held by Send as Bundle steps that have not been mined."
       />
 
       <CapControl

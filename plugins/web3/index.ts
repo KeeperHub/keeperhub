@@ -6,16 +6,19 @@ import {
   amountField,
   balanceCheckSuccessOutput,
   broadcastOutput,
+  bundleOutputFields,
+  bundleSettingsFields,
   checkErrorOutput,
   contractAddressField,
   evmNetworkField,
-  evmPrivateNetworkField,
   executedCallArgsOutput,
   executedCallContractAddressOutput,
   executedCallFromOutput,
   executedCallRevertedOutput,
   executedCallSponsoredOutput,
   readFailOnErrorField,
+  sendModeField,
+  sendRouteOutputFields,
   receiptChainIdOutput,
   simulateAtField,
   simulateTimestampOffsetField,
@@ -49,7 +52,10 @@ import {
   SHOW_WHEN_UNIFORM,
 } from "./batch-read-modes";
 import { Web3Icon } from "./icon";
-import { checkSimulationConfig } from "./simulation-config";
+import {
+  checkReadSimulationConfig,
+  checkSimulationConfig,
+} from "./simulation-config";
 
 // Single-event mode, including workflows saved before queryMode existed.
 const SINGLE_EVENT_SHOW_WHEN: ShowWhen = {
@@ -306,6 +312,7 @@ const web3Plugin: IntegrationPlugin = {
           description: "The transaction hash of the successful transfer",
         },
         receiptChainIdOutput(),
+        ...sendRouteOutputFields(),
         transferErrorOutput(),
       ],
       configFields: [
@@ -315,10 +322,10 @@ const web3Plugin: IntegrationPlugin = {
           type: "chain-select",
           // Native transfer works on any native-token chain (EVM + Solana),
           // so no chainType filter here - the adapter routes by chainId.
-          showPrivateVariants: true,
           placeholder: "Select network",
           required: true,
         },
+        sendModeField("web3/transfer-funds"),
         {
           key: "amount",
           label: "Amount",
@@ -386,10 +393,12 @@ const web3Plugin: IntegrationPlugin = {
         executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
+        ...sendRouteOutputFields(),
         transferErrorOutput(),
       ],
       configFields: [
-        evmPrivateNetworkField(),
+        evmNetworkField(),
+        sendModeField("web3/transfer-token"),
         tokenConfigField(),
         amountField(),
         {
@@ -915,7 +924,7 @@ const web3Plugin: IntegrationPlugin = {
     },
     {
       slug: "read-contract",
-      validateConfig: checkSimulationConfig,
+      validateConfig: checkReadSimulationConfig,
       label: "Read Contract",
       description: "Read data from a smart contract (view/pure functions)",
       category: "Web3",
@@ -977,13 +986,38 @@ const web3Plugin: IntegrationPlugin = {
           isAddressField: true,
         },
         readFailOnErrorField(
-          "When off, a failed read passes a soft error to the next node instead of failing the run, so one bad item in a For Each loop does not abort it. This covers the call itself and the ABI, function and arguments you send. Only problems that leave the step with nowhere to call - an invalid address, an unknown network, unresolved RPC config, or, with Simulate at set to Next block, an RPC that cannot simulate the next block - still fail the run."
+          "When off, a failed read passes a soft error to the next node instead of failing the run, so one bad item in a For Each loop does not abort it. This covers the call itself and the ABI, function and arguments you send. Only problems that leave the step with nowhere to call - an invalid address, an unknown network, unresolved RPC config, or, with Simulate at set to Next block or At a time, an RPC that cannot simulate a future block - still fail the run."
         ),
         {
           type: "group",
           label: "Advanced",
           defaultExpanded: false,
-          fields: [simulateAtField(), simulateTimestampOffsetField()],
+          fields: [
+            {
+              defaultValue: "latest",
+              helpTip:
+                "Latest block checks the call against the latest block. Next block checks it as if the next block had already arrived. At a time checks it as if a block at the time you give had arrived, for example to ask whether a call will work once a cooldown ends. Next block and At a time need an RPC that can simulate a future block.",
+              key: "simulateAt",
+              label: "Simulate at",
+              options: [
+                { label: "Latest block", value: "latest" },
+                { label: "Next block", value: "next-block" },
+                { label: "At a time", value: "time" },
+              ],
+              type: "select",
+            },
+            simulateTimestampOffsetField(),
+            {
+              editorRenderer: "unix-time",
+              helpTip:
+                "Unix seconds, such as 1796126400, or a date with a time zone, such as 2026-12-01T12:00:00Z. Can be a template. The check runs on the latest state with this time as the block time, and the first block number that cannot be earlier. Transactions sent before then are not seen. A time in the past checks the next block.",
+              key: "simulateTime",
+              label: "Time",
+              placeholder: "1796126400",
+              showWhen: { field: "simulateAt", equals: "time" },
+              type: "template-input",
+            },
+          ],
         },
       ],
     },
@@ -1852,10 +1886,12 @@ const web3Plugin: IntegrationPlugin = {
           description:
             "With Next block, the predicted block the per-call check before the send ran against. It differs from simulation when a new block or slot came before the send, which then checked again.",
         },
+        ...sendRouteOutputFields(),
         broadcastOutput(),
       ],
       configFields: [
-        evmPrivateNetworkField(),
+        evmNetworkField(),
+        sendModeField("web3/batch-write-contract"),
         {
           key: "calls",
           label: "Calls",
@@ -1957,13 +1993,15 @@ const web3Plugin: IntegrationPlugin = {
         executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
+        ...sendRouteOutputFields(),
         {
           field: "error",
           description: "Error message if the approval failed",
         },
       ],
       configFields: [
-        evmPrivateNetworkField(),
+        evmNetworkField(),
+        sendModeField("web3/approve-token"),
         tokenConfigField(),
         {
           key: "spenderAddress",
@@ -2149,6 +2187,8 @@ const web3Plugin: IntegrationPlugin = {
         executedCallFromOutput(),
         executedCallSponsoredOutput(),
         executedCallRevertedOutput(),
+        ...sendRouteOutputFields(),
+        ...bundleOutputFields(),
         {
           field: "error",
           description:
@@ -2158,7 +2198,9 @@ const web3Plugin: IntegrationPlugin = {
         broadcastOutput(),
       ],
       configFields: [
-        evmPrivateNetworkField(),
+        evmNetworkField(),
+        sendModeField("web3/write-contract"),
+        ...bundleSettingsFields(),
         contractAddressField(),
         {
           key: "abi",

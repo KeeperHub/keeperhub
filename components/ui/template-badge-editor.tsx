@@ -90,6 +90,10 @@ export type TemplateBadgeEditorProps = {
   disabled?: boolean;
   className?: string;
   id?: string;
+  // Passed to the editable box, which a <label for> cannot name.
+  ariaLabelledBy?: string;
+  ariaDescribedBy?: string;
+  ariaInvalid?: boolean;
   /**
    * When set, the editor behaves as a textarea: line breaks are preserved
    * (rendered as <br>, stored as "\n"), Enter inserts a line break, and the
@@ -185,6 +189,9 @@ export function TemplateBadgeEditor({
   disabled,
   className,
   id,
+  ariaLabelledBy,
+  ariaDescribedBy,
+  ariaInvalid,
   multiline,
 }: TemplateBadgeEditorProps) {
   const [isFocused, setIsFocused] = useState(false);
@@ -938,7 +945,10 @@ export function TemplateBadgeEditor({
                 )
               : "min-w-0 flex-1 overflow-hidden whitespace-nowrap outline-none"
           }
+          aria-describedby={ariaDescribedBy}
           aria-disabled={disabled || undefined}
+          aria-invalid={ariaInvalid || undefined}
+          aria-labelledby={ariaLabelledBy}
           contentEditable={!disabled}
           id={id}
           onBlur={handleBlur}

@@ -7,6 +7,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLANS } from "@/lib/billing/plans";
 import {
+  NOT_LANDED_LATER,
+  SKIPPED_BILLING_TEXT,
+} from "@/lib/errors/execution-status";
+import {
   ErrorCategory,
   logSystemError,
   logUserError,
@@ -724,9 +728,11 @@ type ExecutionDigestEmailData = {
     total: number;
     success: number;
     error: number;
-    // Runs refused before they started. Rendered in its own neutral section:
-    // they never ran, so they are not failures and carry no rate.
+    // Runs refused, skipped behind a live run, or whose bundle step skipped behind an
+    // in-flight bundle. Rendered in its own neutral section: not failures, carry no rate.
     skipped: number;
+    // A bundle in the run was not seen in its target blocks: neutral, no rate, still billable.
+    notLanded?: number;
     distinctWorkflows: number;
     transactionCount: number;
     gasUsedWei: string;
@@ -835,6 +841,10 @@ function formatWeiToEth(weiStr: string): string {
   return eth < 0.0001 ? "<0.0001" : eth.toFixed(4);
 }
 
+// The digest's skipped causes, in the text and HTML bodies alike.
+const SKIPPED_CAUSES_TEXT =
+  "refused, skipped behind a previous run still running, or whose bundle step sent no transaction: an earlier run's bundle was still in flight, an earlier run's public copy was not mined yet, or the bundle step was waiting for its Not before time";
+
 /**
  * Send a scheduled (daily/weekly) workflow execution digest to a
  * subscribed org member.
@@ -909,7 +919,7 @@ export async function sendWorkflowExecutionDigestEmail(
   // Omitted entirely when nothing was refused, which is the normal case.
   const skippedText = stats.skipped
     ? `
-Skipped: ${stats.skipped} (refused before starting, not failures)
+Skipped: ${stats.skipped} (runs ${SKIPPED_CAUSES_TEXT}; not failures. ${SKIPPED_BILLING_TEXT})
 ${topSkipped
   .map(
     (w) =>
@@ -918,6 +928,13 @@ ${topSkipped
       } (${workflowUrl(w.workflowId)})`
   )
   .join("\n")}
+`
+    : "";
+
+  const notLanded = stats.notLanded ?? 0;
+  const notLandedText = notLanded
+    ? `
+Not landed: ${notLanded} (a bundle was not seen in its target blocks; not failures, but they count toward your plan's runs. ${NOT_LANDED_LATER})
 `
     : "";
 
@@ -942,7 +959,7 @@ ${mostExecutedText}
 Failed: ${stats.error} (${failRate}%)
 Top failing workflows:
 ${failingText}
-${skippedText}
+${skippedText}${notLandedText}
 View runs: ${appUrl}/analytics
 
 You're receiving this digest for ${orgName} because you're an owner or admin of that organization.
@@ -1043,8 +1060,8 @@ ${socialText}
 
   const skippedSection = stats.skipped
     ? `<div style="text-align:left; margin-top:28px;">
-      <p style="margin:0 0 4px;"><span style="color:#666; font-weight:bold; font-size:17px;">Skipped: ${stats.skipped}</span> <span style="color:#999; font-size:13px;">- Runs refused before they started</span></p>
-      <p style="margin:0 0 10px; color:#999; font-size:12px;">These runs never started, so they are not failures and do not count towards your success rate or your usage.</p>
+      <p style="margin:0 0 4px;"><span style="color:#666; font-weight:bold; font-size:17px;">Skipped: ${stats.skipped}</span> <span style="color:#999; font-size:13px;">- Runs ${SKIPPED_CAUSES_TEXT}</span></p>
+      <p style="margin:0 0 10px; color:#999; font-size:12px;">These runs are not failures and do not count toward your success rate. ${SKIPPED_BILLING_TEXT}</p>
       <table style="width:100%; border-collapse:collapse;">${tableHeader("Skipped")}${skippedRows}</table>
     </div>`
     : "";
@@ -1080,6 +1097,13 @@ ${socialText}
       <table style="width:100%; border-collapse:collapse;">${tableHeader("Failures", "#c0392b")}${failingRows}</table>
     </div>
     ${skippedSection}
+    ${
+      notLanded
+        ? `<div style="text-align:left; margin-top:28px;">
+      <p style="margin:0;"><span style="color:#666; font-weight:bold; font-size:17px;">Not landed: ${notLanded}</span> <span style="color:#999; font-size:13px;">- Runs where a bundle was not seen in its target blocks. Not failures, but they count toward your plan's runs. ${NOT_LANDED_LATER}</span></p>
+    </div>`
+        : ""
+    }
     <div style="margin:30px 0 0;">
       <a href="${appUrl}/analytics" style="display:inline-block; background:#1a1a2e; color:#fff; padding:12px 24px; border-radius:8px; text-decoration:none;">View runs</a>
     </div>

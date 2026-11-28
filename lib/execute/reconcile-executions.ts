@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, isNotNull, lt } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, lt, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   type DirectExecution,
@@ -18,15 +18,43 @@ import { ErrorCategory, logInfo, logSystemWarn, logWarn } from "@/lib/logging";
 import {
   recordWorkflowExecutionError,
   recordWorkflowExecutionFinished,
+  recordWorkflowExecutionSkipped,
 } from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
 import { DAY_MS } from "@/lib/utils/duration";
 import {
+  type CopyHashes,
+  type EndedPublicCopy,
+  endedPublicCopyFor,
+  minedBundleHashFor,
+  noneConfirmedSql,
+} from "@/lib/web3/bundles/bundle-history";
+import {
+  type LateBundleSweep,
+  sweepLateBundles,
+} from "@/lib/web3/bundles/late-landing-sweep";
+import {
   describeVerificationFailure,
   hasUnreadableReceipt,
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
+import { mergeReceiptResults } from "@/lib/workflow/executor/logging";
+import {
+  type RunOutcome,
+  type RunOutcomeSignals,
+  runOutcomeCode,
+  runOutcomeOf,
+  runOutcomeReason,
+  skippedMetricReason,
+} from "@/lib/workflow/executor/run-outcome";
+import {
+  NEVER_MINED_RUN_ERROR,
+  type PublicCopyEnd,
+  publicCopyNotLandedReason,
+  type RunOutcomeCode,
+} from "@/lib/workflow/executor/run-outcome-keys";
+import { loadSuccessLogFacts } from "@/lib/workflow/executor/success-log-facts";
 
 /**
  * Settles executions left in `unconfirmed`: a transaction was broadcast but
@@ -76,9 +104,12 @@ export type ReconcileSummary = {
 export type ReconcileReport = {
   direct: ReconcileSummary;
   workflows: ReconcileSummary;
+  lateBundles: LateBundleSweep;
 };
 
 type SettleOutcome = "completed" | "failed" | "unconfirmed";
+
+type SettledStatus = "success" | RunOutcome | ErrorStatus;
 
 type UnconfirmedDirectExecution = Pick<
   DirectExecution,
@@ -256,11 +287,21 @@ async function reconcileOne(
  */
 async function recordSettled(
   workflowId: string,
-  status: "success" | ErrorStatus,
-  classification?: { errorType: string | null; errorCategory: string | null }
+  status: SettledStatus,
+  classification?: { errorType: string | null; errorCategory: string | null },
+  // The row's reason and code; a skipped run's metric label follows them.
+  error?: string | null,
+  code?: RunOutcomeCode | null
 ): Promise<void> {
   try {
     const orgSlug = await resolveOrgSlugForCounter(workflowId);
+    if (status === "skipped") {
+      recordWorkflowExecutionSkipped({
+        orgSlug,
+        reason: skippedMetricReason(code, error),
+      });
+      return;
+    }
     const errorType = classification?.errorType as ExecutionErrorType | null;
     recordWorkflowExecutionFinished({
       status,
@@ -293,25 +334,59 @@ async function recordSettled(
  */
 async function settleWorkflow(
   execution: UnconfirmedWorkflowExecution,
-  status: "success" | ErrorStatus,
-  error: string | null
+  status: SettledStatus,
+  error: string | null,
+  transactionHashes?: TransactionHashEntry[],
+  // Settled by its outcome: the waiting code, or null; else the row's code is kept.
+  code?: RunOutcomeCode | null,
+  // An extra condition the write must still meet.
+  guard?: SQL
 ): Promise<void> {
   const updated = await db
     .update(workflowExecutions)
-    .set({ status, error, completedAt: new Date() })
+    .set({
+      status,
+      error,
+      completedAt: new Date(),
+      ...(transactionHashes && { transactionHashes }),
+      ...(code !== undefined && { errorCode: code }),
+    })
     .where(
       and(
         eq(workflowExecutions.id, execution.id),
-        eq(workflowExecutions.status, "unconfirmed")
+        eq(workflowExecutions.status, "unconfirmed"),
+        guard
       )
     )
     .returning({ id: workflowExecutions.id });
   if (updated.length > 0) {
-    await recordSettled(execution.workflowId, status, {
-      errorType: execution.errorType,
-      errorCategory: execution.errorCategory,
-    });
+    await recordSettled(
+      execution.workflowId,
+      status,
+      {
+        errorType: execution.errorType,
+        errorCategory: execution.errorCategory,
+      },
+      error,
+      code
+    );
   }
+}
+
+/** Settle a run whose hashes all verified (or that has none) by its steps' outcome. */
+async function settleByOutcome(
+  execution: UnconfirmedWorkflowExecution,
+  signals: RunOutcomeSignals,
+  transactionHashes?: TransactionHashEntry[]
+): Promise<void> {
+  const outcome = runOutcomeOf(signals);
+  await settleWorkflow(
+    execution,
+    outcome ?? "success",
+    outcome === undefined ? null : runOutcomeReason(outcome, signals),
+    transactionHashes,
+    outcome === undefined ? null : runOutcomeCode(outcome, signals)
+  );
 }
 
 /**
@@ -343,11 +418,30 @@ async function reconcileWorkflow(
     execution.errorType as ExecutionErrorType | null
   );
 
-  const entries = execution.transactionHashes ?? [];
+  // A success finalize that could not read its logs wrote no hashes or outcome: read them now.
+  const logged =
+    !failureOrigin && (execution.transactionHashes ?? []).length === 0
+      ? await loadSuccessLogFacts(execution.id, true)
+      : undefined;
+  if (logged && logged.hashes.length === 0) {
+    await settleByOutcome(execution, logged.signals);
+    return "completed";
+  }
+  const entries = logged?.hashes ?? execution.transactionHashes ?? [];
   const verifiable = entries.filter(
     (entry): entry is TransactionHashEntry & { chainId: number } =>
       entry.chainId !== undefined
   );
+  // As at finalize: a logged hash with no chainId can never verify, so the run fails.
+  if (logged && verifiable.length < entries.length) {
+    await settleWorkflow(
+      execution,
+      settledStatus,
+      "On-chain verification failed: missing chainId for one or more transaction hashes",
+      logged.hashes
+    );
+    return "failed";
+  }
 
   if (verifiable.length === 0) {
     await settleWorkflow(
@@ -360,17 +454,51 @@ async function reconcileWorkflow(
     return "failed";
   }
 
-  const { allVerified, results } = await verifyExecutionReceipts(
+  const verified = await verifyExecutionReceipts(
     verifiable.map((entry) => ({ hash: entry.hash, chainId: entry.chainId }))
   );
+  // Only a run whose logs carry a bundle route has bundle rows to read.
+  const bundleSent = needsBundleCheck(verified.results)
+    ? await runSentBundle(execution.id, logged, failureOrigin)
+    : false;
+  const swapped = bundleSent
+    ? await swapMinedBundleHashes(execution.id, entries, verified)
+    : undefined;
+  const { allVerified, results } = swapped?.verified ?? verified;
+  const settledHashes = swapped?.entries ?? logged?.hashes;
 
   if (allVerified && !failureOrigin) {
-    await settleWorkflow(execution, "success", null);
+    // A step that did not land keeps the run not landed; a skipped bundle step skips it.
+    const { signals } =
+      logged ?? (await loadSuccessLogFacts(execution.id, false));
+    await settleByOutcome(execution, signals, settledHashes);
     return "completed";
   }
 
   const stillUnreadable = hasUnreadableReceipt(results);
   const age = now.getTime() - execution.startedAt.getTime();
+  // Within the day, unread hashes that are all this run's dropped or replaced public copies: Not landed, as the sweep says.
+  const copies =
+    bundleSent && !failureOrigin && age < DROPPED_AFTER_MS
+      ? await endedCopiesOnly(execution.id, results)
+      : undefined;
+  if (copies) {
+    await settleWorkflow(
+      execution,
+      "not_landed",
+      publicCopyNotLandedReason(copies.end),
+      mergeReceiptResults(
+        (settledHashes ?? entries).filter(
+          (entry) => !copies.hashes.has(entry.hash.toLowerCase())
+        ),
+        results
+      ),
+      undefined,
+      // Not if a copy was mined (its row confirmed) after it was read as ended.
+      noneConfirmedSql(copies.guards)
+    );
+    return "completed";
+  }
   if (stillUnreadable && age < DROPPED_AFTER_MS) {
     return "unconfirmed";
   }
@@ -388,12 +516,150 @@ async function reconcileWorkflow(
     execution,
     settledStatus,
     stillUnreadable
-      ? `Transactions were broadcast but never appeared on chain; treating them as dropped after ${Math.round(
+      ? `${NEVER_MINED_RUN_ERROR}; treating them as dropped after ${Math.round(
           DROPPED_AFTER_MS / 3_600_000
         )}h`
-      : describeVerificationFailure(results)
+      : verificationFailure(results, bundleSent),
+    settledHashes
   );
   return "failed";
+}
+
+type Verified = Awaited<ReturnType<typeof verifyExecutionReceipts>>;
+
+/** The end of the run's public copies when every hash not verified is one of them, not found, its row dropped or replaced (or its nonce reused). */
+async function endedCopiesOnly(
+  executionId: string,
+  results: Verified["results"]
+): Promise<
+  { end: PublicCopyEnd; hashes: Set<string>; guards: CopyHashes[] } | undefined
+> {
+  const unread = results.filter((result) => !result.verified);
+  if (
+    unread.length === 0 ||
+    unread.some((result) => result.status !== "not_found")
+  ) {
+    return;
+  }
+  const ends: EndedPublicCopy[] = [];
+  for (const result of unread) {
+    let end: EndedPublicCopy | undefined;
+    try {
+      end = await endedPublicCopyFor(executionId, result.chainId, result.hash);
+    } catch (error) {
+      logSystemWarn(
+        ErrorCategory.DATABASE,
+        "[Reconcile] Could not read a run's public copy row",
+        error,
+        { execution_id: executionId }
+      );
+    }
+    if (!end) {
+      return;
+    }
+    ends.push(end);
+  }
+  return {
+    end: ends.every(({ end }) => end === "replaced")
+      ? "public-copy-replaced"
+      : "public-copy-dropped",
+    hashes: new Set(unread.map((result) => result.hash.toLowerCase())),
+    // Every matched entry's signed hashes, each at its own row, as the sweep guards.
+    guards: ends.map(({ row, hashes }) => ({ row, hashes })),
+  };
+}
+
+function needsBundleCheck(results: Verified["results"]): boolean {
+  return results.some(
+    (result) => result.status === "not_found" || result.status === "reverted"
+  );
+}
+
+/** Whether a step of the run reported a bundle route; a failed run's failed step is not in its success logs, so it counts. */
+async function runSentBundle(
+  executionId: string,
+  logged: { signals: RunOutcomeSignals } | undefined,
+  failureOrigin: boolean
+): Promise<boolean> {
+  if (logged) {
+    return logged.signals.bundleSent;
+  }
+  if (failureOrigin) {
+    return true;
+  }
+  try {
+    return (await loadSuccessLogFacts(executionId, false)).signals.bundleSent;
+  } catch (error) {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[Reconcile] Could not read a run's bundle steps",
+      error,
+      { execution_id: executionId }
+    );
+    return false;
+  }
+}
+
+/** The failure text; a mined revert in a run that sent a bundle says its gas was paid. */
+function verificationFailure(
+  results: Verified["results"],
+  bundleSent: boolean
+): string {
+  const text = describeVerificationFailure(results);
+  return bundleSent && results.some((result) => result.status === "reverted")
+    ? `${text}; the wallet paid its gas`
+    : text;
+}
+
+/** A not-found hash the run's bundle row was confirmed past (a reorg mined another of its hashes) verifies as that one. */
+async function swapMinedBundleHashes(
+  executionId: string,
+  entries: readonly TransactionHashEntry[],
+  verified: Verified
+): Promise<
+  { entries: TransactionHashEntry[]; verified: Verified } | undefined
+> {
+  const swaps = new Map<string, string>();
+  for (const result of verified.results) {
+    if (result.status !== "not_found") {
+      continue;
+    }
+    let mined: string | undefined;
+    try {
+      mined = await minedBundleHashFor(
+        executionId,
+        result.chainId,
+        result.hash
+      );
+    } catch (error) {
+      logSystemWarn(
+        ErrorCategory.DATABASE,
+        "[Reconcile] Could not read a run's bundle row",
+        error,
+        { execution_id: executionId }
+      );
+    }
+    if (mined) {
+      swaps.set(result.hash, mined);
+    }
+  }
+  if (swaps.size === 0) {
+    return;
+  }
+  const next = entries.map((entry) => {
+    const mined = swaps.get(entry.hash);
+    return mined ? { ...entry, hash: mined } : entry;
+  });
+  return {
+    entries: next,
+    verified: await verifyExecutionReceipts(
+      next.flatMap((entry) =>
+        entry.chainId === undefined
+          ? []
+          : [{ hash: entry.hash, chainId: entry.chainId }]
+      )
+    ),
+  };
 }
 
 /**
@@ -531,6 +797,19 @@ export async function reconcileUnconfirmedExecutions(
     "[Reconciler] Failed to re-verify an unconfirmed workflow run; leaving it open"
   );
 
+  // Not landed runs whose bundle was mined later; uses what the budget left.
+  const lateBundles = await sweepLateBundles(
+    now,
+    startedAt + timeBudgetMs
+  ).catch((error: unknown): LateBundleSweep => {
+    logSystemWarn(
+      ErrorCategory.DATABASE,
+      "[Reconciler] Late bundle sweep failed; retried next run",
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return { examined: 0, landed: 0, replaced: 0, runsChecked: 0 };
+  });
+
   if (direct.deferred > 0 || workflows.deferred > 0) {
     logWarn(
       "[Reconciler] Time budget exhausted before every unconfirmed row was examined",
@@ -553,5 +832,5 @@ export async function reconcileUnconfirmedExecutions(
     });
   }
 
-  return { direct, workflows };
+  return { direct, workflows, lateBundles };
 }

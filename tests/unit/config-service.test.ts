@@ -28,6 +28,7 @@ describe("config-service", () => {
     symbol: "ETH",
     defaultPrimaryRpc: "https://default-eth.example.com",
     defaultFallbackRpc: "https://default-eth-backup.example.com",
+    broadcastRpcUrls: ["https://extra.example"],
     isEnabled: true,
   };
 
@@ -80,6 +81,7 @@ describe("config-service", () => {
         fallbackWssUrl: undefined,
         usePrivateMempoolRpc: false,
         privateRpcUrl: undefined,
+        broadcastRpcUrls: ["https://extra.example"],
         source: "default",
       });
     });
@@ -124,6 +126,8 @@ describe("config-service", () => {
         privateRpcUrl: undefined,
         source: "user",
       });
+      // A user's own RPC may be private: never fan out next to it.
+      expect(result?.broadcastRpcUrls).toBeUndefined();
     });
 
     it("should return chain defaults when user has no custom config", async () => {
@@ -219,15 +223,79 @@ describe("config-service", () => {
       expect(result?.fallbackRpcUrl).toBe("https://default-eth.example.com");
     });
 
-    it("does not flag the relay when the chain does not support private mempool", async () => {
+    it("refuses a relay request on a chain without one", async () => {
+      mockChainQuery(mockChain);
+
+      await expect(
+        resolveRpcConfig(1, undefined, { usePrivateMempool: true })
+      ).rejects.toThrow(
+        'This step is set to Send as: Private relay, but Ethereum Mainnet has no private relay. Set Send as to Normal transaction (sendMode: "transaction").'
+      );
+    });
+
+    it("proceeds on the public RPC without a relay only when strict is false", async () => {
       mockChainQuery(mockChain);
 
       const result = await resolveRpcConfig(1, undefined, {
         usePrivateMempool: true,
+        strict: false,
       });
 
       expect(result?.primaryRpcUrl).toBe("https://default-eth.example.com");
       expect(result?.primaryIsPrivateRelay).toBeUndefined();
+    });
+
+    it("uses an optional relay only where the chain has one", async () => {
+      mockChainQuery(mockChain);
+      const plain = await resolveRpcConfig(1, undefined, {
+        usePrivateMempool: true,
+        relayOptional: true,
+      });
+      expect(plain?.primaryRpcUrl).toBe("https://default-eth.example.com");
+      expect(plain?.primaryIsPrivateRelay).toBeUndefined();
+
+      mockChainQuery({
+        ...mockChain,
+        usePrivateMempoolRpc: true,
+        defaultPrivateRpcUrl: "https://rpc.flashbots.example.com",
+      });
+      const relay = await resolveRpcConfig(1, undefined, {
+        usePrivateMempool: true,
+        relayOptional: true,
+      });
+      expect(relay?.primaryIsPrivateRelay).toBe(true);
+      // Still strict on a chain with the relay: no public fallback.
+      expect(relay?.fallbackRpcUrl).toBeUndefined();
+    });
+
+    it("cleans the stored extra URLs again at run time", async () => {
+      mockChainQuery({
+        ...mockChain,
+        broadcastRpcUrls: [
+          "https://default-eth.example.com/",
+          "http://plain.example",
+          "https://extra.example/",
+        ],
+      });
+
+      const result = await resolveRpcConfig(1);
+
+      expect(result?.broadcastRpcUrls).toEqual(["https://extra.example"]);
+    });
+
+    it("hands no extra URLs to a private relay send", async () => {
+      mockChainQuery({
+        ...mockChain,
+        usePrivateMempoolRpc: true,
+        defaultPrivateRpcUrl: "https://rpc.flashbots.example.com",
+      });
+
+      const result = await resolveRpcConfig(1, undefined, {
+        usePrivateMempool: true,
+        strict: false,
+      });
+
+      expect(result?.broadcastRpcUrls).toEqual([]);
     });
 
     it("does not flag the relay when the node did not ask for the private mempool", async () => {
@@ -447,6 +515,37 @@ describe("config-service", () => {
       await expect(getChainBuilderRpcUrls(1)).resolves.toEqual({
         titan: "https://titan.example",
       });
+    });
+
+    it("never returns a bundle-only builder for a raw send", async () => {
+      mockChainQuery({
+        builderRpcUrls: [
+          {
+            label: "flashbots",
+            url: "https://relay.example",
+            methods: ["bundle"],
+          },
+          { label: "titan", url: "https://titan.example", methods: ["raw"] },
+        ],
+      });
+
+      await expect(getChainBuilderRpcUrls(1)).resolves.toEqual({
+        titan: "https://titan.example",
+      });
+    });
+
+    it("returns undefined when every builder is bundle only", async () => {
+      mockChainQuery({
+        builderRpcUrls: [
+          {
+            label: "flashbots",
+            url: "https://relay.example",
+            methods: ["bundle"],
+          },
+        ],
+      });
+
+      await expect(getChainBuilderRpcUrls(1)).resolves.toBeUndefined();
     });
 
     it("returns undefined when the lookup fails", async () => {

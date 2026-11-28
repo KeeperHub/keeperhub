@@ -20,11 +20,59 @@ export class RpcRelayTransportError extends Error {
 }
 
 /**
- * The fault domain an RPC failure declares, or undefined for anything that is
- * not a relay transport failure (the caller keeps its own classification).
+ * The step asked for the private relay and none is usable on its chain (no
+ * relay, or one serving another chain). Refused before anything is sent.
+ */
+export class PrivateRelayUnavailableError extends Error {
+  override readonly name = "PrivateRelayUnavailableError" as const;
+  readonly errorClass = ExecutionErrorType.USER;
+}
+
+/** A `sendMode` that names no mode: refused rather than sent as Normal. */
+export class InvalidSendModeError extends Error {
+  override readonly name = "InvalidSendModeError" as const;
+  readonly errorClass = ExecutionErrorType.USER;
+}
+
+/** An RPC endpoint answered with a 3xx: redirects are never followed. */
+export class RpcRedirectError extends Error {
+  override readonly name = "RpcRedirectError" as const;
+}
+
+export const RPC_REDIRECT_MESSAGE =
+  "RPC endpoint answered with a redirect, which is not followed";
+
+/** Every endpoint tried was the user's own RPC preference and it redirected. */
+export class RpcUserEndpointError extends Error {
+  override readonly name = "RpcUserEndpointError" as const;
+  readonly errorClass = ExecutionErrorType.USER;
+}
+
+/**
+ * The fault domain a relay or Send as failure declares, or undefined for
+ * anything else (the caller keeps its own classification).
  */
 export function rpcRelayErrorClass(
   error: unknown
 ): ExecutionErrorType | undefined {
-  return error instanceof RpcRelayTransportError ? error.errorClass : undefined;
+  if (
+    error instanceof RpcRelayTransportError ||
+    error instanceof PrivateRelayUnavailableError ||
+    error instanceof InvalidSendModeError ||
+    error instanceof RpcUserEndpointError
+  ) {
+    return error.errorClass;
+  }
+  return;
+}
+
+/**
+ * `{ errorClass }` when the error declares one, for a step that wraps an RPC
+ * error in its own message: the class survives the new text.
+ */
+export function declaredErrorClass(error: unknown): {
+  errorClass?: ExecutionErrorType;
+} {
+  const errorClass = rpcRelayErrorClass(error);
+  return errorClass ? { errorClass } : {};
 }

@@ -65,10 +65,8 @@ describe("web3/transfer-spl-token action definition", () => {
       // gas-limit-multiplier posts to /api/gas/estimate with an EVM chainId, and
       // Solana fees are lamports-per-signature plus optional priority fees.
       expect(field.type).not.toBe("gas-limit-multiplier");
-      // showPrivateVariants renders private-mempool chain variants; Solana has none.
-      expect(
-        "showPrivateVariants" in field && field.showPrivateVariants
-      ).toBeFalsy();
+      // Send as offers EVM private relays; Solana has none.
+      expect("key" in field && field.key).not.toBe("sendMode");
       // token-select is EVM-bound end to end: it checksums addresses, dedupes
       // case-insensitively (base58 is case-sensitive), and validates via
       // /api/validate-token, which is ethers.isAddress + ERC20 ABI.

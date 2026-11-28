@@ -249,6 +249,28 @@ describe("createWorkflowJob", () => {
     expect(getEnvVar(envVars, "TURNKEY_API_PRIVATE_KEY")).toBeUndefined();
   });
 
+  it("references the bundle searcher key as an optional secret ref, never plaintext", async () => {
+    (getRunnerSystemEnvVars as Mock).mockReturnValue([
+      { name: "BUNDLE_SEARCHER_PRIVATE_KEY", value: "should-be-ignored" },
+    ]);
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "schedule",
+    });
+
+    const envVars = getJobEnvVars(getSubmittedJob());
+    const refs = envVars.filter((v) => v.name === "BUNDLE_SEARCHER_PRIVATE_KEY");
+    expect(refs).toHaveLength(1);
+    expect(refs[0].value).toBeUndefined();
+    expect(getSecretRef(envVars, "BUNDLE_SEARCHER_PRIVATE_KEY")).toEqual({
+      name: "keeperhub-executor-common-bundle-searcher-private-key",
+      key: "keeperhub-executor-common-bundle-searcher-private-key",
+      optional: true,
+    });
+  });
+
   it("includes SCHEDULE_ID for scheduled triggers", async () => {
     await createWorkflowJob({
       workflowId: "wf-1",
@@ -287,6 +309,25 @@ describe("createWorkflowJob", () => {
     expect(getEnvVar(envVars, "WORKFLOW_ID")).toBe("wf-1");
     expect(getEnvVar(envVars, "EXECUTION_ID")).toBe("exec-1234abcd");
     expect(getEnvVar(envVars, "WORKFLOW_INPUT")).toBe('{"test":true}');
+  });
+
+  it("gives the runner its deadline, counted from now as the Job's starts no earlier", async () => {
+    const before = Date.now();
+    await createWorkflowJob({
+      workflowId: "wf-1",
+      executionId: "exec-1234abcd",
+      input: {},
+      triggerType: "manual",
+    });
+    const deadline = Number(
+      getEnvVar(getJobEnvVars(getSubmittedJob()), "KH_RUN_DEADLINE_AT")
+    );
+    expect(deadline).toBeGreaterThanOrEqual(
+      before + CONFIG.jobActiveDeadline * 1000
+    );
+    expect(deadline).toBeLessThanOrEqual(
+      Date.now() + CONFIG.jobActiveDeadline * 1000
+    );
   });
 
   it("references core credentials as required (non-optional) secret refs", async () => {

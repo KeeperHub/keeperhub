@@ -41,8 +41,8 @@ function isCapAnchorInsert(values: Record<string, unknown>): boolean {
 // FOR UPDATE lookup (.for().limit()), recognised by the columns it selects
 // because lockOrgSpendCapRow may run it twice; the anchor insert when the org
 // has no row; the value SUM -- two thenable .where() selects (direct
-// executions, then the value ledger) via sumOrgValueTodayWei -- and the
-// reservation insert.
+// executions, then the value ledger) plus the bundle totals via
+// sumOrgValueTodayWei -- and the reservation insert.
 vi.mock("@/lib/db", () => ({
   db: {
     transaction: (cb: (tx: unknown) => unknown) => {
@@ -75,8 +75,17 @@ vi.mock("@/lib/db", () => ({
               }),
             };
           }
+          // Today's bundle totals per recorded nonce: none in these cases.
+          if (columns.includes("rowStatus")) {
+            const joined = {
+              leftJoin: () => joined,
+              where: () => ({ groupBy: () => Promise.resolve([]) }),
+            };
+            return { from: () => joined };
+          }
           sumCall += 1;
-          const rows = sumCall === 1 ? state.sumRows : state.ledgerRows;
+          const sums = [state.sumRows, state.ledgerRows];
+          const rows = sums[sumCall - 1] ?? [{ totalWei: "0" }];
           return {
             from: () => ({
               where: () => Promise.resolve(rows),

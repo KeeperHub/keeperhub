@@ -3,6 +3,9 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { chains, explorerConfigs } from "@/lib/db/schema";
 import { ErrorCategory, logSystemError } from "@/lib/logging";
+import { builderLabels } from "@/lib/rpc/rpc-config";
+import { chainTipLimitGwei } from "@/lib/web3/gas-strategy";
+import { chainHasPrivateRelay } from "@/lib/web3/send-mode";
 
 export type ChainResponse = {
   id: string;
@@ -16,8 +19,12 @@ export type ChainResponse = {
   explorerApiType: string | null;
   isTestnet: boolean;
   isEnabled: boolean;
-  // KEEP-137: whether the chain supports private mempool routing (Flashbots Protect)
+  // The chain has a private relay: the flag on and a relay URL set (never sent).
   usePrivateMempoolRpc: boolean;
+  // Labels of the chain's bundle-capable builders, in order (never URLs).
+  bundleBuilders: string[];
+  // The highest tip the gas estimate picks here (gwei); bundle tips stop there too.
+  tipLimitGwei: number | null;
 };
 
 export type GetChainsResponse = ChainResponse[];
@@ -63,7 +70,9 @@ export async function GET(request: Request) {
       explorerApiType: explorer?.explorerApiType ?? null,
       isTestnet: chain.isTestnet ?? false,
       isEnabled: chain.isEnabled ?? true,
-      usePrivateMempoolRpc: chain.usePrivateMempoolRpc ?? false,
+      usePrivateMempoolRpc: chainHasPrivateRelay(chain),
+      bundleBuilders: builderLabels(chain.builderRpcUrls),
+      tipLimitGwei: chainTipLimitGwei(chain.chainId, chain.gasConfig),
     }));
 
     return NextResponse.json(response);

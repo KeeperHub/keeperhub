@@ -899,7 +899,7 @@ function renderCustomField(
   onUpdateConfig: (key: string, value: unknown) => void,
   disabled?: boolean
 ) {
-  const renderer = getCustomFieldRenderer(field.type);
+  const renderer = getCustomFieldRenderer(field.editorRenderer ?? field.type);
   if (!renderer) {
     return null;
   }
@@ -974,7 +974,8 @@ function renderField(
     onUpdateConfig,
     inputDisabled
   );
-  if (customResult !== null) {
+  // An editorRenderer may draw nothing, which must not fall back to the type's.
+  if (customResult !== null || field.editorRenderer) {
     if (!(field.ignoredWhenSponsored || lockHint)) {
       return customResult;
     }

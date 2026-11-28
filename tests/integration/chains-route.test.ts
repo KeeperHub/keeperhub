@@ -220,6 +220,99 @@ describe("/api/chains route", () => {
       expect(chain).toHaveProperty("explorerApiType", "etherscan");
       expect(chain).toHaveProperty("isTestnet", false);
       expect(chain).toHaveProperty("isEnabled", true);
+      // No gas config on the row: the default tip limit.
+      expect(chain).toHaveProperty("tipLimitGwei", 500);
+    });
+
+    it("reports the tip limit as the gas strategy reads it: default, chain override, row config", async () => {
+      const withGas = (chainId: number, gasConfig: unknown) => ({
+        ...mockChains.ethereumWithExplorer,
+        chain: { ...mockChains.ethereumWithExplorer.chain, chainId, gasConfig },
+      });
+      mockQueryResult = [
+        withGas(1, null),
+        withGas(8453, {}),
+        withGas(1, { maxPriorityFeeGwei: 42 }),
+        withGas(1, { maxPriorityFeeGwei: "x" }),
+      ];
+      const response = await GET(createRequest("/api/chains"));
+      const data = (await response.json()) as { tipLimitGwei: unknown }[];
+      expect(data.map((chain) => chain.tipLimitGwei)).toEqual([
+        500,
+        5,
+        42,
+        null,
+      ]);
+    });
+
+    it("reports a private relay only with the flag on and a relay URL set, never the URL", async () => {
+      const withRelay = (
+        usePrivateMempoolRpc: boolean,
+        defaultPrivateRpcUrl: string | null
+      ) => ({
+        ...mockChains.ethereumWithExplorer,
+        chain: {
+          ...mockChains.ethereumWithExplorer.chain,
+          usePrivateMempoolRpc,
+          defaultPrivateRpcUrl,
+        },
+      });
+      mockQueryResult = [
+        withRelay(true, "https://relay.example"),
+        withRelay(true, null),
+        withRelay(false, "https://relay.example"),
+      ];
+
+      const data = await (await GET(createRequest("/api/chains"))).json();
+
+      expect(
+        data.map(
+          (chain: { usePrivateMempoolRpc: boolean }) =>
+            chain.usePrivateMempoolRpc
+        )
+      ).toEqual([true, false, false]);
+      expect(JSON.stringify(data)).not.toContain("relay.example");
+    });
+
+    it("lists bundle-capable builder labels in stored order, never their URLs", async () => {
+      mockQueryResult = [
+        {
+          ...mockChains.ethereumWithExplorer,
+          chain: {
+            ...mockChains.ethereumWithExplorer.chain,
+            builderRpcUrls: [
+              {
+                label: "zeta",
+                url: "https://zeta.builder.example",
+                methods: ["bundle"],
+              },
+              {
+                label: "alpha",
+                url: "https://alpha.builder.example",
+                methods: ["bundle", "raw"],
+              },
+              {
+                label: "rawonly",
+                url: "https://raw.builder.example",
+                methods: ["raw"],
+              },
+              {
+                label: "Bad Name",
+                url: "https://bad.builder.example",
+                methods: ["bundle"],
+              },
+            ],
+          },
+        },
+        mockChains.sepoliaWithExplorer,
+      ];
+
+      const data = await (await GET(createRequest("/api/chains"))).json();
+
+      expect(
+        data.map((chain: { bundleBuilders: string[] }) => chain.bundleBuilders)
+      ).toEqual([["zeta", "alpha"], []]);
+      expect(JSON.stringify(data)).not.toContain("builder.example");
     });
 
     it("should handle chains without explorer config", async () => {

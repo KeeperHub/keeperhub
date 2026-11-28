@@ -4,13 +4,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 // Mock ethers with proper class constructors
-vi.mock("ethers", () => {
+// The send path builds revert-decoding ABIs at import, so Interface stays real.
+vi.mock("ethers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ethers")>();
   const mockGetBalance = vi
     .fn()
     .mockResolvedValue(BigInt(5_000_000_000_000_000_000));
 
   return {
     ethers: {
+      Interface: actual.ethers.Interface,
       isAddress: vi.fn(
         (addr: string) => addr.startsWith("0x") && addr.length === 42
       ),

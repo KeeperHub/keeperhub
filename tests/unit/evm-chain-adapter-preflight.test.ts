@@ -28,7 +28,9 @@ const mockSendTx = Object.assign(
   { staticCall: mockStaticCall, estimateGas: mockEstimateGas }
 );
 
-vi.mock("ethers", () => {
+// The send path builds revert-decoding ABIs at import, so Interface stays real.
+vi.mock("ethers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ethers")>();
   function MockContract(): Record<string, unknown> {
     return {
       approve: mockSendTx,
@@ -43,6 +45,7 @@ vi.mock("ethers", () => {
   return {
     ethers: {
       Contract: MockContract,
+      Interface: actual.ethers.Interface,
     },
   };
 });
@@ -155,5 +158,58 @@ describe("EvmChainAdapter preflight signer address", () => {
     const gasOverrides = mockEstimateGas.mock.calls[0].at(-1);
     expect(gasOverrides.from).toBe(SIGNER_ADDRESS);
     expect(gasOverrides.value).toBe(ethValue);
+  });
+});
+
+describe("EvmChainAdapter fixed gas limit on contract calls", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Production shape: preflight and estimate go through an rpcManager.
+  const rpcManager = {
+    executeWithFailover: (op: (p: unknown) => unknown) =>
+      op({
+        getBlock: () => Promise.resolve({ number: 1, gasLimit: BigInt(30e6) }),
+      }),
+    getBroadcastRpcUrls: () => [],
+    isPrivateRelayProvider: () => false,
+    hasPrivateRelayPrimary: () => false,
+  };
+
+  async function call(gasOverrides: Record<string, bigint>): Promise<void> {
+    try {
+      await createAdapter().executeContractCall(
+        createMockSigner() as any,
+        {
+          contractAddress: "0x779877A7B0D9E8603169DdbD7836e478b4624789",
+          abi: APPROVE_ABI as unknown as import("ethers").InterfaceAbi,
+          functionKey: "approve",
+          args: [SPENDER, AMOUNT],
+        },
+        { currentNonce: 5 } as any,
+        { gasOverrides, rpcManager: rpcManager as any }
+      );
+    } catch {
+      // the send itself fails with the mocked ethers - expected
+    }
+  }
+
+  it("runs the staticCall preflight under the fixed gas limit and skips estimateGas", async () => {
+    await call({ gasLimitOverride: BigInt(80_000) });
+
+    expect(mockStaticCall).toHaveBeenCalledTimes(1);
+    expect(mockStaticCall.mock.calls[0].at(-1)).toMatchObject({
+      from: SIGNER_ADDRESS,
+      gasLimit: BigInt(80_000),
+    });
+    expect(mockEstimateGas).not.toHaveBeenCalled();
+  });
+
+  it("estimates, with no gas cap on the preflight, without a fixed gas limit", async () => {
+    await call({});
+
+    expect(mockStaticCall.mock.calls[0].at(-1)).not.toHaveProperty("gasLimit");
+    expect(mockEstimateGas).toHaveBeenCalledTimes(1);
   });
 });

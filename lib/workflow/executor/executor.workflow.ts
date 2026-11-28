@@ -33,6 +33,7 @@ import {
 } from "@/lib/step-registry";
 import { deserializeTriggerInput, getErrorMessageAsync } from "@/lib/utils";
 import { hasOwnField, readOwnField } from "@/lib/utils/read-own-field";
+import { markTemplatedNotBefore } from "@/lib/web3/bundles/settings";
 import {
   collectReachable,
   isBackEdge,
@@ -62,7 +63,11 @@ import {
   type ExecutionResult,
   findOrphanedNodes,
 } from "@/lib/workflow/executor/final-success";
-import { runBodyNode } from "@/lib/workflow/executor/for-each-body-runner";
+import {
+  type IterationMeta,
+  nestedLoopDepth,
+  runBodyNode,
+} from "@/lib/workflow/executor/for-each-body-runner";
 import {
   clearOutputCache,
   getCompletedStepOutput,
@@ -3009,6 +3014,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       processedConfig.code = renderedCode;
     }
     restoreConditionFields(processedConfig, conditionFields);
+    // A templated Not before that renders empty fails the bundle step instead of turning it off.
+    markTemplatedNotBefore(actionType, config, processedConfig);
 
     return processedConfig;
   }
@@ -3033,7 +3040,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     bodyResults: Record<string, ExecutionResult>,
     bodyEdgesBySource: Map<string, string[]>,
     collectNodeId: string | undefined,
-    iterationMeta?: { iterationIndex: number; forEachNodeId: string },
+    iterationMeta?: IterationMeta,
     bodyHandleMap?: EdgesBySourceHandle
   ): Promise<void> {
     await runBodyNode(nodeId, {
@@ -3130,6 +3137,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
           forEachNodeId: nestedForEachNodeId,
           forEachNode: nestedForEachNode,
           processedConfig,
+          loopDepth: nestedLoopDepth(iterationMeta),
           currentOutputs: scopedOutputs,
           currentResults: bodyResults,
           currentVisited: bodyVisited,
@@ -3175,6 +3183,8 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
     forEachNodeId: string;
     forEachNode: WorkflowNode;
     processedConfig: Record<string, unknown>;
+    // Loops around this one's body, counting itself: 1 at the top level.
+    loopDepth: number;
     currentOutputs: NodeOutputs;
     currentResults: Record<string, ExecutionResult>;
     currentVisited: Set<string>;
@@ -3196,6 +3206,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       forEachNodeId,
       forEachNode,
       processedConfig,
+      loopDepth,
       currentOutputs,
       currentResults,
       currentVisited,
@@ -3279,7 +3290,11 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       // Execute body starting from For Each's direct children
       const bodyVisited = new Set<string>();
       const firstBodyNodes = bodyEdgesBySource.get(forEachNodeId) ?? [];
-      const iterationMeta = { iterationIndex: index, forEachNodeId };
+      const iterationMeta: IterationMeta = {
+        iterationIndex: index,
+        forEachNodeId,
+        ...(loopDepth > 1 && { loopDepth }),
+      };
 
       // Parallel For Each iterations are vulnerable to the same SDK
       // checkpoint-resume truncation that KEEP-395 fixed for the main
@@ -3725,6 +3740,7 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
       forEachNodeId: nodeId,
       forEachNode: node,
       processedConfig: forEachConfig,
+      loopDepth: 1,
       currentOutputs: outputs,
       currentResults: results,
       currentVisited: visited,

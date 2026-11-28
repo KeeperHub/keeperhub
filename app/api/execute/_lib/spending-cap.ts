@@ -13,6 +13,7 @@ import {
   getDefaultDailyValueCapWei,
 } from "@/lib/execute/spend-cap-defaults";
 import {
+  dailyValueCapRefusal,
   type LockedSpendCap,
   lockOrgSpendCapRow,
   type StablecoinDailyLimit,
@@ -122,7 +123,7 @@ async function nativeCapDenial(
     allowed: false,
     reason: isSolana
       ? "Daily Solana spending cap exceeded"
-      : "Daily spending cap exceeded",
+      : await dailyValueCapRefusal(tx, organizationId),
   };
 }
 

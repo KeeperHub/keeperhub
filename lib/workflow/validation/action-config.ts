@@ -9,12 +9,18 @@ import { isBoolLiteral, isToggleValue, switchRefusal } from "@/lib/utils";
 import { stripControlChars } from "@/lib/utils/control-chars";
 import { cutText } from "@/lib/utils/cut-text";
 import { EVM_ADDRESS_RE } from "@/lib/web3/address";
+import { BUNDLE_SETTING_KEYS } from "@/lib/web3/bundles/settings";
+import { SEND_MODE_KEY } from "@/lib/web3/send-mode";
 import {
   checkSolidityValue,
   HEX_BYTES_PATTERN,
   INTEGER_PATTERN,
   UNSIGNED_INTEGER_PATTERN,
 } from "@/lib/web3/solidity-values";
+import {
+  RUN_ON_MISSED_SLOT_LABEL,
+  SKIP_IF_RUNNING_LABEL,
+} from "@/lib/workflow/block-trigger-switches";
 import { BUILTIN_NODE_ID } from "@/lib/workflow/editor/builtin-variables";
 import {
   evaluateShowWhen,
@@ -290,6 +296,10 @@ function suggestActionType(input: string): string | undefined {
   }
   return undefined;
 }
+
+const BUNDLE_SETTING_KEY_SET: ReadonlySet<string> = new Set(
+  Object.values(BUNDLE_SETTING_KEYS)
+);
 
 function isMissingRequiredValue(value: unknown): boolean {
   return value === undefined || value === null || value === "";
@@ -584,6 +594,39 @@ function toggleIssue(
     received: capReceived(value),
     message: toggleRefusal(field.label ?? field.key, value),
   };
+}
+
+// Block Trigger switches; the network decides whether one is used, not save.
+const BLOCK_TRIGGER_TOGGLES = [
+  { key: "skipIfRunning", label: SKIP_IF_RUNNING_LABEL },
+  { key: "runOnMissedSlot", label: RUN_ON_MISSED_SLOT_LABEL },
+] as const;
+
+function blockTriggerToggleIssues(
+  node: WorkflowNodeForValidation,
+  nodeIndex: number
+): ActionConfigValidationIssue[] {
+  const config = node.data?.config;
+  if (
+    !(
+      node.data?.type === "trigger" &&
+      isRecord(config) &&
+      config.triggerType === "Block"
+    )
+  ) {
+    return [];
+  }
+  return BLOCK_TRIGGER_TOGGLES.filter(
+    (toggle) => !isToggleValue(config[toggle.key])
+  ).map((toggle) =>
+    toggleIssue(
+      `nodes[${nodeIndex}].data.config.${toggle.key}`,
+      "Block",
+      toggle,
+      config[toggle.key],
+      nodeIdentity(node, `nodes[${nodeIndex}]`)
+    )
+  );
 }
 
 // Node id -> a field read from each node: its config or its label.
@@ -996,6 +1039,7 @@ export function validateWorkflowActionConfigs(
       });
     }
 
+    issues.push(...blockTriggerToggleIssues(node, nodeIndex));
     if (!isActionNode(node)) {
       continue;
     }
@@ -1183,7 +1227,11 @@ export function validateWorkflowActionConfigs(
         });
       }
 
-      const fieldCheck = validateFieldValue(field, value);
+      // Send as and the bundle settings are checked by validateSendModeForSave, with one issue per node.
+      const fieldCheck: FieldCheckResult =
+        field.key === SEND_MODE_KEY || BUNDLE_SETTING_KEY_SET.has(field.key)
+          ? { valid: true }
+          : validateFieldValue(field, value);
       if (!fieldCheck.valid) {
         // A check that explains itself is quoted in the summary, as a
         // cross-field issue is.
@@ -1329,7 +1377,12 @@ function formatNodeFields(fields: string[], count: number): string {
 }
 
 export function formatActionConfigValidationResponse(
-  validation: ActionConfigValidationResult
+  validation: ActionConfigValidationResult,
+  // A caller that does not save (a copy) says what happened instead.
+  wording: { lead: string; end: string } = {
+    lead: "Workflow contains invalid action configuration.",
+    end: "Fix the listed fields and save again.",
+  }
 ) {
   const summary =
     validation.issues.length > 0
@@ -1417,7 +1470,7 @@ export function formatActionConfigValidationResponse(
       : "";
   return {
     error: "INVALID_ACTION_CONFIG",
-    message: `Workflow contains invalid action configuration. ${summary}Fix the listed fields and save again.`,
+    message: `${wording.lead} ${summary}${wording.end}`,
     invalidFields: validation.issues,
   };
 }

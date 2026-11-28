@@ -39,6 +39,9 @@ import {
 import { getRetentionConfig } from "@/lib/retention/config";
 import { getOrgLogRetentionCutoff } from "@/lib/retention/progress";
 import { redactAllUrls, redactSecretUrls } from "@/lib/rpc/scrub-rpc-urls";
+import { skipReasonOf } from "@/lib/workflow/executor/run-outcome-keys";
+import { loadWaitingRunInfo } from "@/lib/workflow/executor/waiting-runs";
+import { skippedRefusalsSql } from "@/lib/workflow/refused-runs";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { attachAlertsSent } from "./alert-sent";
 import { analyticsCacheKey, cachedAnalytics } from "./cache";
@@ -71,7 +74,7 @@ import type {
 
 /**
  * Normalize workflow execution status to a unified status.
- * workflow_executions uses: pending | running | unconfirmed | success | error | skipped | cancelled
+ * workflow_executions uses: pending | running | unconfirmed | success | error | skipped | not_landed | cancelled
  * direct_executions uses: pending | running | unconfirmed | completed | failed
  * We normalize to: pending | running | success | error
  */
@@ -94,8 +97,11 @@ export function normalizeStatus(
   if (status === "skipped") {
     return "skipped";
   }
-  // Both sources use "unconfirmed" for a broadcast the chain has not confirmed.
-  // It is still in flight, not an outcome, so it reads as running in the UI.
+  if (status === "not_landed") {
+    return "not_landed";
+  }
+  // Both sources use "unconfirmed" for a broadcast the chain has not confirmed,
+  // or a run whose outcome is not read yet: not an outcome, so it reads as running.
   if (status === "unconfirmed") {
     return "running";
   }
@@ -545,6 +551,7 @@ function parseBucketRow(row: {
   error: string;
   cancelled: string;
   skipped: string;
+  notLanded: string;
   pending: string;
   running: string;
 }): TimeSeriesBucket {
@@ -554,6 +561,7 @@ function parseBucketRow(row: {
     error: Number(row.error) || 0,
     cancelled: Number(row.cancelled) || 0,
     skipped: Number(row.skipped) || 0,
+    notLanded: Number(row.notLanded) || 0,
     pending: Number(row.pending) || 0,
     running: Number(row.running) || 0,
   };
@@ -572,6 +580,7 @@ function addBucketToMap(
     existing.error += bucket.error;
     existing.cancelled += bucket.cancelled;
     existing.skipped += bucket.skipped;
+    existing.notLanded += bucket.notLanded;
     existing.pending += bucket.pending;
     existing.running += bucket.running;
   } else {
@@ -676,6 +685,7 @@ async function computeAnalyticsSummary(
   const errorCount = workflowStats.error + directStats.error;
   const cancelledCount = workflowStats.cancelled;
   const skippedCount = workflowStats.skipped;
+  const notLandedCount = workflowStats.notLanded;
   const successRate = totalRuns > 0 ? successCount / totalRuns : 0;
 
   const avgDurationMs = computeAvgDuration(
@@ -691,6 +701,7 @@ async function computeAnalyticsSummary(
     errorCount,
     cancelledCount,
     skippedCount,
+    notLandedCount,
     successRate,
     avgDurationMs,
     totalGasWei,
@@ -711,6 +722,7 @@ async function getWorkflowCounts(
   error: number;
   cancelled: number;
   skipped: number;
+  notLanded: number;
   durationSum: number;
   durationCount: number;
 }> {
@@ -720,6 +732,7 @@ async function getWorkflowCounts(
       error: sql<number>`SUM(CASE WHEN ${inArray(workflowExecutions.status, [...ERROR_STATUSES])} THEN 1 ELSE 0 END)`,
       cancelled: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'cancelled' THEN 1 ELSE 0 END)`,
       skipped: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'skipped' THEN 1 ELSE 0 END)`,
+      notLanded: sql<number>`SUM(CASE WHEN ${workflowExecutions.status} = 'not_landed' THEN 1 ELSE 0 END)`,
       durationSum: sql<number>`COALESCE(SUM(${workflowExecutions.duration}), 0)`,
       durationCount: sql<number>`SUM(CASE WHEN ${workflowExecutions.duration} IS NOT NULL THEN 1 ELSE 0 END)`,
     })
@@ -738,15 +751,17 @@ async function getWorkflowCounts(
   const success = Number(row?.success) || 0;
   const error = Number(row?.error) || 0;
   // Total counts only completed runs (success + error). Pending, running,
-  // cancelled and skipped runs are excluded so the success rate and Total Runs
-  // KPI ignore in-flight runs, cancellations, and runs the platform refused
-  // before they started.
+  // cancelled, skipped and not landed runs are excluded so the success rate and
+  // Total Runs KPI ignore in-flight runs, cancellations, runs that never started
+  // (refused, or skipped behind a still-running run) and transactions that were
+  // not included.
   return {
     total: success + error,
     success,
     error,
     cancelled: Number(row?.cancelled) || 0,
     skipped: Number(row?.skipped) || 0,
+    notLanded: Number(row?.notLanded) || 0,
     durationSum: Number(row?.durationSum) || 0,
     durationCount: Number(row?.durationCount) || 0,
   };
@@ -860,6 +875,7 @@ async function getPreviousPeriodSummary(
     errorCount: workflowStats.error + directStats.error,
     cancelledCount: workflowStats.cancelled,
     skippedCount: workflowStats.skipped,
+    notLandedCount: workflowStats.notLanded,
     avgDurationMs: computeAvgDuration(
       workflowStats.durationSum + directStats.durationSum,
       workflowStats.durationCount + directStats.durationCount
@@ -1066,6 +1082,7 @@ async function computeTimeSeries(
       error: sql<string>`SUM(CASE WHEN ${inArray(workflowExecutions.status, [...ERROR_STATUSES])} THEN 1 ELSE 0 END)`,
       cancelled: sql<string>`SUM(CASE WHEN ${workflowExecutions.status} = 'cancelled' THEN 1 ELSE 0 END)`,
       skipped: sql<string>`SUM(CASE WHEN ${workflowExecutions.status} = 'skipped' THEN 1 ELSE 0 END)`,
+      notLanded: sql<string>`SUM(CASE WHEN ${workflowExecutions.status} = 'not_landed' THEN 1 ELSE 0 END)`,
       pending: sql<string>`SUM(CASE WHEN ${workflowExecutions.status} = 'pending' THEN 1 ELSE 0 END)`,
       running: sql<string>`SUM(CASE WHEN ${workflowExecutions.status} = 'running' THEN 1 ELSE 0 END)`,
     })
@@ -1094,6 +1111,7 @@ async function computeTimeSeries(
           error: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'failed' THEN 1 ELSE 0 END)`,
           cancelled: sql<string>`0`,
           skipped: sql<string>`0`,
+          notLanded: sql<string>`0`,
           pending: sql<string>`SUM(CASE WHEN ${directExecutions.status} = 'pending' THEN 1 ELSE 0 END)`,
           running: sql<string>`SUM(CASE WHEN ${directExecutions.status} IN ('running', 'unconfirmed') THEN 1 ELSE 0 END)`,
         })
@@ -1179,6 +1197,7 @@ function fillBuckets(
         error: 0,
         cancelled: 0,
         skipped: 0,
+        notLanded: 0,
         pending: 0,
         running: 0,
       }
@@ -1233,6 +1252,7 @@ type BucketRow = {
   error: string;
   cancelled: string;
   skipped: string;
+  notLanded: string;
   pending: string;
   running: string;
 };
@@ -1505,13 +1525,29 @@ export async function getUnifiedRuns(
   const nextCursor = hasMore ? (pagedRuns.at(-1)?.startedAt ?? null) : null;
 
   return {
-    runs: await attachAlertsSent(organizationId, pagedRuns),
+    runs: await attachWaitingInfo(
+      await attachAlertsSent(organizationId, pagedRuns)
+    ),
     nextCursor,
     total,
     page,
     pageSize: pageLimit,
     stepLogRetentionCutoff: stepLogRetentionCutoff?.toISOString() ?? null,
   };
+}
+
+/** A waiting run's Not before and blocks, so the table can group back-to-back ones. */
+async function attachWaitingInfo(runs: UnifiedRun[]): Promise<UnifiedRun[]> {
+  const waiting = await loadWaitingRunInfo(
+    runs.map((run) => ({ id: run.id, skipReason: run.skipReason ?? null }))
+  );
+  if (waiting.size === 0) {
+    return runs;
+  }
+  return runs.map((run) => {
+    const info = waiting.get(run.id);
+    return info ? { ...run, waiting: info } : run;
+  });
 }
 
 async function fetchWorkflowRuns(
@@ -1694,6 +1730,7 @@ async function fetchWorkflowRuns(
       errorCode: workflowExecutions.errorCode,
       errorType: workflowExecutions.errorType,
       errorCategory: workflowExecutions.errorCategory,
+      refusals: skippedRefusalsSql(),
     })
     .from(workflowExecutions)
     .leftJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
@@ -1741,6 +1778,8 @@ async function fetchWorkflowRuns(
     errorCode: row.errorCode ?? null,
     errorType: row.errorType ?? null,
     errorCategory: row.errorCategory ?? null,
+    skipReason: skipReasonOf(row),
+    refusals: row.refusals ?? null,
   }));
 }
 

@@ -35,6 +35,9 @@ export type BlockWorkflow = {
   organizationId: string | null;
   network: string;
   blockInterval: number;
+  // Block Trigger switches; both off when absent.
+  skipIfRunning?: boolean;
+  runOnMissedSlot?: boolean;
 };
 
 export type ChainConfig = {
@@ -56,6 +59,11 @@ export type BlockMessage = {
     blockHash: string;
     blockTimestamp: number;
     parentHash: string;
+    // Slot fields: only with runOnMissedSlot. On a missed-slot run the block fields are the latest block.
+    missedSlot?: boolean;
+    slotTimestamp?: number;
+    targetSlot?: number;
+    targetSlotTimestamp?: number;
   };
 };
 
@@ -72,6 +80,8 @@ export type FetchBlockWorkflowsResponse = {
           triggerType?: string;
           network?: string;
           blockInterval?: string;
+          skipIfRunning?: string | boolean;
+          runOnMissedSlot?: string | boolean;
         };
       };
     }>;

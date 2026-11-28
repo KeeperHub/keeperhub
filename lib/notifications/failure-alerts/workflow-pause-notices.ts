@@ -176,7 +176,14 @@ async function latestRunFailed(workflowId: string): Promise<boolean> {
       refused: sql<boolean>`${REFUSED_RUN_SQL}`,
     })
     .from(workflowExecutions)
-    .where(attemptConditions(workflowId, null))
+    .where(
+      and(
+        attemptConditions(workflowId, null),
+        // Neither a failure nor a success: stepped over, as the failure streak does.
+        // A literal, so 0176's partial index (status <> 'not_landed') can match.
+        sql`${workflowExecutions.status} <> 'not_landed'`
+      )
+    )
     .orderBy(desc(workflowExecutions.startedAt))
     .limit(1);
   return run?.status === "error" || run?.refused === true;

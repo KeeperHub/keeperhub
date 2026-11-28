@@ -8,7 +8,11 @@ import { solidityTypeToFieldType } from "@/lib/solidity-type-fields";
 import type { IntegrationType } from "@/lib/types/integration";
 import { getReadContractOutputFields } from "@/lib/workflow/editor/action-output-fields";
 
-import { sponsorGasField } from "@/plugins/field-fragments";
+import {
+  sendModeField,
+  sendRouteOutputFields,
+  sponsorGasField,
+} from "@/plugins/field-fragments";
 import {
   createProtocolIconComponent,
   ProtocolIcon,
@@ -504,11 +508,12 @@ function buildConfigFieldsFromAction(
       label: "Network",
       type: "chain-select",
       chainTypeFilter: "evm",
-      // KEEP-137: write actions show private mempool variants (e.g., Flashbots)
-      ...(action.type === "write" ? { showPrivateVariants: true } : {}),
       required: true,
       ...(allowedChainIds.length > 0 ? { allowedChainIds } : {}),
     },
+    ...(action.type === "write"
+      ? [sendModeField(`${def.slug}/${action.slug}`)]
+      : []),
   ];
 
   if (contract?.userSpecifiedAddress) {
@@ -690,6 +695,7 @@ function buildOutputFieldsFromAction(
       field: "transactionLink",
       description: "Explorer link to transaction",
     });
+    outputs.push(...sendRouteOutputFields());
   }
 
   return outputs;

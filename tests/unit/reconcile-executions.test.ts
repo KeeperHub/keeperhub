@@ -21,7 +21,17 @@ const {
   mockLogInfo,
   mockLogWarn,
   mockLogSystemWarn,
+  mockLoadSignals,
+  mockLoadHashes,
+  mockRecordSkipped,
+  mockSweepLateBundles,
+  mockMinedBundleHashFor,
 } = vi.hoisted(() => ({
+  mockMinedBundleHashFor: vi.fn(),
+  mockLoadSignals: vi.fn(),
+  mockLoadHashes: vi.fn(),
+  mockRecordSkipped: vi.fn(),
+  mockSweepLateBundles: vi.fn(),
   mockVerify: vi.fn(),
   mockRecordFinished: vi.fn(),
   mockRecordError: vi.fn(),
@@ -103,6 +113,7 @@ vi.mock("@/lib/web3/verify-receipt", () => ({
 vi.mock("@/lib/metrics/collectors/prometheus", () => ({
   recordWorkflowExecutionFinished: mockRecordFinished,
   recordWorkflowExecutionError: mockRecordError,
+  recordWorkflowExecutionSkipped: mockRecordSkipped,
 }));
 
 vi.mock("@/lib/metrics/org-slug.server", () => ({
@@ -110,10 +121,26 @@ vi.mock("@/lib/metrics/org-slug.server", () => ({
 }));
 
 vi.mock("@/lib/logging", () => ({
-  ErrorCategory: { NETWORK_RPC: "network_rpc" },
+  ErrorCategory: { NETWORK_RPC: "network_rpc", DATABASE: "database" },
   logInfo: mockLogInfo,
   logWarn: mockLogWarn,
   logSystemWarn: mockLogSystemWarn,
+}));
+
+vi.mock("@/lib/workflow/executor/success-log-facts", () => ({
+  loadSuccessLogFacts: async (executionId: string, withHashes: boolean) => ({
+    hashes: withHashes ? await mockLoadHashes(executionId) : [],
+    signals: await mockLoadSignals(executionId, withHashes),
+    notIncludedSteps: [],
+  }),
+}));
+
+vi.mock("@/lib/web3/bundles/late-landing-sweep", () => ({
+  sweepLateBundles: mockSweepLateBundles,
+}));
+
+vi.mock("@/lib/web3/bundles/bundle-history", () => ({
+  minedBundleHashFor: mockMinedBundleHashFor,
 }));
 
 import { reconcileUnconfirmedExecutions } from "@/lib/execute/reconcile-executions";
@@ -208,6 +235,17 @@ const workflowUpdates = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockLoadSignals.mockResolvedValue({
+    skippedInFlight: false,
+    notIncluded: false,
+  });
+  mockLoadHashes.mockResolvedValue([]);
+  mockSweepLateBundles.mockResolvedValue({
+    examined: 0,
+    landed: 0,
+    replaced: 0,
+    runsChecked: 0,
+  });
   selectResults = [];
   selectCalls = [];
   updateCalls = [];
@@ -378,6 +416,7 @@ describe("workflow runs", () => {
       status: "success",
       error: null,
       completedAt: expect.any(Date),
+      errorCode: null,
     });
     expect(mockRecordFinished).toHaveBeenCalledTimes(1);
     expect(mockRecordFinished).toHaveBeenCalledWith({
@@ -385,6 +424,228 @@ describe("workflow runs", () => {
       orgSlug: "org-a",
       errorType: "na",
     });
+  });
+
+  it("settles a verified run with a not-included step as not_landed, not success", async () => {
+    verifyResolves("success");
+    mockLoadSignals.mockResolvedValue({
+      skippedInFlight: true,
+      notIncluded: true,
+    });
+
+    await run([], [workflowRow()]);
+
+    expect(mockLoadSignals).toHaveBeenCalledWith("we_1", false);
+    expect(workflowUpdates()[0].values).toEqual({
+      status: "not_landed",
+      error: expect.stringContaining("Not landed: a bundle in this run"),
+      completedAt: expect.any(Date),
+      errorCode: null,
+    });
+    expect(mockRecordFinished).toHaveBeenCalledWith({
+      status: "not_landed",
+      orgSlug: "org-a",
+      errorType: "na",
+    });
+  });
+
+  it("settles a sent run whose bundle step skipped in flight as skipped", async () => {
+    verifyResolves("success");
+    mockLoadSignals.mockResolvedValue({
+      skippedInFlight: true,
+      notIncluded: false,
+    });
+
+    await run([], [workflowRow()]);
+
+    expect(workflowUpdates()[0].values.status).toBe("skipped");
+  });
+
+  describe("a success finalize that could not read its logs (no hashes on the row)", () => {
+    it("settles success from the logs when they hold no hash and no signal", async () => {
+      const report = await run([], [workflowRow({ transactionHashes: [] })]);
+
+      expect(mockLoadSignals).toHaveBeenCalledWith("we_1", true);
+      expect(mockVerify).not.toHaveBeenCalled();
+      expect(report.workflows.completed).toBe(1);
+      expect(workflowUpdates()[0].values).toEqual({
+        status: "success",
+        error: null,
+        completedAt: expect.any(Date),
+        errorCode: null,
+      });
+    });
+
+    it("settles not_landed from the logs, never success", async () => {
+      mockLoadSignals.mockResolvedValue({
+        skippedInFlight: false,
+        notIncluded: true,
+      });
+
+      await run([], [workflowRow({ transactionHashes: null })]);
+
+      expect(workflowUpdates()[0].values.status).toBe("not_landed");
+    });
+
+    it("settles skipped and counts it as a skip, not a finished run", async () => {
+      mockLoadSignals.mockResolvedValue({
+        skippedInFlight: true,
+        notIncluded: false,
+      });
+
+      await run([], [workflowRow({ transactionHashes: [] })]);
+
+      expect(workflowUpdates()[0].values.status).toBe("skipped");
+      expect(mockRecordSkipped).toHaveBeenCalledWith({
+        orgSlug: "org-a",
+        reason: "bundle_in_flight",
+      });
+      expect(mockRecordFinished).not.toHaveBeenCalled();
+    });
+
+    it("settles a waiting run Skipped with its code, billed, counted as a waiting skip", async () => {
+      mockLoadSignals.mockResolvedValue({
+        skippedInFlight: false,
+        notIncluded: false,
+        waiting: true,
+        bundleSent: false,
+      });
+
+      await run([], [workflowRow({ transactionHashes: [] })]);
+
+      expect(workflowUpdates()[0].values).toMatchObject({
+        status: "skipped",
+        error: expect.stringMatching(/^Waiting:/),
+        errorCode: "bundle-waiting",
+      });
+      // The settle leaves billable as inserted: a waiting run is billed.
+      expect(workflowUpdates()[0].values).not.toHaveProperty("billable");
+      expect(mockRecordSkipped).toHaveBeenCalledWith({
+        orgSlug: "org-a",
+        reason: "bundle_waiting",
+      });
+    });
+
+    it("verifies the logged hashes and writes them with the settle", async () => {
+      verifyResolves("success");
+      const logged = [
+        { hash: HASH, nodeId: "n1", nodeName: "Transfer", chainId: CHAIN_ID },
+      ];
+      mockLoadHashes.mockResolvedValue(logged);
+
+      await run([], [workflowRow({ transactionHashes: [] })]);
+
+      expect(mockVerify).toHaveBeenCalledWith([
+        { hash: HASH, chainId: CHAIN_ID },
+      ]);
+      expect(workflowUpdates()[0].values).toEqual({
+        status: "success",
+        error: null,
+        completedAt: expect.any(Date),
+        errorCode: null,
+        transactionHashes: logged,
+      });
+    });
+
+    it("writes the logged hashes with a failed settle too", async () => {
+      verifyResolves("reverted");
+      const logged = [
+        { hash: HASH, nodeId: "n1", nodeName: "Transfer", chainId: CHAIN_ID },
+      ];
+      mockLoadHashes.mockResolvedValue(logged);
+
+      const report = await run([], [workflowRow({ transactionHashes: [] })]);
+
+      expect(report.workflows.failed).toBe(1);
+      expect(workflowUpdates()[0].values).toEqual({
+        status: "error",
+        error: expect.stringContaining("On-chain verification failed"),
+        completedAt: expect.any(Date),
+        transactionHashes: logged,
+      });
+    });
+
+    it("fails the run, as finalize does, when a logged hash has no chainId", async () => {
+      const logged = [
+        { hash: HASH, nodeId: "n1", nodeName: "Transfer", chainId: CHAIN_ID },
+        { hash: "0xdef", nodeId: "n2", nodeName: "Transfer" },
+      ];
+      mockLoadHashes.mockResolvedValue(logged);
+
+      const report = await run([], [workflowRow({ transactionHashes: [] })]);
+
+      expect(mockVerify).not.toHaveBeenCalled();
+      expect(report.workflows.failed).toBe(1);
+      expect(workflowUpdates()[0].values).toEqual({
+        status: "error",
+        error:
+          "On-chain verification failed: missing chainId for one or more transaction hashes",
+        completedAt: expect.any(Date),
+        transactionHashes: logged,
+      });
+    });
+
+    it("leaves the run unconfirmed, unwritten and uncounted when the log read throws", async () => {
+      mockLoadHashes.mockRejectedValue(new Error("db down"));
+
+      const report = await run([], [workflowRow({ transactionHashes: [] })]);
+
+      expect(report.workflows.stillUnconfirmed).toBe(1);
+      expect(report.workflows.completed).toBe(0);
+      expect(report.workflows.failed).toBe(0);
+      expect(workflowUpdates()).toHaveLength(0);
+      expect(mockRecordFinished).not.toHaveBeenCalled();
+      expect(mockRecordError).not.toHaveBeenCalled();
+    });
+
+    it("leaves a run held open by its own failure to the failure path", async () => {
+      await run(
+        [],
+        [
+          workflowRow({
+            transactionHashes: [],
+            errorType: "user",
+            error: "boom",
+          }),
+        ]
+      );
+
+      expect(mockLoadSignals).not.toHaveBeenCalled();
+      expect(workflowUpdates()[0].values.status).toBe("error");
+    });
+  });
+
+  it("runs the late bundle sweep with the time left, and reports it", async () => {
+    mockSweepLateBundles.mockResolvedValue({
+      examined: 2,
+      landed: 1,
+      replaced: 1,
+      runsChecked: 3,
+    });
+
+    const report = await run([], []);
+
+    expect(mockSweepLateBundles).toHaveBeenCalledWith(NOW, expect.any(Number));
+    expect(report.lateBundles).toEqual({
+      examined: 2,
+      landed: 1,
+      replaced: 1,
+      runsChecked: 3,
+    });
+  });
+
+  it("keeps the report when the late bundle sweep fails", async () => {
+    mockSweepLateBundles.mockRejectedValue(new Error("db down"));
+
+    const report = await run([], []);
+
+    expect(report.lateBundles).toEqual({
+      examined: 0,
+      landed: 0,
+      replaced: 0,
+      runsChecked: 0,
+    });
+    expect(mockLogSystemWarn).toHaveBeenCalled();
   });
 
   it("emits no finished sample when another writer settled the row first", async () => {
@@ -663,5 +924,60 @@ describe("scheduling safety", () => {
       "[Reconciler] Settled unconfirmed executions",
       expect.objectContaining({ direct_examined: "1", workflow_examined: "1" })
     );
+  });
+});
+
+describe("runs that sent a bundle", () => {
+  const bundleSignals = {
+    skippedInFlight: false,
+    notIncluded: false,
+    bundleSent: true,
+  };
+
+  it("a mined revert says the wallet paid its gas", async () => {
+    verifyResolves("reverted");
+    mockLoadSignals.mockResolvedValue(bundleSignals);
+    await run([], [workflowRow()]);
+    expect(workflowUpdates()[0].values).toMatchObject({
+      status: "error",
+      error:
+        "On-chain verification failed for 1 transaction; the wallet paid its gas",
+    });
+  });
+
+  it("a run with no bundle step keeps the plain revert text", async () => {
+    verifyResolves("reverted");
+    await run([], [workflowRow()]);
+    expect(workflowUpdates()[0].values).toMatchObject({
+      error: "On-chain verification failed for 1 transaction",
+    });
+  });
+
+  it("reads the bundle rows for a hash not found only when the run sent a bundle", async () => {
+    verifyResolves("not_found");
+    await run([], [workflowRow({ startedAt: minutesAgo(25 * 60) })]);
+    expect(mockMinedBundleHashFor).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    updateCalls = [];
+    verifyResolves("not_found");
+    mockLoadSignals.mockResolvedValue(bundleSignals);
+    mockMinedBundleHashFor.mockResolvedValue(undefined);
+    await run([], [workflowRow({ startedAt: minutesAgo(25 * 60) })]);
+    expect(mockMinedBundleHashFor).toHaveBeenCalledWith("we_1", CHAIN_ID, HASH);
+  });
+
+  it("warns, and verifies the hash as is, when the bundle row read fails", async () => {
+    verifyResolves("not_found");
+    mockLoadSignals.mockResolvedValue(bundleSignals);
+    mockMinedBundleHashFor.mockRejectedValue(new Error("db down"));
+    await run([], [workflowRow({ startedAt: minutesAgo(25 * 60) })]);
+    expect(mockLogSystemWarn).toHaveBeenCalledWith(
+      "database",
+      "[Reconcile] Could not read a run's bundle row",
+      expect.any(Error),
+      { execution_id: "we_1" }
+    );
+    expect(mockVerify).toHaveBeenCalledTimes(1);
   });
 });

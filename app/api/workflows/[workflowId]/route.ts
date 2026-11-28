@@ -47,9 +47,10 @@ import { isReservedSlug } from "@/lib/workflow/reserved-slugs";
 import {
   formatActionConfigValidationResponse,
   hasDraftActionNodes,
-  validateWorkflowActionConfigs,
   type WorkflowNodeForValidation,
 } from "@/lib/workflow/validation/action-config";
+import { validateWorkflowNodesForSave } from "@/lib/workflow/validation/save";
+import { validateSendModeForSave } from "@/lib/workflow/validation/send-mode";
 import { findInvalidTemplateTokens } from "@/lib/workflow/validation/template-syntax";
 import { viewerReadOnlyResponse } from "@/lib/security/viewer-policy";
 async function fetchWorkflowPublicTags(
@@ -621,16 +622,41 @@ export async function PATCH(
 
       // Stray toggle values already stored are let through (keptStrayMatcher),
       // compared in the same sanitized shape as the incoming nodes.
-      const actionConfigValidation = validateWorkflowActionConfigs(
+      const savedNodes = sanitizeWorkflowData(
+        existingWorkflow.nodes ?? [],
+        []
+      ).nodes;
+      const actionConfigValidation = await validateWorkflowNodesForSave(
         updateData.nodes,
         {
-          savedNodes: sanitizeWorkflowData(existingWorkflow.nodes ?? [], [])
-            .nodes,
+          savedNodes,
+          organizationId: existingWorkflow.organizationId ?? undefined,
+          edges: Array.isArray(updateData.edges)
+            ? updateData.edges
+            : (existingWorkflow.edges ?? []),
         }
       );
       if (!actionConfigValidation.valid) {
         return NextResponse.json(
           formatActionConfigValidationResponse(actionConfigValidation),
+          { status: 422 }
+        );
+      }
+    } else if (Array.isArray(updateData.edges)) {
+      // Edges alone can wire a saved bundle step into a nested For Each: the
+      // stored nodes pass as saved, and the loop rule runs on the new edges.
+      const savedNodes = sanitizeWorkflowData(
+        existingWorkflow.nodes ?? [],
+        []
+      ).nodes;
+      const edgeValidation = await validateSendModeForSave(savedNodes, {
+        savedNodes,
+        organizationId: existingWorkflow.organizationId ?? undefined,
+        edges: updateData.edges,
+      });
+      if (!edgeValidation.valid) {
+        return NextResponse.json(
+          formatActionConfigValidationResponse(edgeValidation),
           { status: 422 }
         );
       }

@@ -2,10 +2,11 @@ import "server-only";
 
 import { ethers } from "ethers";
 import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { declaredErrorClass, type RpcProviderManager } from "@/lib/rpc/providers";
 import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
 import { getErrorMessage } from "@/lib/utils";
@@ -68,7 +69,11 @@ type BatchReadContractResult =
       totalCalls: number | null;
       error?: string;
     }
-  | (ReadDestinationFailure & { success: false; error: string });
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 export type BatchReadContractCoreInput = ReadFailOnErrorInput & {
   network?: string;
@@ -562,7 +567,11 @@ async function executeMulticallBatches(
   rpcManager: RpcProviderManager,
   batchSize: number,
   chainId: number
-): Promise<{ results: CallResult[]; error?: string }> {
+): Promise<{
+  results: CallResult[];
+  error?: string;
+  errorClass?: ExecutionErrorType;
+}> {
   const results: CallResult[] = [];
   const totalBatches = Math.ceil(encodedCalls.length / batchSize);
 
@@ -612,6 +621,7 @@ async function executeMulticallBatches(
       return {
         results: [],
         error: `Multicall batch ${batchIndex + 1}/${totalBatches} failed: ${reason}`,
+        ...declaredErrorClass(error),
       };
     }
   }
@@ -894,7 +904,11 @@ async function executeUniformMode(
     return { success: false, destinationError: true, error: chainRpc.error };
   }
 
-  const { results, error: batchError } = await executeMulticallBatches(
+  const {
+    results,
+    error: batchError,
+    errorClass,
+  } = await executeMulticallBatches(
     prepared.encoded,
     chainRpc.rpcManager,
     parseBatchSize(input.batchSize),
@@ -902,7 +916,11 @@ async function executeUniformMode(
   );
 
   if (batchError) {
-    return { success: false, error: batchError };
+    return {
+      success: false,
+      error: batchError,
+      ...(errorClass ? { errorClass } : {}),
+    };
   }
 
   return { success: true, results, totalCalls: results.length };
@@ -966,7 +984,12 @@ async function executeMixedMode(
     results: CallResult[];
     group: IndexedEncodedCall[];
   };
-  type GroupFailure = { ok: false; error: string; destinationError?: true };
+  type GroupFailure = {
+    ok: false;
+    error: string;
+    destinationError?: true;
+    errorClass?: ExecutionErrorType;
+  };
   type GroupOutcome = GroupSuccess | GroupFailure;
 
   // Execute all network groups in parallel
@@ -987,7 +1010,13 @@ async function executeMixedMode(
         chainRpc.chainId
       );
       if (batchResult.error !== undefined) {
-        return { ok: false, error: batchResult.error };
+        return {
+          ok: false,
+          error: batchResult.error,
+          ...(batchResult.errorClass
+            ? { errorClass: batchResult.errorClass }
+            : {}),
+        };
       }
 
       return { ok: true, results: batchResult.results, group };
@@ -998,7 +1027,11 @@ async function executeMixedMode(
     if (!outcome.ok) {
       return outcome.destinationError
         ? { success: false, destinationError: true, error: outcome.error }
-        : { success: false, error: outcome.error };
+        : {
+            success: false,
+            error: outcome.error,
+            ...(outcome.errorClass ? { errorClass: outcome.errorClass } : {}),
+          };
     }
     for (const [resultIdx, groupCall] of outcome.group.entries()) {
       allResults[groupCall.originalIndex] = outcome.results[resultIdx];

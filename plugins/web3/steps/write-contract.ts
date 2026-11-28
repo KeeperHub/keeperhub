@@ -4,6 +4,7 @@ import { withPluginMetrics } from "@/lib/metrics/instrumentation/plugin";
 import { withStepValueCap } from "@/lib/execute/value-ledger";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
 import { type StepInput, withStepLogging } from "@/lib/workflow/executor/step-handler";
+import { bundleReservationEnd } from "@/lib/workflow/executor/run-outcome-keys";
 import {
   applyFailOnError,
   type WriteContractCoreInput,
@@ -67,16 +68,24 @@ export async function writeContractStep(
             executionId: input._context?.executionId,
             valueCapReserved: input._context?.valueCapReserved,
           },
-          async () => {
+          async (valueReservationId) => {
             // payerParam is an internal core option: only protocolWriteStep and
             // the protocol execute route set it, and both build the core input
             // themselves. A generic write-contract config must never reach it,
             // or it could rewrite an argument after the stablecoin ceiling read it.
             const { payerParam: _ignoredPayerParam, ...coreInput } =
               input as typeof input & { payerParam?: unknown };
-            coreResult = await writeContractCore(coreInput);
+            coreResult = await writeContractCore({
+              ...coreInput,
+              allowBundle: true,
+              // A bundle records it, so a held miss counts while it may land.
+              ...(valueReservationId && {
+                _context: { ...coreInput._context, valueReservationId },
+              }),
+            });
             return coreResult;
-          }
+          },
+          bundleReservationEnd
         );
         return result === coreResult
           ? applyFailOnError(result, input.failOnError)

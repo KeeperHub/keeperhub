@@ -606,6 +606,7 @@ describe("safeFetch (shadow mode)", () => {
   describe("against a local listener", () => {
     let server: Server;
     let port = 0;
+    let finalHits = 0;
 
     beforeEach(async () => {
       server = createServer((req, res) => {
@@ -618,6 +619,9 @@ describe("safeFetch (shadow mode)", () => {
           res.writeHead(302, { location: `http://localhost:${port}/final` });
           res.end();
           return;
+        }
+        if (req.url === "/final") {
+          finalHits += 1;
         }
         res.end("ok");
       });
@@ -658,6 +662,24 @@ describe("safeFetch (shadow mode)", () => {
           extra: { hostname: "127.0.0.1", resolved_ip: "127.0.0.1" },
         })
       );
+    });
+
+    it("passes redirect: error through to undici (the RPC transport relies on it)", async () => {
+      fakeDns.set("redirect.example.test", [
+        { address: "127.0.0.1", family: 4 },
+      ]);
+      finalHits = 0;
+      const error = await safeFetch(
+        `http://redirect.example.test:${port}/redirect`,
+        { method: "POST", body: "signed", redirect: "error" }
+      ).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect((error as Error | undefined)?.cause).toMatchObject({
+        message: "unexpected redirect",
+      });
+      expect(finalHits).toBe(0);
     });
 
     it("applies the hostname denylist to a redirect hop", async () => {

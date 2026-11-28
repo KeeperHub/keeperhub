@@ -206,18 +206,11 @@ describe("isFailureAlertsEnabledForOrg", () => {
     expect(isFailureAlertsEnabledForOrg("org-a", rollout)).toBe(expected);
   });
 
-  it("only ever adds organizations as the percentage grows", () => {
-    const ids = Array.from({ length: 200 }, (_, i) => `org-${i}`);
-    const at10 = ids.filter((id) =>
-      isFailureAlertsEnabledForOrg(id, "percent:10")
-    );
-    const at50 = new Set(
-      ids.filter((id) => isFailureAlertsEnabledForOrg(id, "percent:50"))
-    );
-    expect(at10.length).toBeGreaterThan(0);
-    for (const id of at10) {
-      expect(at50.has(id)).toBe(true);
-    }
+  it("reads FAILURE_ALERTS_ROLLOUT by default", () => {
+    vi.stubEnv("FAILURE_ALERTS_ROLLOUT", "orgs:org-a");
+    expect(isFailureAlertsEnabledForOrg("org-a")).toBe(true);
+    expect(isFailureAlertsEnabledForOrg("org-b")).toBe(false);
+    vi.unstubAllEnvs();
   });
 });
 

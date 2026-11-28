@@ -67,6 +67,8 @@ vi.mock("@/plugins/tempo/steps/tempo-tx-core", () => ({
   normalizeMemo: (...args: unknown[]) => mockNormalizeMemo(...args),
 }));
 
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { RpcUserEndpointError } from "@/lib/rpc/providers";
 import {
   type TransferWithMemoInput,
   transferWithMemoStep,
@@ -189,6 +191,31 @@ describe("transferWithMemoStep", () => {
     if (!res.success) {
       expect(res.error).toContain("reverted");
     }
+  });
+
+  it("keeps the user's class when their own RPC fails a read before sending", async () => {
+    mockResolveTempoToken.mockRejectedValue(
+      new RpcUserEndpointError(
+        "Your RPC preference answered with a redirect, which is not followed"
+      )
+    );
+
+    const res = await transferWithMemoStep(baseInput());
+
+    expect(res).toMatchObject({
+      success: false,
+      errorClass: ExecutionErrorType.USER,
+    });
+    expect(mockSignAndBroadcast).not.toHaveBeenCalled();
+  });
+
+  it("declares no class for a platform RPC failure", async () => {
+    mockResolveTempoToken.mockRejectedValue(new Error("redirect"));
+
+    const res = await transferWithMemoStep(baseInput());
+
+    expect(res.success).toBe(false);
+    expect(res).not.toHaveProperty("errorClass");
   });
 
   it("passes an optional on-chain expiry (validBefore) to the transaction", async () => {

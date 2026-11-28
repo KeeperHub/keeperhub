@@ -17,6 +17,13 @@ describe("parseRunFilters", () => {
     ).toEqual(["error", "external_error", "system_error"]);
   });
 
+  it("accepts not_landed as a status filter", () => {
+    expect(parse("status=not_landed&status=skipped").statuses).toEqual([
+      "not_landed",
+      "skipped",
+    ]);
+  });
+
   it("keeps a single value working the way it always did", () => {
     expect(parse("status=success").statuses).toEqual(["success"]);
   });

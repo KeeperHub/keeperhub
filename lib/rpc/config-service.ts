@@ -14,21 +14,29 @@ import {
 } from "@/lib/db/schema";
 import { logWarn } from "@/lib/logging";
 import { getErrorMessage } from "@/lib/utils";
-import { type BuilderRpcUrls, normalizeBuilderRpcUrls } from "./rpc-config";
+import { noPrivateRelayMessage } from "@/lib/web3/send-mode";
+import { PrivateRelayUnavailableError } from "./providers/transport-error";
+import {
+  type BuilderRpcUrls,
+  cleanBroadcastRpcUrls,
+  normalizeBuilderRpcUrls,
+} from "./rpc-config";
 import type { ResolvedRpcConfig } from "./types";
 
 /**
  * Options for resolveRpcConfig.
  *
- * KEEP-137: Per-node Private Mempool toggle. When `usePrivateMempool=true` and
- * the chain supports private mempool routing (`chains.usePrivateMempoolRpc=true`
- * with a populated `defaultPrivateRpcUrl`), the primary URL is swapped to the
- * private endpoint. If `strict=true` (the default), the fallback URL is cleared so a failing
- * private endpoint does NOT silently fall back to the public mempool.
+ * Per-node private relay ("Send as: Private relay"). When `usePrivateMempool`
+ * is set and the chain has a relay (`chains.usePrivateMempoolRpc` with a
+ * `defaultPrivateRpcUrl`), the primary URL is swapped to the relay. With
+ * `strict` (the default) the fallback is cleared, and a chain without a relay
+ * is refused unless the relay is optional (the old flag alone).
  */
 export type ResolveRpcConfigOptions = {
   usePrivateMempool?: boolean;
   strict?: boolean;
+  // Use the relay only where the chain has one (the old flag with no sendMode).
+  relayOptional?: boolean;
 };
 
 /**
@@ -135,19 +143,22 @@ function buildDefaultConfig(
     fallbackRpcUrl: chain.defaultFallbackRpc || undefined,
     primaryWssUrl: chain.defaultPrimaryWss || undefined,
     fallbackWssUrl: chain.defaultFallbackWss || undefined,
+    broadcastRpcUrls: cleanBroadcastRpcUrls(chain.broadcastRpcUrls, [
+      chain.defaultPrimaryRpc,
+      chain.defaultFallbackRpc,
+      chain.defaultPrivateRpcUrl,
+    ]),
     ...capabilities,
     source: "default",
   };
 }
 
 /**
- * Apply the private-mempool URL swap when requested and supported.
+ * Apply the private relay URL swap when requested.
  *
- * When the chain does not support private mempool but the flag is set, we log
- * a warning and proceed with the public mempool URL. This is a defense-in-depth
- * path: the UI is expected to hide the toggle on unsupported chains, so reaching
- * this branch usually indicates config drift (e.g. the flag was disabled on the
- * chain row after a workflow was saved).
+ * A chain without a relay (a templated network, a chain that lost its relay,
+ * a direct API call) is refused unless `strict` is false or the relay is
+ * optional, where the step proceeds on the public mempool with a warning.
  */
 function applyPrivateMempoolSwap(
   baseConfig: ResolvedRpcConfig,
@@ -158,6 +169,11 @@ function applyPrivateMempoolSwap(
   }
 
   if (!(baseConfig.usePrivateMempoolRpc && baseConfig.privateRpcUrl)) {
+    if (options.strict !== false && !options.relayOptional) {
+      throw new PrivateRelayUnavailableError(
+        noPrivateRelayMessage(baseConfig.chainName)
+      );
+    }
     logWarn(
       `[rpc-config] Private mempool requested for chain ${baseConfig.chainId} ` +
         "but chain does not support it; proceeding with public mempool"
@@ -173,6 +189,8 @@ function applyPrivateMempoolSwap(
     ...baseConfig,
     primaryRpcUrl: baseConfig.privateRpcUrl,
     fallbackRpcUrl: strict ? undefined : baseConfig.primaryRpcUrl,
+    // Data hygiene only: the manager is what keeps extras off relay sends.
+    broadcastRpcUrls: [],
     // Only reached when the swap actually happened: the node asked for the
     // private mempool and the chain had a relay to route to. We configure that
     // pointer but do not run the node behind it.

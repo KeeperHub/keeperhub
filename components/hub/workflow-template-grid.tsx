@@ -3,7 +3,12 @@
 import { useRouter } from "next/navigation";
 import { type MouseEvent, useState } from "react";
 import { toast } from "sonner";
-import { api, type SavedWorkflow } from "@/lib/api-client";
+import {
+  api,
+  DUPLICATE_ERROR_TOAST,
+  duplicateErrorMessage,
+  type SavedWorkflow,
+} from "@/lib/api-client";
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import type { VoteDirection } from "@/lib/workflow/editor/votes";
 import type { VoteOverridesMap } from "./use-vote-overrides";
@@ -44,7 +49,8 @@ export function WorkflowTemplateGrid({
       router.push(`/workflows/${duplicated.id}`);
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to duplicate"
+        duplicateErrorMessage(error, "Failed to duplicate"),
+        DUPLICATE_ERROR_TOAST
       );
     } finally {
       setDuplicatingIds((prev) => {

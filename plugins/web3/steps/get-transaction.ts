@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { db } from "@/lib/db";
 import { explorerConfigs } from "@/lib/db/schema";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getAddressUrl, getTransactionUrl } from "@/lib/explorer";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import {
@@ -12,7 +13,7 @@ import {
   getSolanaProvider,
   isSolanaChain,
 } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { declaredErrorClass, type RpcProviderManager } from "@/lib/rpc/providers";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
 import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
@@ -66,7 +67,11 @@ type GetTransactionResult =
       toLink: string;
       error?: string;
     }
-  | (ReadDestinationFailure & { success: false; error: string });
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 /** Data fields a softened lookup reports, so a soft failure never looks like a real transaction. */
 const SOFT_TRANSACTION_FIELDS = {
@@ -249,7 +254,7 @@ async function stepHandler(
       : await fetchEvmTransaction(hash, chainId, userId);
   } catch (error) {
     const message = `Failed to fetch transaction: ${getErrorMessage(error)}`;
-    return { success: false, error: message };
+    return { success: false, error: message, ...declaredErrorClass(error) };
   }
 }
 

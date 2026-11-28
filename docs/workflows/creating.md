@@ -91,7 +91,7 @@ For trigger nodes, you'll also configure specific settings based on the trigger 
 | Schedule | `"Schedule"` | `scheduleCron` | `scheduleTimezone` |
 | Webhook  | `"Webhook"`  | (none) | `webhookSchema`, `webhookMockRequest` |
 | Event    | `"Event"`    | `network`, `contractAddress`, `contractABI`, `eventName` | (none) |
-| Block    | `"Block"`    | `network`, `blockInterval` | (none) |
+| Block    | `"Block"`    | `network`, `blockInterval` | `skipIfRunning` (EVM networks), `runOnMissedSlot` (Ethereum Mainnet, Sepolia and Hoodi, Block Interval 1); each `"true"` or `"false"` (JSON `true` and `false` are accepted too), see [Block Trigger](/keepers/configuration#block-trigger) |
 
 > **Note for API users:** The `triggerType` must match the Pascal-case string exactly (e.g., `"Schedule"`, not `"cron"`). The canonical list, including any future additions, is returned under the `triggers` map of [`GET /api/mcp/schemas`](/api/workflows#list-action-schemas).
 

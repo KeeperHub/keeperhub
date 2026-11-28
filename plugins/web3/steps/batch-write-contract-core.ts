@@ -12,9 +12,12 @@
  * confirmed payable (not view) in lib/contracts/abis/multicall3.json.
  */
 import "server-only";
+import { broadcastAttemptedOf } from "@/lib/web3/pre-send";
 import {
   type BroadcastInfo,
-  isPreBroadcastNetworkError,
+  type SendReport,
+  type SendRoute,
+  sendReportFields,
 } from "@/lib/web3/submit-signed";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
@@ -33,7 +36,6 @@ import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
 import { getErrorMessage, resolveFailOnError } from "@/lib/utils";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
 import { getChainBuilderRpcUrls } from "@/lib/rpc/config-service";
 import {
   getOrganizationWalletAddress,
@@ -41,6 +43,7 @@ import {
 } from "@/lib/web3/wallet-helpers";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
 import { type RpcProviderManager, rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { resolveWriteRpc } from "@/lib/rpc/send-provider";
 import { getChainAdapter } from "@/lib/web3/chain-adapter";
 import {
   preflightGasBalance,
@@ -66,7 +69,6 @@ import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   type NextBlockSimulation,
   type NextBlockSimulationOptions,
-  failedNextBlockCheck,
   getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
   nextBlockFailure,
@@ -79,6 +81,7 @@ import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
 import type { TransactionContext } from "@/lib/web3/transaction-manager";
 import { withNonceSession } from "@/lib/web3/transaction-manager";
 import { generateId } from "@/lib/utils/id";
+import { SEND_MODE, unsupportedSendMode } from "@/lib/web3/send-mode";
 import {
   type AbiOutputParam,
   structureAbiOutputs,
@@ -111,7 +114,13 @@ export type BatchWriteContractCoreInput = {
   // Optional maxFeePerGas ceiling (in gwei). The send is refused when it is
   // below the current base fee.
   maxFeeGwei?: string;
-  usePrivateMempool?: boolean;
+  // sendMode "private-relay" is refused before sending (relayRefusal). The old
+  // flag alone (any stored value) still uses the relay where the chain has one.
+  sendMode?: string;
+  usePrivateMempool?: unknown;
+  // Only with that old flag on a relay chain: false gives the relay manager a
+  // public fallback, which the eth_call check reaches at Latest (an HTTP refusal
+  // such as Protect's 403 is retried there), never at Next block.
   strict?: boolean;
   web3Connection?: string;
   // See WriteContractCoreInput: "next-block" simulates as of the next block.
@@ -148,6 +157,8 @@ export type BatchWriteContractResult =
     simulation?: NextBlockSimulation;
     // The block the per-call results were checked against.
     resultsSimulation?: NextBlockSimulation;
+    route?: SendRoute;
+    included?: boolean;
     // How the transaction went out; builder labels only, never URLs.
     broadcast?: BroadcastInfo;
   }
@@ -157,6 +168,8 @@ export type BatchWriteContractResult =
     rejection?: RevertKind;
     errorClass?: ExecutionErrorType;
     simulation?: NextBlockSimulation;
+    route?: SendRoute;
+    included?: boolean;
     transactionHash?: string;
     chainId?: number;
     // Present when the pre-broadcast simulation ran and decoded per-call
@@ -196,6 +209,7 @@ export function applyBatchFailOnError(
     success: true,
     error: redactAllUrls(result.error),
     rejection: result.rejection,
+    ...sendReportFields(result),
     // Carried forward when present (e.g. an all-calls-failed simulation
     // abort): unlike transactionHash, these are pre-broadcast diagnostics
     // with no KEEP-966 reconciliation risk, so there is no reason to drop
@@ -570,8 +584,6 @@ async function batchWriteContractCoreImpl(
     gasLimitMultiplier,
     priorityFeeGwei,
     maxFeeGwei,
-    usePrivateMempool,
-    strict,
     web3Connection,
     simulateAt,
     simulateTimestampOffsetSec,
@@ -624,12 +636,8 @@ async function batchWriteContractCoreImpl(
   const { organizationId, userId } = orgCtx;
 
   let chainId: number;
-  let rpcUrl: string;
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
   try {
     chainId = getChainIdFromNetwork(network);
-    rpcManager = await getRpcProvider({ chainId, userId, usePrivateMempool, strict });
-    rpcUrl = await rpcManager.resolveActiveRpcUrl();
   } catch (error) {
     return {
       success: false,
@@ -637,6 +645,23 @@ async function batchWriteContractCoreImpl(
       errorClass: ExecutionErrorType.SYSTEM,
     };
   }
+  // sendMode "private-relay" is refused before sending. The old flag alone runs as
+  // before Send as: the relay where the chain has one (its eth_call check can then
+  // fail, as the editor warns), else public.
+  const resolved = await resolveWriteRpc(input, {
+    chainId,
+    userId,
+    relayRefusal: unsupportedSendMode(
+      "web3/batch-write-contract",
+      SEND_MODE.PRIVATE_RELAY
+    ),
+    log: { tag: "[Batch Write Contract]", action: "batch-write-contract" },
+    fallbackClass: ExecutionErrorType.SYSTEM,
+  });
+  if (!resolved.ok) {
+    return { success: false, ...resolved.failure };
+  }
+  const { rpcManager, rpcUrl, relayRequested } = resolved.rpc;
 
   if (maxFeeOverride !== undefined) {
     const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
@@ -780,7 +805,7 @@ async function batchWriteContractCoreImpl(
 
   // Looked up before the wallet lock; private mempool sends stay on the relay.
   const builderRpcUrls =
-    simulation !== undefined && !usePrivateMempool
+    simulation !== undefined && !relayRequested
       ? await getChainBuilderRpcUrls(chainId)
       : undefined;
 
@@ -796,6 +821,7 @@ async function batchWriteContractCoreImpl(
     }
 
     let receivedTransactionHash: string | undefined;
+    const sendReport: SendReport = {};
     try {
       const receipt = await adapter.executeContractCall(
         signer,
@@ -819,6 +845,7 @@ async function batchWriteContractCoreImpl(
             simulation && checkedAt
               ? { ...simulation, basedOn: checkedAt }
               : simulation,
+          sendReport,
           builderRpcUrls,
         }
       );
@@ -841,6 +868,7 @@ async function batchWriteContractCoreImpl(
         totalCalls: results.length,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
         ...(checkedAt ? { resultsSimulation: checkedAt } : {}),
+        ...sendReportFields(sendReport),
         ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
       };
     } catch (error) {
@@ -864,14 +892,9 @@ async function batchWriteContractCoreImpl(
         ),
         ...(errorClass ? { errorClass } : {}),
         ...(broadcastHash ? { transactionHash: broadcastHash, chainId } : {}),
-        broadcastAttempted: broadcastHash
-          ? true
-          : rejection.kind !== "unknown" ||
-              isPreBroadcastNetworkError(error) ||
-              failedNextBlockCheck(error)
-            ? false
-            : true,
+        broadcastAttempted: broadcastAttemptedOf(error, broadcastHash, rejection),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
+        ...sendReportFields(sendReport),
       };
       // aggregate3 is atomic, so a confirmed on-chain revert (receipt status
       // 0) is the one case where every call's outcome is actually known:

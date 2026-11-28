@@ -7,7 +7,8 @@ import {
 } from "@/lib/agentic-wallet/constants";
 import { db } from "@/lib/db";
 import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
-import { isErrorStatus } from "@/lib/errors/execution-status";
+import { isErrorStatus, NOT_LANDED_LATER } from "@/lib/errors/execution-status";
+import { withoutDailyCapDetail } from "@/lib/execute/daily-cap-text";
 
 /**
  * Default timeout for waiting on read-workflow completion before falling back
@@ -22,7 +23,8 @@ type TerminalStatus =
   | "error"
   | "system_error"
   | "cancelled"
-  | "skipped";
+  | "skipped"
+  | "not_landed";
 
 type ExecutionResult = {
   status: TerminalStatus;
@@ -37,7 +39,8 @@ function isTerminalStatus(status: string): status is TerminalStatus {
     status === "cancelled" ||
     // A refused run never starts, so a caller waiting on it must stop here
     // rather than poll until the timeout.
-    status === "skipped"
+    status === "skipped" ||
+    status === "not_landed"
   );
 }
 
@@ -231,7 +234,13 @@ export type CallCompletionResponse =
       output: unknown;
       feedback: FeedbackCta;
     }
-  | { executionId: string; status: "error"; error: string }
+  | {
+      executionId: string;
+      status: "error";
+      error: string;
+      // Set when the run ended without failing, so a caller can tell it apart.
+      code?: "skipped" | "not_landed";
+    }
   | { executionId: string; status: "running" };
 
 /**
@@ -269,11 +278,21 @@ export async function buildCallCompletionResponse(
       executionId,
       status: "error",
       error: result.error ?? "Execution skipped",
+      code: "skipped",
+    };
+  }
+  if (result.status === "not_landed") {
+    return {
+      executionId,
+      status: "error",
+      error: `Execution finished, but a bundle in it was not seen in its target blocks. ${NOT_LANDED_LATER}`,
+      code: "not_landed",
     };
   }
   return {
     executionId,
     status: "error",
-    error: result.error ?? "Execution failed",
+    // The caller is outside the owner's org: no wallet or amount detail.
+    error: withoutDailyCapDetail(result.error ?? "Execution failed"),
   };
 }

@@ -8,8 +8,11 @@ import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logSystemError } from "@/lib/logging";
 import {
+  builderLabels,
+  bundleCapableBuilders,
   CHAIN_CONFIG,
-  getBuilderRpcUrls,
+  cleanBroadcastRpcUrls,
+  ETH_MAINNET_BUILDERS,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrl,
@@ -21,6 +24,8 @@ import {
   parseRpcConfigWithDetails,
   RPC_CONFIG_GZIP_PREFIX,
   type RpcConfig,
+  readBroadcastRpcUrls,
+  readChainBuilders,
 } from "../../lib/rpc/rpc-config";
 
 vi.mock("@/lib/logging", async (importActual) => {
@@ -1226,6 +1231,291 @@ describe("RPC Config Resolution", () => {
  * This asserts over the whole exported table rather than the one entry that was
  * wrong, so an endpoint added later fails here rather than in someone's install.
  */
+describe("readBroadcastRpcUrls / cleanBroadcastRpcUrls", () => {
+  it("keeps https URLs, normalised and unique, and drops anything else", () => {
+    const rpcConfig = {
+      "eth-mainnet": {
+        broadcastRpcUrls: [
+          " https://a.example ",
+          "https://A.EXAMPLE/",
+          "http://c.example/rpc",
+          "wss://b.example",
+          "not a url",
+          42,
+          "https://d.example/v2/key/",
+        ] as unknown as string[],
+      },
+    };
+
+    expect(readBroadcastRpcUrls({ rpcConfig, jsonKey: "eth-mainnet" })).toEqual(
+      ["https://a.example", "https://d.example/v2/key"]
+    );
+  });
+
+  it("allows plain http only to a local node", () => {
+    expect(
+      cleanBroadcastRpcUrls([
+        "http://localhost:8545",
+        "http://127.0.0.1:8546/",
+        "http://10.0.0.1:8545",
+      ])
+    ).toEqual(["http://localhost:8545", "http://127.0.0.1:8546"]);
+  });
+
+  it("drops URLs equal to one of the chain's own RPCs", () => {
+    expect(
+      cleanBroadcastRpcUrls(
+        [
+          "https://primary.example/",
+          "https://relay.example",
+          "https://x.example",
+        ],
+        ["https://PRIMARY.example", null, "https://relay.example/"]
+      )
+    ).toEqual(["https://x.example"]);
+  });
+
+  it("keeps at most ten URLs", () => {
+    const urls = Array.from({ length: 12 }, (_, i) => `https://n${i}.example`);
+    expect(cleanBroadcastRpcUrls(urls)).toHaveLength(10);
+  });
+
+  it("is empty when the entry or the list is missing", () => {
+    expect(
+      readBroadcastRpcUrls({ rpcConfig: {}, jsonKey: "eth-mainnet" })
+    ).toEqual([]);
+    expect(cleanBroadcastRpcUrls("x")).toEqual([]);
+  });
+});
+
+// The builders a chain-config builderRpcUrls value gives a chain without defaults.
+function parseChainBuilders(value: unknown) {
+  return readChainBuilders({
+    rpcConfig: {
+      x: { builderRpcUrls: value as RpcConfig[string]["builderRpcUrls"] },
+    },
+    jsonKey: "x",
+  });
+}
+
+// Raw-capable builder URLs for a chain, over the given defaults.
+function getBuilderRpcUrls(
+  options: Parameters<typeof readChainBuilders>[0]
+): ReturnType<typeof normalizeBuilderRpcUrls> {
+  return normalizeBuilderRpcUrls(readChainBuilders(options));
+}
+
+describe("builder methods, defaults and order", () => {
+  const MAINNET_LABELS = [
+    "flashbots",
+    "buildernet",
+    "titan",
+    "beaverbuild",
+    "quasar",
+    "btcs",
+    "eureka",
+  ];
+  const bundleOnly = (url: string) => ({
+    url,
+    methods: ["bundle" as const],
+  });
+
+  it("reads a plain URL as raw only: never used for bundles", () => {
+    const value = { titan: "https://titan.example" };
+    expect(parseChainBuilders(value)).toEqual([
+      { label: "titan", url: "https://titan.example", methods: ["raw"] },
+    ]);
+    expect(normalizeBuilderRpcUrls(value)).toEqual({
+      titan: "https://titan.example",
+    });
+    expect(builderLabels(value)).toEqual([]);
+    expect(bundleCapableBuilders(value)).toEqual([]);
+  });
+
+  it("never sends raw transactions to a bundle-only builder", () => {
+    const value = { flashbots: bundleOnly("https://relay.example") };
+    expect(builderLabels(value)).toEqual(["flashbots"]);
+    expect(normalizeBuilderRpcUrls(value)).toBeUndefined();
+  });
+
+  it("uses a builder with both methods for bundles and raw sends", () => {
+    const value = {
+      titan: { url: "https://titan.example", methods: ["raw", "bundle"] },
+    };
+    expect(builderLabels(value)).toEqual(["titan"]);
+    expect(normalizeBuilderRpcUrls(value)).toEqual({
+      titan: "https://titan.example",
+    });
+    expect(parseChainBuilders(value)[0]?.methods).toEqual(["bundle", "raw"]);
+  });
+
+  it("drops entries with no known method, a bad URL or a bad label", () => {
+    expect(
+      parseChainBuilders({
+        none: { url: "https://none.example", methods: [] },
+        odd: { url: "https://odd.example", methods: ["call"] },
+        remote: "http://remote.example",
+        "Bad Label": "https://bad.example",
+        local: { url: "http://127.0.0.1:9000", methods: ["bundle"] },
+      })
+    ).toEqual([
+      { label: "local", url: "http://127.0.0.1:9000", methods: ["bundle"] },
+    ]);
+  });
+
+  it("keeps the stored array order, not alphabetical or jsonb key order", () => {
+    const stored = [
+      { label: "zeta", url: "https://z.example", methods: ["bundle"] },
+      { label: "alpha", url: "https://a.example", methods: ["bundle"] },
+      { label: "mid", url: "https://m.example", methods: ["bundle"] },
+    ];
+    expect(builderLabels(stored)).toEqual(["zeta", "alpha", "mid"]);
+  });
+
+  it("keeps the first sixteen bundle-capable builders in order", () => {
+    const stored = Array.from({ length: 20 }, (_, i) => ({
+      label: `b${i}`,
+      url: `https://b${i}.example`,
+      methods: i === 0 ? ["raw"] : ["bundle"],
+    }));
+    const labels = builderLabels(stored);
+    expect(labels).toHaveLength(16);
+    expect(labels[0]).toBe("b1");
+    expect(labels[15]).toBe("b16");
+  });
+
+  it("seeds mainnet with the seven builders, bundle only, in order", () => {
+    const builders = readChainBuilders({
+      rpcConfig: {},
+      jsonKey: "eth-mainnet",
+      defaults: ETH_MAINNET_BUILDERS,
+    });
+    expect(builders.map((b) => b.label)).toEqual(MAINNET_LABELS);
+    expect(builderLabels(builders)).toEqual(MAINNET_LABELS);
+    // The next-block raw broadcast stays off on mainnet by default.
+    expect(normalizeBuilderRpcUrls(builders)).toBeUndefined();
+    expect(
+      getBuilderRpcUrls({
+        rpcConfig: {},
+        jsonKey: "eth-mainnet",
+        defaults: ETH_MAINNET_BUILDERS,
+      })
+    ).toBeUndefined();
+  });
+
+  it("a plain URL on a default label keeps it for bundles and adds raw; explicit methods replace it", () => {
+    const rpcConfig: RpcConfig = {
+      "eth-mainnet": {
+        builderRpcUrls: {
+          titan: "https://titan-raw.example",
+          quasar: { url: "https://quasar-raw.example" },
+          btcs: { url: "https://btcs-raw.example", methods: ["raw"] },
+        },
+      },
+    };
+    const builders = readChainBuilders({
+      rpcConfig,
+      jsonKey: "eth-mainnet",
+      defaults: ETH_MAINNET_BUILDERS,
+    });
+    const byLabel = new Map(builders.map((b) => [b.label, b]));
+    expect(byLabel.get("titan")).toEqual({
+      label: "titan",
+      url: "https://titan-raw.example",
+      methods: ["bundle", "raw"],
+    });
+    expect(byLabel.get("quasar")?.methods).toEqual(["bundle", "raw"]);
+    expect(byLabel.get("btcs")?.methods).toEqual(["raw"]);
+    // Order unchanged; btcs leaves bundles only because its methods say so.
+    expect(builderLabels(builders)).toEqual(
+      MAINNET_LABELS.filter((label) => label !== "btcs")
+    );
+    expect(normalizeBuilderRpcUrls(builders)).toEqual({
+      titan: "https://titan-raw.example",
+      quasar: "https://quasar-raw.example",
+      btcs: "https://btcs-raw.example",
+    });
+  });
+
+  it("replaces a default in place, removes one with an empty URL, appends the rest in config order", () => {
+    const rpcConfig: RpcConfig = {
+      "eth-mainnet": {
+        builderRpcUrls: {
+          zed: "https://zed.example",
+          titan: {
+            url: "https://titan.example",
+            methods: ["bundle", "raw"],
+          },
+          flashbots: "",
+          aaa: bundleOnly("https://aaa.example"),
+        },
+      },
+    };
+    const builders = readChainBuilders({
+      rpcConfig,
+      jsonKey: "eth-mainnet",
+      defaults: ETH_MAINNET_BUILDERS,
+    });
+    expect(builders.map((b) => b.label)).toEqual([
+      "buildernet",
+      "titan",
+      "beaverbuild",
+      "quasar",
+      "btcs",
+      "eureka",
+      "zed",
+      "aaa",
+    ]);
+    expect(builderLabels(builders)).toEqual([
+      "buildernet",
+      "titan",
+      "beaverbuild",
+      "quasar",
+      "btcs",
+      "eureka",
+      "aaa",
+    ]);
+    expect(normalizeBuilderRpcUrls(builders)).toEqual({
+      titan: "https://titan.example",
+      zed: "https://zed.example",
+    });
+  });
+
+  it("names each entry skipped as not valid, and whether it removed a default", () => {
+    const rpcConfig: RpcConfig = {
+      "eth-mainnet": {
+        builderRpcUrls: {
+          flashbots: "http://relay.flashbots.net",
+          // A misspelled method, as a hand-written config could hold.
+          titan: {
+            url: "https://titan.example",
+            methods: ["bundles"],
+          } as never,
+          beaverbuild: "",
+          Zed: "https://zed.example",
+          aaa: { url: "https://aaa.example", methods: [] },
+          ok: "https://ok.example",
+        },
+      },
+    };
+    const onSkipped = vi.fn();
+    const builders = readChainBuilders({
+      rpcConfig,
+      jsonKey: "eth-mainnet",
+      defaults: ETH_MAINNET_BUILDERS,
+      onSkipped,
+    });
+    expect(onSkipped.mock.calls).toEqual([
+      ["flashbots", true],
+      ["titan", true],
+      ["Zed", false],
+      ["aaa", false],
+    ]);
+    expect(builders.map((b) => b.label)).not.toContain("flashbots");
+    expect(builders.map((b) => b.label)).toContain("ok");
+  });
+});
+
 describe("PUBLIC_RPCS contains no KeeperHub-operated endpoint", () => {
   const OPERATED_DOMAINS = ["techops.services", "keeperhub.com"];
 

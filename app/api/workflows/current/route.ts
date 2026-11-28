@@ -14,8 +14,8 @@ import { generateId } from "@/lib/utils/id";
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import {
   formatActionConfigValidationResponse,
-  validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
+import { validateWorkflowNodesForSave } from "@/lib/workflow/validation/save";
 
 const CURRENT_WORKFLOW_NAME = "~~__CURRENT__~~";
 
@@ -141,14 +141,6 @@ export async function POST(request: Request) {
       return featureGuard.response;
     }
 
-    const actionConfigValidation = validateWorkflowActionConfigs(nodes);
-    if (!actionConfigValidation.valid) {
-      return NextResponse.json(
-        formatActionConfigValidationResponse(actionConfigValidation),
-        { status: 422 }
-      );
-    }
-
     // Check if current workflow exists for this user in this org.
     // Both filters are required: userId scopes the draft to the editing user,
     // organizationId prevents access after the user has left the org.
@@ -163,6 +155,21 @@ export async function POST(request: Request) {
         )
       )
       .limit(1);
+
+    // Nodes kept as in the stored draft (old "(Flashbots)" ones included) pass, as on PATCH.
+    const actionConfigValidation = await validateWorkflowNodesForSave(nodes, {
+      organizationId,
+      edges,
+      savedNodes: existingWorkflow
+        ? sanitizeWorkflowData(existingWorkflow.nodes ?? [], []).nodes
+        : undefined,
+    });
+    if (!actionConfigValidation.valid) {
+      return NextResponse.json(
+        formatActionConfigValidationResponse(actionConfigValidation),
+        { status: 422 }
+      );
+    }
 
     if (existingWorkflow) {
       // Update existing current workflow

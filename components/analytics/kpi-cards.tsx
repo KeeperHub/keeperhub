@@ -29,6 +29,10 @@ import {
   analyticsRangeAtom,
   analyticsSummaryAtom,
 } from "@/lib/atoms/analytics";
+import {
+  NOT_LANDED_LATER,
+  SKIPPED_BILLING_TEXT,
+} from "@/lib/errors/execution-status";
 import { cn } from "@/lib/utils";
 
 function formatDuration(ms: number | null): string {
@@ -112,11 +116,9 @@ function DeltaDisplay({
   );
 }
 
-// Shown on Total Runs, which is where a user notices runs are missing: the
-// trigger fired but the platform refused the run before it started, so it is
-// neither a success nor a failure and belongs in no rate.
-const SKIPPED_TOOLTIP =
-  "Runs that finished, successfully or not, over this period. Runs still in flight, runs you cancelled, and skipped runs are excluded. A run is skipped when the trigger fired but the run did not start: the plan's monthly execution limit was reached, the workflow uses an action your plan does not include, a pay-as-you-go charge could not be collected, or the workflow cannot run (for example it was turned off or its schedule was removed). Refusals of one workflow for the same reason share one skipped run per hour, so the skipped count can be lower than the number of refusals. Nothing ran, so skipped runs do not count towards your success rate or your usage.";
+// Shown on Total Runs, where a user notices runs are missing: skipped and not
+// landed runs are neither a success nor a failure, so they belong in no rate.
+export const SKIPPED_TOOLTIP = `Runs that finished, successfully or not, over this period. Runs still in flight, runs you cancelled, skipped runs and not landed runs are excluded. A skipped run is one where the trigger fired but the run did not start (the plan's monthly execution limit was reached, the workflow uses an action your plan does not include, a pay-as-you-go charge could not be collected, or the workflow cannot run, for example it was turned off or its schedule was removed), a Block trigger set to skip while running fired while the previous run was still going, a bundle step found an earlier run's bundle still in flight, or an earlier run's public copy not mined yet, and sent nothing (the run's other steps still ran, and may have sent transactions), or a bundle step is waiting: its Not before time was still too far ahead, so it sent nothing. Refusals of one workflow for the same reason share one skipped run per hour, and the skips behind one running run share one skipped run, so the skipped count can be lower than the number of refused or skipped triggers. They do not count toward your success rate. ${SKIPPED_BILLING_TEXT} A run marked Not landed finished, but a bundle in it was not seen in its target blocks: neither a success nor a failure, but it still counts toward your plan's runs. ${NOT_LANDED_LATER}`;
 
 const COMPARISON_LABELS: Record<TimeRange, string> = {
   "1h": "the previous hour",
@@ -304,6 +306,20 @@ export function KpiCards(): ReactNode {
 
     const prev = summary.previousPeriod;
     const skippedCount = summary.skippedCount;
+    const notLandedCount = summary.notLandedCount;
+    const excludedLines = [
+      ...(skippedCount > 0
+        ? [{ key: "skipped", text: `${skippedCount.toLocaleString()} skipped` }]
+        : []),
+      ...(notLandedCount > 0
+        ? [
+            {
+              key: "not-landed",
+              text: `${notLandedCount.toLocaleString()} not landed`,
+            },
+          ]
+        : []),
+    ];
 
     const totalRunsDelta = prev
       ? computeDelta(summary.totalRuns, prev.totalRuns)
@@ -344,15 +360,7 @@ export function KpiCards(): ReactNode {
         deltaTooltip: deltaTooltip("total runs"),
         invertDeltaColor: false,
         iconClassName: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-        breakdown:
-          skippedCount > 0
-            ? ([
-                {
-                  key: "skipped",
-                  text: `${skippedCount.toLocaleString()} skipped`,
-                },
-              ] as const)
-            : undefined,
+        breakdown: excludedLines.length > 0 ? excludedLines : undefined,
         tooltip: SKIPPED_TOOLTIP,
       },
       {

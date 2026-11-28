@@ -22,11 +22,13 @@ import {
   consoleMetricsCollector,
   createRpcProviderManager,
   getAllFailoverStates,
+  lastEndpointErrorOf,
   noopMetricsCollector,
   type RpcMetricsCollector,
   RpcProviderManager,
   RpcRelayTransportError,
 } from "@/lib/rpc/providers";
+import { getErrorMessage } from "@/lib/utils";
 
 const providerOptions = vi.hoisted((): unknown[] => []);
 
@@ -335,6 +337,70 @@ describe("RpcProviderManager", () => {
       expect(context).not.toHaveProperty("level");
     });
 
+    it("keeps the last endpoint error on the failover error, hidden from its message and JSON", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://primary.example.com",
+          fallbackRpcUrl: "https://fallback.example.com",
+          maxRetries: 1,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+        },
+        metricsCollector,
+      });
+      const last = new Error("fallback down");
+      const operation = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("primary down"))
+        .mockRejectedValueOnce(last);
+      const thrown = await manager
+        .executeWithFailover(operation)
+        .catch((error: unknown) => error);
+      expect(lastEndpointErrorOf(thrown)).toBe(last);
+      expect((thrown as Error).message).toBe(
+        "RPC failed on both endpoints. Primary: primary down. Fallback: fallback down"
+      );
+      expect((thrown as Error).cause).toBeUndefined();
+      expect(getErrorMessage(thrown)).toBe((thrown as Error).message);
+      expect(JSON.stringify(thrown)).not.toContain("fallback down");
+    });
+
+    it("reports both endpoints behind the chain as lag (a warning), not an outage", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://primary.example.com",
+          fallbackRpcUrl: "https://fallback.example.com",
+          maxRetries: 1,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+        },
+        metricsCollector,
+      });
+      const behind = () =>
+        Object.assign(new Error("not at the trigger block"), {
+          rpcLagging: true,
+        });
+      await expect(
+        manager.executeWithFailover(
+          vi
+            .fn()
+            .mockRejectedValueOnce(behind())
+            .mockRejectedValueOnce(behind())
+        )
+      ).rejects.toThrow("RPC failed on both endpoints");
+      expect(metricsCollector.recordBothFailed).not.toHaveBeenCalled();
+      expect(recordErrorMock).not.toHaveBeenCalled();
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(captureException).mock.calls[0][1]).toEqual(
+        expect.objectContaining({
+          level: "warning",
+          extra: expect.objectContaining({
+            event: "RPC_BOTH_ENDPOINTS_LAGGING",
+          }),
+        })
+      );
+    });
+
     it("records a failover that served the call as a warning, not an error", async () => {
       const manager = new RpcProviderManager({
         config: {
@@ -475,6 +541,110 @@ describe("RpcProviderManager", () => {
       await expect(manager.executeWithFailover(mockOperation)).rejects.toThrow(
         "RPC failed on primary endpoint"
       );
+    });
+
+    it("keeps trying the relay first after one call fell back (strict: false)", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://rpc.flashbots.example.com",
+          fallbackRpcUrl: "https://public.example.com",
+          maxRetries: 1,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+          primaryIsPrivateRelay: true,
+        },
+        metricsCollector,
+      });
+      const seen: unknown[] = [];
+      const operation = vi.fn((provider: unknown) => {
+        seen.push(provider);
+        // The relay refuses the first call (a method it does not allow).
+        return seen.length === 1
+          ? Promise.reject(makeServerError(403))
+          : Promise.resolve("ok");
+      });
+
+      await manager.executeWithFailover(operation);
+      await manager.executeWithFailover(operation);
+
+      expect(seen[1]).not.toBe(seen[0]);
+      expect(seen[2]).toBe(seen[0]);
+      expect(manager.isCurrentlyUsingFallback()).toBe(false);
+    });
+
+    it("never retries a revert on the relay elsewhere", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://rpc.flashbots.example.com",
+          fallbackRpcUrl: "https://public.example.com",
+          maxRetries: 3,
+          timeoutMs: 100,
+          chainName: "Ethereum",
+          primaryIsPrivateRelay: true,
+        },
+        metricsCollector,
+      });
+      const operation = vi
+        .fn()
+        .mockRejectedValue(makeEthersError("CALL_EXCEPTION", "reverted"));
+
+      await expect(manager.executeWithFailover(operation)).rejects.toThrow(
+        "reverted"
+      );
+      expect(operation).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses a relay that serves another chain, checked once", async () => {
+      const manager = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://rpc.flashbots.example.com",
+          chainId: 11_155_111,
+          chainName: "Sepolia",
+          primaryIsPrivateRelay: true,
+        },
+        metricsCollector,
+      });
+      const send = vi.fn().mockResolvedValue("0x1");
+      (
+        manager as unknown as { getPrimaryProvider: () => unknown }
+      ).getPrimaryProvider = () => ({ send });
+
+      vi.mocked(captureException).mockClear();
+      await expect(manager.assertPrivateRelayChain()).rejects.toThrow(
+        'the private relay for Sepolia is misconfigured (it serves chain 1, not 11155111). Set Send as to Normal transaction (sendMode: "transaction") only if a public send is acceptable.'
+      );
+      // Our misconfiguration: alerted as a system error, the step fails as USER.
+      expect(captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "PrivateRelayUnavailableError" }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ error_category: "configuration" }),
+        })
+      );
+      // Refused on every run, alerted once per relay and chain.
+      await expect(manager.assertPrivateRelayChain()).rejects.toThrow(
+        "misconfigured"
+      );
+      expect(captureException).toHaveBeenCalledTimes(1);
+      send.mockResolvedValue("0xaa36a7");
+      await manager.assertPrivateRelayChain();
+      await manager.assertPrivateRelayChain();
+      expect(send).toHaveBeenCalledTimes(3);
+
+      // A later manager for the same relay and chain does not ask again.
+      const next = new RpcProviderManager({
+        config: {
+          primaryRpcUrl: "https://rpc.flashbots.example.com",
+          chainId: 11_155_111,
+          chainName: "Sepolia",
+          primaryIsPrivateRelay: true,
+        },
+        metricsCollector,
+      });
+      (
+        next as unknown as { getPrimaryProvider: () => unknown }
+      ).getPrimaryProvider = () => ({ send });
+      await next.assertPrivateRelayChain();
+      expect(send).toHaveBeenCalledTimes(3);
     });
 
     it("attributes a private-mempool relay timeout to the relay, not the platform", async () => {

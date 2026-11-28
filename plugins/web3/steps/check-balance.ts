@@ -3,10 +3,11 @@ import "server-only";
 import { eq } from "drizzle-orm";
 import { ethers } from "ethers";
 import { db } from "@/lib/db";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { ErrorCategory, logUserError } from "@/lib/logging";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider, isSolanaChain } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { declaredErrorClass, type RpcProviderManager } from "@/lib/rpc/providers";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
 import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
@@ -30,7 +31,11 @@ type CheckBalanceResult =
       addressLink: string;
       error?: string;
     }
-  | (ReadDestinationFailure & { success: false; error: string });
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 export type CheckBalanceCoreInput = ReadFailOnErrorInput & {
   network: string;
@@ -159,7 +164,7 @@ async function stepHandler(
       }
     );
     const message = `Failed to check balance: ${getErrorMessage(error)}`;
-    return { success: false, error: message };
+    return { success: false, error: message, ...declaredErrorClass(error) };
   }
 }
 

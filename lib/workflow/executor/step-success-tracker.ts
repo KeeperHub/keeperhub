@@ -28,6 +28,13 @@
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import { isSolanaChain } from "@/lib/rpc/solana-chains";
 import { validateChainTxHash } from "@/lib/web3/validate-chain-tx-hash";
+import {
+  hasSignal,
+  mergeSignals,
+  NO_RUN_OUTCOME_SIGNALS,
+  type RunOutcomeSignals,
+  signalsOfStep,
+} from "./run-outcome";
 import type { StepContext } from "./step-handler";
 
 /**
@@ -169,7 +176,7 @@ export function recordTransactionHashIfPresent(
   const list = txHashEntries.get(context.executionId) ?? [];
   // One on-chain write, one entry. A step can be recorded more than once for
   // the same node -- a replay that reuses a completed step records it so the
-  // tracker stays complete -- and resolveTransactionHashesForSuccess feeds
+  // tracker stays complete -- and resolveSuccessFacts feeds
   // this list straight into the run's transactionHashes, so a duplicate would
   // be re-verified against the chain and counted twice in the digest.
   const alreadyTracked = list.some(
@@ -187,7 +194,7 @@ export function recordTransactionHashIfPresent(
 
 /**
  * Returns a shallow copy of the tracked entries so callers cannot mutate
- * the internal list. resolveTransactionHashesForSuccess feeds this directly
+ * the internal list. resolveSuccessFacts feeds this directly
  * into a DB UPDATE; without the copy, any future caller that mutates the
  * returned array (push, splice, reverse) would silently mutate the
  * tracker's state for the entire process lifetime of that execution.
@@ -199,7 +206,36 @@ export function getTransactionHashes(
   return list === undefined ? [] : [...list];
 }
 
+const runOutcomeSignals = new Map<string, RunOutcomeSignals>();
+
+/** Called from withStepLoggingInner after each successful step. */
+export function recordRunOutcomeIfPresent(
+  context: StepContext,
+  output: unknown
+): void {
+  if (context.executionId === undefined) {
+    return;
+  }
+  const signals = signalsOfStep(context.nodeType, output);
+  if (!hasSignal(signals)) {
+    return;
+  }
+  runOutcomeSignals.set(
+    context.executionId,
+    mergeSignals(
+      runOutcomeSignals.get(context.executionId) ?? NO_RUN_OUTCOME_SIGNALS,
+      signals
+    )
+  );
+}
+
+/** What this pod's steps said about the run outcome; logs hold the rest on a cross-pod resume. */
+export function getRunOutcomeSignals(executionId: string): RunOutcomeSignals {
+  return runOutcomeSignals.get(executionId) ?? NO_RUN_OUTCOME_SIGNALS;
+}
+
 export function clearExecution(executionId: string): void {
   executions.delete(executionId);
   txHashEntries.delete(executionId);
+  runOutcomeSignals.delete(executionId);
 }

@@ -13,6 +13,7 @@ import {
 } from "@/lib/middleware/auth-helpers";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { boundedJsonb } from "@/lib/workflow/bounded-jsonb";
+import type { NodeOutcome } from "@/lib/workflow/executor/run-outcome-keys";
 import { canShareExecutionStatus } from "@/lib/workflow/share-execution-status";
 
 type AuthenticatedContext = Exclude<DualAuthContext, { error: string }>;
@@ -50,6 +51,8 @@ export type ExecutionViewAccess =
 type NodeStatus = {
   nodeId: string;
   status: NodeExecutionStatus;
+  // A successful bundle step whose bundle did not land, or that sent nothing.
+  outcome?: NodeOutcome;
 };
 
 export type ExecutionStatusPayload = {
@@ -134,6 +137,7 @@ export function redactExecutionStatusForPublicView(
   const redactedNodeStatuses = payload.nodeStatuses.map((node) => ({
     status: node.status,
     nodeId: "",
+    ...(node.outcome && { outcome: node.outcome }),
   }));
 
   return {

@@ -42,7 +42,9 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
     "explorerApiType": "etherscan",
     "isTestnet": false,
     "isEnabled": true,
-    "usePrivateMempoolRpc": false
+    "usePrivateMempoolRpc": false,
+    "bundleBuilders": ["flashbots", "buildernet", "titan"],
+    "tipLimitGwei": 500
   },
   {
     "id": "chain_2",
@@ -56,7 +58,9 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
     "explorerApiType": "etherscan",
     "isTestnet": true,
     "isEnabled": true,
-    "usePrivateMempoolRpc": false
+    "usePrivateMempoolRpc": false,
+    "bundleBuilders": [],
+    "tipLimitGwei": 500
   }
 ]
 ```
@@ -76,32 +80,92 @@ Returns a bare JSON array of chain objects. The response is not wrapped in a `da
 | `explorerApiType` | string \| null | Explorer API family (e.g. `etherscan`, `blockscout`) |
 | `isTestnet` | boolean | Whether this chain is a testnet |
 | `isEnabled` | boolean | Whether the chain is currently available for workflow execution |
-| `usePrivateMempoolRpc` | boolean | Whether this chain offers a configured private-mempool RPC capability (Flashbots Protect). This does not enable private routing by default. |
+| `usePrivateMempoolRpc` | boolean | Whether this chain offers a configured private relay (Flashbots Protect): `true` only when the relay is switched on and its URL is set. This does not enable private routing by default. |
+| `bundleBuilders` | string[] | Names of the block builders that take transaction bundles on this chain, in KeeperHub's order (never their URLs): the builders Send as Bundle can send to. Empty on chains without them. |
+| `tipLimitGwei` | number \| null | The highest priority fee (tip), in gwei, that KeeperHub's gas estimate picks on this chain. A bundle step's rising tips stop there too (see [Send as Bundle](/plugins/web3#send-as-bundle)). |
 
 RPC endpoint URLs (`defaultPrimaryRpc`, `defaultFallbackRpc`) are not returned by this endpoint. They may embed provider API keys and are read server-side only; client code should use the user-configurable RPC preferences API instead.
 
 ### Private Mempool Capability
 
 `usePrivateMempoolRpc` describes a chain capability, not the route used by a
-specific transaction. A `true` value makes the chain's `(Flashbots)` variant
-available on supported workflow write actions. Selecting that variant stores
-`usePrivateMempool: true` in the action configuration. Programmatic workflow
-definitions can set the same field directly.
+specific transaction. A `true` value lists Private relay in the Send as field
+of workflow write actions (see [Send as](/plugins/web3#send-as)). Choosing it
+stores `sendMode: "private-relay"`, together with `usePrivateMempool: true` for
+older readers; a save that sends `sendMode` alone gets `usePrivateMempool`
+written beside it. Programmatic workflow definitions can send either key; a
+config with `usePrivateMempool: true` and no `sendMode` sends through the relay
+on a chain that has one and to the public mempool elsewhere (never sponsored),
+as it always did. New values of `usePrivateMempool` must be booleans; an older
+stored value that is not a boolean (such as the text `"false"`) is read the
+same way. Any `sendMode` other
+than `"transaction"`, `"private-relay"` or `"bundle"` is refused (`"bundle"` only on
+Write Contract; see below). When both keys are sent
+they must agree (`true` with `"private-relay"`, `false` with `"transaction"`),
+except on an update that changes only one of them: that key wins, and both are
+saved in agreement. To change the route, set `sendMode`. Saving
+`"private-relay"` on a chain where this value is `false` is refused.
 
 Private routing is strict by default: when the private RPC is available, its
-public fallback is removed. Set `strict: false` only when falling back to the
-public mempool is acceptable. If a stored action requests private routing after
-the chain capability is removed, execution proceeds through the public RPC and
-logs a warning.
+public fallback is removed, and a step with `sendMode: "private-relay"` on a
+chain without a relay fails before anything is sent (for example a network set
+by a template). Set
+`strict: false` only when falling back to the public mempool is acceptable;
+the send itself can then go to the public mempool. See
+[Send as](/plugins/web3#send-as) for exactly when it falls back. A relay that
+serves another chain is always refused, `strict: false` included. Saving a
+workflow again is allowed while a step's network and Send as are unchanged.
 
 Private-mempool writes are not gas sponsored because Turnkey sponsorship uses
-its own broadcast path. The direct-execution API and MCP execute tools do not
-currently expose the workflow action's `usePrivateMempool` or `strict` fields.
+its own broadcast path. The direct node-execution API takes `sendMode`,
+`usePrivateMempool` and `strict` in a write action's config, runs the same
+Send as checks as a workflow save, and answers 400 with the first problem
+found. The contract-call and transfer execution endpoints and the MCP execute
+tools take no `sendMode` and always send normally.
+
+### Block Builders
+
+`bundleBuilders` lists the chain's block builders that take bundles. A Write
+Contract step with Send as Bundle (`sendMode: "bundle"`) sends its bundle to
+them; see [Send as Bundle](/plugins/web3#send-as-bundle). Each builder
+KeeperHub knows takes bundles, single signed transactions, or both: a builder
+that only takes single transactions is not listed here and never gets a
+bundle, and one that only takes bundles never gets the single transaction a
+next-block send also sends to builders (see
+[Simulate at the next block](/plugins/web3#simulate-at-the-next-block)). The
+Ethereum builders listed by default take bundles only. Bundle is offered only where the
+list is not empty, and only to organizations where bundles are turned on
+(`bundleSendEnabled` in `GET /api/features`). A step's `bundleBuilders` setting
+takes names from this list; a name not on it is refused at save. Saving a
+bundle step on a chain with an empty list is refused. The direct node-execution
+API refuses `"bundle"`: bundles only run in a workflow's Write Contract step.
+
+For operators: a chain's builders come from `builderRpcUrls` in its entry of
+the chain configuration (the `CHAIN_RPC_CONFIG` environment variable on a
+self-hosted install), an object keyed by builder name (lowercase letters,
+digits and dashes). Each value is either a plain URL, which takes single
+signed transactions only, or `{ "url": "...", "methods": [...] }` with
+`"bundle"`, `"raw"` (single signed transactions) or both. URLs must be https,
+or http to `localhost` or `127.0.0.1` for local testing. Ethereum has default
+builders that take bundles only. An entry under a default builder's name
+overrides it in place: with `methods` it replaces it as written; as a plain
+URL (or without `methods`) it keeps taking bundles, also takes single
+transactions, and the URL is used for both. Where a builder takes single
+transactions at another URL than its bundles (Flashbots Protect is not the
+Flashbots bundle relay, for example), add that URL under another name, such
+as `flashbots-protect`, instead. An empty URL removes a default. Other
+entries follow the defaults, in the order configured.
+
+An entry not in this format is skipped, with only a warning in the log of the
+chain seed: an uppercase name, http to a host that is not local, or `methods`
+naming neither `bundle` nor `raw` (empty, or misspelled). Under a default builder's
+name, that also removes the default builder from bundles. Bundles go to at
+most the first 16 builders that take them.
 
 Neither this chain capability nor a saved workflow setting confirms that a
-specific transaction used a private route. Current execution outputs do not
-include a public/private route field, so describe the route as requested unless
-you have separate relay evidence.
+specific transaction used a private route. Workflow Write Contract and Batch
+Write Contract steps report it in their `route` and `included` outputs; see
+[Write Contract](/plugins/web3#write-contract).
 
 ### Chain Types
 

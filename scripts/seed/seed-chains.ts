@@ -20,15 +20,19 @@ import {
   type NewChain,
   type NewExplorerConfig,
 } from "../../lib/db/schema";
+import { logWarn } from "../../lib/logging";
 import {
+  type ChainBuilder,
   CHAIN_CONFIG,
-  getBuilderRpcUrls,
   getConfigValue,
   getPrivateRpcUrl,
   getRpcUrlByChainId,
   getUsePrivateMempoolRpc,
   getWssUrl,
   parseRpcConfigWithDetails,
+  ETH_MAINNET_BUILDERS,
+  readBroadcastRpcUrls,
+  readChainBuilders,
 } from "../../lib/rpc/rpc-config";
 import { RPC_ENDPOINT } from "../../lib/rpc/rpc-endpoint";
 
@@ -83,6 +87,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("eth-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "eth-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "eth-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "eth-mainnet" }),
     aliases: ["ethereum", "eth"],
   },
   {
@@ -106,6 +111,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("eth-sepolia", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "eth-sepolia" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "eth-sepolia" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "eth-sepolia" }),
   },
   {
     chainId: getChainConfigValue("eth-hoodi", "chainId", 560_048),
@@ -128,6 +134,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("eth-hoodi", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "eth-hoodi" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "eth-hoodi" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "eth-hoodi" }),
     aliases: ["hoodi", "eth-hoodi"],
   },
   {
@@ -151,6 +158,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("base-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "base-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "base-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "base-mainnet" }),
     aliases: ["base"],
     isPaymentRail: true,
   },
@@ -175,6 +183,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("base-testnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "base-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "base-testnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "base-testnet" }),
   },
   // Unichain (Uniswap Labs' OP Stack L2). Native gas is ETH, same as Base
   // and Optimism -- no USDC-as-gas quirk, no missing WSS. Both networks
@@ -203,6 +212,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "unichain-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "unichain-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "unichain-mainnet" }),
     aliases: ["unichain"],
   },
   {
@@ -227,6 +237,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "unichain-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "unichain-testnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "unichain-testnet" }),
   },
   {
     chainId: getChainConfigValue("tempo-testnet", "chainId", 42_431),
@@ -249,6 +260,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("tempo-testnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "tempo-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "tempo-testnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "tempo-testnet" }),
     aliases: ["tempo"],
     isPaymentRail: true,
   },
@@ -273,6 +285,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("tempo-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "tempo-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "tempo-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "tempo-mainnet" }),
     aliases: ["tempo"],
     isPaymentRail: true,
   },
@@ -297,6 +310,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("bsc-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "bsc-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "bsc-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "bsc-mainnet" }),
     aliases: ["bnb", "bsc", "binance"],
   },
   {
@@ -320,6 +334,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("bsc-testnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "bsc-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "bsc-testnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "bsc-testnet" }),
   },
   {
     chainId: getChainConfigValue("polygon-mainnet", "chainId", 137),
@@ -342,6 +357,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("polygon-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "polygon-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "polygon-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "polygon-mainnet" }),
     aliases: ["polygon", "matic"],
   },
   {
@@ -365,6 +381,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("arbitrum-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arbitrum-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arbitrum-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "arbitrum-mainnet" }),
     aliases: ["arbitrum", "arbitrum-one"],
   },
   {
@@ -388,6 +405,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("polygon-amoy", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "polygon-amoy" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "polygon-amoy" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "polygon-amoy" }),
   },
   {
     chainId: getChainConfigValue("arbitrum-sepolia", "chainId", 421_614),
@@ -410,6 +428,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("arbitrum-sepolia", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arbitrum-sepolia" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arbitrum-sepolia" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "arbitrum-sepolia" }),
   },
   // Optimism chains
   {
@@ -439,6 +458,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
       rpcConfig,
       jsonKey: "op-mainnet",
     }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "op-mainnet" }),
     aliases: ["optimism", "op"],
   },
   {
@@ -468,6 +488,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
       rpcConfig,
       jsonKey: "op-sepolia",
     }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "op-sepolia" }),
   },
   // Avalanche chains
   {
@@ -491,6 +512,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("avax-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "avax-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "avax-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "avax-mainnet" }),
     aliases: ["avalanche", "avax"],
   },
   {
@@ -514,6 +536,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("avax-fuji", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "avax-fuji" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "avax-fuji" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "avax-fuji" }),
   },
   // Somnia chains
   {
@@ -538,6 +561,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "somnia-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "somnia-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "somnia-mainnet" }),
     aliases: ["somnia"],
   },
   {
@@ -562,6 +586,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "somnia-shannon" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "somnia-shannon" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "somnia-shannon" }),
     aliases: [],
   },
   // Plasma chains
@@ -586,6 +611,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("plasma-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "plasma-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "plasma-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "plasma-mainnet" }),
     aliases: ["plasma"],
   },
   {
@@ -609,6 +635,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("plasma-testnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "plasma-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "plasma-testnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "plasma-testnet" }),
   },
   // 0G chains
   {
@@ -633,6 +660,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "0g-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "0g-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "0g-mainnet" }),
     aliases: ["0g", "og", "aristotle"],
   },
   {
@@ -657,6 +685,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "0g-galileo" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "0g-galileo" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "0g-galileo" }),
   },
   {
     chainId: getChainConfigValue("robinhood-mainnet", "chainId", 4663),
@@ -680,6 +709,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "robinhood-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "robinhood-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "robinhood-mainnet" }),
     aliases: ["robinhood"],
   },
   {
@@ -704,6 +734,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "robinhood-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "robinhood-testnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "robinhood-testnet" }),
   },
   // HyperEVM (Hyperliquid's EVM). Mainnet only: the testnet (998) has a working
   // RPC but no explorer API to back ABI auto-fetch and links.
@@ -729,6 +760,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "hyperevm-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "hyperevm-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "hyperevm-mainnet" }),
     aliases: ["hyperevm"],
   },
   // Solana chains (non-EVM - uses SolanaProviderManager)
@@ -753,6 +785,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("solana-mainnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "solana-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "solana-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "solana-mainnet" }),
   },
   {
     chainId: getChainConfigValue("solana-testnet", "chainId", 103),
@@ -775,6 +808,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     isEnabled: getChainConfigValue("solana-testnet", "isEnabled", true),
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "solana-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "solana-testnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "solana-testnet" }),
   },
   // Arc Mainnet (Circle) - USDC is the native gas token, not ETH.
   {
@@ -799,6 +833,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arc-mainnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arc-mainnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "arc-mainnet" }),
     aliases: ["arc"],
   },
   // Arc Testnet (Circle) - USDC is the native gas token, not ETH
@@ -824,6 +859,7 @@ export const DEFAULT_CHAINS: NewChain[] = [
     status: "experimental",
     usePrivateMempoolRpc: getUsePrivateMempoolRpc({ rpcConfig, jsonKey: "arc-testnet" }),
     defaultPrivateRpcUrl: getPrivateRpcUrl({ rpcConfig, jsonKey: "arc-testnet" }),
+    broadcastRpcUrls: readBroadcastRpcUrls({ rpcConfig, jsonKey: "arc-testnet" }),
   },
 ];
 
@@ -1240,6 +1276,11 @@ export function buildExplorerConfigs(
 }
 
 
+// Code-default builders per chain, under chain-config's builderRpcUrls.
+const DEFAULT_CHAIN_BUILDERS: Record<number, readonly ChainBuilder[]> = {
+  1: ETH_MAINNET_BUILDERS,
+};
+
 async function seedChains() {
   // Resolved before anything is written: a chain with no explorer mapping
   // fails the run here, with the database untouched, rather than after every
@@ -1260,9 +1301,19 @@ async function seedChains() {
 
   for (const chain of DEFAULT_CHAINS) {
     const jsonKey = CHAIN_CONFIG[chain.chainId]?.jsonKey;
-    const builderRpcUrls = jsonKey
-      ? (getBuilderRpcUrls({ rpcConfig, jsonKey }) ?? null)
-      : null;
+    // Stored as an ordered array, so the configured order survives jsonb.
+    const builders = jsonKey
+      ? readChainBuilders({
+          rpcConfig,
+          jsonKey,
+          defaults: DEFAULT_CHAIN_BUILDERS[chain.chainId],
+          onSkipped: (label, removedDefault) =>
+            logWarn(
+              `[seed-chains] Skipped builder "${label}" on ${jsonKey}: not a valid entry${removedDefault ? ", so the default builder is removed" : ""}`
+            ),
+        })
+      : [];
+    const builderRpcUrls = builders.length > 0 ? builders : null;
 
     // Check if chain already exists
     const existing = await db
@@ -1287,6 +1338,7 @@ async function seedChains() {
           defaultFallbackWss: chain.defaultFallbackWss ?? null,
           usePrivateMempoolRpc: chain.usePrivateMempoolRpc ?? false,
           defaultPrivateRpcUrl: chain.defaultPrivateRpcUrl ?? null,
+          broadcastRpcUrls: chain.broadcastRpcUrls ?? [],
           builderRpcUrls,
           isTestnet: chain.isTestnet,
           isEnabled: chain.isEnabled,

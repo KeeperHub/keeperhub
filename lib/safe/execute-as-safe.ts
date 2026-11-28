@@ -3,6 +3,7 @@ import "server-only";
 import { ethers } from "ethers";
 import { startSafeTxMetrics } from "@/lib/metrics/instrumentation/safe";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { buildExecTransactionCalldata } from "@/lib/safe/allowance-module";
 import { buildExecTransactionWithRoleCalldata } from "@/lib/safe/zodiac-roles";
 import { getErrorMessage } from "@/lib/utils";
@@ -16,13 +17,14 @@ import {
 } from "@/lib/web3/next-block-simulation";
 import { getNonceManager, type NonceSession } from "@/lib/web3/nonce-manager";
 import {
+  minedRevertError,
   OnChainPendingError,
-  OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
-import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
+import { pollReceipt, RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import {
   type BroadcastResult,
   NonceConflictError,
+  type SendReport,
   submitSignedTransactionWithFailover,
 } from "@/lib/web3/submit-signed";
 
@@ -56,6 +58,8 @@ export type ExecuteAsSafeOptions = {
   simulation?: NextBlockSimulationOptions;
   // The node's priority fee and max fee, applied to the owner transaction.
   feeOverrides?: { priorityFeeOverride?: bigint; maxFeeOverride?: bigint };
+  // Filled with the outer transaction's route and whether a receipt came back.
+  sendReport?: SendReport;
 };
 
 // The outer transaction's gas estimate, which is also its revert check.
@@ -110,16 +114,15 @@ function finishOnError(
  * A mined receipt with status 0 is a reverted transaction. Both Safe routes
  * are built so that an inner-call failure reverts the whole outer transaction
  * (execTransaction with safeTxGas=0 and gasPrice=0, execTransactionWithRole
- * with shouldRevert=true), and `waitForTransaction`, unlike `tx.wait()`,
- * resolves that receipt instead of throwing, so the status has to be read here.
+ * with shouldRevert=true), and a receipt read, unlike `tx.wait()`, returns
+ * that receipt instead of throwing, so the status has to be read here.
  */
-function throwIfReverted(receipt: ethers.TransactionReceipt): void {
+function throwIfReverted(
+  receipt: ethers.TransactionReceipt,
+  gasLimit: bigint
+): void {
   if (receipt.status === 0) {
-    throw new OnChainRevertError({
-      message: `Transaction ${receipt.hash} reverted on-chain (status 0, block ${receipt.blockNumber})`,
-      transactionHash: receipt.hash,
-      blockNumber: receipt.blockNumber,
-    });
+    throw minedRevertError(receipt, gasLimit);
   }
 }
 
@@ -128,9 +131,8 @@ function throwIfReverted(receipt: ethers.TransactionReceipt): void {
  * the wait can end without one.
  *
  * Both failure modes here are post-broadcast: the transaction is on the
- * network and the nonce is spent. `executeWithFailover` exhausting its
- * providers (~186s) threw a bare Error or RpcRelayTransportError, and a null
- * receipt threw a bare Error, so neither carried the hash. The finalizer
+ * network and the nonce is spent. A failed receipt read and a null receipt
+ * once threw bare Errors, so neither carried the hash. The finalizer
  * harvests hashes off the error, so a hash-less throw stamped a terminal
  * failure on a transaction that existed on-chain and nowhere in our data --
  * #2020, entered from the Safe path.
@@ -140,40 +142,72 @@ function throwIfReverted(receipt: ethers.TransactionReceipt): void {
  * settled-failure case is status 0, which arrives as a receipt and is
  * classified by throwIfReverted at the call sites.
  *
- * The wait is bounded for the same reason the ethers path is: ethers'
- * `waitForTransaction` rejects only when a timeout is supplied and otherwise
- * waits on the block listener forever, so without one a Safe-routed
- * transaction that never mines pins the step until the reaper takes it and
- * records no hash. Supplying the timeout is also what makes the null return
- * below reachable -- at confirms = 1 ethers resolves null only on timeout.
+ * The wait polls the receipt (pollReceipt) until RECEIPT_WAIT_TIMEOUT_MS, each
+ * read through the failover (on a relay, the provider that sent, each read
+ * capped), so a dead endpoint costs one read, not the wait. Not ethers'
+ * waitForTransaction: it swallows read errors and can leave an unhandled
+ * rejection when its first read fails.
  */
 async function waitForSafeReceipt(
   broadcast: BroadcastResult,
   rpcManager: RpcProviderManager,
-  label: string
+  label: string,
+  report: SendReport = {}
 ): Promise<ethers.TransactionReceipt> {
-  if (broadcast.preExistingReceipt) {
-    return broadcast.preExistingReceipt;
-  }
-  let receipt: ethers.TransactionReceipt | null;
-  try {
-    receipt = await rpcManager.executeWithFailover(
-      (p) => p.waitForTransaction(broadcast.hash, 1, RECEIPT_WAIT_TIMEOUT_MS),
-      "read"
-    );
-  } catch (error) {
-    throw new OnChainPendingError({
-      message: `${label} sent but receipt could not be read (${getErrorMessage(error)})`,
-      transactionHash: broadcast.hash,
-    });
-  }
-  if (!receipt) {
-    throw new OnChainPendingError({
-      message: `${label} sent but receipt unavailable`,
-      transactionHash: broadcast.hash,
-    });
-  }
+  const receipt =
+    broadcast.preExistingReceipt ??
+    (await readSafeReceipt(broadcast, rpcManager, label, report.route));
+  report.included = true;
   return receipt;
+}
+
+/** Where a relay manager's send went: the relay, or the strict: false fallback. */
+function relaySendProvider(
+  rpcManager: RpcProviderManager,
+  route: SendReport["route"]
+): ethers.JsonRpcProvider {
+  return (
+    (route === "public" ? rpcManager.getFallbackProvider() : null) ??
+    rpcManager.getProvider()
+  );
+}
+
+// Between receipt reads while a Safe send waits for inclusion.
+const RECEIPT_POLL_INTERVAL_MS = 2000;
+// One receipt read on the relay, which has no failover to end a hung read.
+const RELAY_RECEIPT_READ_TIMEOUT_MS = 30_000;
+
+async function readSafeReceipt(
+  broadcast: BroadcastResult,
+  rpcManager: RpcProviderManager,
+  label: string,
+  route: SendReport["route"]
+): Promise<ethers.TransactionReceipt> {
+  const { hash } = broadcast;
+  const relay = rpcManager.hasPrivateRelayPrimary();
+  const read = (): Promise<ethers.TransactionReceipt | null> =>
+    relay
+      ? relaySendProvider(rpcManager, route).getTransactionReceipt(hash)
+      : rpcManager.executeWithFailover(
+          (provider) => provider.getTransactionReceipt(hash),
+          "read"
+        );
+  // Inclusion can take minutes (a relay holds a send about 25 blocks).
+  const outcome = await pollReceipt(read, {
+    timeoutMs: RECEIPT_WAIT_TIMEOUT_MS,
+    intervalMs: RECEIPT_POLL_INTERVAL_MS,
+    // A relay read has no failover, so a hung one is cut short.
+    readTimeoutMs: relay ? RELAY_RECEIPT_READ_TIMEOUT_MS : undefined,
+  });
+  if (outcome.receipt) {
+    return outcome.receipt;
+  }
+  throw new OnChainPendingError({
+    message: outcome.lastReadError
+      ? `${label} sent but receipt could not be read (${redactAllUrls(getErrorMessage(outcome.lastReadError))})`
+      : `${label} sent but not included within ${RECEIPT_WAIT_TIMEOUT_MS / 60_000} minutes`,
+    transactionHash: hash,
+  });
 }
 
 export async function executeContractCallAsSafe(
@@ -243,7 +277,8 @@ export async function executeContractCallAsSafe(
         maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
         chainId: options.chainId,
       },
-      options.rpcManager
+      options.rpcManager,
+      options.sendReport
     );
 
     await nonceManager.recordTransaction(
@@ -257,9 +292,10 @@ export async function executeContractCallAsSafe(
     const receipt = await waitForSafeReceipt(
       broadcast,
       options.rpcManager,
-      "Safe-routed transaction"
+      "Safe-routed transaction",
+      options.sendReport
     );
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, gasConfig.gasLimit);
 
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
@@ -373,7 +409,8 @@ export async function executeContractCallAsRole(
         maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
         chainId: options.chainId,
       },
-      options.rpcManager
+      options.rpcManager,
+      options.sendReport
     );
 
     await nonceManager.recordTransaction(
@@ -387,9 +424,10 @@ export async function executeContractCallAsRole(
     const receipt = await waitForSafeReceipt(
       broadcast,
       options.rpcManager,
-      "Role-routed transaction"
+      "Role-routed transaction",
+      options.sendReport
     );
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, gasConfig.gasLimit);
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
     return {
@@ -480,7 +518,8 @@ export async function executeNativeTransferAsRole(
         maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
         chainId: options.chainId,
       },
-      options.rpcManager
+      options.rpcManager,
+      options.sendReport
     );
 
     await nonceManager.recordTransaction(
@@ -494,9 +533,10 @@ export async function executeNativeTransferAsRole(
     const receipt = await waitForSafeReceipt(
       broadcast,
       options.rpcManager,
-      "Role-routed native transfer"
+      "Role-routed native transfer",
+      options.sendReport
     );
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, gasConfig.gasLimit);
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");
     return {
@@ -584,7 +624,8 @@ export async function executeNativeTransferAsSafe(
         maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
         chainId: options.chainId,
       },
-      options.rpcManager
+      options.rpcManager,
+      options.sendReport
     );
 
     await nonceManager.recordTransaction(
@@ -598,9 +639,10 @@ export async function executeNativeTransferAsSafe(
     const receipt = await waitForSafeReceipt(
       broadcast,
       options.rpcManager,
-      "Safe-routed native transfer"
+      "Safe-routed native transfer",
+      options.sendReport
     );
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, gasConfig.gasLimit);
 
     await nonceManager.confirmTransaction(broadcast.hash);
     finishMetrics("success");

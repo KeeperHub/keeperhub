@@ -26,6 +26,7 @@ import {
   formatWhen,
   joinList,
   notRunningText,
+  streakLine,
   TOUCH_TARGET,
 } from "./format";
 import { memberLabel, pauseSentence } from "./member-label";
@@ -400,7 +401,7 @@ export function AlertsHealth({
         detail: `${
           isNotRunning(w.openedBy)
             ? notRunningText(w.dueAt, w.refused, w.openedBy)
-            : `${w.openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(w.failureCount)} in a row${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`
+            : `${streakLine(w.openedBy, w.failureCount)}${ownRule(ownThreshold.get(w.workflowId))}, alert sent ${timeAgo(w.openedAt)}`
         }${pause ? `. Not reported until ${formatWhen(pause.until)}` : ""}`,
       })),
     ...paused.filter((w) => w.failing).map(pauseRow),

@@ -346,13 +346,26 @@ export const TRIGGERS = {
     },
     optionalFields: {
       executionPriority: EXECUTION_PRIORITY_DOC,
+      skipIfRunning:
+        'string - EVM networks only. "true": a block that fires while a run of this workflow is still pending or running does not start a run; one Skipped row per blocking run counts the skipped blocks and slots, once each (a repeat within 2 minutes is not counted again). Runs started through the listed-workflow call endpoint do not block, and a run older than the stale-run limit (30 minutes by default) with no step finished within that limit no longer blocks. true and "true" are both accepted. Default "false"',
+      runOnMissedSlot:
+        'string - "true": when no block arrives 4 s into a slot, the workflow runs anyway; at most one run per slot. Takes effect only on Ethereum Mainnet, Sepolia and Hoodi with blockInterval 1; saved but ignored otherwise. Best effort. true and "true" are both accepted. Default "false"',
     },
     outputFields: {
       // EVM chains
-      blockNumber: "number - EVM: the block number",
+      blockNumber:
+        "number - EVM: the block number (on a missed-slot run, the latest block)",
       blockHash: "string - EVM: hash of the block",
       blockTimestamp: "number - EVM: Unix timestamp of the block",
       parentHash: "string - EVM: hash of the parent block",
+      missedSlot:
+        "boolean - With runOnMissedSlot: true when no block had arrived 4 s into the slot (a late block may still land; it does not start a second run), false for a block; absent otherwise",
+      slotTimestamp:
+        "number - With runOnMissedSlot: start of the slot that fired the run (targetSlot - 1), in Unix seconds",
+      targetSlot:
+        "number - With runOnMissedSlot: beacon slot number of the slot after slotTimestamp's slot; dedupe on it rather than blockNumber",
+      targetSlotTimestamp:
+        "number - With runOnMissedSlot: start of the slot after it (Unix seconds)",
       // Solana chains (fields emitted by the solana-tracker block payload;
       // keep in sync with buildBlockPayload in
       // keeperhub-events/solana-tracker/src/payload/block-payload.ts)

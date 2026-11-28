@@ -189,6 +189,13 @@ export const dispatchRefusedTotal = new Counter({
   registers: [registry],
 });
 
+export const skipCheckFailedTotal = new Counter({
+  name: `${PREFIX}_skip_check_failed_total`,
+  help: "Blocks of skip-if-running workflows not dispatched because the platform's skip check failed (fails closed), per chain: transport errors, 5xx and unexpected 4xx (such as an auth failure), not a workflow that is deleted or deactivated, or whose organization or owner is deactivated. Sustained growth means such keepers are not running.",
+  labelNames: ["chain"] as const,
+  registers: [registry],
+});
+
 export const unhandledRejectionsTotal = new Counter({
   name: `${PREFIX}_unhandled_rejections_total`,
   help: "Process-level unhandled promise rejections absorbed by the dispatcher's safety-net handler. The most common source is ethers v6 destroyProvider eth_unsubscribe cancellation during reconnect. A sustained increase is fine for those; anything else warrants log investigation.",
@@ -298,6 +305,9 @@ export const metrics = {
   },
   recordDispatchRefused(chain: string, reason: string): void {
     dispatchRefusedTotal.inc({ chain, reason });
+  },
+  recordSkipCheckFailed(chain: string): void {
+    skipCheckFailedTotal.inc({ chain });
   },
   recordUnhandledRejection(): void {
     unhandledRejectionsTotal.inc();

@@ -255,10 +255,14 @@ vi.mock("@/lib/contracts/abis/erc20.json", () => ({
 }));
 
 // Must import AFTER all mocks
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import { RpcUserEndpointError } from "@/lib/rpc/providers";
 import type { ApproveTokenCoreInput } from "@/plugins/web3/steps/approve-token-core";
 import { approveTokenCore } from "@/plugins/web3/steps/approve-token-core";
 
 const VALID_TOKEN = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+const USER_REDIRECT =
+  "Your RPC preference for Ethereum answered with a redirect, which is not followed; set it to the final https:// address";
 const VALID_SPENDER = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
 // Deliberately not a protocol contract: the allowlist admits over-cap
 // approvals to routers this repo already directs value at, and VALID_SPENDER
@@ -281,6 +285,7 @@ function makeInput(
 function setupMocks(): void {
   mockGetChainIdFromNetwork.mockReturnValue(1);
   mockGetRpcProvider.mockResolvedValue({
+    hasPrivateRelayPrimary: () => false,
     resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
     executeWithFailover: (fn: (p: unknown) => unknown) => fn({} as any),
   });
@@ -383,6 +388,60 @@ describe("approve-token - validation", () => {
   });
 });
 
+describe("approve-token - Send as", () => {
+  it("selects the relay from sendMode alone", async () => {
+    setupMocks();
+    await approveTokenCore(
+      makeInput({ amount: "100", sendMode: "private-relay" })
+    );
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+    });
+  });
+
+  it("asks for the relay only where there is one for an old non-boolean flag", async () => {
+    setupMocks();
+    await approveTokenCore(
+      makeInput({
+        amount: "100",
+        usePrivateMempool: "yes" as unknown as boolean,
+      })
+    );
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+  });
+
+  it("refuses an unknown sendMode as a user error before any RPC", async () => {
+    setupMocks();
+    mockGetRpcProvider.mockClear();
+    const result = await approveTokenCore(
+      makeInput({ amount: "100", sendMode: " private-relay" })
+    );
+    expect(result).toMatchObject({ success: false, errorClass: "user" });
+    expect(mockGetRpcProvider).not.toHaveBeenCalled();
+  });
+
+  it("fails as a user error when the chain has no relay", async () => {
+    setupMocks();
+    const { PrivateRelayUnavailableError } = await import(
+      "@/lib/rpc/providers/transport-error"
+    );
+    mockGetRpcProvider.mockRejectedValueOnce(
+      new PrivateRelayUnavailableError("no relay")
+    );
+    const result = await approveTokenCore(
+      makeInput({ amount: "100", sendMode: "private-relay" })
+    );
+    expect(result).toMatchObject({
+      success: false,
+      error: "no relay",
+      errorClass: "user",
+    });
+  });
+});
+
 describe("approve-token - successful approval", () => {
   it("approves a specific amount", async () => {
     setupMocks();
@@ -460,6 +519,32 @@ describe("approve-token - error handling", () => {
     if (!result.success) {
       expect(result.error).toContain("Token approval failed");
     }
+  });
+
+  it("keeps a redirecting user RPC preference the user's fault through the metadata read", async () => {
+    setupMocks();
+    const redirect = new RpcUserEndpointError(USER_REDIRECT);
+    mockGetRpcProvider.mockResolvedValue({
+      hasPrivateRelayPrimary: () => false,
+      resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
+      executeWithFailover: () => Promise.reject(redirect),
+    });
+    const result = await approveTokenCore(makeInput({}));
+    expect(result).toMatchObject({
+      success: false,
+      error: `Failed to read token metadata: ${USER_REDIRECT}`,
+      errorClass: ExecutionErrorType.USER,
+    });
+    // A platform URL's redirect carries no class: the classifier keeps it a platform fault.
+    mockGetRpcProvider.mockResolvedValue({
+      hasPrivateRelayPrimary: () => false,
+      resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
+      executeWithFailover: () =>
+        Promise.reject(new Error("RPC failed on both endpoints: redirect")),
+    });
+    const platform = await approveTokenCore(makeInput({}));
+    expect(platform).toMatchObject({ success: false });
+    expect((platform as { errorClass?: unknown }).errorClass).toBeUndefined();
   });
 
   it("fails when wallet initialization fails", async () => {

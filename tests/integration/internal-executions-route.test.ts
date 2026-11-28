@@ -64,6 +64,9 @@ const sourceArg = (source: string) => expect.objectContaining({ source });
 let mockWorkflow: {
   organizationId: string | null;
   deletedAt: Date | null;
+  deactivatedAt?: Date | null;
+  // Read in the same query (extras), as the raw timestamp string.
+  orgDeactivatedAt?: string | null;
   nodes: unknown[];
   userId: string;
 } | null;
@@ -74,13 +77,25 @@ let updatedSet: Record<string, unknown> | null;
 // Empty simulates a dispatch-key conflict (another dispatcher won the race).
 let mockInsertReturning: Array<{ id: string }> = [{ id: "exec_created" }];
 // Rows the dedup fallback SELECT resolves to when the insert conflicted.
-let mockSelectResult: Array<{ id: string }> = [];
+let mockSelectResult: Array<{ id: string; status?: string }> = [];
 // Rows the PATCH terminal UPDATE's .returning() resolves to; seed with
 // workflowId + previousStatus to exercise the counter-emission gate.
 let mockUpdateReturning: Array<{
   workflowId: string;
   previousStatus: string;
 }> = [];
+
+// Lock, check and write are covered against Postgres in skip-if-running.db.test.ts.
+const insertPhantomUnlessRunning = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]) => ({
+    id: "exec_skip",
+    skipped: false,
+    alreadyExisted: false,
+  }))
+);
+vi.mock("@/lib/workflow/skip-if-running", () => ({
+  insertPhantomUnlessRunning,
+}));
 
 vi.mock("@/lib/db", () => ({
   db: {
@@ -104,9 +119,16 @@ vi.mock("@/lib/db", () => ({
     })),
     // Dedup fallback lookup when the insert conflicts on dispatch_key.
     select: vi.fn(() => ({
-      from: () => ({
+      from: (table: { __name?: string } | undefined) => ({
         where: () => ({
-          limit: () => Promise.resolve(mockSelectResult),
+          limit: () =>
+            Promise.resolve(
+              table?.__name === "organization"
+                ? Promise.reject(
+                    new Error("organization is read in the workflow query")
+                  )
+                : mockSelectResult
+            ),
         }),
       }),
     })),
@@ -134,6 +156,11 @@ vi.mock("@/lib/db/schema", () => ({
     dispatchKey: "dispatch_key",
   },
   workflows: { id: "id" },
+  organization: {
+    __name: "organization",
+    id: "organization.id",
+    deactivatedAt: "organization.deactivated_at",
+  },
 }));
 
 // The alias() self-join needs drizzle table internals the schema stub lacks.
@@ -200,6 +227,7 @@ describe("POST /api/internal/executions", () => {
     mockWorkflow = {
       organizationId: "org_1",
       deletedAt: null,
+      orgDeactivatedAt: null,
       nodes: [],
       userId: "wf_owner",
     };
@@ -359,6 +387,138 @@ describe("POST /api/internal/executions", () => {
     expect(insertedValues?.dispatchKey).toBe(
       "schedule:sched_1:2026-01-01T00:00:00.000Z"
     );
+  });
+
+  describe("skipIfRunning", () => {
+    const blockDispatch = (skipIfRunning?: boolean) =>
+      postRequest({
+        workflowId: "wf_1",
+        status: "phantom",
+        triggerSource: "block",
+        dispatchKey: "block:wf_1:1:100",
+        skipIfRunning,
+      });
+
+    it("hands the phantom to the skip check, with the database handle", async () => {
+      const { db } = await import("@/lib/db");
+      const response = await POST(blockDispatch(true));
+
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({
+        executionId: "exec_skip",
+        alreadyExisted: false,
+      });
+      expect(insertPhantomUnlessRunning).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({
+          workflowId: "wf_1",
+          status: "phantom",
+          billable: false,
+          dispatchKey: "block:wf_1:1:100",
+        })
+      );
+      expect(insertedValues).toBeNull();
+    });
+
+    it("reports a skip, and a duplicate of a skipped dispatch", async () => {
+      insertPhantomUnlessRunning.mockResolvedValueOnce({
+        id: "exec_skip",
+        skipped: true,
+        alreadyExisted: false,
+      });
+      const skipped = await POST(blockDispatch(true));
+      expect(skipped.status).toBe(201);
+      expect((await skipped.json()).skipped).toBe(true);
+
+      insertPhantomUnlessRunning.mockResolvedValueOnce({
+        id: "exec_skip",
+        skipped: true,
+        alreadyExisted: true,
+      });
+      const duplicate = await POST(blockDispatch(true));
+      expect(duplicate.status).toBe(200);
+      expect(await duplicate.json()).toEqual({
+        executionId: "exec_skip",
+        alreadyExisted: true,
+        skipped: true,
+      });
+    });
+
+    it("leaves dispatches without the option, and direct creates, unchanged", async () => {
+      await POST(blockDispatch());
+      expect(insertedValues?.status).toBe("phantom");
+      await POST(
+        postRequest({ workflowId: "wf_1", userId: "u", skipIfRunning: true })
+      );
+      expect(insertedValues?.status).toBe("running");
+      expect(insertPhantomUnlessRunning).not.toHaveBeenCalled();
+    });
+
+    it("answers a deactivated workflow with a coded 403 before the insert", async () => {
+      mockWorkflow = {
+        organizationId: "org_1",
+        deletedAt: null,
+        deactivatedAt: new Date(),
+        nodes: [],
+        userId: "wf_owner",
+      };
+      const response = await POST(blockDispatch(true));
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error: "This workflow is deactivated, so it may not run",
+        code: "WORKFLOW_INACTIVE",
+      });
+      expect(insertPhantomUnlessRunning).not.toHaveBeenCalled();
+      expect(checkDispatchAdmission).not.toHaveBeenCalled();
+    });
+
+    it("answers a deactivated organization (or owner) with a coded 403 before the insert", async () => {
+      mockWorkflow = {
+        organizationId: "org_1",
+        deletedAt: null,
+        orgDeactivatedAt: "2026-01-02 03:04:05",
+        nodes: [],
+        userId: "wf_owner",
+      };
+      const response = await POST(blockDispatch(true));
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error:
+          "This workflow's organization is deactivated (or its owner), so it may not run",
+        code: "WORKFLOW_INACTIVE",
+      });
+      expect(insertPhantomUnlessRunning).not.toHaveBeenCalled();
+    });
+
+    it("keeps a raw 42501 from the insert a failure, not an inactive answer", async () => {
+      // Also what a missing GRANT looks like: it must stay a 500 the dispatcher counts.
+      insertPhantomUnlessRunning.mockRejectedValueOnce(
+        Object.assign(new Error("permission denied for table"), {
+          code: "42501",
+        })
+      );
+      await expect(POST(blockDispatch(true))).rejects.toThrow(
+        "permission denied for table"
+      );
+    });
+
+    it("answers a deleted workflow with a coded 404", async () => {
+      mockWorkflow = null;
+      const response = await POST(blockDispatch(true));
+      expect(response.status).toBe(404);
+      expect((await response.json()).code).toBe("WORKFLOW_NOT_FOUND");
+    });
+
+    it("flags a dispatch-key conflict with a skipped row as skipped", async () => {
+      mockInsertReturning = [];
+      mockSelectResult = [{ id: "exec_old", status: "skipped" }];
+      const data = await (await POST(blockDispatch())).json();
+      expect(data).toEqual({
+        executionId: "exec_old",
+        alreadyExisted: true,
+        skipped: true,
+      });
+    });
   });
 
   it("stores a null dispatch key when none is supplied", async () => {

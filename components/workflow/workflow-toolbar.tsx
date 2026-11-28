@@ -47,6 +47,7 @@ import { isAnonymousUser } from "@/lib/is-anonymous";
 import {
   ApiError,
   api,
+  DUPLICATE_ERROR_TOAST,
   type Project,
   type Tag,
   WORKFLOW_SAVE_ERROR_TOAST,
@@ -88,6 +89,7 @@ import {
   canRedoAtom,
   canUndoAtom,
   cancelPendingAutosave,
+  canvasNodeStatus,
   clearWorkflowAtom,
   currentExecutionIdAtom,
   currentWorkflowIdAtom,
@@ -111,6 +113,7 @@ import {
   isWorkflowEnabled,
   isWorkflowOwnerAtom,
   isWorkflowViewerAtom,
+  type NodeRunStatus,
   nodesAtom,
   previewVersionAtom,
   propertiesPanelActiveTabAtom,
@@ -166,9 +169,9 @@ function updateNodesStatus(
   nodes: WorkflowNode[],
   updateNodeData: (update: {
     id: string;
-    data: { status?: "idle" | "running" | "success" | "error" };
+    data: { status?: NodeRunStatus };
   }) => void,
-  status: "idle" | "running" | "success" | "error"
+  status: NodeRunStatus
 ) {
   for (const node of nodes) {
     updateNodeData({ id: node.id, data: { status } });
@@ -501,7 +504,7 @@ type ExecuteTestWorkflowParams = {
   nodes: WorkflowNode[];
   updateNodeData: (update: {
     id: string;
-    data: { status?: "idle" | "running" | "success" | "error" };
+    data: { status?: NodeRunStatus };
   }) => void;
   pollingIntervalRef: React.MutableRefObject<NodeJS.Timeout | null>;
   setIsExecuting: (value: boolean) => void;
@@ -592,13 +595,7 @@ async function executeTestWorkflow({
         for (const nodeStatus of statusData.nodeStatuses) {
           updateNodeData({
             id: nodeStatus.nodeId,
-            data: {
-              status: nodeStatus.status as
-                | "idle"
-                | "running"
-                | "success"
-                | "error",
-            },
+            data: { status: canvasNodeStatus(nodeStatus) },
           });
         }
 
@@ -643,7 +640,7 @@ type WorkflowHandlerParams = {
   edges: WorkflowEdge[];
   updateNodeData: (update: {
     id: string;
-    data: { status?: "idle" | "running" | "success" | "error" };
+    data: { status?: NodeRunStatus };
   }) => void;
   isExecuting: boolean;
   setIsExecuting: (value: boolean) => void;
@@ -1517,7 +1514,13 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
       router.push(`/workflows/${newWorkflow.id}`);
     } catch (error) {
       console.error("Failed to duplicate workflow:", error);
-      toast.error("Failed to duplicate workflow. Please try again.");
+      toast.error(
+        workflowSaveErrorMessage(
+          error,
+          "Failed to duplicate workflow. Please try again."
+        ),
+        DUPLICATE_ERROR_TOAST
+      );
     } finally {
       setIsDuplicating(false);
     }

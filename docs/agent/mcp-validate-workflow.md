@@ -131,6 +131,7 @@ All error codes are stable kebab-case identifiers. When any error is present, `v
 | `missing-write-action-for-write-workflow` | `workflowType` is `"write"` but no node is a write action (`write-contract` or a protocol-write step) | Add a write-action node, or change `workflowType` to `"read"` |
 | `unknown-chain-id` | A node's `network` field is a chain ID not enabled on the platform | Use a supported chain ID — call `list_action_schemas?includeChains=true` to see the full list |
 | `invalid-token-address` | A `contractAddress` or `tokenConfig.customToken.address` fails the EVM address format check | Use a valid `0x`-prefixed 40-hex-character address |
+| `invalid-send-mode` | A Send as setting a save refuses: an unknown `sendMode`, a mode the step or network does not offer, or, for `sendMode: "bundle"`, a step other than Write Contract, an organization where bundles are not turned on (`bundleSendEnabled` in `GET /api/features`), a Safe connection, `bundleBlocks` (1 to 5) or `bundleTipIncreasePercent` (0 to 100) out of range, `bundleBuilders` names the network does not list, or a bundle step inside a For Each that is inside another For Each. Bundle steps are checked even when unchanged since they were saved, as a run checks them: such a step is reported for `bundleBuilders` only when the network lists none of its builders (a run sends to the ones still listed); other steps saved before pass, as on save | Follow the message: it names the editor label and the API value, for example set `sendMode` to `"transaction"` |
 
 ## Warning code reference
 
@@ -166,6 +167,7 @@ The default `deepCheck: false` tier makes zero network calls. It covers:
 - Write-action / workflow-type consistency
 - Chain ID existence (database lookup, cached per request)
 - Token address format (synchronous `isAddress()` check)
+- Send as settings, as a save checks them (database lookup of the networks' private relays and block builders)
 
 Expected latency: under 300 ms at the 95th percentile.
 

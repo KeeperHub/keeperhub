@@ -474,6 +474,7 @@ async function prepareWarmRunner(): Promise<boolean> {
   currentScheduleId = prepared.assignment.scheduleId ?? null;
   const { runDeadlineMs } = prepared;
   if (runDeadlineMs !== undefined) {
+    // Also sets RUN_DEADLINE_AT_ENV, read by steps that must finish before it.
     armRunDeadline(runDeadlineMs, () => {
       console.error(
         `[Runner] Run exceeded its ${runDeadlineMs}ms deadline, terminating`

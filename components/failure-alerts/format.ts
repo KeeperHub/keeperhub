@@ -14,6 +14,22 @@ export function failedRuns(count: number): string {
   return `${count} failed run${count === 1 ? "" : "s"}`;
 }
 
+/** "Bundles not landing: 5 runs not landed in a row": bundles that missed, not failures. */
+function notLandingLine(count: number): string {
+  return `Bundles not landing: ${count} run${count === 1 ? "" : "s"} not landed in a row`;
+}
+
+/** A failing workflow's streak in a list: failed runs, or runs whose bundles missed. */
+export function streakLine(
+  openedBy: FailureIncidentTrigger,
+  count: number
+): string {
+  if (openedBy === "not_landing") {
+    return notLandingLine(count);
+  }
+  return `${openedBy === "funding" ? "Wallet out of funds, " : ""}${failedRuns(count)} in a row`;
+}
+
 /** A not-running incident: refused runs (a plan limit, unpaid) say so; else when it was due. */
 export function notRunningText(
   dueAt: string,
@@ -35,6 +51,9 @@ export function incidentTitle(
 ): string {
   if (isNotRunning(incident.openedBy)) {
     return notRunningText(incident.since, incident.refused, incident.openedBy);
+  }
+  if (incident.openedBy === "not_landing") {
+    return notLandingLine(incident.failureCount);
   }
   const runs = `${failedRuns(incident.failureCount)} in a row`;
   if (incident.openedBy === "funding") {

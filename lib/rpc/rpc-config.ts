@@ -560,8 +560,10 @@ export type RpcConfigEntry = {
   fallbackWssUrl?: string;
   isPrivateMempoolRpcEnabled?: boolean;
   privateMempoolRpcUrl?: string;
-  // Block builder endpoints keyed by label, e.g. { "titan": "https://..." }.
-  builderRpcUrls?: Record<string, string>;
+  broadcastRpcUrls?: string[];
+  // Block builders keyed by label, in order: { "titan": "https://..." } (raw
+  // only) or { "titan": { "url": "https://...", "methods": ["bundle", "raw"] } }.
+  builderRpcUrls?: BuilderRpcConfigValue;
   isEnabled?: boolean;
   isTestnet?: boolean;
 };
@@ -752,6 +754,76 @@ export function getPrivateRpcUrl(
     ?.privateMempoolRpcUrl;
 }
 
+const MAX_BROADCAST_RPC_URLS = 10;
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
+const HTTPS_PROTOCOL = "https:";
+
+/** The raw broadcastRpcUrls list of a chain-config entry, cleaned. */
+export function readBroadcastRpcUrls(
+  options: ChainConfigLookupOptions
+): string[] {
+  return cleanBroadcastRpcUrls(
+    findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.broadcastRpcUrls
+  );
+}
+
+const TRAILING_SLASH_RE = /\/$/;
+
+// Undefined when not a URL.
+function parseRpcUrl(raw: unknown): URL | undefined {
+  if (typeof raw !== "string") {
+    return;
+  }
+  try {
+    return new URL(raw.trim());
+  } catch {
+    return;
+  }
+}
+
+function urlKey(url: URL): string {
+  return url.toString().replace(TRAILING_SLASH_RE, "");
+}
+
+// https only, except plain http to a local node.
+function isAllowedBroadcastUrl(url: URL): boolean {
+  return (
+    url.protocol === HTTPS_PROTOCOL ||
+    (url.protocol === "http:" && LOCAL_HOSTS.has(url.hostname))
+  );
+}
+
+/**
+ * Extra broadcast URLs as they may be used: valid, unique after
+ * normalising, none equal to one of the chain's own RPCs, at most
+ * MAX_BROADCAST_RPC_URLS.
+ */
+export function cleanBroadcastRpcUrls(
+  raw: unknown,
+  chainRpcUrls: readonly (string | null | undefined)[] = []
+): string[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  for (const chainUrl of chainRpcUrls) {
+    const url = parseRpcUrl(chainUrl);
+    if (url) {
+      seen.add(urlKey(url));
+    }
+  }
+  const urls: string[] = [];
+  for (const entry of raw) {
+    const url = parseRpcUrl(entry);
+    const key = url && isAllowedBroadcastUrl(url) ? urlKey(url) : undefined;
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      urls.push(key);
+    }
+  }
+  return urls.slice(0, MAX_BROADCAST_RPC_URLS);
+}
+
 /**
  * Get whether the chain has private mempool routing enabled.
  *
@@ -766,41 +838,192 @@ export function getUsePrivateMempoolRpc(
   );
 }
 
+/** Raw-capable builders as label -> URL: what a next-block send also goes to. */
 export type BuilderRpcUrls = Record<string, string>;
 
-const BUILDER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const HTTPS_PROTOCOL = "https:";
+/** `bundle` takes eth_sendBundle, `raw` takes eth_sendRawTransaction. */
+type BuilderMethod = "bundle" | "raw";
 
-// Keeps lowercase labels mapped to https URLs; undefined when none remain.
+/** One builder, as stored in chains.builder_rpc_urls (an ordered array). */
+export type ChainBuilder = {
+  label: string;
+  url: string;
+  methods: BuilderMethod[];
+};
+
+/**
+ * A chain-config builderRpcUrls value: { label: url | { url, methods } }, in
+ * order. A plain URL is raw only (the original form).
+ */
+type BuilderRpcConfigValue = Record<
+  string,
+  string | { url: string; methods?: BuilderMethod[] }
+>;
+
+const BUILDER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const BUILDER_METHODS: readonly BuilderMethod[] = ["bundle", "raw"];
+
+// Bundles send to at most this many of a chain's builders.
+const MAX_CHAIN_BUILDERS = 16;
+
+// Ethereum mainnet bundle builders (eth_sendBundle only). A chain-config
+// builderRpcUrls entry overrides a label in place; an empty URL removes it.
+export const ETH_MAINNET_BUILDERS: readonly ChainBuilder[] = [
+  ["flashbots", "https://relay.flashbots.net"],
+  ["buildernet", "https://rpc.buildernet.org"],
+  ["titan", "https://rpc.titanbuilder.xyz"],
+  ["beaverbuild", "https://rpc.beaverbuild.org"],
+  ["quasar", "https://rpc.quasar.win"],
+  ["btcs", "https://rpc.btcs.com"],
+  ["eureka", "https://rpc.eurekabuilder.xyz"],
+].map(([label, url]) => ({ label, url, methods: ["bundle"] }));
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// [label, entry] pairs in order: a stored array or a config object.
+function builderEntries(value: unknown): [unknown, unknown][] {
+  if (Array.isArray(value)) {
+    return value.map((item) => [
+      isPlainRecord(item) ? item.label : undefined,
+      item,
+    ]);
+  }
+  return isPlainRecord(value) ? Object.entries(value) : [];
+}
+
+function readMethods(raw: unknown): BuilderMethod[] {
+  // No methods: raw only, as a plain URL.
+  if (raw === undefined) {
+    return ["raw"];
+  }
+  return Array.isArray(raw)
+    ? BUILDER_METHODS.filter((method) => raw.includes(method))
+    : [];
+}
+
+function toChainBuilder(
+  label: unknown,
+  entry: unknown
+): ChainBuilder | undefined {
+  if (typeof label !== "string" || !BUILDER_LABEL_PATTERN.test(label)) {
+    return;
+  }
+  const fields = typeof entry === "string" ? { url: entry } : entry;
+  if (!isPlainRecord(fields)) {
+    return;
+  }
+  const parsed = parseRpcUrl(fields.url);
+  const methods = readMethods(fields.methods);
+  if (!(parsed && isAllowedBroadcastUrl(parsed)) || methods.length === 0) {
+    return;
+  }
+  return { label, url: urlKey(parsed), methods };
+}
+
+/**
+ * A chain's builders in order, from the stored array or a chain-config
+ * object: valid lowercase label, https URL (or http to a local node), at
+ * least one method, first entry per label.
+ */
+function parseChainBuilders(value: unknown): ChainBuilder[] {
+  const seen = new Set<string>();
+  const builders: ChainBuilder[] = [];
+  for (const [label, entry] of builderEntries(value)) {
+    const builder = toChainBuilder(label, entry);
+    if (builder && !seen.has(builder.label)) {
+      seen.add(builder.label);
+      builders.push(builder);
+    }
+  }
+  return builders;
+}
+
+/** The builders Send as Bundle may use, in order, at most MAX_CHAIN_BUILDERS. */
+export function bundleCapableBuilders(value: unknown): ChainBuilder[] {
+  return parseChainBuilders(value)
+    .filter((builder) => builder.methods.includes("bundle"))
+    .slice(0, MAX_CHAIN_BUILDERS);
+}
+
+/** Labels (never URLs) of the bundle-capable builders, in order. */
+export function builderLabels(value: unknown): string[] {
+  return bundleCapableBuilders(value).map((builder) => builder.label);
+}
+
+// Raw-capable builders as label -> URL; undefined when none remain.
 export function normalizeBuilderRpcUrls(
   value: unknown
 ): BuilderRpcUrls | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
-  }
   const result: BuilderRpcUrls = {};
-  for (const [label, url] of Object.entries(value)) {
-    if (!BUILDER_LABEL_PATTERN.test(label) || typeof url !== "string") {
-      continue;
-    }
-    try {
-      if (new URL(url).protocol === HTTPS_PROTOCOL) {
-        result[label] = url;
-      }
-    } catch {
-      // Not a URL: skipped.
+  for (const builder of parseChainBuilders(value)) {
+    if (builder.methods.includes("raw")) {
+      result[builder.label] = builder.url;
     }
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
-// Block builder endpoints from chain-config JSON, with no env-var fallback.
-export function getBuilderRpcUrls(
-  options: ChainConfigLookupOptions
-): BuilderRpcUrls | undefined {
-  return normalizeBuilderRpcUrls(
-    findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.builderRpcUrls
+// A plain URL (no methods) on a default label keeps the default's methods
+// and adds raw; explicit methods replace them.
+function overDefault(builder: ChainBuilder, entry: unknown): unknown {
+  const fields = typeof entry === "string" ? { url: entry } : entry;
+  if (!isPlainRecord(fields) || fields.methods !== undefined) {
+    return entry;
+  }
+  return { ...fields, methods: [...new Set([...builder.methods, "raw"])] };
+}
+
+// An empty URL removes a builder on purpose.
+function isRemoval(entry: unknown): boolean {
+  const url = isPlainRecord(entry) ? entry.url : entry;
+  return typeof url === "string" && url.trim() === "";
+}
+
+/**
+ * The builders to store for a chain: the code defaults in their order, each
+ * overridden in place (or removed, by an empty URL) by a chain-config entry
+ * of the same label, then the other chain-config entries in config order.
+ * onSkipped names each entry dropped as not valid (an empty URL is not).
+ */
+export function readChainBuilders(
+  options: ChainConfigLookupOptions & {
+    defaults?: readonly ChainBuilder[];
+    onSkipped?: (label: string, removedDefault: boolean) => void;
+  }
+): ChainBuilder[] {
+  const configured = new Map(
+    builderEntries(
+      findRpcConfigEntry(options.rpcConfig, options.jsonKey)?.builderRpcUrls
+    ).filter((pair): pair is [string, unknown] => typeof pair[0] === "string")
   );
+  const defaults = options.defaults ?? [];
+  const merged: [string, unknown][] = defaults.map((builder) => [
+    builder.label,
+    configured.has(builder.label)
+      ? overDefault(builder, configured.get(builder.label))
+      : builder,
+  ]);
+  const defaultLabels = new Set(defaults.map((builder) => builder.label));
+  for (const [label, entry] of configured) {
+    if (!defaultLabels.has(label)) {
+      merged.push([label, entry]);
+    }
+  }
+  // As an array: an object would reorder integer-like labels.
+  const builders = parseChainBuilders(
+    merged.map(([label, entry]) =>
+      isPlainRecord(entry) ? { ...entry, label } : { label, url: entry }
+    )
+  );
+  const kept = new Set(builders.map((builder) => builder.label));
+  for (const [label, entry] of configured) {
+    if (!(kept.has(label) || isRemoval(entry))) {
+      options.onSkipped?.(label, defaultLabels.has(label));
+    }
+  }
+  return builders;
 }
 
 /**

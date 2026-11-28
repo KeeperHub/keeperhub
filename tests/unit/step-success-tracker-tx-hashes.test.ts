@@ -33,7 +33,7 @@ function ctx(overrides: Partial<StepContext> = {}): StepContext {
 describe("recordTransactionHashIfPresent (KEEP-470)", () => {
   it("records one on-chain write once even when the step is recorded twice", () => {
     // A replay that reuses a completed step records it so the tracker stays
-    // complete. resolveTransactionHashesForSuccess feeds this list straight
+    // complete. resolveSuccessFacts feeds this list straight
     // into the run's transactionHashes, so a duplicate would be re-verified
     // against the chain and counted twice in the digest.
     const executionId = "exec_repeat";

@@ -348,6 +348,26 @@ describe("protocolWriteStep", () => {
     });
   });
 
+  describe("Send as", () => {
+    it("forwards sendMode alone to writeContractCore", async () => {
+      mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);
+      mockGetProtocol.mockReturnValue(COMPOUND_PROTOCOL);
+      mockResolveAbi.mockResolvedValue({
+        abi: COMPOUND_PROTOCOL.contracts.comet.abi,
+      });
+      mockWriteContractCore.mockResolvedValue({
+        success: true,
+        transactionHash: "0xabc123",
+      });
+
+      await protocolWriteStep(makeInput({ sendMode: "private-relay" }));
+
+      expect(mockWriteContractCore.mock.calls[0]?.[0]).toMatchObject({
+        sendMode: "private-relay",
+      });
+    });
+  });
+
   describe("successful delegation to writeContractCore", () => {
     it("passes resolved inputs to writeContractCore and returns success", async () => {
       mockResolveProtocolMeta.mockReturnValue(COMPOUND_SUPPLY_META);

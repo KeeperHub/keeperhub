@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { bundleStep } from "@/tests/utils/bundle-save-fixtures";
 
 const mockSession = {
   user: { id: "user-dup-test", email: "test@example.com", name: "Test User" },
@@ -53,6 +54,8 @@ const mockDbQuery = {
 
 const mockDbDelete = vi.fn().mockResolvedValue(undefined);
 const mockMemberLimit = vi.fn();
+// Rows a plain awaited select returns, such as the save check's chains read.
+const mockChainRows = vi.fn().mockResolvedValue([]);
 
 vi.mock("@/lib/db", () => ({
   db: {
@@ -65,9 +68,9 @@ vi.mock("@/lib/db", () => ({
         leftJoin: vi.fn(() => ({
           where: vi.fn(() => ({ limit: mockMemberLimit })),
         })),
-        where: vi.fn(() => ({
-          limit: mockMemberLimit,
-        })),
+        where: vi.fn(() =>
+          Object.assign(mockChainRows(), { limit: mockMemberLimit })
+        ),
       })),
     })),
     insert: vi.fn().mockReturnValue({
@@ -375,5 +378,101 @@ describe("Workflow duplicate API with a stray toggle value", () => {
     const kept = (await duplicate()).failOnError;
     expect(kept).toMatch(/^\{\{@.+:Manual Trigger\.flag\}\}$/);
     expect(kept).not.toBe(TEMPLATE);
+  });
+});
+
+describe("Workflow duplicate API with a bundle step", () => {
+  const withBundle = {
+    ...sourceWorkflow,
+    organizationId: "org-other",
+    nodes: [sourceWorkflow.nodes[0], bundleStep()],
+    edges: [{ id: "e1", source: "trigger-1", target: "write-1" }],
+  };
+
+  async function duplicate(): Promise<Response> {
+    const { POST } = await import(
+      "@/app/api/workflows/[workflowId]/duplicate/route"
+    );
+    return POST(
+      new Request("http://localhost/api/workflows/source-wf-1/duplicate", {
+        method: "POST",
+      }),
+      { params: Promise.resolve({ workflowId: "source-wf-1" }) }
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    mockDbQuery.workflows.findFirst.mockResolvedValue(withBundle);
+    mockDbQuery.workflows.findMany.mockResolvedValue([]);
+    mockMemberLimit.mockResolvedValue([{ id: "member-1" }]);
+    mockChainRows.mockResolvedValue([]);
+  });
+
+  it("checks the copy's bundle step for the copy's organization, not as saved before", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org-other");
+    const refused = await duplicate();
+    expect(refused.status).toBe(422);
+    const body = (await refused.json()) as { error: string; message: string };
+    expect(body.error).toBe("INVALID_ACTION_CONFIG");
+    // Names the step and why, and says nothing was copied.
+    expect(body.message).toMatch(
+      /^This workflow cannot be copied into your organization\. Invalid node\(s\): "Write": /
+    );
+    expect(body.message).toContain(
+      "cannot run in your organization: bundles are not turned on for it yet."
+    );
+    // The copier cannot change the template's step, so no advice to.
+    expect(body.message).not.toContain("Normal transaction");
+    expect(body.message).toMatch(/Nothing was copied\.$/);
+    const { db } = await import("@/lib/db");
+    expect(db.insert).not.toHaveBeenCalled();
+
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org-1");
+    expect((await duplicate()).status).toBe(200);
+  });
+
+  it("copies a step whose network still lists one of its builders, and refuses one with none listed", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org-1");
+    const onEthereum = (bundleBuilders: string[]) => {
+      const step = bundleStep();
+      const data = step.data as { config: Record<string, unknown> };
+      return {
+        ...withBundle,
+        nodes: [
+          sourceWorkflow.nodes[0],
+          {
+            ...step,
+            data: {
+              ...data,
+              config: { ...data.config, network: "1", bundleBuilders },
+            },
+          },
+        ],
+      };
+    };
+    mockChainRows.mockResolvedValue([
+      {
+        chainId: 1,
+        name: "Ethereum",
+        builderRpcUrls: {
+          flashbots: {
+            url: "https://relay.flashbots.example",
+            methods: ["bundle"],
+          },
+        },
+      },
+    ]);
+    mockDbQuery.workflows.findFirst.mockResolvedValue(
+      onEthereum(["flashbots", "titan"])
+    );
+    expect((await duplicate()).status).toBe(200);
+    mockDbQuery.workflows.findFirst.mockResolvedValue(onEthereum(["titan"]));
+    const refused = await duplicate();
+    expect(refused.status).toBe(422);
+    expect(JSON.stringify(await refused.json())).toContain(
+      "lists none of its builders"
+    );
   });
 });

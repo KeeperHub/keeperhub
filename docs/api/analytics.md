@@ -41,6 +41,7 @@ Returns aggregated analytics for the organization including run counts, success 
   "errorCount": 70,
   "cancelledCount": 0,
   "skippedCount": 0,
+  "notLandedCount": 0,
   "successRate": 0.944,
   "avgDurationMs": 2340,
   "totalGasWei": "15000000000000000",
@@ -52,6 +53,7 @@ Returns aggregated analytics for the organization including run counts, success 
     "errorCount": 80,
     "cancelledCount": 0,
     "skippedCount": 0,
+    "notLandedCount": 0,
     "avgDurationMs": 2510,
     "totalGasWei": "14000000000000000",
     "sponsoredGasWei": "1800000000000000"
@@ -63,17 +65,18 @@ Returns aggregated analytics for the organization including run counts, success 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `totalRuns` | number | `successCount + errorCount`. Runs that are still pending or running are not counted, and neither are the runs that were cancelled or skipped, so this is not the total of every row List Runs returns. The four figures do not sum to it, deliberately |
+| `totalRuns` | number | `successCount + errorCount`. Runs that are still pending or running are not counted, and neither are the runs that were cancelled, skipped or not landed, so this is not the total of every row List Runs returns. These figures do not sum to it, deliberately |
 | `successCount` | number | Runs that completed successfully |
 | `errorCount` | number | Runs that failed |
 | `cancelledCount` | number | Workflow runs that were cancelled |
-| `skippedCount` | number | Workflow runs with status `skipped`: a run the platform refused before it started (over the plan limit, a gated action, an unpaid pay-as-you-go charge, or a workflow that cannot run), or an expired price signal. Refusals of one workflow for one reason share a row per hour, so this counts rows, not refused attempts |
+| `skippedCount` | number | Workflow runs with status `skipped`: a run the platform refused before it started (over the plan limit, a gated action, an unpaid pay-as-you-go charge, or a workflow that cannot run), an expired price signal, Block trigger dispatches skipped while a previous run was still running, a run whose bundle step found an earlier run's bundle still in flight and sent nothing (the run's other steps still ran, and may have sent transactions), or a run whose bundle step is waiting for its Not before time. Refusals of one workflow for one reason share a row per hour, and the skips behind one running run share one row, so this counts rows, not attempts. Skipped runs do not count toward your plan's runs, except waiting runs and runs skipped because an earlier run's bundle (or public copy) was in flight ([Billing in the Web3 docs](/plugins/web3#send-as-bundle)) |
+| `notLandedCount` | number | Workflow runs with status `not_landed`: the run finished, but a bundle in it was not seen in its target blocks. Neither a success nor a failure, but they count toward your plan's runs. A bundle that could not be checked can still land within about a day; then the run changes to `success`, or to `error` if the call reverted |
 | `successRate` | number | Fraction of runs that succeeded, `0` to `1`, not a percentage. The dashboard renders it by multiplying by 100, so a consumer that wants a percentage has to do the same |
 | `avgDurationMs` | number or null | Mean duration in milliseconds, or `null` when the window holds no completed run to average |
 | `totalGasWei` | string | Every wei the runs burned over the range, sponsored gas included. A decimal string, because the figure overflows a JavaScript number |
 | `sponsoredGasWei` | string | The sponsored portion of `totalGasWei`, read from the gas-credit ledger. A subset rather than a second figure: adding the two double counts, and the wallet-paid share is the subtraction |
 | `activeRuns` | number | Runs in flight at the moment of the request, counted for the organization rather than the window. Under `projectId` it is scoped to that project and covers workflow runs only, because the direct-execution count is skipped when the parameter is set |
-| `previousPeriod` | object | The same counts over the window immediately before this one, so a caller can render deltas. It carries `totalRuns`, `successCount`, `errorCount`, `cancelledCount`, `skippedCount`, `avgDurationMs`, `totalGasWei` and `sponsoredGasWei`, and deliberately not `successRate` or `activeRuns`: derive the previous rate from its own `successCount / totalRuns` |
+| `previousPeriod` | object | The same counts over the window immediately before this one, so a caller can render deltas. It carries `totalRuns`, `successCount`, `errorCount`, `cancelledCount`, `skippedCount`, `notLandedCount`, `avgDurationMs`, `totalGasWei` and `sponsoredGasWei`, and deliberately not `successRate` or `activeRuns`: derive the previous rate from its own `successCount / totalRuns` |
 
 ## Get Time Series Data
 
@@ -107,6 +110,7 @@ Same as the summary endpoint, plus:
       "error": 2,
       "cancelled": 0,
       "skipped": 0,
+      "notLanded": 0,
       "pending": 0,
       "running": 0
     }
@@ -164,7 +168,7 @@ Returns a unified list of both workflow executions and direct executions with pa
 | `range` | string | Time range filter (same as summary) |
 | `customStart` | string | ISO timestamp for custom range start |
 | `customEnd` | string | ISO timestamp for custom range end |
-| `status` | string | Filter by status. Repeatable. One of `pending`, `running`, `success`, `error`, `system_error`, `external_error`, `skipped`, `cancelled` |
+| `status` | string | Filter by status. Repeatable. One of `pending`, `running`, `success`, `error`, `system_error`, `external_error`, `skipped`, `not_landed`, `cancelled` |
 | `source` | string | Filter by source: `workflow`, `direct`. Repeatable |
 | `network` | string | Restrict to these networks. Repeatable |
 | `gas` | string | How the run's gas was paid: `sponsored`, `wallet` or `free`. Repeatable. Any other value is dropped rather than refused, so `?gas=8453` returns the unfiltered list with no error: filter by chain with `network` above |
@@ -338,6 +342,8 @@ GET /api/analytics/spend-cap
 Returns current spending status against the daily spending caps.
 
 `dailyCapWei` and `dailySolanaCapLamports` report what the organization configured, and are `null` when it configured nothing. That is not the same as being uncapped: the `effective*` fields carry the figure enforcement actually applies, which is the platform default whenever `usingDefault*` is true. Plan against the effective figures.
+
+`dailyUsedWei` includes value held by Send as Bundle steps whose bundle was not included but can still be mined (see [Spending Caps](/api/direct-execution)), so it can be above what actually moved today.
 
 ### Response
 

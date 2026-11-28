@@ -74,7 +74,8 @@ vi.mock("@/lib/rpc/config-service", () => ({
 }));
 
 const mockRpcRelayErrorClass = vi.fn();
-vi.mock("@/lib/rpc/providers", () => ({
+vi.mock("@/lib/rpc/providers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rpc/providers")>()),
   rpcRelayErrorClass: (...args: unknown[]) => mockRpcRelayErrorClass(...args),
 }));
 
@@ -282,6 +283,7 @@ beforeEach(() => {
   mockGetRpcProvider.mockResolvedValue({
     resolveActiveRpcUrl: () => Promise.resolve("https://rpc.example.com"),
     executeWithFailover: (fn: (provider: unknown) => unknown) => fn({}),
+    hasPrivateRelayPrimary: () => false,
   });
   mockResolveSignerForNode.mockResolvedValue({
     kind: "eoa",
@@ -371,6 +373,102 @@ describe("batch-write-contract - happy path", () => {
     expect(result.results?.[0].success).toBe(true);
     expect(result.results?.[1].success).toBe(true);
     expect(result.results?.[1].result).toBe(true);
+  });
+});
+
+describe("batch-write-contract - old (Flashbots) relay configs", () => {
+  it("sends an old true flag through the relay on a chain with one, as before Send as", async () => {
+    const relayReads = vi.fn((fn: (provider: unknown) => unknown) => fn({}));
+    const relay = {
+      resolveActiveRpcUrl: () => Promise.resolve("https://relay.example"),
+      executeWithFailover: relayReads,
+      hasPrivateRelayPrimary: () => true,
+      assertPrivateRelayChain: vi.fn().mockResolvedValue(undefined),
+    };
+    mockGetRpcProvider.mockResolvedValueOnce(relay);
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    const result = await batchWriteContractCore(
+      baseInput({ usePrivateMempool: true })
+    );
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+    expect(result.success).toBe(true);
+    // The per-call check and the send both go through the relay manager.
+    expect(relayReads).toHaveBeenCalled();
+    const sendOptions = mockExecuteContractCall.mock.calls[0]?.[3] as
+      | { rpcManager: unknown }
+      | undefined;
+    expect(sendOptions?.rpcManager).toBe(relay);
+  });
+
+  it("sends an old true flag publicly on a chain without a relay, as before", async () => {
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    const result = await batchWriteContractCore(
+      baseInput({ usePrivateMempool: true })
+    );
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it.each([{ sendMode: "private-relay" }])(
+    "fails %j before any RPC, as a user error",
+    async (relay) => {
+      mockGetRpcProvider.mockClear();
+      const { rpcRelayErrorClass } = await vi.importActual<
+        typeof import("@/lib/rpc/providers")
+      >("@/lib/rpc/providers");
+      mockRpcRelayErrorClass.mockImplementationOnce(rpcRelayErrorClass);
+      const result = await batchWriteContractCore(baseInput(relay));
+      expect(result).toMatchObject({
+        success: false,
+        errorClass: "user",
+      });
+      expect((result as { error: string }).error).toContain(
+        "Batch Write Contract can't send through the private relay yet"
+      );
+      expect(mockGetRpcProvider).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe("batch-write-contract - old non-boolean flag", () => {
+  it("asks for the relay only where there is one, and sends when there is none", async () => {
+    mockGetRpcProvider.mockClear();
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    const result = await batchWriteContractCore(
+      baseInput({ usePrivateMempool: "false" as unknown as boolean })
+    );
+    expect(mockGetRpcProvider.mock.calls[0]?.[0]).toMatchObject({
+      usePrivateMempool: true,
+      relayOptional: true,
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("batch-write-contract - route and included", () => {
+  it("reports the route the adapter broadcast on", async () => {
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    mockExecuteContractCall.mockImplementationOnce((...args: unknown[]) => {
+      const report = (args[3] as { sendReport: Record<string, unknown> })
+        .sendReport;
+      report.route = "private-relay";
+      report.included = true;
+      return Promise.resolve(RECEIPT);
+    });
+
+    const result = await batchWriteContractCore(baseInput({}));
+
+    expect(result).toMatchObject({
+      success: true,
+      route: "private-relay",
+      included: true,
+    });
   });
 });
 
@@ -1410,6 +1508,18 @@ describe("batch-write-contract - simulateAt next-block", () => {
     const result = await batchWriteContractCore(
       baseInput({ simulateAt: "next-block" })
     );
+
+    expect(result).toMatchObject({ success: false, broadcastAttempted: false });
+  });
+
+  it("reports a Gas Limit too low (Simulate at: Latest) as not sent", async () => {
+    mockStaticCall.mockResolvedValueOnce([SUCCESS_RETURN, SUCCESS_RETURN]);
+    const { GasLimitTooLowError } = await import("@/lib/web3/gas-limit-error");
+    mockExecuteContractCall.mockRejectedValueOnce(
+      new GasLimitTooLowError(BigInt(30_000), {})
+    );
+
+    const result = await batchWriteContractCore(baseInput({}));
 
     expect(result).toMatchObject({ success: false, broadcastAttempted: false });
   });

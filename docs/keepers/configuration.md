@@ -63,6 +63,43 @@ No additional configuration needed. Click the Run button to execute.
 |-------|-------------|
 | Network * | Blockchain network to watch |
 | Block Interval * | Fire the workflow every N blocks (1 = every block, 10 = every 10th block) |
+| Skip if the previous run is still running | Off by default. EVM networks only. While a run of this workflow is still pending or running, a block that fires does not start a run. |
+| Also run when a slot is missed | Off by default. Ethereum Mainnet, Sepolia and Hoodi, Block Interval 1 only. When no block arrives 4 seconds into a slot, the workflow runs anyway. |
+
+#### Skip if the previous run is still running
+
+Use it when a run must not overlap the one before it, for example a keeper that sends a transaction and waits for its receipt. Blocks that fire while a run is going are skipped:
+
+- The run history shows one Skipped row for each run that blocked others, with a count of the times it skipped: once per block or missed slot, even if KeeperHub receives the same block twice (a retry) within 2 minutes.
+- Skipped rows are not billed and never count toward or reset failure alerts.
+- Runs started through a listed workflow's public call endpoint do not block it: callers of a listed workflow cannot stop your trigger.
+- A run that started more than 30 minutes ago and has not finished a step in the last 30 minutes (the platform's stale-run limit) no longer blocks new runs.
+- If the platform cannot run the check (it cannot record the run before dispatching it), the block is skipped rather than run unchecked; no Skipped row is written for it.
+- A run that waits more than 5 minutes to start and is timed out by the platform is not started later.
+- Through the API, `true` and `"true"` both turn it on.
+- A run that sent a transaction but is still waiting for its receipt (its transaction may still be pending) does not block the next run, so the next run may send the same action again; check onchain state before sending.
+- The switch works per workflow, not per wallet: runs of other workflows that use the same wallet do not block this one.
+
+#### Also run when a slot is missed
+
+Ethereum produces at most one block per 12-second slot, and sometimes a slot stays empty. With this switch on, KeeperHub checks 4 seconds into each slot, and if no block has arrived it runs the workflow anyway.
+
+- A run starts some seconds after its trigger: with the Standard start priority often more than one 12-second slot, with Low latency usually under a second when a pre-warmed runner is free. Either way a missed-slot run is an extra run that carries the next slot's data, not a guaranteed send in that slot.
+- At most one run per slot: if the slot's block arrives late, after the missed-slot run, it does not start a second run. If a late block is replaced by a block in the next slot with the same number (a reorg), that next slot still gets its run.
+- With "Skip if the previous run is still running" also on, a missed-slot run is often recorded as Skipped, because the previous block's run is still going.
+- Missed-slot runs are best effort. They pause while blocks reach KeeperHub more than 4 seconds after their slot starts, and resume on their own once blocks are on time again. They also stop after 4 empty slots in a row, since that usually means a lagging node rather than missed slots, and start again with the next block that arrives.
+- The switch is saved on any network and at any interval, but only takes effect on Ethereum Mainnet, Sepolia and Hoodi with Block Interval 1. Through the API, `true` and `"true"` both turn it on.
+
+While this switch takes effect, every run carries these trigger fields; they are absent when it does not (another network, or a Block Interval other than 1). On a missed-slot run the usual block fields (`blockNumber`, `blockHash`, `blockTimestamp`, `parentHash`) describe the latest block on the chain, which is the block before the empty slot. After a reconnect, blocks that are caught up carry the fields of their own (past) slot: turn on "Skip if the previous run is still running" so a burst of them does not start overlapping runs, and compare `slotTimestamp` with the current time to spot stale blocks.
+
+| Field | Description |
+|-------|-------------|
+| `missedSlot` | `true` when no block had arrived 4 seconds into the slot (a late block may still land; it does not start a second run), `false` on a run fired by a block |
+| `slotTimestamp` | Start of the slot that fired the run (`targetSlot - 1`), in Unix seconds |
+| `targetSlot` | Beacon chain slot number of the slot after it |
+| `targetSlotTimestamp` | Start of that next slot, in Unix seconds |
+
+Pick them from the trigger in any step's template picker. To act once per slot, deduplicate on `targetSlot`, not `blockNumber`: a missed-slot run reports the same `blockNumber` as the run of the block before it, and two missed slots in a row report the same one too.
 
 ## Web3 Node Configuration
 

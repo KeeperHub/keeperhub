@@ -11,6 +11,8 @@ import type { NodeExecutionStatus } from "@/lib/errors/execution-status";
 import { ErrorCategory, logSystemError, logUserError } from "@/lib/logging";
 import { computeAutoLayout } from "@/lib/workflow/editor/auto-layout";
 import { buildExecutionLogsMap } from "@/lib/workflow/editor/template-helpers";
+import type { NodeOutcome } from "@/lib/workflow/executor/run-outcome-keys";
+import { isSavedNodeStatus } from "@/lib/workflow/saved-node-status";
 
 export type WorkflowNodeType = "trigger" | "action" | "add";
 
@@ -65,12 +67,48 @@ const TRIGGER_TYPES: ReadonlySet<string> = new Set(
   Object.values(WorkflowTriggerEnum)
 );
 
+/**
+ * A node's state in the run on screen. A bundle step that missed, sent nothing
+ * or landed late has its own state; these are never saved with the workflow.
+ */
+export type NodeRunStatus =
+  | "idle"
+  | "running"
+  | "success"
+  | "error"
+  | "not-included"
+  | "skipped"
+  | "landed-late"
+  | "landed-late-reverted"
+  | "public-pending"
+  | "waiting";
+
+const OUTCOME_STATUS: Record<NodeOutcome, NodeRunStatus> = {
+  "not-included": "not-included",
+  "skipped-in-flight": "skipped",
+  "landed-late": "landed-late",
+  "landed-late-reverted": "landed-late-reverted",
+  "public-pending": "public-pending",
+  waiting: "waiting",
+};
+
+/** How the canvas shows a node of a run, from the status route's entry. */
+export function canvasNodeStatus(entry: {
+  status: string;
+  outcome?: NodeOutcome;
+}): NodeRunStatus {
+  if (entry.outcome) {
+    return OUTCOME_STATUS[entry.outcome];
+  }
+  return isSavedNodeStatus(entry.status) ? entry.status : "idle";
+}
+
 export type WorkflowNodeData = {
   label: string;
   description?: string;
   type: WorkflowNodeType;
   config?: Record<string, unknown>;
-  status?: "idle" | "running" | "success" | "error";
+  status?: NodeRunStatus;
   enabled?: boolean; // Whether the step is enabled (defaults to true)
   onClick?: () => void; // For the "add" node type
 };

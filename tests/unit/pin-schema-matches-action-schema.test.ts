@@ -165,7 +165,7 @@ describe("pin schema and action schema agree on field types", () => {
 
   it("checks fields of every JSON type", () => {
     expect(new Set(cases.map((field) => fieldJsonType(field.type)))).toEqual(
-      new Set(["string", "number", "boolean"])
+      new Set(["string", "number", "boolean", "array"])
     );
   });
 

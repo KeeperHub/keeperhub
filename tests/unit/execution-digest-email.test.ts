@@ -7,6 +7,7 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 import { sendWorkflowExecutionDigestEmail } from "@/lib/email";
+import { SKIPPED_BILLING_TEXT } from "@/lib/errors/execution-status";
 
 const mockFetch = vi.fn();
 
@@ -144,6 +145,42 @@ describe("sendWorkflowExecutionDigestEmail", () => {
     expect(content).toContain("https://app.keeperhub.com/workflows/wf-skip");
     // The failure count and rate stay untouched by the refusals.
     expect(content).toContain("Failed: 2 (40%)");
+  });
+
+  it("lists every skipped cause and the shared billing line in both bodies", async () => {
+    const data = baseData();
+    await sendWorkflowExecutionDigestEmail({
+      ...data,
+      stats: { ...data.stats, skipped: 3 },
+    });
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body ?? "{}");
+    const [text, html] = (body.content ?? []).map(
+      (c: { value: string }) => c.value
+    );
+    const causes =
+      "refused, skipped behind a previous run still running, or whose bundle step sent no transaction: an earlier run's bundle was still in flight, an earlier run's public copy was not mined yet, or the bundle step was waiting for its Not before time";
+    for (const part of [text, html]) {
+      expect(part).toContain(causes);
+      expect(part).toContain(SKIPPED_BILLING_TEXT);
+      expect(part).not.toContain("only when an earlier run's bundle");
+    }
+    expect(text).toContain(`Skipped: 3 (runs ${causes}; not failures.`);
+    expect(html).toContain("do not count toward your success rate.");
+  });
+
+  it("says not landed runs count toward the plan's runs in both bodies", async () => {
+    const data = baseData();
+    await sendWorkflowExecutionDigestEmail({
+      ...data,
+      stats: { ...data.stats, notLanded: 2 },
+    });
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body ?? "{}");
+    for (const part of (body.content ?? []).map(
+      (c: { value: string }) => c.value
+    )) {
+      expect(part).toContain("they count toward your plan's runs.");
+      expect(part).not.toContain("towards");
+    }
   });
 
   it("reports the number of distinct workflows run", async () => {

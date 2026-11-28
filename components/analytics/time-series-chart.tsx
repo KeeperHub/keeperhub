@@ -21,15 +21,16 @@ import {
 } from "@/lib/atoms/analytics";
 import { DAY_MS } from "@/lib/utils/duration";
 
-// Colours come from the shared status palette, so a band on this chart is the
-// same hue as that status's badge in the table and its swatch in the filter.
-const CHART_COLORS = {
-  success: STATUS_DISPLAY.success.chartColor,
-  error: STATUS_DISPLAY.error.chartColor,
-  cancelled: STATUS_DISPLAY.cancelled.chartColor,
-  skipped: STATUS_DISPLAY.skipped.chartColor,
-  running: STATUS_DISPLAY.running.chartColor,
-  pending: STATUS_DISPLAY.pending.chartColor,
+// Each band reads its colour and name from the shared status palette, so it
+// matches that status's badge in the table and its swatch in the filter.
+const CHART_STATUSES = {
+  success: STATUS_DISPLAY.success,
+  error: STATUS_DISPLAY.error,
+  cancelled: STATUS_DISPLAY.cancelled,
+  skipped: STATUS_DISPLAY.skipped,
+  notLanded: STATUS_DISPLAY.not_landed,
+  running: STATUS_DISPLAY.running,
+  pending: STATUS_DISPLAY.pending,
 } as const;
 
 /**
@@ -121,7 +122,7 @@ function ChartTooltip({
                 className="inline-block size-2 rounded-full"
                 style={{ backgroundColor: entry.color }}
               />
-              <span className="capitalize">{entry.name}</span>
+              <span>{entry.name}</span>
             </div>
             <span className="font-medium">{entry.value}</span>
           </div>
@@ -149,6 +150,7 @@ function TimeSeriesContent({
     error: number;
     cancelled: number;
     skipped: number;
+    notLanded: number;
     pending: number;
     running: number;
   }[];
@@ -163,6 +165,7 @@ function TimeSeriesContent({
       "error",
       "cancelled",
       "skipped",
+      "notLanded",
       "running",
       "pending",
     ] as const;
@@ -209,9 +212,10 @@ function TimeSeriesContent({
         {activeKeys.map((key) => (
           <Area
             dataKey={key}
-            fill={CHART_COLORS[key]}
+            fill={CHART_STATUSES[key].chartColor}
             fillOpacity={0.4}
             key={key}
+            name={CHART_STATUSES[key].label}
             stroke="none"
             type="monotone"
           />

@@ -65,10 +65,13 @@ A run reaches one of these terminal states:
 | `error` | Failed from bad input, workflow logic, or an external dependency |
 | `system_error` | Failed inside KeeperHub infrastructure |
 | `cancelled` | Stopped before completing |
+| `skipped` | Refused before it started, skipped behind a run that was still going, or a Send as Bundle or Bundle and public step sent no transaction (other steps still ran). Counts toward your plan's runs only in that last case (an earlier run's bundle or public copy in flight, or waiting for Not before) |
+| `not_landed` | Finished, but a bundle in it was not seen in its target blocks. Neither a success nor a failure, and it still counts toward your plan's runs. A bundle that could not be checked can still land within about a day (less for a workflow that sends very often from one wallet); then the run changes to `success`, or to `error` if the call reverted |
 
-`pending`, `running`, and `unconfirmed` are non-terminal: keep reading until you see one of the
-four above. Treat anything other than `success` as a failure. Checking only for `error` misses
-`system_error` and `cancelled`.
+`pending`, `running`, and `unconfirmed` are non-terminal. New statuses can be added, so decide when
+to stop from `status.pollIntervalHint` in the `get_execution` response rather than from the status
+name: `0` means the run is terminal. Only `success` means the run did what it was asked. Checking
+only for `error` misses `system_error`, `cancelled`, `skipped`, and `not_landed`.
 
 ## 4. Write onchain, safely
 

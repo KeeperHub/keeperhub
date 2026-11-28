@@ -11,6 +11,9 @@ export interface TemplateBadgeInputProps {
   disabled?: boolean;
   className?: string;
   id?: string;
+  ariaLabelledBy?: string;
+  ariaDescribedBy?: string;
+  ariaInvalid?: boolean;
 }
 
 /**

@@ -1,6 +1,26 @@
 import "server-only";
 
 /**
+ * The settled failure for a mined receipt with status 0. A receipt carries no
+ * reason; using all the gas it was given points to out of gas.
+ */
+export function minedRevertError(
+  receipt: { hash: string; blockNumber: number; gasUsed?: bigint },
+  gasLimit?: bigint | null,
+  fixedByUser = false
+): OnChainRevertError {
+  const outOfGas =
+    gasLimit && receipt.gasUsed !== undefined && receipt.gasUsed >= gasLimit
+      ? `; used all ${gasLimit} gas, likely out of gas${fixedByUser ? "; raise the Gas Limit" : ""}`
+      : "";
+  return new OnChainRevertError({
+    message: `Transaction ${receipt.hash} reverted on-chain (execution reverted, status 0, block ${receipt.blockNumber})${outOfGas}`,
+    transactionHash: receipt.hash,
+    blockNumber: receipt.blockNumber,
+  });
+}
+
+/**
  * Thrown when a directly-signed transaction was broadcast and then reverted
  * on-chain (receipt status 0).
  *
@@ -70,11 +90,22 @@ export function revertedTransactionHash(error: unknown): string | undefined {
 export class OnChainPendingError extends Error {
   readonly kind = "onchain-pending" as const;
   readonly transactionHash: string;
+  // False only when no attempt can have sent it and no node knows the hash; `sendError` is that send's error.
+  declare readonly mayHaveSent?: false;
+  declare readonly sendError?: unknown;
 
-  constructor(opts: { message: string; transactionHash: string }) {
+  constructor(opts: {
+    message: string;
+    transactionHash: string;
+    notSent?: { sendError: unknown };
+  }) {
     super(opts.message);
     this.name = "OnChainPendingError";
     this.transactionHash = opts.transactionHash;
+    if (opts.notSent) {
+      this.mayHaveSent = false;
+      this.sendError = opts.notSent.sendError;
+    }
   }
 }
 

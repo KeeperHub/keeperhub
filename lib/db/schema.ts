@@ -23,6 +23,7 @@ import type { ErrorCategory } from "../logging";
 import type { PythSignal } from "../pyth/price-trigger";
 import type { IntegrationType } from "../types/integration";
 import { generateId } from "../utils/id";
+import type { RunOutcomeCode } from "../workflow/executor/run-outcome-keys";
 import { countedRunSql } from "./counted-runs";
 
 // These enums are created by @workflow/world-postgres migrations in the public
@@ -734,7 +735,8 @@ export const workflowExecutions = pgTable(
     // to be remembered whenever a category is added.
     errorCategory: text("error_category").$type<ErrorCategory>(),
     errorType: text("error_type").$type<ExecutionErrorType>(),
-    errorCode: text("error_code").$type<ErrorCode>(),
+    // A system error's code, or a waiting run's stable key (RunOutcomeCode).
+    errorCode: text("error_code").$type<ErrorCode | RunOutcomeCode>(),
     startedAt: timestamp("started_at").notNull().defaultNow(),
     completedAt: timestamp("completed_at"),
     duration: numeric("duration"), // Duration in milliseconds
@@ -828,7 +830,9 @@ export const workflowExecutions = pgTable(
      * run two replicas with leader election; this key makes a duplicate
      * dispatch a no-op instead of a second SQS message and a second run. The
      * dispatcher sets a stable per-occurrence value
-     * (`schedule:<scheduleId>:<occurrenceIso>` / `block:<workflowId>:<chainId>:<blockNumber>`)
+     * (`schedule:<scheduleId>:<occurrenceIso>` / `block:<workflowId>:<chainId>:<blockNumber>`,
+     * or `slot:<workflowId>:<chainId>:<slot>` for a Block trigger with missed-slot runs on;
+     * a skip-if-running Skipped row uses `skipped-behind:<blocking run id>`)
      * and the create-phantom insert is `ON CONFLICT DO NOTHING` on the unique
      * index below, so an overlapping leader or a catch-up window that re-runs an
      * occurrence collides and skips its enqueue. Null for rows with no dedup key
@@ -866,6 +870,13 @@ export const workflowExecutions = pgTable(
         sql`(CASE WHEN ${table.status} <> 'skipped' THEN ${table.startedAt} END) DESC`
       )
       .where(countedRunSql(table)),
+    // The failure streak (loadStreakRuns without notLanded): same key, not landed runs left out.
+    index("idx_workflow_executions_workflow_started_landed")
+      .on(
+        table.workflowId,
+        sql`(CASE WHEN ${table.status} <> 'skipped' THEN ${table.startedAt} END) DESC`
+      )
+      .where(sql`${countedRunSql(table)} AND ${table.status} <> 'not_landed'`),
     index("idx_workflow_executions_status").on(table.status),
     index("idx_workflow_executions_user_id").on(table.userId),
     // Backs the FK to organization: without it the RI check on an organization
@@ -878,6 +889,16 @@ export const workflowExecutions = pgTable(
     // Idempotency guard for dispatch dedup; NULL keys are distinct so only real
     // per-occurrence keys are constrained.
     uniqueIndex("idx_workflow_executions_dispatch_key").on(table.dispatchKey),
+    // Skip-if-running blocker lookup (findBlockingRun): live rows only; predicate must match its literals.
+    index("idx_workflow_executions_live_started")
+      .on(table.workflowId, table.startedAt.desc())
+      .where(sql`${table.status} IN ('phantom', 'pending', 'running')`),
+    // Skip-if-running repeat lookup (findSkippedKey); predicate must match its literals.
+    index("idx_workflow_executions_skipped_behind")
+      .on(table.workflowId, table.completedAt)
+      .where(
+        sql`${table.status} = 'skipped' AND ${table.dispatchKey} LIKE 'skipped-behind:%'`
+      ),
   ]
 );
 
@@ -1375,9 +1396,22 @@ export const chains = pgTable(
     // write transactions for this chain can be routed through defaultPrivateRpcUrl
     // instead of the public mempool.
     usePrivateMempoolRpc: boolean("use_private_mempool_rpc").default(false),
+    // The Send as copy (private, no gas on revert) assumes the default Protect
+    // URL: no useMempool, canRevert, hint=calldata or /fast.
     defaultPrivateRpcUrl: text("default_private_rpc_url"),
-    // Block builder endpoints for next-block sends, seeded from chain-config.
-    builderRpcUrls: jsonb("builder_rpc_urls").$type<Record<string, string>>(),
+    // Extra public RPCs every signed write is also sent to, at the same time.
+    // Set from CHAIN_RPC_CONFIG (broadcastRpcUrls) by the chain seed.
+    broadcastRpcUrls: jsonb("broadcast_rpc_urls")
+      .notNull()
+      .default([])
+      .$type<string[]>(),
+    // Block builders, seeded from chain-config: an ordered array of
+    // { label, url, methods }. Bundles use the "bundle" ones, next-block sends
+    // the "raw" ones. The older { label: url } form reads as raw only.
+    builderRpcUrls: jsonb("builder_rpc_urls").$type<
+      | { label: string; url: string; methods: ("bundle" | "raw")[] }[]
+      | Record<string, unknown>
+    >(),
     isTestnet: boolean("is_testnet").default(false),
     isEnabled: boolean("is_enabled").default(true), // Can disable chains
     // Support maturity signal surfaced to agents via list_action_schemas:

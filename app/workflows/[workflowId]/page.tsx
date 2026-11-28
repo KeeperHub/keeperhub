@@ -19,6 +19,7 @@ import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
 import { useGatedWorkflowWarning } from "@/hooks/use-features";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
+  ApiError,
   api,
   WORKFLOW_SAVE_ERROR_TOAST,
   workflowSaveErrorMessage,
@@ -38,6 +39,12 @@ import {
 import { refetchSidebar } from "@/lib/refetch-sidebar";
 import type { IntegrationType } from "@/lib/types/integration";
 import {
+  RUNNING_POLL_MS,
+  selectedRunPollMs,
+  selectedRunPollMsAfterError,
+} from "@/lib/workflow/run-polling";
+import {
+  canvasNodeStatus,
   currentExecutionIdAtom,
   currentWorkflowDescriptionAtom,
   currentWorkflowIdAtom,
@@ -1020,49 +1027,56 @@ const WorkflowEditor = ({ workflowId }: WorkflowEditorProps) => {
     }
 
     // Start polling for the selected execution
+    let pollMs: number | null = RUNNING_POLL_MS;
+    let cancelled = false;
+    const pollEvery = (nextMs: number | null) => {
+      if (nextMs === pollMs || !selectedExecutionPollingIntervalRef.current) {
+        return;
+      }
+      clearInterval(selectedExecutionPollingIntervalRef.current);
+      selectedExecutionPollingIntervalRef.current =
+        nextMs === null ? null : setInterval(pollSelectedExecution, nextMs);
+      pollMs = nextMs;
+    };
     const pollSelectedExecution = async () => {
       try {
         const statusData =
           await api.workflow.getExecutionStatus(selectedExecutionId);
+        // Another run was selected meanwhile; its own poll owns the interval now.
+        if (cancelled) {
+          return;
+        }
 
         // Update node statuses based on the execution logs
         for (const nodeStatus of statusData.nodeStatuses) {
           updateNodeData({
             id: nodeStatus.nodeId,
-            data: {
-              status: nodeStatus.status as
-                | "idle"
-                | "running"
-                | "success"
-                | "error",
-            },
+            data: { status: canvasNodeStatus(nodeStatus) },
           });
         }
 
-        // Stop polling if execution is complete
-        if (
-          statusData.status !== "running" &&
-          selectedExecutionPollingIntervalRef.current
-        ) {
-          clearInterval(selectedExecutionPollingIntervalRef.current);
-          selectedExecutionPollingIntervalRef.current = null;
-        }
+        // Stop when complete; a not landed run is read again slowly, as it can re-settle.
+        pollEvery(selectedRunPollMs(statusData.status));
       } catch (error) {
         console.error("Failed to poll selected execution status:", error);
-        // Clear polling on error
-        if (selectedExecutionPollingIntervalRef.current) {
-          clearInterval(selectedExecutionPollingIntervalRef.current);
-          selectedExecutionPollingIntervalRef.current = null;
+        // A refused read (gone, no access) ends the poll; others are retried slowly.
+        if (!cancelled) {
+          pollEvery(
+            selectedRunPollMsAfterError(
+              error instanceof ApiError ? error.status : undefined
+            )
+          );
         }
       }
     };
 
-    // Poll immediately and then every 500ms
+    // Poll immediately and then at the running rate until the status says otherwise
     pollSelectedExecution();
-    const pollInterval = setInterval(pollSelectedExecution, 500);
+    const pollInterval = setInterval(pollSelectedExecution, RUNNING_POLL_MS);
     selectedExecutionPollingIntervalRef.current = pollInterval;
 
     return () => {
+      cancelled = true;
       if (selectedExecutionPollingIntervalRef.current) {
         clearInterval(selectedExecutionPollingIntervalRef.current);
         selectedExecutionPollingIntervalRef.current = null;

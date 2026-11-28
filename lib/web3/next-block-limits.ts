@@ -1,5 +1,7 @@
-// The next-block settings' limits and parser. No imports, so the step runtime,
-// save-time validation and the editor all read the settings the same way.
+// The next-block settings' limits and parser. Only the import-free time reader,
+// so the step runtime, save-time validation and the editor read them the same way.
+import { MAX_UNIX_SECONDS, readUnixTime } from "@/lib/web3/unix-time";
+
 export const MIN_SIMULATE_TIMESTAMP_OFFSET_SEC = 1;
 export const MAX_SIMULATE_TIMESTAMP_OFFSET_SEC = 60;
 
@@ -7,12 +9,18 @@ export const MAX_SIMULATE_TIMESTAMP_OFFSET_SEC = 60;
 export type TriggerBlock = { chainId: number; number: number };
 
 type ParsedSimulationSettings =
-  | { ok: true; options: { timestampOffsetSec?: number } | undefined }
+  | {
+      ok: true;
+      options: { timestampOffsetSec?: number; atTime?: number } | undefined;
+    }
   | {
       ok: false;
-      field: "simulateAt" | "simulateTimestampOffsetSec";
+      field: "simulateAt" | "simulateTimestampOffsetSec" | "simulateTime";
       error: string;
     };
+
+/** Read Contract's "At a time": the time field's value, strict for a saved literal. */
+export type SimulateTimeSetting = { value: unknown; strict: boolean };
 
 const WHOLE_SECONDS = /^\d+$/;
 
@@ -23,10 +31,12 @@ function isUnset(value: unknown): boolean {
 /**
  * Reads `simulateAt` / `simulateTimestampOffsetSec`. `options` is undefined
  * for Latest block (the default); the offset is only read for Next block.
+ * "time" is read only where `time` is given (Read Contract), from its value.
  */
 export function parseSimulationSettings(
   simulateAt: unknown,
-  timestampOffsetSec: unknown
+  timestampOffsetSec: unknown,
+  time?: SimulateTimeSetting
 ): ParsedSimulationSettings {
   const mode =
     typeof simulateAt === "string"
@@ -35,11 +45,14 @@ export function parseSimulationSettings(
   if (isUnset(mode) || mode === "latest") {
     return { ok: true, options: undefined };
   }
+  if (mode === "time" && time) {
+    return parseSimulateTime(time);
+  }
   if (mode !== "next-block") {
     return {
       ok: false,
       field: "simulateAt",
-      error: `Invalid Simulate at "${String(simulateAt)}": expected "latest" or "next-block"`,
+      error: `Invalid Simulate at "${String(simulateAt)}": expected ${time ? '"latest", "next-block" or "time"' : '"latest" or "next-block"'}`,
     };
   }
   if (isUnset(timestampOffsetSec)) {
@@ -65,4 +78,29 @@ export function parseSimulationSettings(
 export function simulatesNextBlock(config: Record<string, unknown>): boolean {
   const parsed = parseSimulationSettings(config.simulateAt, undefined);
   return parsed.ok && parsed.options !== undefined;
+}
+
+function parseSimulateTime(
+  time: SimulateTimeSetting
+): ParsedSimulationSettings {
+  if (isUnset(time.value)) {
+    return {
+      ok: false,
+      field: "simulateTime",
+      error: "Enter a time, or set Simulate at to Latest block.",
+    };
+  }
+  const read = readUnixTime(time.value, { strict: time.strict });
+  if (!read.ok) {
+    return {
+      ok: false,
+      field: "simulateTime",
+      error: `Time (simulateTime) ${JSON.stringify(String(time.value)).slice(0, 60)}: ${read.reason}`,
+    };
+  }
+  // A resolved time past MAX_UNIX_SECONDS reads as that far future.
+  return {
+    ok: true,
+    options: { atTime: Math.min(read.seconds, MAX_UNIX_SECONDS) },
+  };
 }

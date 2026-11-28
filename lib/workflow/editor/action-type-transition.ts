@@ -9,10 +9,20 @@
  * validation evaluate immediately. `_protocolMeta` is always refreshed since
  * stale metadata would call the wrong contract function at runtime.
  */
+import {
+  LEGACY_PRIVATE_MEMPOOL_KEY,
+  resolveSendMode,
+  SEND_MODE,
+  SEND_MODE_KEY,
+  sendModeUpdates,
+  unsupportedSendMode,
+} from "@/lib/web3/send-mode";
 import { isKnownConfigKeyForAction } from "@/lib/workflow/validation/action-config";
 import { findActionById, flattenConfigFields } from "@/plugins/registry";
 
 const PROTOCOL_META_KEY = "_protocolMeta";
+// Send as's fallback switch (API only), reserved like the old flag.
+const STRICT_KEY = "strict";
 
 export function buildConfigForActionTypeChange(
   actionType: string,
@@ -24,6 +34,22 @@ export function buildConfigForActionTypeChange(
       continue;
     }
     if (isKnownConfigKeyForAction(actionType, key)) {
+      pruned[key] = value;
+    }
+  }
+
+  // The old flag and `strict` are reserved keys: they go with Send as when the new action has none.
+  if (!isKnownConfigKeyForAction(actionType, SEND_MODE_KEY)) {
+    delete pruned[LEGACY_PRIVATE_MEMPOOL_KEY];
+    delete pruned[STRICT_KEY];
+  }
+
+  // Send as a new step cannot use (e.g. Write Contract's private relay on
+  // Batch Write Contract) goes back to Normal rather than failing every run.
+  // The stored mode, so a chain list still loading cannot hide an old flag.
+  const mode = resolveSendMode(pruned);
+  if (mode !== SEND_MODE.TRANSACTION && unsupportedSendMode(actionType, mode)) {
+    for (const [key, value] of sendModeUpdates(SEND_MODE.TRANSACTION)) {
       pruned[key] = value;
     }
   }
@@ -44,4 +70,14 @@ export function buildConfigForActionTypeChange(
   }
 
   return pruned;
+}
+
+/** The config transform for one field write: an action switch rebuilds the config. */
+export function configTransformFor(
+  key: string,
+  value: unknown
+): ((config: Record<string, unknown>) => Record<string, unknown>) | undefined {
+  return key === "actionType" && typeof value === "string"
+    ? (config) => buildConfigForActionTypeChange(value, config)
+    : undefined;
 }

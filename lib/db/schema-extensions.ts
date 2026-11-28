@@ -17,6 +17,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   foreignKey,
   index,
@@ -542,6 +543,43 @@ export type NewWalletLock = typeof walletLocks.$inferInsert;
  *
  * Status lifecycle: pending -> confirmed | dropped | replaced
  */
+/** One bundle signed at a nonce: its hashes, the run and step that signed it, and when. */
+export type BundleRun = {
+  executionId: string;
+  hashes: string[];
+  // Epoch ms; entries older than the late-landing window are pruned on reuse.
+  signedAt: number;
+  // Lets a late landing name its hash on the run.
+  node?: { id: string; name: string; iterationIndex?: number };
+  // Set when the step decided the miss and dropped the row, so a replay returns it.
+  missed?: BundleMiss;
+  // The step's value reservation, for audit; the reservation carries this row's key.
+  valueReservationId?: string;
+  // A copy of one of `hashes` sent to the public mempool, recorded before it went out.
+  public?: BundlePublicCopy;
+};
+
+/** A bundle's public copy: accepted false when it never went out; misses and unclear count sweeps in a row. */
+export type BundlePublicCopy = {
+  hash: string;
+  kind: "with-bundle" | "fallback";
+  at: number;
+  // Sent through the user's own RPC (never miss-counted) or the platform's.
+  via?: "user" | "platform";
+  accepted?: boolean;
+  misses?: number;
+  unclear?: number;
+  // When the sweep last examined it (ms): the oldest checked go first, so rows that never drop cannot hold the slots.
+  checkedAt?: number;
+};
+
+/** A bundle miss its step decided: no builder picked it, it now reverts, none accepted it, or no public RPC took its fallback. */
+export type BundleMiss =
+  | "not-picked"
+  | "no-longer-needed"
+  | "no-builder-accepted"
+  | "fallback-refused";
+
 export const pendingTransactions = pgTable(
   "pending_transactions",
   {
@@ -555,6 +593,15 @@ export const pendingTransactions = pgTable(
     submittedAt: timestamp("submitted_at", { withTimezone: true }).defaultNow(),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
     status: text("status").default("pending"), // pending, confirmed, dropped, replaced
+    // Set only while the row's current send is a bundle: reconcile leaves it
+    // pending until the latest block passes this.
+    lastTargetBlock: bigint("last_target_block", { mode: "number" }),
+    // Bundles signed at this nonce (newest last, capped), kept across reuse of
+    // a dropped nonce so a late landing re-settles the right run.
+    bundleRuns: jsonb("bundle_runs")
+      .$type<BundleRun[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
   },
   (table) => [
     primaryKey({ columns: [table.walletAddress, table.chainId, table.nonce] }),
@@ -826,7 +873,10 @@ export type NewOrganizationSpendCap = typeof organizationSpendCaps.$inferInsert;
  * a row before broadcast and settles or releases it afterward.
  *
  * status: `reserved` (in-flight) -> `settled` (broadcast succeeded) | `released`
- * (denied or failed; excluded from the cap SUM). Wei stored as text for BigInt.
+ * (denied or failed; excluded from the cap SUM) | `held` (a bundle not included
+ * that can still land). A reservation whose bundle was recorded carries that
+ * bundle's (chain, wallet, nonce), and the cap counts it by that row's status
+ * instead (see value-ledger). Wei stored as text for BigInt.
  */
 export const orgValueReservations = pgTable(
   "org_value_reservations",
@@ -844,11 +894,17 @@ export const orgValueReservations = pgTable(
     // and predates this) plus the real figure here, so the wei SUM is unaffected
     // by Solana activity and vice versa.
     valueLamports: text("value_lamports"),
-    status: text("status").notNull().default("reserved"), // reserved | settled | released
+    status: text("status").notNull().default("reserved"), // reserved | settled | released | held
     // Origin of the value-moving execution, for audit only.
     source: text("source"), // direct | workflow | protocol
-    // Correlation id (executionId when available), for audit only.
+    // Correlation id (executionId when available). A bundle reservation's
+    // landing is matched to its run by it.
     ref: text("ref"),
+    // Where the step's bundle was recorded (pending_transactions' key), set
+    // with the record; null for every other reservation.
+    bundleChainId: integer("bundle_chain_id"),
+    bundleWalletAddress: text("bundle_wallet_address"),
+    bundleNonce: integer("bundle_nonce"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

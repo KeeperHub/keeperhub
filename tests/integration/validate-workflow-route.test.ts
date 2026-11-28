@@ -13,7 +13,7 @@
  */
 
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mock server-only so the deep module can be imported in tests
@@ -464,6 +464,215 @@ describe("/api/workflows/[workflowId]/validate", () => {
       // Both keys absent — VALID-01 contract
       expect("errors" in body.result).toBe(false);
       expect("warnings" in body.result).toBe(false);
+    });
+  });
+
+  describe("Send as checks", () => {
+    const bundleRow = {
+      ...validWorkflowRow,
+      nodes: [
+        triggerNode,
+        {
+          id: "write-1",
+          type: "action",
+          data: {
+            label: "Write",
+            type: "action",
+            config: {
+              actionType: "web3/write-contract",
+              network: "1",
+              sendMode: "bundle",
+            },
+          },
+        },
+      ],
+      edges: [{ id: "e1", source: "trigger-1", target: "write-1" }],
+      workflowType: "write",
+    };
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("reports a bundle step outside the rollout as invalid-send-mode", async () => {
+      vi.stubEnv("BUNDLE_SEND_ROLLOUT", "off");
+      mockWorkflowRows = [bundleRow];
+      mockChainRows = [chainRow];
+      const res = await GET(makeRequest(WORKFLOW_ID), makeParams(WORKFLOW_ID));
+      const body = await res.json();
+      expect(body.result.valid).toBe(false);
+      expect(body.result.errors).toContainEqual({
+        code: "invalid-send-mode",
+        message:
+          'Send as: Bundle (sendMode: "bundle") is not turned on for this organization yet. Set Send as to Normal transaction (sendMode: "transaction").',
+        parameterPath: "nodes[1].config.sendMode",
+      });
+    });
+
+    it("keeps the saved-step exemption for other Send as checks: stored conflicts and old flags still run", async () => {
+      const write = (id: string, config: Record<string, unknown>) => ({
+        id,
+        type: "action",
+        data: {
+          label: id,
+          type: "action",
+          config: {
+            actionType: "web3/write-contract",
+            network: "1",
+            ...config,
+          },
+        },
+      });
+      mockWorkflowRows = [
+        {
+          ...bundleRow,
+          nodes: [
+            triggerNode,
+            write("conflict", {
+              sendMode: "transaction",
+              usePrivateMempool: true,
+            }),
+            write("legacy", { usePrivateMempool: "true" }),
+          ],
+          edges: [
+            { id: "e1", source: "trigger-1", target: "conflict" },
+            { id: "e2", source: "conflict", target: "legacy" },
+          ],
+        },
+      ];
+      mockChainRows = [chainRow];
+      const res = await GET(makeRequest(WORKFLOW_ID), makeParams(WORKFLOW_ID));
+      const body = await res.json();
+      expect(
+        (body.result.errors ?? []).filter(
+          (error: { code: string }) => error.code === "invalid-send-mode"
+        )
+      ).toEqual([]);
+    });
+
+    it("passes a saved bundle step while the network still lists one of its builders, as runs send to it", async () => {
+      vi.stubEnv("BUNDLE_SEND_ROLLOUT", `orgs:${OWNER_ORG_ID}`);
+      const withBuilders = (bundleBuilders: string[]) => ({
+        ...bundleRow,
+        nodes: [
+          triggerNode,
+          {
+            ...bundleRow.nodes[1],
+            data: {
+              ...bundleRow.nodes[1].data,
+              config: { ...bundleRow.nodes[1].data.config, bundleBuilders },
+            },
+          },
+        ],
+      });
+      const listed = {
+        chainId: 1,
+        name: "Ethereum",
+        builderRpcUrls: {
+          flashbots: {
+            url: "https://relay.flashbots.example",
+            methods: ["bundle"],
+          },
+        },
+      };
+      const sendModeErrors = async () => {
+        selectCallIndex = 0;
+        const res = await GET(
+          makeRequest(WORKFLOW_ID),
+          makeParams(WORKFLOW_ID)
+        );
+        const body = await res.json();
+        return (body.result.errors ?? []).filter(
+          (error: { code: string }) => error.code === "invalid-send-mode"
+        );
+      };
+      mockChainRows = [listed];
+      mockWorkflowRows = [withBuilders(["flashbots", "titan"])];
+      expect(await sendModeErrors()).toEqual([]);
+      mockWorkflowRows = [withBuilders(["titan"])];
+      expect(await sendModeErrors()).toEqual([
+        expect.objectContaining({
+          message: expect.stringContaining('does not list: "titan"'),
+          parameterPath: "nodes[1].config.bundleBuilders",
+        }),
+      ]);
+    });
+
+    it("reports a Not before in milliseconds and Send ahead + Target blocks above 5 as invalid-send-mode", async () => {
+      vi.stubEnv("BUNDLE_SEND_ROLLOUT", `orgs:${OWNER_ORG_ID}`);
+      const withConfig = (extra: Record<string, unknown>) => ({
+        ...bundleRow,
+        nodes: [
+          triggerNode,
+          {
+            ...bundleRow.nodes[1],
+            data: {
+              ...bundleRow.nodes[1].data,
+              config: { ...bundleRow.nodes[1].data.config, ...extra },
+            },
+          },
+        ],
+      });
+      const sendModeErrors = async () => {
+        selectCallIndex = 0;
+        const res = await GET(
+          makeRequest(WORKFLOW_ID),
+          makeParams(WORKFLOW_ID)
+        );
+        const body = await res.json();
+        return (body.result.errors ?? []).filter(
+          (error: { code: string }) => error.code === "invalid-send-mode"
+        );
+      };
+      mockChainRows = [chainRow];
+      mockWorkflowRows = [withConfig({ notBefore: "1796126400000" })];
+      expect(await sendModeErrors()).toEqual([
+        expect.objectContaining({
+          message: expect.stringContaining(
+            "This looks like milliseconds. Use seconds: 1796126400."
+          ),
+          parameterPath: "nodes[1].config.notBefore",
+        }),
+      ]);
+      mockWorkflowRows = [
+        withConfig({ notBefore: "{{@r:Read.result}}", bundleBlocks: 5 }),
+      ];
+      expect(await sendModeErrors()).toEqual([
+        expect.objectContaining({
+          message: expect.stringContaining(
+            "Send ahead (2) + Target blocks (5) is 7."
+          ),
+          parameterPath: "nodes[1].config.sendAheadBlocks",
+        }),
+      ]);
+      // A stored normal step ignores Not before: flagged, though a save lets it through.
+      mockWorkflowRows = [
+        withConfig({ sendMode: "transaction", notBefore: 1_796_126_400 }),
+      ];
+      expect(await sendModeErrors()).toEqual([
+        expect.objectContaining({
+          message: expect.stringContaining(
+            'Not before (notBefore) only works with Send as: Bundle (sendMode: "bundle")'
+          ),
+          parameterPath: "nodes[1].config.notBefore",
+        }),
+      ]);
+    });
+
+    it("reports a network without builders for an organization in the rollout", async () => {
+      vi.stubEnv("BUNDLE_SEND_ROLLOUT", `orgs:${OWNER_ORG_ID}`);
+      mockWorkflowRows = [bundleRow];
+      mockChainRows = [chainRow];
+      const res = await GET(makeRequest(WORKFLOW_ID), makeParams(WORKFLOW_ID));
+      const body = await res.json();
+      expect(body.result.errors).toContainEqual(
+        expect.objectContaining({
+          code: "invalid-send-mode",
+          message: expect.stringContaining(
+            "it has no block builders that take bundles"
+          ),
+        })
+      );
     });
   });
 });

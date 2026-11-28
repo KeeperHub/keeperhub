@@ -133,7 +133,11 @@ export async function PATCH(
       and(
         eq(workflowExecutions.id, executionId),
         eq(prevExecution.id, workflowExecutions.id),
-        notInArray(workflowExecutions.status, ["cancelled", "skipped"])
+        notInArray(workflowExecutions.status, [
+          "cancelled",
+          "skipped",
+          "not_landed",
+        ])
       )
     )
     .returning({

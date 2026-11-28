@@ -125,6 +125,11 @@ function mapFieldType(field: ActionConfigFieldBase): string {
   if (jsonType === "number") {
     return "number";
   }
+  if (jsonType === "array") {
+    return field.max === undefined
+      ? "array of strings (duplicates are dropped, no templates)"
+      : `array of strings (up to ${field.max} names, duplicates are dropped, no templates)`;
+  }
   switch (field.type) {
     case "chain-select":
       return "string (chain ID)";

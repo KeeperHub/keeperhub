@@ -27,8 +27,8 @@ import {
 import { sanitizeWorkflowData } from "@/lib/workflow/editor/sanitize-nodes";
 import {
   formatActionConfigValidationResponse,
-  validateWorkflowActionConfigs,
 } from "@/lib/workflow/validation/action-config";
+import { validateWorkflowNodesForSave } from "@/lib/workflow/validation/save";
 
 const versionedBodySchema = z
   .object({ version: z.unknown() })
@@ -170,8 +170,9 @@ export async function POST(request: Request): Promise<NextResponse> {
       return featureGuard.response;
     }
 
-    const actionConfigValidation = validateWorkflowActionConfigs(
-      sanitized.nodes
+    const actionConfigValidation = await validateWorkflowNodesForSave(
+      sanitized.nodes,
+      { keepLegacy: true, organizationId, edges: sanitized.edges }
     );
     if (!actionConfigValidation.valid) {
       return NextResponse.json(

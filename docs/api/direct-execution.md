@@ -34,7 +34,9 @@ Two independent daily caps bound the native token **value** an organization move
 
 **Every organization is capped, including one that has never configured anything.** An organization that has set no cap of its own, or that clears one, gets the platform default for that chain family rather than unlimited spending. There is no uncapped state: raising the ceiling means setting a higher number, not leaving the field empty. The defaults are `0.02 ETH` per day for EVM chains and `0.5 SOL` per day for Solana; self-hosted deployments can change them with the `EXECUTE_DEFAULT_DAILY_VALUE_CAP_WEI` and `EXECUTE_DEFAULT_DAILY_SOLANA_VALUE_CAP_LAMPORTS` environment variables.
 
-Both caps count value moved by workflow runs as well as by this API, so the two cannot be used to double-spend the same daily budget. Exceeding one returns `403` with `Daily spending cap exceeded` (or `Daily Solana spending cap exceeded`).
+Both caps count value moved by workflow runs as well as by this API, so the two cannot be used to double-spend the same daily budget. Exceeding one returns `403` with a reason that starts with `Daily spending cap exceeded` (or is `Daily Solana spending cap exceeded`); match the start, not the whole text, since the EVM reason can go on to say how much value is held by Send as Bundle steps.
+
+The EVM cap also counts value held by [Send as Bundle](/plugins/web3#bundle-outputs) steps whose signed transactions have not been mined: they can still be mined, so that value counts until another transaction from the same wallet on that network uses their nonce, or the UTC day ends, whichever comes first. It is part of `dailyUsedWei` in `GET /api/analytics/spend-cap` and of the usage the MCP `get_spending_limits` tool reports, so the used figure can be above what actually moved. A refusal while value is held names the amount, the wallet and the network; a caller outside your organization running your listed workflow gets only `Daily spending cap exceeded`.
 
 Call `GET /api/analytics/spend-cap` before planning a large transfer. Read `effectiveDailyCapWei` and `effectiveDailySolanaCapLamports` — those are the figures enforcement uses. A null `dailyCapWei` means the organization configured nothing, not that spending is unbounded.
 
@@ -488,6 +490,8 @@ POST /api/execute/contract-call
 ```
 
 Call any smart contract function. Automatically detects read vs write operations.
+
+A write waits while a workflow's bundle step holds the same wallet on that network (up to about three minutes; see [Bundle outputs](/plugins/web3#bundle-outputs)), and the response comes only after that. Set your client timeout above three minutes for writes from a wallet that also sends bundles, and always send an `Idempotency-Key`: a retry after a client timeout then cannot send a second transaction.
 
 ### Request Body
 

@@ -50,6 +50,7 @@ import {
 } from "@/lib/web3/gas-defaults";
 import {
   AdaptiveGasStrategy,
+  chainTipLimitGwei,
   getGasStrategy,
   HARDCODED_CHAIN_OVERRIDES,
   resetGasStrategy,
@@ -436,6 +437,26 @@ describe("AdaptiveGasStrategy", () => {
       expect(config.maxFeePerGas).toBeGreaterThanOrEqual(BigInt(5e9));
     });
 
+    it("uses a fixed gas limit without an estimate, and needs one otherwise", async () => {
+      const strategy = new AdaptiveGasStrategy();
+      const provider = createMockProvider(
+        {}
+      ) as unknown as import("ethers").Provider;
+
+      const fixed = await strategy.getGasConfig(
+        provider,
+        undefined,
+        1,
+        undefined,
+        BigInt(90_000)
+      );
+
+      expect(fixed.gasLimit).toBe(BigInt(90_000));
+      await expect(
+        strategy.getGasConfig(provider, undefined, 1)
+      ).rejects.toThrow("No gas estimate");
+    });
+
     it("lowers the max fee to the caller's cap", async () => {
       const strategy = new AdaptiveGasStrategy();
       const provider = createMockProvider();
@@ -778,6 +799,34 @@ describe("AdaptiveGasStrategy", () => {
       const strategy2 = getGasStrategy();
 
       expect(strategy1).not.toBe(strategy2);
+    });
+
+    it("lists the tip limit from the shared strategy's config, as run time reads it", async () => {
+      resetGasStrategy();
+      const strategy = getGasStrategy({ maxPriorityFeeGwei: 7 });
+      try {
+        expect(chainTipLimitGwei(999_999, null)).toBe(7);
+        expect(chainTipLimitGwei(999_999, { maxPriorityFeeGwei: 42 })).toBe(42);
+        expect(chainTipLimitGwei(999_999, { maxPriorityFeeGwei: "x" })).toBe(
+          null
+        );
+        expect(strategy.tipLimitGwei(999_999, null)).toBe(7);
+      } finally {
+        resetGasStrategy();
+      }
+    });
+
+    it("lists no tip limit for a malformed row value, never 0", () => {
+      resetGasStrategy();
+      try {
+        for (const bad of [null, "", " ", false, true, "1e3", [], {}]) {
+          expect(chainTipLimitGwei(1, { maxPriorityFeeGwei: bad })).toBe(null);
+        }
+        expect(chainTipLimitGwei(1, { maxPriorityFeeGwei: "12.5" })).toBe(12.5);
+        expect(chainTipLimitGwei(1, { maxPriorityFeeGwei: 0 })).toBe(0);
+      } finally {
+        resetGasStrategy();
+      }
     });
 
     it("should ignore config after first initialization", () => {

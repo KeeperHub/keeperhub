@@ -70,11 +70,13 @@ export type ReadContractCoreInput = {
   // #2430: extra ABI documents whose error entries join the decode path, after
   // `abi`. Decoding only - `abi` still encodes the call and reads its result.
   errorAbis?: string[];
-  // "next-block" reads as of the next block (number + 1, its predicted time).
-  // Unset or "latest" = today's behaviour.
+  // "next-block" reads as of the next block (number + 1, its predicted time);
+  // "time" as of simulateTime. Unset or "latest" = today's behaviour.
   simulateAt?: SimulateAt;
   // Block time (slot length) in seconds; unset = the chain's measured one.
   simulateTimestampOffsetSec?: string | number;
+  // "time" only: unix seconds or an ISO 8601 date with a zone.
+  simulateTime?: unknown;
   _context?: {
     executionId?: string;
     organizationId?: string;
@@ -204,7 +206,8 @@ async function readContractInner(
   const simulationSettings = readSimulationSettings(
     simulateAt,
     simulateTimestampOffsetSec,
-    _context?.triggerBlock
+    _context?.triggerBlock,
+    { value: input.simulateTime }
   );
   if (!simulationSettings.ok) {
     return simulationSettings.failure;

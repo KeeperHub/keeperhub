@@ -129,6 +129,87 @@ export function summarizeStreak(
   return summary;
 }
 
+/** The newest counted runs all ended not landed: their bundles keep missing. */
+type NotLandingStreak = {
+  count: number;
+  firstFailedAt: Date;
+  lastFailedAt: Date;
+  lastRunId: string;
+  lastError: string | null;
+};
+
+// A finished run that landed what it sent, or failed: either way not a miss.
+const ENDS_NOT_LANDING: ReadonlySet<string> = new Set(["success", "error"]);
+
+/**
+ * Not landed runs in a row, newest first, when there are at least `threshold`;
+ * else null. Steps over what summarizeStreak steps over; a success or an
+ * error ends it.
+ */
+export function summarizeNotLanding(
+  runsNewestFirst: readonly StreakRun[],
+  countingSince: Date | null,
+  threshold: number
+): NotLandingStreak | null {
+  let newest: { run: StreakRun; finishedAt: Date } | undefined;
+  let first: StreakRun | undefined;
+  let count = 0;
+  for (const run of runsNewestFirst) {
+    const finishedAt = run.completedAt ?? run.startedAt;
+    if (countingSince && finishedAt < countingSince) {
+      break;
+    }
+    if (!isAutomatedRun(run) || isPlatformError(run) || isRefusedRun(run)) {
+      continue;
+    }
+    if (ENDS_NOT_LANDING.has(run.status)) {
+      break;
+    }
+    if (run.status !== "not_landed") {
+      continue;
+    }
+    newest ??= { run, finishedAt };
+    first = run;
+    count += 1;
+  }
+  if (!(newest && first) || count < threshold) {
+    return null;
+  }
+  return {
+    count,
+    firstFailedAt: first.startedAt,
+    lastFailedAt: newest.finishedAt,
+    lastRunId: newest.run.id,
+    lastError: newest.run.error,
+  };
+}
+
+/**
+ * The newest counted run from `since` on, when it landed or failed; null
+ * while the newest is still not landed (an older run re-settled late does
+ * not end the streak).
+ */
+export function landedSince(
+  runsNewestFirst: readonly StreakRun[],
+  since: Date
+): StreakRun | null {
+  for (const run of runsNewestFirst) {
+    if (run.startedAt < since) {
+      return null;
+    }
+    if (!isAutomatedRun(run) || isPlatformError(run) || isRefusedRun(run)) {
+      continue;
+    }
+    if (run.status === "not_landed") {
+      return null;
+    }
+    if (ENDS_NOT_LANDING.has(run.status)) {
+      return run;
+    }
+  }
+  return null;
+}
+
 type StreakDecision =
   | { kind: "none" }
   | { kind: "open"; by: "count" | "time" | "funding" }

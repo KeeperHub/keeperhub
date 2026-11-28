@@ -377,6 +377,39 @@ describe("NonceManager", () => {
 
       expect(onConflictDoUpdate).toHaveBeenCalled();
     });
+
+    it("writes in one statement: no read before the upsert", async () => {
+      const onConflictDoUpdate = vi.fn().mockResolvedValue(undefined);
+      mockInsert.mockReturnValue({
+        values: vi.fn().mockReturnValue({ onConflictDoUpdate }),
+      });
+      mockSelect.mockClear();
+
+      const manager = new NonceManager();
+      await manager.recordTransaction(
+        {
+          walletAddress: "0x1234",
+          chainId: 1,
+          executionId: "exec_123",
+          currentNonce: 5,
+          startedAt: new Date(),
+        },
+        5,
+        "0xtxhash123"
+      );
+
+      expect(mockSelect).not.toHaveBeenCalled();
+      // The history merge is in the upsert itself, kept only over a dropped row.
+      const [[upsert]] = onConflictDoUpdate.mock.calls as [
+        [{ set: { bundleRuns: SQL } }],
+      ];
+      const { set } = upsert;
+      const merge = new PgDialect().sqlToQuery(set.bundleRuns).sql;
+      expect(merge).toContain(
+        "CASE WHEN pending_transactions.status = 'dropped'"
+      );
+      expect(merge).toContain("LIMIT");
+    });
   });
 
   describe("confirmTransaction", () => {
@@ -431,6 +464,8 @@ describe("NonceManager", () => {
                 chainId: 1,
                 nonce: 4,
                 txHash: "0xconfirmed",
+                lastTargetBlock: null,
+                bundleRuns: [],
                 status: "pending",
               },
             ]),
@@ -465,6 +500,8 @@ describe("NonceManager", () => {
                 chainId: 1,
                 nonce: 4,
                 txHash: "0xreplaced",
+                lastTargetBlock: null,
+                bundleRuns: [],
                 status: "pending",
               },
             ]),
@@ -504,6 +541,8 @@ describe("NonceManager", () => {
                 chainId: 1,
                 nonce: 5,
                 txHash: "0xdropped",
+                lastTargetBlock: null,
+                bundleRuns: [],
                 status: "pending",
                 submittedAt: new Date(),
               },
@@ -551,6 +590,8 @@ describe("NonceManager", () => {
                 chainId: 1,
                 nonce: 3,
                 txHash: "0xfuturedropped",
+                lastTargetBlock: null,
+                bundleRuns: [],
                 status: "pending",
               },
             ]),
@@ -592,6 +633,8 @@ describe("NonceManager", () => {
                 chainId: 1,
                 nonce: 3,
                 txHash: "0xfuturequeued",
+                lastTargetBlock: null,
+                bundleRuns: [],
                 status: "pending",
               },
             ]),
@@ -712,6 +755,8 @@ describe("NonceManager", () => {
                     chainId: 8453,
                     nonce: n,
                     txHash: `0xphantom${n}`,
+                    lastTargetBlock: null,
+                    bundleRuns: [],
                     status: "pending",
                   }))
                 ),
@@ -1003,6 +1048,8 @@ describe("NonceManager", () => {
                 chainId: 1,
                 nonce: 4,
                 txHash: "0xmined",
+                lastTargetBlock: null,
+                bundleRuns: [],
                 status: "pending",
               },
               {
@@ -1010,6 +1057,8 @@ describe("NonceManager", () => {
                 chainId: 1,
                 nonce: 5,
                 txHash: "0xinflight",
+                lastTargetBlock: null,
+                bundleRuns: [],
                 status: "pending",
                 submittedAt: new Date(),
               },
@@ -1067,6 +1116,8 @@ describe("NonceManager", () => {
                 chainId: 1,
                 nonce: 5,
                 txHash: "0xinflight",
+                lastTargetBlock: null,
+                bundleRuns: [],
                 status: "pending",
                 submittedAt: new Date(),
               },
@@ -1127,6 +1178,8 @@ describe("NonceManager", () => {
                 chainId: 1,
                 nonce: 5,
                 txHash: "0xgone",
+                lastTargetBlock: null,
+                bundleRuns: [],
                 status: "pending",
                 submittedAt: new Date(),
               },
@@ -1147,7 +1200,9 @@ describe("NonceManager", () => {
       } as unknown as RpcProviderManager;
 
       const set = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined),
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ nonce: 5 }]),
+        }),
       });
       mockUpdate.mockReturnValue({ set });
 

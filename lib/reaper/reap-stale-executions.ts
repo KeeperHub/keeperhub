@@ -5,22 +5,13 @@ import { walletLocks } from "@/lib/db/schema-extensions";
 import { classifyExecutionError } from "@/lib/errors/classify";
 import type { ErrorCode } from "@/lib/errors/error-codes";
 import { recordExecutionErrorFinalized } from "@/lib/errors/finalize-error";
-
-const DEFAULT_THRESHOLD_MINUTES = 30;
+import { completedStepSince } from "@/lib/reaper/completed-step-since";
+import { staleExecutionThresholdMinutes } from "@/lib/reaper/stale-threshold";
 
 // Pending rows that have produced no step logs are unambiguously stuck:
 // the executor inserted but the runtime never started. A few minutes is
 // generous for image pulls and k8s scheduling; beyond that, it's dead.
 const PENDING_THRESHOLD_MINUTES = 5;
-
-function getThresholdMinutes(): number {
-  const envValue = process.env.STALE_EXECUTION_THRESHOLD_MINUTES;
-  if (!envValue) {
-    return DEFAULT_THRESHOLD_MINUTES;
-  }
-  const parsed = Number.parseInt(envValue, 10);
-  return Number.isNaN(parsed) ? DEFAULT_THRESHOLD_MINUTES : parsed;
-}
 
 /**
  * Find workflow executions stuck past their threshold, mark them system_error
@@ -46,7 +37,7 @@ function getThresholdMinutes(): number {
  * in - and inflate the infrastructure counter it exists to keep accurate.
  */
 export async function reapStaleExecutions(
-  thresholdMinutes: number = getThresholdMinutes()
+  thresholdMinutes: number = staleExecutionThresholdMinutes()
 ): Promise<string[]> {
   const runningCutoff = new Date(Date.now() - thresholdMinutes * 60 * 1000);
   const pendingCutoff = new Date(
@@ -62,22 +53,7 @@ export async function reapStaleExecutions(
   )`;
   const noStepLogs = sql`NOT ${hasStepLogs}`;
 
-  // A step that COMPLETED after the running cutoff means the execution is still
-  // progressing - never reap it even past the running threshold.
-  //
-  // This correlates on execution_id, so Postgres probes
-  // idx_exec_logs_execution_id once per reap candidate, and the candidate set is
-  // a handful of rows. The earlier form pre-selected every recently completed
-  // step id in one pass and passed the result to NOT IN. No index covered
-  // completed_at, so that pass sequentially scanned the whole log table - 23M
-  // rows and 22 GB on prod - to return about a thousand ids. It took 150 to 175
-  // seconds on every 10-minute run, and it started failing outright once a 120s
-  // statement_timeout landed on the role.
-  const noRecentlyCompletedStep = sql`NOT EXISTS (
-    SELECT 1 FROM ${workflowExecutionLogs}
-    WHERE ${workflowExecutionLogs.executionId} = ${workflowExecutions.id}
-      AND ${workflowExecutionLogs.completedAt} > ${sql.param(runningCutoff, workflowExecutionLogs.completedAt)}
-  )`;
+  const noRecentlyCompletedStep = sql`NOT ${completedStepSince(runningCutoff)}`;
 
   const staleConditions = or(
     // running, older than the running threshold (default 30 min), not recently

@@ -8,9 +8,12 @@ import {
   type ValidatorWorkflow,
   validateWorkflow,
 } from "@/lib/mcp/validate-workflow";
+import { VALIDATION_ERROR_CODES } from "@/lib/mcp/validate-workflow-codes";
 import { validateWorkflowDeep } from "@/lib/mcp/validate-workflow-deep";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { resolveProtocolEventAddress } from "@/lib/workflow/protocol-event-address";
+import type { WorkflowNodeForValidation } from "@/lib/workflow/validation/action-config";
+import { validateSendModeForSave } from "@/lib/workflow/validation/send-mode";
 
 export async function GET(
   request: Request,
@@ -91,6 +94,33 @@ export async function GET(
   const result: ValidationResult = deepCheck
     ? await validateWorkflowDeep(workflow, options)
     : validateWorkflow(workflow, options);
+
+  // The Send as checks a save runs on these stored steps: bundle steps are
+  // rechecked by the run-time rules, the others keep the saved-step exemption.
+  const nodes = workflow.nodes as WorkflowNodeForValidation[];
+  const sendModes = await validateSendModeForSave(nodes, {
+    savedNodes: nodes,
+    recheckBundles: true,
+    organizationId: row.organizationId ?? undefined,
+    edges: workflow.edges,
+  });
+  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+  for (const issue of sendModes.issues) {
+    const index =
+      issue.nodeId === undefined ? undefined : indexById.get(issue.nodeId);
+    result.errors.push({
+      code: VALIDATION_ERROR_CODES.INVALID_SEND_MODE,
+      message: issue.message,
+      // MCP paths name the config without `data`; a node with no id keeps the save path.
+      parameterPath:
+        index === undefined || issue.field === undefined
+          ? issue.path
+          : `nodes[${index}].config.${issue.field}`,
+    });
+  }
+  if (sendModes.issues.length > 0) {
+    result.valid = false;
+  }
 
   return NextResponse.json({
     ok: true,

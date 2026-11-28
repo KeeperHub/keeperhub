@@ -26,7 +26,7 @@ import type { RpcProviderManager } from "@/lib/rpc/providers";
 import { initializeWalletSigner } from "@/lib/web3/wallet-helpers";
 import { getGasStrategy } from "./gas-strategy";
 import { getNonceManager, type NonceSession } from "./nonce-manager";
-import { OnChainRevertError } from "./onchain-revert";
+import { minedRevertError } from "./onchain-revert";
 import {
   type BroadcastResult,
   submitSignedTransactionWithFailover,
@@ -139,7 +139,7 @@ async function confirmAndBuildResult(
   if (!receipt) {
     throw new Error("Transaction sent but receipt not available");
   }
-  throwIfReverted(receipt);
+  throwIfReverted(receipt, broadcast.response.gasLimit);
 
   await nonceManager.confirmTransaction(broadcast.hash);
 
@@ -169,13 +169,12 @@ async function confirmAndBuildResult(
  * reverted transaction (status 0) has to become a failure here or the caller
  * reads it as `success: true`.
  */
-function throwIfReverted(receipt: ethers.TransactionReceipt | null): void {
+function throwIfReverted(
+  receipt: ethers.TransactionReceipt | null,
+  gasLimit?: bigint | null
+): void {
   if (receipt?.status === 0) {
-    throw new OnChainRevertError({
-      message: `Transaction ${receipt.hash} reverted on-chain (status 0, block ${receipt.blockNumber})`,
-      transactionHash: receipt.hash,
-      blockNumber: receipt.blockNumber,
-    });
+    throw minedRevertError(receipt, gasLimit);
   }
 }
 
@@ -254,7 +253,7 @@ export async function executeTransaction(
     if (!receipt) {
       throw new Error("Transaction sent but receipt not available");
     }
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, broadcast.response.gasLimit);
 
     await nonceManager.confirmTransaction(broadcast.hash);
 
@@ -360,7 +359,7 @@ export async function executeContractTransaction(
     if (!receipt) {
       throw new Error("Contract transaction sent but receipt not available");
     }
-    throwIfReverted(receipt);
+    throwIfReverted(receipt, broadcast.response.gasLimit);
 
     await nonceManager.confirmTransaction(broadcast.hash);
 
@@ -395,7 +394,8 @@ export async function executeContractTransaction(
 export async function withNonceSession<T>(
   context: TransactionContext,
   walletAddress: string,
-  fn: (session: NonceSession) => Promise<T>
+  fn: (session: NonceSession) => Promise<T>,
+  options: { waitUntil?: number } = {}
 ): Promise<T> {
   const nonceManager = getNonceManager();
 
@@ -403,7 +403,8 @@ export async function withNonceSession<T>(
     walletAddress,
     context.chainId,
     context.executionId,
-    context.rpcManager
+    context.rpcManager,
+    options
   );
 
   if (!validation.valid) {

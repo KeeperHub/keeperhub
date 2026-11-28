@@ -224,6 +224,28 @@ PATCH /api/workflows/{workflowId}
 
 The `tagId` field assigns the workflow to an organization tag for categorization.
 
+### Send as checks on save
+
+Create, update, import and the editor's autosave run the same Send as checks; a copy runs them with its own rule (below). A refused save answers `422` with `error: "INVALID_ACTION_CONFIG"`; each entry of `invalidFields` names the node, the `field` and a `message` that gives both the editor label and the API value. For a Write Contract step with `sendMode: "bundle"` or `"bundle-and-public"` (see [Send as Bundle](/plugins/web3#send-as-bundle)) the save is refused when (each message names the step's own mode):
+
+- the step is not Write Contract (`Bundle (sendMode: "bundle") is only available on Write Contract steps`);
+- bundles are not turned on for your organization (`bundleSendEnabled` in [Get Organization Features](#get-organization-features)); a step already saved as a bundle keeps saving, even when its settings or network change (its runs are refused);
+- `web3Connection` is a Safe (`"safe:..."`);
+- `bundleBlocks` is not a whole number from 1 to 5, or `bundleTipIncreasePercent` not one from 0 to 100;
+- `notBefore` is neither unix seconds (1000000000 to 9999999999) nor an ISO 8601 date with a time zone, or looks like milliseconds (13 digits; the message gives the seconds to use); a template passes and is read when the run starts;
+- `sendAheadBlocks` is not a whole number from 0 to 3, or, with `notBefore` set, `sendAheadBlocks` + `bundleBlocks` is above 5 (the message names both);
+- `bundleFallback` is not `"stop"` or `"public"` (no templates); with `"bundle-and-public"` a valid value is accepted and ignored;
+- the network has no block builders that take bundles, or `bundleBuilders` names one the network does not list (see `bundleBuilders` in the [Chains API](/api/chains));
+- the step sits inside a For Each that is itself inside another For Each.
+
+`notBefore`, `sendAheadBlocks` or `bundleFallback` on a step whose `sendMode` is neither `"bundle"` nor `"bundle-and-public"` is refused too.
+
+A step whose action, network, Send as keys and bundle settings (`notBefore`, `sendAheadBlocks` and `bundleFallback` included) are unchanged since it was saved passes, except for the nested For Each rule, which is checked on every save. A step saved as a bundle whose settings or network changed is checked again except for the rollout: the Safe connection, the settings and the network's builders.
+
+A copy (duplicate, and so Use template and the MCP `deploy_template` tool) checks every bundle step as new, unchanged or not: the rollout, the Safe connection, the settings and the builders (for `bundleBuilders`, only when the network lists none of the step's builders, since a run sends to the ones still listed). One refused step refuses the whole copy (see [Duplicate Workflow](#duplicate-workflow)).
+
+The MCP `validate_workflow` tool reports the same problems as `invalid-send-mode` errors; it checks bundle steps even when unchanged since they were saved, as a run checks them (for `bundleBuilders`, only when the network lists none of the step's builders, since a run sends to the ones still listed), while other steps saved before pass as they do on save.
+
 ## Delete Workflow
 
 ```http
@@ -303,7 +325,9 @@ Trigger a workflow via webhook. Requires API key authentication.
 POST /api/workflows/{workflowId}/duplicate
 ```
 
-Creates a copy of an existing workflow.
+Creates a copy of an existing workflow. Use template in the app and the MCP `deploy_template` tool call this too.
+
+The copy's steps are checked for your organization with the [Send as checks on save](#send-as-checks-on-save), bundle steps as new ones even when unchanged. A Write Contract step sent as a bundle that your organization cannot use (bundles are not turned on for it, the network has no block builders that take bundles or lists none of the step's builders, a Safe connection, or settings out of range) refuses the whole copy: the answer is `422` with `error: "INVALID_ACTION_CONFIG"`, a `message` that starts "This workflow cannot be copied into your organization.", names each refused step and why, and ends "Nothing was copied.", and the steps in `invalidFields`. No workflow is created. To copy it, set Send as to Normal transaction on that step in the original first (or ask its author to), or ask KeeperHub to turn bundles on for your organization (if that is the reason).
 
 ## Download Workflow
 
@@ -499,8 +523,11 @@ Returns the calling organization's feature snapshot so a client can render per-p
       "actionTypes": ["Database Query"]
     }
   ],
-  "billingEnabled": true
+  "billingEnabled": true,
+  "bundleSendEnabled": false
 }
 ```
 
 `billingEnabled` is `false` on self-hosted installs where billing is disabled, in which case `plan` is `"enterprise"` and every feature is enabled.
+
+`bundleSendEnabled` is `true` when your organization may save and run Write Contract steps with Send as Bundle (`sendMode: "bundle"`). Bundles are being turned on for organizations gradually; while it is `false`, saving a new bundle step (or setting Send as to Bundle on a step) is refused, a step already saved as a bundle keeps saving even when changed, its runs are refused, and a copy of a workflow with a bundle step is refused.

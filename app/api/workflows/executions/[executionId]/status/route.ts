@@ -20,10 +20,17 @@ import {
 } from "@/lib/workflow/execution-access";
 import { executionLogNotDeleted } from "@/lib/workflow/soft-delete";
 import { checkExecutionStatusRateLimit } from "@/lib/workflow/execution-status-rate-limit";
+import { stepOutcomeKeysSql } from "@/lib/workflow/executor/run-outcome";
+import {
+  type NodeOutcome,
+  nodeOutcomeOf,
+  RUN_OUTCOME_OUTPUT,
+} from "@/lib/workflow/executor/run-outcome-keys";
 
 type NodeStatus = {
   nodeId: string;
   status: NodeExecutionStatus;
+  outcome?: NodeOutcome;
 };
 
 // Statuses after which there is nothing left to poll for. Mirrors the set the
@@ -33,6 +40,7 @@ const TERMINAL_STATUSES = new Set([
   "error",
   "system_error",
   "skipped",
+  "not_landed",
   "cancelled",
 ]);
 const POLL_INTERVAL_HINT_SECONDS = 2;
@@ -136,20 +144,45 @@ export async function GET(
 
     const { execution } = viewAccess;
 
+    const keys = stepOutcomeKeysSql(workflowExecutionLogs);
     const logs = await db.query.workflowExecutionLogs.findMany({
       // Per-step detail of one run, so a purge hides it here too.
       where: and(
         eq(workflowExecutionLogs.executionId, executionId),
         executionLogNotDeleted()
       ),
-      // Only the two fields the payload reads; the step bodies can be large.
-      columns: { nodeId: true, status: true },
+      // Only the fields the payload reads; the step bodies can be large.
+      columns: {
+        nodeId: true,
+        nodeType: true,
+        status: true,
+        iterationIndex: true,
+      },
+      extras: {
+        route: keys.route.as("route"),
+        notIncludedReason: keys.notIncludedReason.as("not_included_reason"),
+        pending: keys.pending.as("pending"),
+      },
     });
 
-    const nodeStatuses: NodeStatus[] = logs.map((log) => ({
-      nodeId: log.nodeId,
-      status: log.status,
-    }));
+    const nodeStatuses: NodeStatus[] = logs.map((log) => {
+      const outcome = nodeOutcomeOf(
+        {
+          ...log,
+          output: {
+            [RUN_OUTCOME_OUTPUT.routeKey]: log.route,
+            [RUN_OUTCOME_OUTPUT.notIncludedReasonKey]: log.notIncludedReason,
+            [RUN_OUTCOME_OUTPUT.pendingKey]: log.pending === true,
+          },
+        },
+        execution
+      );
+      return {
+        nodeId: log.nodeId,
+        status: log.status,
+        ...(outcome && { outcome }),
+      };
+    });
 
     let payload = buildStatusPayload(execution, nodeStatuses);
     if (viewAccess.mode === "publicReadOnly") {

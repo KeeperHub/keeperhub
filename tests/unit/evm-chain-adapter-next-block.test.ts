@@ -74,7 +74,10 @@ function setup(): {
     adapter,
     getGasConfig,
     signer,
-    rpcManager: { executeWithFailover } as unknown as RpcProviderManager,
+    rpcManager: {
+      executeWithFailover,
+      hasPrivateRelayPrimary: () => false,
+    } as unknown as RpcProviderManager,
     executeWithFailover,
   };
 }
@@ -113,11 +116,15 @@ describe("EvmChainAdapter.executeContractCall at the next block", () => {
     );
 
     const data = new ethers.Interface(ABI).encodeFunctionData("run", [5]);
-    expect(mockSimulate).toHaveBeenCalledWith(rpcManager, {
-      chainId: CHAIN_ID,
-      tx: { from: SIGNER, to: TARGET, data, value: undefined },
-      options: { timestampOffsetSec: 12 },
-    });
+    expect(mockSimulate).toHaveBeenCalledWith(
+      rpcManager,
+      expect.objectContaining({
+        chainId: CHAIN_ID,
+        tx: { from: SIGNER, to: TARGET, data, value: undefined },
+        options: { timestampOffsetSec: 12 },
+        gasLimit: undefined,
+      })
+    );
     // No staticCall or estimate at `latest` on this path.
     expect(executeWithFailover).not.toHaveBeenCalled();
     expect(getGasConfig.mock.calls[0]?.[1]).toBe(BigInt(46_097));
@@ -129,6 +136,43 @@ describe("EvmChainAdapter.executeContractCall at the next block", () => {
       chainId: CHAIN_ID,
     });
     expect(receipt).toEqual({ ...RECEIPT, simulation: SIMULATION });
+    confirm.mockRestore();
+  });
+
+  it("still runs the next-block check with a fixed Gas Limit, and fills the send report", async () => {
+    const { adapter, getGasConfig, signer, rpcManager, executeWithFailover } =
+      setup();
+    const sendReport = {};
+    const confirm = vi
+      .spyOn(
+        EvmChainAdapter.prototype as unknown as {
+          confirmTransaction: () => Promise<unknown>;
+        },
+        "confirmTransaction"
+      )
+      .mockResolvedValue(RECEIPT);
+
+    await adapter.executeContractCall(
+      signer,
+      { contractAddress: TARGET, abi: ABI, functionKey: "run", args: [5] },
+      {} as never,
+      {
+        gasOverrides: { gasLimitOverride: BigInt(90_000) },
+        rpcManager,
+        simulation: { timestampOffsetSec: 12 },
+        sendReport,
+      }
+    );
+
+    // The estimate with block overrides is the revert check: never skipped,
+    // and it gets the limit so a limit below the estimate fails before sending.
+    expect(mockSimulate).toHaveBeenCalledTimes(1);
+    expect(mockSimulate.mock.calls[0]?.[1]).toMatchObject({
+      gasLimit: BigInt(90_000),
+    });
+    expect(executeWithFailover).not.toHaveBeenCalled();
+    expect(getGasConfig.mock.calls[0]?.[4]).toBe(BigInt(90_000));
+    expect(mockSubmit.mock.calls[0]?.[3]).toBe(sendReport);
     confirm.mockRestore();
   });
 
@@ -157,7 +201,7 @@ describe("EvmChainAdapter.executeContractCall at the next block", () => {
       { gasOverrides: {}, rpcManager, simulation: {}, builderRpcUrls }
     );
 
-    expect(mockSubmit.mock.calls[0]?.[3]).toEqual({ builderRpcUrls });
+    expect(mockSubmit.mock.calls[0]?.[4]).toEqual({ builderRpcUrls });
     expect(receipt).toEqual({ ...RECEIPT, simulation: SIMULATION, broadcast });
     confirm.mockRestore();
   });
@@ -185,7 +229,7 @@ describe("EvmChainAdapter.executeContractCall at the next block", () => {
       }
     );
 
-    expect(mockSubmit.mock.calls[0]?.[3]).toEqual({});
+    expect(mockSubmit.mock.calls[0]?.[4]).toEqual({});
     confirm.mockRestore();
   });
 

@@ -20,6 +20,7 @@ import { isFailureAlertsRolloutActive } from "./rollout";
 /** The triggers alerts depend on; a dropped or disabled one stops alerts silently. */
 const ALERT_TRIGGERS = [
   { table: "workflow_executions", name: "queue_alert_check" },
+  { table: "workflow_executions", name: "queue_alert_check_not_landed" },
   { table: "workflows", name: "mark_alert_incident_reenabled" },
 ] as const;
 
@@ -78,7 +79,7 @@ export async function checkFailureAlertsRunning(): Promise<WatchdogReport> {
       EXISTS (SELECT 1 FROM ${workflowExecutions}
         WHERE ${workflowExecutions.startedAt} >= now() - make_interval(secs => ${staleSecs})
           AND ${workflowExecutions.completedAt} <= now() - make_interval(secs => ${graceSecs})
-          AND ${workflowExecutions.status} IN ('success', 'error', 'skipped')) AS runs_ended,
+          AND ${workflowExecutions.status} IN ('success', 'error', 'skipped', 'not_landed')) AS runs_ended,
       COALESCE((SELECT fed_at >= now() - make_interval(secs => ${staleSecs + graceSecs})
         FROM ${failureAlertHeartbeat} WHERE name = ${EVALUATE_HEARTBEAT}), false) AS fed_recent,
       ${triggersOn}

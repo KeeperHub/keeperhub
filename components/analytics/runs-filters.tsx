@@ -75,6 +75,11 @@ const STATUS_GROUPS: StatusGroup[] = [
     label: "Skipped",
     members: [{ value: "skipped", label: "Skipped" }],
   },
+  {
+    key: "not_landed",
+    label: "Not landed",
+    members: [{ value: "not_landed", label: "Not landed" }],
+  },
 ];
 
 const SOURCE_OPTIONS: Array<{ value: RunSource; label: string }> = [

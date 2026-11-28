@@ -7,6 +7,8 @@
 
 import type { TransactionHashEntry } from "@/lib/db/schema";
 import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
+import type { SkipReason } from "@/lib/workflow/executor/run-outcome-keys";
+import type { WaitingRunInfo } from "@/lib/workflow/executor/waiting-runs";
 
 export type { TransactionHashEntry } from "@/lib/db/schema";
 
@@ -26,6 +28,7 @@ export type UnifiedStatus =
   | "success"
   | "error"
   | "skipped"
+  | "not_landed"
   | "cancelled"
   | "completed"
   | "failed";
@@ -37,10 +40,12 @@ export type NormalizedStatus =
   | "error"
   | "system_error"
   | "external_error"
-  // Refused before it started (over the plan limit, a gated action, an unpaid
-  // pay-as-you-go charge). Its own status so it stays out of the error count and
+  // Did not start: refused (over the plan limit, a gated action, an unpaid
+  // pay-as-you-go charge) or skipped behind a live run. Its own status so it stays out of the error count and
   // the success-rate denominator.
   | "skipped"
+  // Ran, but a bundle in it was not seen in its target blocks: neither a success nor an error.
+  | "not_landed"
   | "cancelled";
 
 export type UnifiedRun = {
@@ -91,6 +96,12 @@ export type UnifiedRun = {
   errorCategory: string | null;
   /** On a failed workflow run that set off a failure alert. */
   alert?: RunAlert;
+  /** Why a skipped workflow run was skipped (waiting, in flight, while running). */
+  skipReason?: SkipReason | null;
+  /** A waiting run's Not before and blocks; absent otherwise. */
+  waiting?: WaitingRunInfo | null;
+  /** A skipped-while-running row's folded dispatches. */
+  refusals?: number | null;
 };
 
 /** The failure alert a run set off: when, on which methods, and how it went. */
@@ -106,6 +117,7 @@ export type AnalyticsSummary = {
   errorCount: number;
   cancelledCount: number;
   skippedCount: number;
+  notLandedCount: number;
   successRate: number;
   avgDurationMs: number | null;
   /** Every wei the runs burned over the range, sponsored gas included. */
@@ -124,6 +136,7 @@ export type AnalyticsSummary = {
     errorCount: number;
     cancelledCount: number;
     skippedCount: number;
+    notLandedCount: number;
     avgDurationMs: number | null;
     totalGasWei: string;
     sponsoredGasWei: string;
@@ -136,6 +149,7 @@ export type TimeSeriesBucket = {
   error: number;
   cancelled: number;
   skipped: number;
+  notLanded: number;
   pending: number;
   running: number;
 };

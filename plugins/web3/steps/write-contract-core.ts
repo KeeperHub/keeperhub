@@ -6,7 +6,30 @@
  * exporting functions from "use step" files (which breaks the workflow bundler).
  */
 import "server-only";
-import { isPreBroadcastNetworkError } from "@/lib/web3/submit-signed";
+import { broadcastAttemptedOf } from "@/lib/web3/pre-send";
+import {
+  type SendReport,
+  type SendRoute,
+  sendReportFields,
+} from "@/lib/web3/submit-signed";
+import type { SkippedTarget } from "@/lib/web3/bundles/plan";
+import type {
+  BuilderReport,
+  PublicCopyReport,
+} from "@/lib/web3/bundles/send-bundle";
+import type { BundleSettingsInput } from "@/lib/web3/bundles/settings";
+import {
+  type BundleSendRoute,
+  type FallbackNotSentReason,
+  RUN_OUTCOME_OUTPUT,
+} from "@/lib/workflow/executor/run-outcome-keys";
+import {
+  type BundleRoute,
+  bundleOutputsOf,
+  bundleSignerRefusal,
+  prepareBundleRoute,
+  writeAsBundle,
+} from "./write-contract-bundle";
 import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 
 import { eq } from "drizzle-orm";
@@ -21,7 +44,7 @@ import { db } from "@/lib/db";
 import { explorerConfigs, workflowExecutions } from "@/lib/db/schema";
 import { checkStablecoinContractCall } from "@/lib/execute/stablecoin-cap";
 import { getTransactionUrl } from "@/lib/explorer";
-import { ErrorCategory, logUserError } from "@/lib/logging";
+import { ErrorCategory, logSystemWarn, logUserError } from "@/lib/logging";
 import { getChainBuilderRpcUrls } from "@/lib/rpc/config-service";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import {
@@ -29,8 +52,9 @@ import {
   initializeWalletSigner,
 } from "@/lib/web3/wallet-helpers";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
-import { rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { type RpcProviderManager, rpcRelayErrorClass } from "@/lib/rpc/providers";
+import { readRpcFor } from "@/lib/rpc/read-provider";
+import { resolveWriteRpc } from "@/lib/rpc/send-provider";
 import {
   describeAmbiguousKey,
   resolveAbiFunction,
@@ -61,7 +85,6 @@ import {
 import type { TriggerBlock } from "@/lib/web3/next-block-limits";
 import {
   type NextBlockSimulation,
-  failedNextBlockCheck,
   getNextBlockSimulation,
   isNextBlockSimulationUnsupported,
   nextBlockFailure,
@@ -69,18 +92,23 @@ import {
   type SimulateAt,
   unsupportedFailure,
 } from "@/lib/web3/next-block-simulation";
-import { maxFeeBelowBaseFeeError } from "@/lib/web3/max-fee-check";
+import { maxFeeCapFailure } from "@/lib/web3/max-fee-cap-failure";
 import { resolveOrganizationContext } from "@/lib/web3/resolve-org-context";
+import { isBundleMode, resolveSendMode } from "@/lib/web3/send-mode";
 import { executeSponsoredContractTransaction } from "@/lib/web3/sponsored-transaction-manager";
 import type { BroadcastInfo } from "@/lib/web3/submit-signed";
 import type { ExecutedCall } from "@/lib/web3/trace-decode";
-import { traceExecutedCallWithFailover } from "@/lib/web3/trace-executed-call";
+import {
+  type TraceExecutedCallOptions,
+  traceExecutedCallWithFailover,
+} from "@/lib/web3/trace-executed-call";
 import {
   broadcastTransactionHash,
   isOnChainPendingError,
 } from "@/lib/web3/onchain-revert";
 import { resolveSponsoredSendError } from "@/lib/web3/sponsored-send-error";
 import { shouldTrySponsorship } from "@/lib/web3/sponsorship-eligibility";
+import { isSponsoredTxRevertError } from "@/lib/web3/turnkey-revert";
 import {
   type TransactionContext,
   withNonceSession,
@@ -107,12 +135,21 @@ export type WriteContractCoreInput = {
   // route outright so the transaction is signed and paid for by the org's own
   // wallet. Resolved through resolveSponsorGas so an unset value stays on.
   sponsorGas?: boolean;
-  // KEEP-137: Route the write transaction through the chain's private mempool
-  // RPC (e.g. Flashbots Protect). Skips Turnkey-sponsored execution -- mutually exclusive.
-  usePrivateMempool?: boolean;
-  // When true and usePrivateMempool is true, failing to reach the private RPC
-  // does NOT fall back to the public mempool. Ignored when usePrivateMempool is false.
+  // "Send as" and the old flag (any stored value), read by relayUseOf in
+  // getSendRpcProvider. A step that asks for the relay is never sponsored.
+  sendMode?: string;
+  usePrivateMempool?: unknown;
+  // Send as Bundle settings, read only when sendMode is "bundle".
+  bundleBlocks?: BundleSettingsInput["bundleBlocks"];
+  bundleTipIncreasePercent?: BundleSettingsInput["bundleTipIncreasePercent"];
+  bundleBuilders?: BundleSettingsInput["bundleBuilders"];
+  notBefore?: BundleSettingsInput["notBefore"];
+  sendAheadBlocks?: BundleSettingsInput["sendAheadBlocks"];
+  // false: a relay failure other than a revert is retried on the public RPC, and
+  // sendMode "private-relay" on a chain without a relay sends publicly.
   strict?: boolean;
+  // Set only by the Write Contract step: every other caller refuses a bundle.
+  allowBundle?: boolean;
   // Per-node Web3 Connection field. See ParsedWeb3Connection / parseWeb3Connection
   // in lib/safe/signer-resolver.ts. Missing -> "default" -> org-policy resolver.
   web3Connection?: string;
@@ -140,11 +177,51 @@ export type WriteContractCoreInput = {
     // callers that supply executionId without it.
     workflowId?: string;
     triggerBlock?: TriggerBlock;
+    // The workflow node running this call; a bundle needs it.
+    nodeId?: string;
+    nodeName?: string;
+    nodeType?: string;
+    iterationIndex?: number;
+    loopDepth?: number;
+    // The step's value reservation; a bundle records it on its row.
+    valueReservationId?: string;
   };
 };
 
+/** Where a write went: a send route, a bundle, skipped behind a bundle in flight, or waiting for Not before. */
+type WriteRoute =
+  | SendRoute
+  | BundleSendRoute
+  | typeof RUN_OUTCOME_OUTPUT.skippedInFlightRoute
+  | typeof RUN_OUTCOME_OUTPUT.waitingRoute;
+
+/** Send as Bundle outputs; see the Write Contract output fields. */
+type BundleOutputs = {
+  includedBlock?: number;
+  targetBlocks?: number[];
+  targetTipsGwei?: string[];
+  notIncludedReason?: string;
+  builders?: BuilderReport[];
+  bundleTargetsSkipped?: SkippedTarget[];
+  // Skipped in flight: the block after which the earlier bundle can no longer land.
+  inFlightUntilBlock?: number;
+  // Skipped behind an earlier run's public copy not mined yet: its hash.
+  inFlightHash?: string;
+  // With Not before set: its unix seconds, the first block that cannot precede it, the latest block read.
+  notBefore?: number;
+  firstAllowedBlock?: number;
+  latestBlock?: number;
+  sendAheadBlocks?: number;
+  // A public copy (Bundle and public, or the fallback) and what became of it.
+  publicCopy?: PublicCopyReport;
+  fallbackSent?: boolean;
+  fallbackNotSentReason?: FallbackNotSentReason;
+  // A public copy is out and not mined yet: transactionHash is its hash.
+  pending?: boolean;
+};
+
 export type WriteContractResult =
-  | {
+  | ({
       success: true;
       transactionHash?: string;
       // KEEP-966: chain the transaction was broadcast on, required for
@@ -179,16 +256,22 @@ export type WriteContractResult =
       error?: string;
       rejection?: RevertKind;
       simulation?: NextBlockSimulation;
+      // Where the transaction was broadcast, and whether a receipt came back.
+      route?: WriteRoute;
+      included?: boolean;
       // How the transaction went out; builder labels only, never URLs.
       broadcast?: BroadcastInfo;
-    }
-  | {
+    } & BundleOutputs)
+  | ({
       success: false;
       error: string;
       rejection?: RevertKind;
       errorClass?: ExecutionErrorType;
       // The predicted block a next-block simulation ran against.
       simulation?: NextBlockSimulation;
+      // Absent before broadcast. included is true for an on-chain revert.
+      route?: WriteRoute;
+      included?: boolean;
       // Set only when a transaction reached the chain and failed
       // there, so the finalizer can persist a receipt for the failure. Absent
       // on pre-broadcast failures, where no transaction exists.
@@ -199,7 +282,7 @@ export type WriteContractResult =
       // the finalizer can report the route accurately on a failed execution.
       sponsored?: boolean;
       broadcastAttempted?: boolean;
-    };
+    } & BundleOutputs);
 
 /**
  * Soften an execution failure into a success value when failOnError=false, so
@@ -254,6 +337,8 @@ export function applyFailOnError(
     error: redactAllUrls(result.error),
     rejection: result.rejection,
     ...(result.simulation ? { simulation: result.simulation } : {}),
+    ...sendReportFields(result),
+    ...bundleOutputsOf(result),
   };
 }
 
@@ -277,8 +362,6 @@ async function writeContractCoreImpl(
     priorityFeeGwei,
     maxFeeGwei,
     sponsorGas,
-    usePrivateMempool,
-    strict,
     web3Connection,
     errorAbis,
     payerParam,
@@ -286,7 +369,6 @@ async function writeContractCoreImpl(
     simulateTimestampOffsetSec,
     _context,
   } = input;
-
   if (!abiFunction || abiFunction.trim() === "") {
     logUserError(
       ErrorCategory.VALIDATION,
@@ -313,15 +395,19 @@ async function writeContractCoreImpl(
   }
   const { priorityFeeOverride, maxFeeOverride } = fees;
 
-  const simulationSettings = readSimulationSettings(
-    simulateAt,
-    simulateTimestampOffsetSec,
-    _context?.triggerBlock
-  );
-  if (!simulationSettings.ok) {
+  // Simulate at is hidden and ignored with Bundle: a stale stored value cannot fail the step.
+  const simulationSettings =
+    isBundleMode(resolveSendMode(input))
+      ? undefined
+      : readSimulationSettings(
+          simulateAt,
+          simulateTimestampOffsetSec,
+          _context?.triggerBlock
+        );
+  if (simulationSettings && !simulationSettings.ok) {
     return simulationSettings.failure;
   }
-  const simulation = simulationSettings.options;
+  const simulation = simulationSettings?.options;
 
   // Validate contract address
   if (!ethers.isAddress(contractAddress)) {
@@ -438,48 +524,74 @@ async function writeContractCoreImpl(
 
   // Get chain ID and resolve RPC config (with user preferences + failover)
   let chainId: number;
-  let rpcUrl: string;
-  let rpcManager: Awaited<ReturnType<typeof getRpcProvider>>;
   try {
     chainId = getChainIdFromNetwork(network);
-
-    rpcManager = await getRpcProvider({
-      chainId,
-      userId,
-      usePrivateMempool,
-      strict,
-    });
-    rpcUrl = await rpcManager.resolveActiveRpcUrl();
   } catch (error) {
     logUserError(
       ErrorCategory.VALIDATION,
       "[Write Contract] Failed to resolve RPC config",
       error,
-      {
-        plugin_name: "web3",
-        action_name: "write-contract",
-      }
+      { plugin_name: "web3", action_name: "write-contract" }
     );
     return {
       success: false,
       error: getErrorMessage(error),
-      // A private-mempool relay that never answered is not our platform
-      // failing; everything else here (unknown chain, disabled chain, our own
-      // endpoints) is.
-      errorClass: rpcRelayErrorClass(error) ?? ExecutionErrorType.SYSTEM,
+      errorClass: ExecutionErrorType.SYSTEM,
     };
   }
+  // A relay that never answered or a missing relay is not our platform failing.
+  const resolved = await resolveWriteRpc(input, {
+    chainId,
+    userId,
+    allowBundle: input.allowBundle === true,
+    log: { tag: "[Write Contract]", action: "write-contract" },
+    fallbackClass: ExecutionErrorType.SYSTEM,
+  });
+  if (!resolved.ok) {
+    return { success: false, ...resolved.failure };
+  }
+  const { rpcManager, rpcUrl, relayRequested: usePrivateMempool } =
+    resolved.rpc;
+  // The trace's read RPC is resolved only after the send: a failure there skips the trace.
+  const traceExecuted = async (
+    hash: string,
+    options: TraceExecutedCallOptions
+  ): Promise<ExecutedCall | undefined> => {
+    let readRpc: RpcProviderManager;
+    try {
+      readRpc = await readRpcFor(rpcManager, { chainId, userId });
+    } catch (error) {
+      logSystemWarn(
+        ErrorCategory.NETWORK_RPC,
+        "[Write Contract] Read RPC unavailable after the send, trace skipped",
+        error,
+        { plugin_name: "web3", action_name: "write-contract", chain_id: String(chainId) }
+      );
+      return;
+    }
+    // The trace swallows its own failures.
+    return await traceExecutedCallWithFailover(readRpc, hash, options);
+  };
 
-  if (maxFeeOverride !== undefined) {
-    const capError = await maxFeeBelowBaseFeeError(rpcManager, maxFeeOverride);
-    if (capError) {
-      // The base fee, not the node's config, decides this, so failOnError=false
-      // can carry a run through a gas spike.
-      return {
-        success: false,
-        error: capError,
-        errorClass: ExecutionErrorType.EXTERNAL,
-      };
+  let bundleRoute: BundleRoute | undefined;
+  if (resolved.rpc.bundleRequested) {
+    const prepared = await prepareBundleRoute({
+      organizationId,
+      chainId,
+      context: _context,
+      config: input,
+    });
+    if (!prepared.ok) {
+      return prepared.failure;
+    }
+    bundleRoute = prepared.route;
+  }
+
+  // A bundle checks the cap in writeAsBundle, after its replay, in-flight and waiting checks.
+  if (maxFeeOverride !== undefined && !bundleRoute) {
+    const capFailure = await maxFeeCapFailure(rpcManager, maxFeeOverride);
+    if (capFailure) {
+      return capFailure;
     }
   }
 
@@ -551,6 +663,11 @@ async function writeContractCoreImpl(
       error: `Failed to resolve Web3 Connection: ${getErrorMessage(error)}`,
       errorClass: ExecutionErrorType.SYSTEM,
     };
+  }
+
+  const signerRefusal = bundleRoute && bundleSignerRefusal(signerMode, bundleRoute.mode);
+  if (signerRefusal) {
+    return signerRefusal;
   }
 
   if (payerParam !== undefined) {
@@ -641,6 +758,34 @@ async function writeContractCoreImpl(
     rpcManager,
   };
 
+  // A bundle never takes the sponsored route or the public mempool.
+  if (bundleRoute) {
+    return await writeAsBundle({
+      route: bundleRoute,
+      chainId,
+      organizationId,
+      walletAddress,
+      rpcUrl,
+      rpcManager,
+      traceExecuted,
+      triggerBlock: _context?.triggerBlock,
+      txContext,
+      contractAddress,
+      parsedAbi,
+      abiFunction,
+      functionKey: abiFunctionKey,
+      args,
+      value: parsedEthValue,
+      gas: {
+        multiplierOverride,
+        gasLimitOverride,
+        priorityFeeOverride,
+        maxFeeOverride,
+      },
+      errorAbis,
+    });
+  }
+
   // Try gas-sponsored execution first via Turnkey Gas Station (KEEP-464).
   // shouldTrySponsorship holds every reason the route can be declined.
   if (
@@ -677,8 +822,7 @@ async function writeContractCoreImpl(
           ? getTransactionUrl(explorerConfig, sponsoredResult.transactionHash)
           : "";
 
-        const executedCall = await traceExecutedCallWithFailover(
-          rpcManager,
+        const executedCall = await traceExecuted(
           sponsoredResult.transactionHash,
           { target: contractAddress, abi: parsedAbi, functionName: abiFunction }
         );
@@ -686,6 +830,8 @@ async function writeContractCoreImpl(
         return {
           success: true,
           sponsored: true,
+          route: "sponsored",
+          included: true,
           transactionHash: sponsoredResult.transactionHash,
           chainId,
           transactionLink,
@@ -734,6 +880,8 @@ async function writeContractCoreImpl(
           error: decision.error,
           errorClass: decision.errorClass,
           sponsored: true,
+          route: "sponsored",
+          included: isSponsoredTxRevertError(error),
           broadcastAttempted: decision.broadcastAttempted,
           ...(decision.transactionHash
             ? {
@@ -795,6 +943,7 @@ async function writeContractCoreImpl(
     }
 
     let receivedTransactionHash: string | undefined;
+    const sendReport: SendReport = {};
     try {
       let receipt: Awaited<ReturnType<typeof adapter.executeContractCall>>;
       if (signerMode.kind === SIGNER_MODE.SAFE_ROLE) {
@@ -818,6 +967,7 @@ async function writeContractCoreImpl(
             rpcManager,
             simulation,
             feeOverrides: { priorityFeeOverride, maxFeeOverride },
+            sendReport,
           }
         );
       } else if (signerMode.kind === SIGNER_MODE.SAFE) {
@@ -839,6 +989,7 @@ async function writeContractCoreImpl(
             rpcManager,
             simulation,
             feeOverrides: { priorityFeeOverride, maxFeeOverride },
+            sendReport,
           }
         );
       } else {
@@ -862,6 +1013,7 @@ async function writeContractCoreImpl(
             workflowId,
             rpcManager,
             simulation,
+            sendReport,
             builderRpcUrls,
           }
         );
@@ -883,6 +1035,7 @@ async function writeContractCoreImpl(
         effectiveGasPrice,
         result: undefined,
         ...(receipt.simulation ? { simulation: receipt.simulation } : {}),
+        ...sendReportFields(sendReport),
         ...(receipt.broadcast ? { broadcast: receipt.broadcast } : {}),
       });
     } catch (error) {
@@ -932,14 +1085,9 @@ async function writeContractCoreImpl(
           getNextBlockSimulation(error)
         ),
         ...(errorClass ? { errorClass } : {}),
-        broadcastAttempted: broadcastHash
-          ? true
-          : rejection.kind !== "unknown" ||
-              isPreBroadcastNetworkError(error) ||
-              failedNextBlockCheck(error)
-            ? false
-            : true,
+        broadcastAttempted: broadcastAttemptedOf(error, broadcastHash, rejection),
         ...(rejection.kind !== "unknown" ? { rejection } : {}),
+        ...sendReportFields(sendReport),
         ...(broadcastHash
           ? {
               transactionHash: broadcastHash,
@@ -953,7 +1101,7 @@ async function writeContractCoreImpl(
     }
   });
   if (isMinedSend(sent)) {
-    const executedCall = await traceExecutedCallWithFailover(rpcManager, sent.hash, {
+    const executedCall = await traceExecuted(sent.hash, {
       target: contractAddress,
       abi: parsedAbi,
       functionName: abiFunction,

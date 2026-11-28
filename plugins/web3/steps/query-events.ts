@@ -1,9 +1,10 @@
 import "server-only";
 
 import { ethers } from "ethers";
+import type { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { getChainIdFromNetwork } from "@/lib/rpc/network-utils";
 import { getRpcProvider } from "@/lib/rpc/provider-factory";
-import type { RpcProviderManager } from "@/lib/rpc/providers";
+import { declaredErrorClass, type RpcProviderManager } from "@/lib/rpc/providers";
 import { resolveExplorerLink } from "@/lib/web3/explorer-link";
 import { getRpcPreferenceUserId } from "@/lib/workflow/executor/helpers";
 import { runPluginStep, type StepInput } from "@/lib/workflow/executor/step-handler";
@@ -52,7 +53,11 @@ type QueryEventsResult =
       eventCount: number | null;
       error?: string;
     }
-  | (ReadDestinationFailure & { success: false; error: string });
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 /** Data fields a softened query reports, so a soft failure never looks like an empty result set. */
 const SOFT_QUERY_FIELDS = {
@@ -154,7 +159,11 @@ async function queryEventBatches(
 
 type OpenedBlockRange =
   | { success: true; rpcManager: RpcProviderManager; range: BlockRange }
-  | (ReadDestinationFailure & { success: false; error: string });
+  | (ReadDestinationFailure & {
+      success: false;
+      error: string;
+      errorClass?: ExecutionErrorType;
+    });
 
 async function openBlockRange(
   input: QueryEventsInput,
@@ -288,7 +297,7 @@ async function singleEventHandler(
     };
   } catch (error) {
     const message = `Event query failed: ${getErrorMessage(error)}`;
-    return { success: false, error: message };
+    return { success: false, error: message, ...declaredErrorClass(error) };
   }
 }
 
@@ -335,6 +344,7 @@ async function multipleEventsHandler(
     return {
       success: false,
       error: `Event query failed: ${getErrorMessage(error)}`,
+      ...declaredErrorClass(error),
     };
   }
 }

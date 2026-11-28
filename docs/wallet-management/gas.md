@@ -44,14 +44,18 @@ These defaults are resolved in order: database chain config > hardcoded chain ov
 
 You can set an absolute gas limit per action node:
 
-1. Open the action node configuration (Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token, or Write Contract)
+1. Open the action node configuration (Transfer Native Token, Transfer ERC20 Token, Approve ERC20 Token, Write Contract, or Batch Write Contract)
 2. Expand the **Advanced** section
 3. Set the **Gas Limit** field to an absolute gas unit value (e.g. 500000)
 
 ### Field Behavior
 
 - **When empty**: The chain's default multiplier (see [Default Multipliers](#default-multipliers)) is applied to the gas estimate at execution time
-- **When set**: Your absolute value is used directly as the transaction gas limit, bypassing the multiplier
+- **When set**: Your absolute value is used directly as the transaction gas limit, bypassing the multiplier. A limit above the network's limit (16777216 on Ethereum mainnet, Sepolia and Hoodi; elsewhere the latest block's gas limit, except on HyperEVM, whose blocks come in two sizes) is refused before sending, and a limit the check shows is too low for the call fails before sending too. A node may still refuse a limit at send time; nothing is broadcast then either. Through a Safe the Gas Limit is not applied.
+- **Simulate at set to Latest**: direct wallet sends skip `eth_estimateGas`, and the pre-send `eth_call` that catches a revert runs with your Gas Limit. Transfer Native Token, Transfer ERC20 Token and Approve ERC20 Token have no Simulate at setting and work the same way.
+- **Simulate at set to Next block**: the estimate is the revert check, so it always runs, with your Gas Limit as its ceiling.
+- **Send as set to Private relay**: the pre-send check goes through the same RPC as the send, the private relay. Flashbots Protect refuses `eth_call`, so with Simulate at set to Latest the check runs as `eth_estimateGas`, with your Gas Limit as its gas; the too-high and too-low rules above still apply. The checks run at one block. Nothing is sent to a public RPC for the check unless the action's config sets `strict: false` (see [Send as](/plugins/web3#send-as)) and the relay fails a call for a reason other than a revert. Batch Write Contract does not offer Private relay yet, because its per-call check needs `eth_call`.
+- **Arbitrum**: on chains that charge the L1 data cost inside the gas limit (Arbitrum One, Arbitrum Sepolia) the pre-send check does not include that cost, so a fixed limit can pass the check and still be refused by the sequencer. Leave Gas Limit empty there, or set it from a real estimate.
 
 The field also shows a live gas estimate when enough configuration is filled in (network, contract address, function, etc.). This helps you choose an appropriate gas limit. If your value is below the current estimate, a warning is shown.
 
@@ -65,7 +69,7 @@ If the network estimates 100,000 gas for your transaction and the network's defa
 | 150,000 | 150,000 (used directly) |
 | 500,000 | 500,000 (used directly) |
 
-Setting a gas limit below the estimate will cause the transaction to revert with an out-of-gas error. Setting it close to the estimate risks failure if on-chain state changes between estimation and execution.
+Setting a gas limit below what the call needs fails the pre-send check, so nothing is sent, and the error names the Gas Limit. Setting it close to the estimate risks running out of gas on-chain if state changes before the transaction is mined.
 
 ### Gas Limit and gas sponsorship
 
@@ -103,9 +107,9 @@ Sponsored transactions cannot carry a custom priority fee. The gas sponsor sets 
 
 - **Sponsor gas on**: the Priority Fee field is disabled and the network's default tip is used, paid by the sponsor.
 - **Sponsor gas off**: the Priority Fee field is editable. The node pays gas from the sending wallet, with your tip.
-- Any change that disables the field clears the priority fee, so a value you can no longer edit never changes how the node sends; the editor shows a notice when it does. A fee saved through the API while the field is disabled stays set and keeps the node off sponsorship; turn off Sponsor gas to clear it. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, moving off a private mempool or a Safe, or switching from Batch Write Contract to Write Contract.
+- Any change that disables the field clears the priority fee, so a value you can no longer edit never changes how the node sends; the editor shows a notice when it does. A fee saved through the API while the field is disabled stays set and keeps the node off sponsorship; turn off Sponsor gas to clear it. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, setting Send as back to Normal transaction, moving off a Safe, or switching from Batch Write Contract to Write Contract.
 
-The field is also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block.
+The field is also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, with Send as set to Private relay, through a Safe, or with Simulate at set to Next block.
 
 With a priority fee, the sending wallet must hold enough of the network's native token to pay the gas. If it does not, the step fails before anything is sent. No gas credits are used for that node.
 
@@ -153,9 +157,9 @@ Sponsored transactions cannot carry a custom max fee. The gas sponsor sets the f
 
 - **Sponsor gas on**: the Max Fee field is disabled and there is no cap; the sponsor sets the fees.
 - **Sponsor gas off**: the Max Fee field is editable. The node pays gas from the sending wallet, within your cap.
-- Any change that disables the field clears the max fee, so a value you can no longer edit never changes how the node sends; the editor shows a notice when it does. A fee saved through the API while the field is disabled stays set and keeps the node off sponsorship; turn off Sponsor gas to clear it. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, moving off a private mempool or a Safe, or switching from Batch Write Contract to Write Contract.
+- Any change that disables the field clears the max fee, so a value you can no longer edit never changes how the node sends; the editor shows a notice when it does. A fee saved through the API while the field is disabled stays set and keeps the node off sponsorship; turn off Sponsor gas to clear it. For example: turning Sponsor gas on, or, with Sponsor gas on, setting Simulate at back to Latest block, switching to a network that gas sponsorship covers, setting Send as back to Normal transaction, moving off a Safe, or switching from Batch Write Contract to Write Contract.
 
-The field is also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block.
+The field is also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, with Send as set to Private relay, through a Safe, or with Simulate at set to Next block.
 
 With a max fee, the sending wallet must hold enough of the network's native token to pay the gas. If it does not, the step fails before anything is sent. No gas credits are used for that node.
 
@@ -192,7 +196,7 @@ A transaction is sponsored only when all of the following are true. Otherwise it
 
 - **Supported network**: Ethereum, Base, Polygon, and Arbitrum, plus their testnets (Sepolia, Base Sepolia, Polygon Amoy, Arbitrum Sepolia).
 - **Direct wallet sender (no Safe)**: the active Sender is the wallet itself.
-- **Public mempool**: transactions routed through a private mempool are not sponsored.
+- **Normal send**: a node with [Send as](/plugins/web3#send-as) set to Private relay is not sponsored.
 - **Gas credits available**: your organization still has gas credits for the current period.
 - **Sponsor gas is on for the node**: the action's own toggle, described below.
 - **No custom fees**: a node with a [Priority Fee](#priority-fee) or [Max Fee](#max-fee) set pays gas from your wallet. In the editor these fields are disabled while the node would be sponsored.
@@ -216,7 +220,7 @@ Through the API or MCP the field is `sponsorGas`, and it takes `true` or `false`
 
 To decide per run, branch with a Condition node to two write nodes, one with **Sponsor gas** on and one with it off.
 
-The toggle only removes sponsorship. Turning it on does not override the conditions above: an unsupported network, a Safe sender, a private mempool route, or an exhausted credit allowance still pays gas from the wallet.
+The toggle only removes sponsorship. In the editor, picking Private relay in Send as turns Sponsor gas off, and turning Sponsor gas on sets Send as back to Normal transaction; the editor says so each time, with an Undo. Otherwise turning it on does not override the conditions above: an unsupported network, a Safe sender, or an exhausted credit allowance still pays gas from the wallet. A config saved through the API with both `sponsorGas` on and `sendMode` set to `"private-relay"` sends through the relay, unsponsored.
 
 ### Safe wallets
 
@@ -279,7 +283,7 @@ Sponsored transactions are built and paid for by the gas sponsor, which sets the
 
 Priority Fee and Max Fee are disabled while sponsored because a fee you choose cannot be honoured on a sponsored transaction. They stay on the form, with a note under each, so you can see they exist and turn off Sponsor gas to use them. The Gas Limit stays editable because it still applies whenever the node ends up paying its own gas.
 
-The fee fields are also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, through a private mempool, through a Safe, or with Simulate at set to Next block (see [Simulate at the next block](/plugins/web3#simulate-at-the-next-block)). A node with a fee set pays gas from the sending wallet, so keep that wallet funded with the network's native token.
+The fee fields are also editable when the node cannot be sponsored anyway: on a network that gas sponsorship does not cover, with Send as set to Private relay, through a Safe, or with Simulate at set to Next block (see [Simulate at the next block](/plugins/web3#simulate-at-the-next-block)). A node with a fee set pays gas from the sending wallet, so keep that wallet funded with the network's native token.
 
 Batch Write Contract is never sponsored, so its Gas Limit, Priority Fee and Max Fee are always editable and always apply.
 
@@ -293,11 +297,13 @@ The chain's default multiplier is applied to the gas estimate at execution time:
 
 ### What happens if my gas limit is too low?
 
-The transaction is mined but reverts with an "out of gas" error, and you still pay for the gas consumed up to the limit. KeeperHub does not retry it: the run fails and reports the revert, including the transaction hash. Raise or clear the gas limit and run the workflow again.
+Usually nothing is sent: the pre-send check runs under your limit, and the step fails with "Gas Limit N is too low for this call". If state changes between the check and the block, the transaction can still be mined and revert out of gas; you then pay for the gas used up to the limit, and the error says it used all its gas. KeeperHub does not retry either case. Raise or clear the gas limit and run the workflow again.
+
+When an inner call runs out of gas and the contract then reverts with no reason, the check cannot tell that from a real revert, so the step shows the node's "execution reverted" with no Gas Limit hint. If you are unsure, leave Gas Limit empty.
 
 ### What happens if my gas limit is too high?
 
-The transaction reserves more gas but only consumes what it needs. Unused gas is refunded. There is no direct cost penalty, but very high limits may cause the transaction to be deprioritized by some networks.
+Up to the network's limit, the transaction reserves more gas but only consumes what it needs, and unused gas is refunded; very high limits may make some networks deprioritize it. Above the network's limit (16777216 on Ethereum mainnet, Sepolia and Hoodi; elsewhere the latest block's gas limit, not checked on HyperEVM), the step fails before sending with "Gas Limit N is above the network's limit".
 
 ### Does the gas limit affect gas price/fees?
 

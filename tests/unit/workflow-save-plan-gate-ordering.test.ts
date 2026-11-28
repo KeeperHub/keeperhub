@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 // The org plan-gate (enforceWorkflowFeatures -> 402 upgrade_required) must run
-// BEFORE action-config validation (validateWorkflowActionConfigs -> 422
+// BEFORE action-config validation (validateWorkflowNodesForSave -> 422
 // INVALID_ACTION_CONFIG) in every workflow-save route, so a plan-gated action
 // whose config is also incomplete reports "upgrade required" instead of a
 // generic config error. workflow-create-route.test.ts proves the runtime
@@ -24,7 +24,7 @@ describe("workflow-save plan-gate ordering", () => {
       const src = readFileSync(path.resolve(process.cwd(), route), "utf8");
       // Match the call sites (trailing "("), not the top-of-file imports.
       const gate = src.indexOf("enforceWorkflowFeatures(");
-      const config = src.indexOf("validateWorkflowActionConfigs(");
+      const config = src.indexOf("validateWorkflowNodesForSave(");
 
       expect(
         gate,
@@ -32,7 +32,7 @@ describe("workflow-save plan-gate ordering", () => {
       ).toBeGreaterThan(-1);
       expect(
         config,
-        `${route}: validateWorkflowActionConfigs( call not found`
+        `${route}: validateWorkflowNodesForSave( call not found`
       ).toBeGreaterThan(-1);
       expect(
         gate,

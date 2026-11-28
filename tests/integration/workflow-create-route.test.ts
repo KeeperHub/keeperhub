@@ -84,6 +84,12 @@ vi.mock("@/lib/security/audit-log", () => ({
 import { NextResponse } from "next/server";
 import { POST } from "@/app/api/workflows/create/route";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
+import {
+  bundleStep,
+  NESTED_LOOP,
+  NOT_TURNED_ON,
+  nestedBundleWorkflow,
+} from "@/tests/utils/bundle-save-fixtures";
 
 function request(body: Record<string, unknown>): Request {
   return new Request("http://localhost:3000/api/workflows/create", {
@@ -580,5 +586,48 @@ describe("POST /api/workflows/create Pyth availability", () => {
         process.env.PYTH_API_KEY = originalPythApiKey;
       }
     }
+  });
+});
+
+describe("POST /api/workflows/create Send as Bundle checks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    mockGetDualAuthContext.mockResolvedValue({
+      userId: "user-123",
+      organizationId: "org-123",
+      authMethod: "session",
+    });
+    mockValidateWorkflowIntegrations.mockResolvedValue({ valid: true });
+    mockInsert.mockReturnValue({
+      values: vi.fn((row: Record<string, unknown>) => ({
+        returning: vi
+          .fn()
+          .mockResolvedValue([
+            { ...row, createdAt: new Date(), updatedAt: new Date() },
+          ]),
+      })),
+    });
+  });
+
+  it("checks the rollout for the saving organization", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org-123");
+    const inRollout = await POST(request(workflowBody([bundleStep()])));
+    expect(inRollout.status).not.toBe(422);
+
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:someone-else");
+    const outside = await POST(request(workflowBody([bundleStep()])));
+    expect(outside.status).toBe(422);
+    expect(JSON.stringify(await outside.json())).toContain(NOT_TURNED_ON);
+  });
+
+  it("checks the edges for a bundle step in a nested For Each", async () => {
+    vi.stubEnv("BUNDLE_SEND_ROLLOUT", "orgs:org-123");
+    const response = await POST(
+      request({ name: "Nested", ...nestedBundleWorkflow() })
+    );
+    expect(response.status).toBe(422);
+    expect(JSON.stringify(await response.json())).toContain(NESTED_LOOP);
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 });

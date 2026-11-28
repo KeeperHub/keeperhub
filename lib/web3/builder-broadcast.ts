@@ -1,11 +1,19 @@
 import "server-only";
 import { logWarn } from "@/lib/logging";
+import { neverReached } from "@/lib/rpc/connection-refusal";
 import type { BuilderRpcUrls } from "@/lib/rpc/rpc-config";
 import { redactAllUrls } from "@/lib/rpc/scrub-rpc-urls";
 import { safeFetch } from "@/lib/safe-fetch";
 import { getErrorMessage } from "@/lib/utils";
+import { readCappedBody } from "@/lib/web3/capped-body";
+import {
+  classifyRpcError,
+  parseJsonRpcAnswer,
+} from "@/lib/web3/json-rpc-answer";
 
 const BUILDER_BROADCAST_TIMEOUT_MS = 2000;
+const MAX_RESPONSE_BYTES = 64 * 1024;
+const HTTP_REQUEST_TIMEOUT = 408;
 
 const MAX_ERROR_LENGTH = 200;
 const JSON_RPC_VERSION = "2.0";
@@ -14,17 +22,11 @@ const SAFE_FETCH_LABEL = "builder-broadcast";
 
 export type BuilderBroadcastResult = {
   name: string;
-  accepted: boolean;
+  // true: it answered with our hash (or already had it); false: it turned the
+  // transaction down or was never reached; null: no clear answer.
+  accepted: boolean | null;
   error?: string;
 };
-
-type JsonRpcReply = {
-  result?: unknown;
-  error?: { message?: unknown };
-};
-
-// A builder that already holds the transaction counts as accepted.
-const ALREADY_KNOWN = /already known|known transaction/i;
 
 // Builder replies end up in the step output, so URLs are removed first.
 function cleanError(message: string): string {
@@ -34,13 +36,20 @@ function cleanError(message: string): string {
     : redacted;
 }
 
+function normalizeHash(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`;
+}
+
 async function sendToBuilder(
   name: string,
   url: string,
-  signedHex: string
+  signedHex: string,
+  expectedHash: string
 ): Promise<BuilderBroadcastResult> {
+  let response: Response;
   try {
-    const response = await safeFetch(url, {
+    response = await safeFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -50,37 +59,83 @@ async function sendToBuilder(
         params: [signedHex],
       }),
       signal: AbortSignal.timeout(BUILDER_BROADCAST_TIMEOUT_MS),
+      // Never re-send the signed bytes to wherever a redirect points.
+      redirect: "manual",
       plugin: SAFE_FETCH_LABEL,
     });
-    const reply = (await response.json()) as JsonRpcReply;
-    if (typeof reply.result === "string") {
+  } catch (error) {
+    // No redirect is followed, so a host never reached never got the bytes.
+    return {
+      name,
+      accepted: neverReached(error) ? false : null,
+      error: cleanError(getErrorMessage(error)),
+    };
+  }
+  const status = response.status;
+  if (
+    (status >= 300 && status < 400) ||
+    status >= 500 ||
+    status === HTTP_REQUEST_TIMEOUT
+  ) {
+    // It read the request, signed bytes included: no clear answer.
+    await response.body?.cancel().catch(() => undefined);
+    return {
+      name,
+      accepted: null,
+      error: status < 400 ? "redirect not followed" : `HTTP ${status}`,
+    };
+  }
+  const body = await readCappedBody(response, MAX_RESPONSE_BYTES);
+  const answer = body === undefined ? undefined : parseJsonRpcAnswer(body);
+  if (typeof answer?.result === "string") {
+    // Anything but our hash (a tracking id, say) proves nothing either way.
+    return normalizeHash(answer.result) === normalizeHash(expectedHash)
+      ? { name, accepted: true }
+      : { name, accepted: null, error: "answered with another hash" };
+  }
+  if (answer?.error) {
+    const delivery = classifyRpcError(answer.error);
+    if (delivery === "accepted") {
       return { name, accepted: true };
     }
     const message =
-      typeof reply.error?.message === "string"
-        ? reply.error.message
-        : `HTTP ${response.status}`;
-    if (ALREADY_KNOWN.test(message)) {
-      return { name, accepted: true };
-    }
-    return { name, accepted: false, error: cleanError(message) };
-  } catch (error) {
-    return { name, accepted: false, error: cleanError(getErrorMessage(error)) };
+      typeof answer.error.message === "string"
+        ? answer.error.message
+        : `HTTP ${status}`;
+    return {
+      name,
+      accepted: delivery === "refused" ? false : null,
+      error: cleanError(message),
+    };
   }
+  // A 4xx with no JSON-RPC error may come from a CDN, WAF or moved host that
+  // read the whole POST, signed bytes included: it may have sent.
+  return {
+    name,
+    accepted: null,
+    error: status >= 400 ? `HTTP ${status}` : "unreadable answer",
+  };
 }
 
 // Best-effort parallel send: failures are reported by label, never thrown.
 export async function broadcastToBuilders(
   signedHex: string,
+  expectedHash: string,
   builders: BuilderRpcUrls
 ): Promise<BuilderBroadcastResult[]> {
   const results = await Promise.all(
     Object.entries(builders).map(([name, url]) =>
-      sendToBuilder(name, url, signedHex)
+      sendToBuilder(name, url, signedHex, expectedHash).catch(
+        (error: unknown): BuilderBroadcastResult => ({
+          name,
+          accepted: null,
+          error: cleanError(getErrorMessage(error)),
+        })
+      )
     )
   );
   for (const result of results) {
-    if (!result.accepted) {
+    if (result.accepted !== true) {
       logWarn(`[BuilderBroadcast] ${result.name} did not accept transaction`, {
         builder: result.name,
         error: result.error ?? "",

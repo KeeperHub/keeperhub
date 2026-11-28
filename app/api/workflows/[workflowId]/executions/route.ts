@@ -11,6 +11,12 @@ import { parsePageLimit } from "@/lib/pagination";
 import { getWorkflowAccess } from "@/lib/workflow/access";
 import { boundedJsonb } from "@/lib/workflow/bounded-jsonb";
 import {
+  type SkipReason,
+  skipReasonOf,
+} from "@/lib/workflow/executor/run-outcome-keys";
+import { loadWaitingRunInfo } from "@/lib/workflow/executor/waiting-runs";
+import { skippedRefusalsSql } from "@/lib/workflow/refused-runs";
+import {
   decodeExecutionsCursor,
   encodeExecutionsCursor,
   type ExecutionsCursor,
@@ -100,6 +106,15 @@ function ifNoneMatchMatches(header: string | null, etag: string): boolean {
   });
 }
 
+/** Each run with its skip reason key (null unless a bundle step skipped it). */
+function withSkipReasons<
+  T extends { status: string; error: string | null; errorCode: string | null },
+>(
+  runs: T[]
+): (T & { skipReason: SkipReason | null })[] {
+  return runs.map((run) => ({ ...run, skipReason: skipReasonOf(run) }));
+}
+
 type SummaryQuery = { limit: number; cursor: ExecutionsCursor | null };
 
 function parseSummaryQuery(
@@ -179,11 +194,7 @@ async function summaryResponse(
           sql<string>`to_char(${workflowExecutions.startedAt}, 'YYYY-MM-DD HH24:MI:SS.US')`.as(
             "started_at_key"
           ),
-        // Only skipped rows are read, so no large step output is detoasted.
-        refusals:
-          sql<number | null>`CASE WHEN ${workflowExecutions.status} = 'skipped' THEN (${workflowExecutions.output}->>'refusals')::int END`.as(
-            "refusals"
-          ),
+        refusals: skippedRefusalsSql().as("refusals"),
       },
       orderBy: [desc(workflowExecutions.startedAt), desc(workflowExecutions.id)],
       limit: limit + 1,
@@ -201,10 +212,13 @@ async function summaryResponse(
       : null;
 
   const resolveVersion = await buildRanVersionResolver(workflowId, pageRows);
-  const executions = pageRows.map(
+  const withReasons = withSkipReasons(pageRows);
+  const waiting = await loadWaitingRunInfo(withReasons);
+  const executions = withReasons.map(
     // biome-ignore lint/correctness/noUnusedVariables: destructure-to-omit pattern
     ({ startedAtKey: _startedAtKey, ...execution }) => ({
       ...execution,
+      waiting: waiting.get(execution.id) ?? null,
       totalSteps: parseIntOrNull(execution.totalSteps),
       completedSteps: parseIntOrNull(execution.completedSteps),
       ranVersion: resolveVersion(
@@ -310,8 +324,11 @@ export async function GET(
     // Coerce to `number | null` before serializing so the response matches the
     // numeric shape clients expect; non-numeric strings (shouldn't happen) fall
     // through as null rather than NaN.
-    const serialized = executions.map((execution) => ({
+    const withReasons = withSkipReasons(executions);
+    const waiting = await loadWaitingRunInfo(withReasons);
+    const serialized = withReasons.map((execution) => ({
       ...execution,
+      waiting: waiting.get(execution.id) ?? null,
       totalSteps: parseIntOrNull(execution.totalSteps),
       completedSteps: parseIntOrNull(execution.completedSteps),
       ranVersion: resolveVersion(

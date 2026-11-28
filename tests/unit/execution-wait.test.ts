@@ -271,6 +271,24 @@ describe("buildCallCompletionResponse (KEEP-265)", () => {
     });
   });
 
+  it("keeps the owner's held bundle detail out of a cap refusal", async () => {
+    mockFindFirstExecution.mockResolvedValue({
+      status: "error",
+      output: null,
+      error:
+        "Daily spending cap exceeded: part of today's total is held by Send as Bundle steps whose signed transactions have not been mined (0.5 ETH from wallet 0xaa on Ethereum). They can still be mined.",
+    });
+    const { buildCallCompletionResponse } = await import(
+      "@/lib/payments/x402/execution-wait"
+    );
+    const res = await buildCallCompletionResponse("exec-cap", null, 1000);
+    expect(res).toEqual({
+      executionId: "exec-cap",
+      status: "error",
+      error: "Daily spending cap exceeded",
+    });
+  });
+
   it("maps cancelled status to an error response", async () => {
     mockFindFirstExecution.mockResolvedValue({
       status: "cancelled",
@@ -285,6 +303,55 @@ describe("buildCallCompletionResponse (KEEP-265)", () => {
       executionId: "exec-cancel",
       status: "error",
       error: "Execution cancelled",
+    });
+  });
+
+  it("stops on a not landed run and reports it, without polling to the timeout", async () => {
+    mockFindFirstExecution.mockResolvedValue({
+      status: "not_landed",
+      output: { included: false },
+      error: null,
+    });
+    const { buildCallCompletionResponse } = await import(
+      "@/lib/payments/x402/execution-wait"
+    );
+    const res = await buildCallCompletionResponse("exec-nl", null, 1000);
+    expect(res).toEqual({
+      executionId: "exec-nl",
+      status: "error",
+      error:
+        "Execution finished, but a bundle in it was not seen in its target blocks. A bundle that could not be checked can still land within about a day; then the run changes to Success, or to Error if the call reverted.",
+      code: "not_landed",
+    });
+    expect(mockFindFirstExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it("tags a skipped run with a code, keeping its reason when it has one", async () => {
+    mockFindFirstExecution.mockResolvedValueOnce({
+      status: "skipped",
+      output: null,
+      error: null,
+    });
+    const { buildCallCompletionResponse } = await import(
+      "@/lib/payments/x402/execution-wait"
+    );
+    expect(await buildCallCompletionResponse("exec-sk", null, 1000)).toEqual({
+      executionId: "exec-sk",
+      status: "error",
+      error: "Execution skipped",
+      code: "skipped",
+    });
+
+    mockFindFirstExecution.mockResolvedValueOnce({
+      status: "skipped",
+      output: null,
+      error: "Execution skipped: workflow is not executable (disabled).",
+    });
+    expect(await buildCallCompletionResponse("exec-sk2", null, 1000)).toEqual({
+      executionId: "exec-sk2",
+      status: "error",
+      error: "Execution skipped: workflow is not executable (disabled).",
+      code: "skipped",
     });
   });
 });

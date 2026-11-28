@@ -1,11 +1,11 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { checkDispatchAdmission } from "@/lib/billing/dispatch-admission";
 import type { DispatchRefusal } from "@/lib/billing/dispatch-refusal";
 import { enforceExecutionLimit } from "@/lib/billing/execution-guard";
 import { db } from "@/lib/db";
-import { workflowExecutions, workflows } from "@/lib/db/schema";
+import { organization, workflowExecutions, workflows } from "@/lib/db/schema";
 import { extractActionTypeNodes } from "@/lib/features";
 import { enforceWorkflowFeatures } from "@/lib/features/route-guard";
 import { authenticateInternalService } from "@/lib/internal-service-auth";
@@ -18,7 +18,9 @@ import {
   type TriggerSource,
 } from "@/lib/security/request-attribution";
 import { hashWorkflowDefinition } from "@/lib/workflow/content-hash";
+import { getWorkflowExecutability } from "@/lib/workflow/executable";
 import { recordRefusedRun } from "@/lib/workflow/refused-runs";
+import { insertPhantomUnlessRunning } from "@/lib/workflow/skip-if-running";
 
 const VALID_TRIGGER_SOURCES: readonly TriggerSource[] = [
   "manual",
@@ -94,6 +96,37 @@ async function recordRefusedDispatch(params: {
   }
 }
 
+const INACTIVE_MESSAGES = {
+  deactivated: "This workflow is deactivated, so it may not run",
+  org_deactivated:
+    "This workflow's organization is deactivated (or its owner), so it may not run",
+} as const;
+
+/**
+ * Why the database would refuse a run of this live workflow (deactivated, or
+ * its organization or that organization's owner deactivated), checked before
+ * the insert so its trigger is not the answer. Deletion is checked by the caller.
+ */
+function inactiveMessage(workflow: {
+  deactivatedAt: Date | null;
+  orgDeactivatedAt: string | Date | null;
+}): string | undefined {
+  const executability = getWorkflowExecutability({
+    enabled: true,
+    deactivatedAt: workflow.deactivatedAt,
+    orgDeactivatedAt: workflow.orgDeactivatedAt
+      ? new Date(workflow.orgDeactivatedAt)
+      : null,
+  });
+  if (executability.executable) {
+    return;
+  }
+  return executability.reason === "deactivated" ||
+    executability.reason === "org_deactivated"
+    ? INACTIVE_MESSAGES[executability.reason]
+    : undefined;
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const rawBody = await request.text();
   const auth = await authenticateInternalService(request, rawBody);
@@ -135,15 +168,28 @@ export async function POST(request: Request): Promise<NextResponse> {
     columns: {
       organizationId: true,
       deletedAt: true,
+      deactivatedAt: true,
       nodes: true,
       edges: true,
       userId: true,
+    },
+    // For the skip check below, in the same query (a raw timestamp string).
+    // Plain names inside: the query rewrites every column object to the workflows alias.
+    extras: {
+      orgDeactivatedAt: sql<
+        string | Date | null
+      >`(SELECT org.deactivated_at FROM ${organization} org WHERE org.id = "workflows"."organization_id")`.as(
+        "org_deactivated_at"
+      ),
     },
   });
 
   // KEEP-440: never create an execution for a soft-deleted workflow.
   if (!workflow || workflow.deletedAt) {
-    return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
+    return NextResponse.json(
+      { error: "Workflow not found", code: "WORKFLOW_NOT_FOUND" },
+      { status: 404 }
+    );
   }
 
   // KEEP-693: the cron scheduler does not know the workflow owner, so userId is
@@ -152,6 +198,20 @@ export async function POST(request: Request): Promise<NextResponse> {
   const ownerId: string = userId ?? workflow.userId;
 
   const source = resolveTriggerSource(triggerSource);
+  const skipIfRunning =
+    isPhantom && body.skipIfRunning === true && dispatchKeyValue !== null;
+
+  // The skip check is an answer the dispatcher counts: refuse an inactive
+  // workflow here, so a raw 42501 from the insert stays a failure (500).
+  if (skipIfRunning) {
+    const inactive = inactiveMessage(workflow);
+    if (inactive) {
+      return NextResponse.json(
+        { error: inactive, code: "WORKFLOW_INACTIVE" },
+        { status: 403 }
+      );
+    }
+  }
 
   // A phantom is created by a dispatcher on every occurrence of its trigger, so
   // admission runs here rather than one hop later on the executor: a refused
@@ -195,32 +255,54 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const attribution = buildAttribution({ request, source });
 
+  const values = {
+    workflowId,
+    organizationId: workflow.organizationId,
+    userId: ownerId,
+    status: isPhantom ? ("phantom" as const) : ("running" as const),
+    // KEEP-693: a phantom has not run yet, so it must not count toward the
+    // org's billable executions -- the executor flips it to billable when
+    // it upgrades the row to running. Non-phantom (direct) rows stay
+    // billable as before.
+    billable: !isPhantom,
+    input: input || {},
+    dispatchKey: dispatchKeyValue,
+    ...attribution,
+    // Tie the run to the workflow version that fired it. For phantoms the
+    // executor restamps this with the definition it actually loads at run
+    // time; this value links the row even if that restamp never lands.
+    executedWorkflowHash: hashWorkflowDefinition(
+      workflow.nodes,
+      workflow.edges
+    ),
+  };
+
+  // Block Trigger "Skip if the previous run is still running": the dispatcher asks.
+  if (skipIfRunning && dispatchKeyValue) {
+    const result = await withBackstopCapture(
+      { workflowId, userId: ownerId, source },
+      () =>
+        insertPhantomUnlessRunning(db, {
+          ...values,
+          dispatchKey: dispatchKeyValue,
+        })
+    );
+    return NextResponse.json(
+      {
+        executionId: result.id,
+        alreadyExisted: result.alreadyExisted,
+        ...(result.skipped ? { skipped: true } : {}),
+      },
+      { status: result.alreadyExisted ? 200 : 201 }
+    );
+  }
+
   const inserted = await withBackstopCapture(
     { workflowId, userId: ownerId, source },
     () =>
       db
         .insert(workflowExecutions)
-        .values({
-          workflowId,
-          organizationId: workflow.organizationId,
-          userId: ownerId,
-          status: isPhantom ? "phantom" : "running",
-          // KEEP-693: a phantom has not run yet, so it must not count toward the
-          // org's billable executions -- the executor flips it to billable when
-          // it upgrades the row to running. Non-phantom (direct) rows stay
-          // billable as before.
-          billable: !isPhantom,
-          input: input || {},
-          dispatchKey: dispatchKeyValue,
-          ...attribution,
-          // Tie the run to the workflow version that fired it. For phantoms the
-          // executor restamps this with the definition it actually loads at run
-          // time; this value links the row even if that restamp never lands.
-          executedWorkflowHash: hashWorkflowDefinition(
-            workflow.nodes,
-            workflow.edges
-          ),
-        })
+        .values(values)
         // No-op if another dispatcher already created a row for this dispatch
         // key. NULL keys never conflict (Postgres treats them as distinct).
         .onConflictDoNothing({ target: workflowExecutions.dispatchKey })
@@ -239,14 +321,18 @@ export async function POST(request: Request): Promise<NextResponse> {
   // flag it so the caller skips the duplicate SQS send. Only reachable with a
   // non-null key, so the lookup is well-defined.
   const [existing] = await db
-    .select({ id: workflowExecutions.id })
+    .select({ id: workflowExecutions.id, status: workflowExecutions.status })
     .from(workflowExecutions)
     .where(eq(workflowExecutions.dispatchKey, dispatchKeyValue as string))
     .limit(1);
 
   if (existing) {
     return NextResponse.json(
-      { executionId: existing.id, alreadyExisted: true },
+      {
+        executionId: existing.id,
+        alreadyExisted: true,
+        ...(existing.status === "skipped" ? { skipped: true } : {}),
+      },
       { status: 200 }
     );
   }

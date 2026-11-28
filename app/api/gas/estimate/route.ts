@@ -9,12 +9,20 @@ import {
 import { apiError } from "@/lib/api-error";
 import ERC20_ABI from "@/lib/contracts/abis/erc20.json";
 import { MULTICALL3_ABI, MULTICALL3_ADDRESS } from "@/lib/contracts/multicall3";
+import { ExecutionErrorType } from "@/lib/errors/execution-error-type";
 import { SCOPE_MCP_READ } from "@/lib/mcp/oauth-scopes";
 import { resolveOrganizationId } from "@/lib/middleware/auth-helpers";
 import { requireScope } from "@/lib/middleware/require-scope";
-import { getRpcProvider } from "@/lib/rpc/provider-factory";
+import {
+  type RpcProviderManager,
+  rpcRelayErrorClass,
+} from "@/lib/rpc/providers";
+import { readRpcFor } from "@/lib/rpc/read-provider";
+import { getSendRpcProvider } from "@/lib/rpc/send-provider";
 import { resolveSignerForNode, SIGNER_MODE } from "@/lib/safe/signer-resolver";
+import { getErrorMessage } from "@/lib/utils";
 import { getChainGasDefaults } from "@/lib/web3/gas-defaults";
+import { SEND_MODE, unsupportedSendMode } from "@/lib/web3/send-mode";
 import { getOrganizationWalletAddress } from "@/lib/web3/wallet-helpers";
 import { hasTemplateToken } from "@/lib/workflow/template-ref";
 import { buildCallsWithMeta } from "@/plugins/web3/steps/batch-write-contract-core";
@@ -30,6 +38,8 @@ type EstimateConfig = {
   calls?: string | unknown[];
   isolateCallFailures?: string | boolean;
   web3Connection?: string;
+  sendMode?: unknown;
+  usePrivateMempool?: unknown;
 };
 
 type ActionSlug =
@@ -101,31 +111,44 @@ function parseTokenAddress(tokenConfig: unknown): string | undefined {
   return;
 }
 
-/**
- * Estimate gas for an ERC20 token transfer
- */
-async function estimateTransferToken(
+type TransferToken = { address: string; decimals: number };
+
+/** The token a transfer-token estimate moves; its decimals come from the public RPC. */
+async function readTransferToken(
   config: EstimateConfig,
-  provider: ethers.JsonRpcProvider,
-  walletAddress: string
-): Promise<NextResponse | bigint> {
+  rpcManager: RpcProviderManager,
+  chainId: number
+): Promise<TransferToken | NextResponse> {
   if (!config.recipientAddress) {
     return badRequest(
       "recipientAddress is required for transfer-token estimation"
     );
   }
-
-  const tokenAddress = parseTokenAddress(config.tokenConfig);
-  if (!(tokenAddress && ethers.isAddress(tokenAddress))) {
+  const address = parseTokenAddress(config.tokenConfig);
+  if (!(address && ethers.isAddress(address))) {
     return badRequest(
       "Valid token address is required for transfer-token estimation"
     );
   }
+  const readRpc = await readRpcFor(rpcManager, { chainId });
+  const decimals = await readRpc.executeWithFailover(async (provider) =>
+    Number(await new ethers.Contract(address, ERC20_ABI, provider).decimals())
+  );
+  return { address, decimals };
+}
 
-  const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
-  const decimals = Number(await tokenContract.decimals());
+/**
+ * Estimate gas for an ERC20 token transfer
+ */
+function estimateTransferToken(
+  config: EstimateConfig,
+  provider: ethers.JsonRpcProvider,
+  walletAddress: string,
+  token: TransferToken
+): Promise<bigint> {
+  const tokenContract = new ethers.Contract(token.address, ERC20_ABI, provider);
   const amountRaw = config.amount
-    ? ethers.parseUnits(config.amount, decimals)
+    ? ethers.parseUnits(config.amount, token.decimals)
     : BigInt(0);
 
   return tokenContract.transfer.estimateGas(
@@ -366,14 +389,47 @@ export async function POST(request: Request): Promise<NextResponse> {
       return badRequest("No wallet configured. Create a wallet first.");
     }
 
-    const rpcManager = await getRpcProvider({ chainId });
+    // Through the private relay the calldata goes to the relay, as the send
+    // will; only the token's decimals are read from the public RPC.
+    let rpcManager: RpcProviderManager;
+    try {
+      ({ rpcManager } = await getSendRpcProvider(config, {
+        chainId,
+        relayRefusal: unsupportedSendMode(
+          `web3/${actionSlug}`,
+          SEND_MODE.PRIVATE_RELAY
+        ),
+        // A bundle's gas is estimated like a normal send's.
+        allowBundle: actionSlug === "write-contract",
+      }));
+    } catch (error) {
+      if (rpcRelayErrorClass(error) === ExecutionErrorType.USER) {
+        return badRequest(getErrorMessage(error));
+      }
+      throw error;
+    }
+    // Read before the send manager's failover, so a public RPC failure is
+    // never counted against (or retried with) the relay.
+    const token =
+      actionSlug === "transfer-token"
+        ? await readTransferToken(config, rpcManager, chainId)
+        : undefined;
+    if (token instanceof NextResponse) {
+      return token;
+    }
 
     const result = await rpcManager.executeWithFailover(async (provider) => {
+      if (token) {
+        return await estimateTransferToken(
+          config,
+          provider,
+          walletAddress,
+          token
+        );
+      }
       switch (actionSlug) {
         case "transfer-funds":
           return await estimateTransferFunds(config, provider, walletAddress);
-        case "transfer-token":
-          return await estimateTransferToken(config, provider, walletAddress);
         case "write-contract":
           return await estimateWriteContract(config, provider, walletAddress);
         case "batch-write-contract":

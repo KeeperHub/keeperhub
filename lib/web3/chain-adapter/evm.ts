@@ -1,17 +1,26 @@
-import { ethers } from "ethers";
+import { ethers, isError } from "ethers";
 import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
 import { logWarn } from "@/lib/logging";
 import type { RpcProviderManager } from "@/lib/rpc/providers";
-import { sleep } from "@/lib/sleep";
 import { getErrorMessage } from "@/lib/utils";
+import { decodeRevertReason } from "@/lib/web3/decode-revert-error";
+import { fixedGasLimit } from "@/lib/web3/gas-defaults";
+import {
+  assertGasLimitFits,
+  GasLimitTooLowError,
+  hasOutOfGasEvidence,
+  nodeMessageOf,
+} from "@/lib/web3/gas-limit-error";
 import {
   isOnChainPendingError,
+  minedRevertError,
   OnChainPendingError,
   OnChainRevertError,
 } from "@/lib/web3/onchain-revert";
-import { RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
+import { pollReceipt, RECEIPT_WAIT_TIMEOUT_MS } from "@/lib/web3/receipt-wait";
 import {
   type BroadcastInfo,
+  type SendReport,
   submitSignedTransactionWithFailover,
 } from "@/lib/web3/submit-signed";
 import type { AdaptiveGasStrategy, GasConfig } from "../gas-strategy";
@@ -40,6 +49,95 @@ import type {
 const TEMPO_CHAIN_IDS = new Set<number>([4217, 42_431]);
 const TEMPO_RECEIPT_TIMEOUT_MS = 60_000;
 const TEMPO_RECEIPT_POLL_INTERVAL_MS = 1500;
+
+type PreflightOverrides = { gasLimit?: bigint; blockTag?: number };
+type LatestBlock = { number: number; gasLimit: bigint };
+
+const MISSING_BLOCK_PATTERN =
+  /header not found|unknown block|block (?:\S+ )?not found|beyond the current head/i;
+
+type Probe = (overrides: PreflightOverrides) => Promise<unknown>;
+
+/**
+ * The Latest-mode revert check, run under a fixed Gas Limit when one is set,
+ * all at one pinned block.
+ * - Through a private relay, which refuses eth_call, the probe is
+ *   eth_estimateGas; with no fixed limit the send's own estimate is the check.
+ * - Above the network's limit (2^24 on Ethereum L1, else the block's limit): too high.
+ * - A capped failure with out-of-gas evidence (revert data, or the node's
+ *   out-of-gas words) is retried uncapped (a real revert throws there), then
+ *   capped again: failing again means too low.
+ * - Any other failure is the node's own error, thrown unchanged.
+ */
+async function preflightCall(
+  fixed: bigint | undefined,
+  probes: { relay: boolean; call: Probe; estimate: Probe },
+  check: {
+    chainId: number;
+    latestBlock: () => Promise<LatestBlock>;
+    contractInterface?: ethers.Interface;
+  }
+): Promise<void> {
+  if (probes.relay && fixed === undefined) {
+    return;
+  }
+  const call = probes.relay ? probes.estimate : probes.call;
+  if (fixed === undefined) {
+    await call({});
+    return;
+  }
+  const block = await check.latestBlock();
+  assertGasLimitFits(fixed, check.chainId, block.gasLimit);
+  // A load-balanced RPC may not have the pinned block yet: try latest once.
+  const pinned = (overrides: PreflightOverrides): Promise<unknown> =>
+    call({ ...overrides, blockTag: block.number }).catch((error: unknown) => {
+      if (!MISSING_BLOCK_PATTERN.test(nodeMessageOf(error))) {
+        throw error;
+      }
+      return call(overrides);
+    });
+  const cappedRun = async (): Promise<unknown> => {
+    try {
+      await pinned({ gasLimit: fixed });
+      return;
+    } catch (error) {
+      if (!(isError(error, "CALL_EXCEPTION") && hasOutOfGasEvidence(error))) {
+        throw error;
+      }
+      return error;
+    }
+  };
+  if ((await cappedRun()) === undefined) {
+    return;
+  }
+  await pinned({});
+  // Passing now means the first failure was a one-off node answer.
+  const again = await cappedRun();
+  if (again !== undefined) {
+    throw new GasLimitTooLowError(
+      fixed,
+      { revertedWith: decodeRevertReason(again, check.contractInterface) },
+      { cause: again }
+    );
+  }
+}
+
+/** eth_estimateGas at a pinned block; ethers' estimateGas drops the tag. */
+async function estimateGasAt(
+  p: ethers.Provider,
+  tx: ethers.TransactionRequest,
+  blockTag: number | undefined
+): Promise<bigint> {
+  if (blockTag === undefined || !(p instanceof ethers.JsonRpcApiProvider)) {
+    return p.estimateGas(tx);
+  }
+  return BigInt(
+    await p.send("eth_estimateGas", [
+      p.getRpcTransaction(tx),
+      ethers.toQuantity(blockTag),
+    ])
+  );
+}
 
 export class EvmChainAdapter implements ChainAdapter {
   readonly chainFamily = "evm";
@@ -75,24 +173,44 @@ export class EvmChainAdapter implements ChainAdapter {
       data: request.data,
     };
 
-    if (options.rpcManager) {
-      await options.rpcManager.executeWithFailover(
-        (rpcProvider) => rpcProvider.call({ ...baseTx, from: walletAddress }),
-        "preflight"
-      );
-    } else {
-      await provider.call({ ...baseTx, from: walletAddress });
-    }
+    const fixed = fixedGasLimit(options.gasOverrides.gasLimitOverride);
+    const run = <T>(
+      probe: (p: ethers.Provider, tx: ethers.TransactionRequest) => Promise<T>,
+      overrides: PreflightOverrides
+    ): Promise<T> => {
+      const preflightTx = { ...baseTx, from: walletAddress, ...overrides };
+      return options.rpcManager
+        ? options.rpcManager.executeWithFailover(
+            (rpcProvider) => probe(rpcProvider, preflightTx),
+            "preflight"
+          )
+        : probe(provider, preflightTx);
+    };
+    const estimate = ({
+      blockTag,
+      ...rest
+    }: PreflightOverrides): Promise<bigint> =>
+      run((p, tx) => estimateGasAt(p, tx, blockTag), rest);
+    await preflightCall(
+      fixed,
+      {
+        relay: options.rpcManager?.hasPrivateRelayPrimary() === true,
+        call: (overrides) => run((p, tx) => p.call(tx), overrides),
+        estimate,
+      },
+      {
+        chainId: this.chainId,
+        latestBlock: () => this.latestBlock(provider, options),
+      }
+    );
 
     const nonce = this.nonceManager.getNextNonce(session);
 
-    const estimatedGas = options.rpcManager
-      ? await options.rpcManager.executeWithFailover(
-          (rpcProvider) =>
-            rpcProvider.estimateGas({ ...baseTx, from: walletAddress }),
-          "preflight"
-        )
-      : await provider.estimateGas({ ...baseTx, from: walletAddress });
+    // A fixed Gas Limit is used as is, so no estimate is needed.
+    let estimatedGas: bigint | undefined;
+    if (fixed === undefined) {
+      estimatedGas = await estimate({});
+    }
 
     const gasConfig = await this.gasStrategy.getGasConfig(
       provider,
@@ -128,7 +246,8 @@ export class EvmChainAdapter implements ChainAdapter {
         await submitSignedTransactionWithFailover(
           signer,
           txRequest,
-          options.rpcManager
+          options.rpcManager,
+          options.sendReport
         )
       ).response;
     } else {
@@ -172,14 +291,19 @@ export class EvmChainAdapter implements ChainAdapter {
 
     const signerAddress = await signer.getAddress();
 
-    let estimatedGas: bigint;
+    const fixed = fixedGasLimit(options.gasOverrides.gasLimitOverride);
+    let estimatedGas: bigint | undefined;
     let simulation: NextBlockSimulation | undefined;
     if (options.simulation) {
       if (!options.rpcManager) {
         throw new Error("Next-block simulation requires an RPC manager");
       }
+      // The estimate with block overrides is the revert check here, so it runs
+      // even with a fixed Gas Limit, and fails when the limit is below it.
       const simulated = await simulateSendAtNextBlock(options.rpcManager, {
         chainId: this.chainId,
+        gasLimit: fixed,
+        contractInterface: contract.interface,
         tx: {
           from: signerAddress,
           to: request.contractAddress,
@@ -198,33 +322,65 @@ export class EvmChainAdapter implements ChainAdapter {
         ...(request.value ? { value: request.value } : {}),
         from: signerAddress,
       };
-      if (options.rpcManager) {
-        await options.rpcManager.executeWithFailover((rpcProvider) => {
-          const readContract = new ethers.Contract(
-            request.contractAddress,
-            request.abi,
-            rpcProvider
+      const run = <T>(
+        probe: (
+          method: ethers.BaseContractMethod,
+          p: ethers.Provider
+        ) => Promise<T>
+      ): Promise<T> =>
+        options.rpcManager
+          ? options.rpcManager.executeWithFailover(
+              (rpcProvider) =>
+                probe(
+                  new ethers.Contract(
+                    request.contractAddress,
+                    request.abi,
+                    rpcProvider
+                  ).getFunction(request.functionKey),
+                  rpcProvider
+                ),
+              "preflight"
+            )
+          : probe(fn, provider);
+      const estimate = ({
+        blockTag,
+        ...rest
+      }: PreflightOverrides): Promise<bigint> =>
+        run(async (method, p) => {
+          const overrides = { ...callOverrides, ...rest };
+          if (blockTag === undefined) {
+            return method.estimateGas(...request.args, overrides);
+          }
+          const tx = await method.populateTransaction(
+            ...request.args,
+            overrides
           );
-          return readContract
-            .getFunction(request.functionKey)
-            .staticCall(...request.args, callOverrides);
-        }, "preflight");
-      } else {
-        await fn.staticCall(...request.args, callOverrides);
-      }
+          return estimateGasAt(p, tx, blockTag);
+        });
+      await preflightCall(
+        fixed,
+        {
+          relay: options.rpcManager?.hasPrivateRelayPrimary() === true,
+          call: (overrides) =>
+            run((method) =>
+              method.staticCall(...request.args, {
+                ...callOverrides,
+                ...overrides,
+              })
+            ),
+          estimate,
+        },
+        {
+          chainId: this.chainId,
+          latestBlock: () => this.latestBlock(provider, options),
+          contractInterface: contract.interface,
+        }
+      );
 
-      estimatedGas = options.rpcManager
-        ? await options.rpcManager.executeWithFailover((rpcProvider) => {
-            const readContract = new ethers.Contract(
-              request.contractAddress,
-              request.abi,
-              rpcProvider
-            );
-            return readContract
-              .getFunction(request.functionKey)
-              .estimateGas(...request.args, callOverrides);
-          }, "preflight")
-        : await fn.estimateGas(...request.args, callOverrides);
+      // A fixed Gas Limit is used as is, so no estimate is needed.
+      if (fixed === undefined) {
+        estimatedGas = await estimate({});
+      }
     }
 
     // A failure after a passed next-block check (broadcast, confirm, on-chain
@@ -271,6 +427,7 @@ export class EvmChainAdapter implements ChainAdapter {
           signer,
           txRequest,
           options.rpcManager,
+          options.sendReport,
           // Builders only for next-block sends, where the block matters.
           simulation ? { builderRpcUrls: options.builderRpcUrls } : {}
         );
@@ -304,6 +461,22 @@ export class EvmChainAdapter implements ChainAdapter {
     } catch (error) {
       throw simulation ? tagNextBlockSimulation(error, simulation) : error;
     }
+  }
+
+  private async latestBlock(
+    provider: ethers.Provider,
+    options: TransactionOptions
+  ): Promise<LatestBlock> {
+    const block = options.rpcManager
+      ? await options.rpcManager.executeWithFailover(
+          (rpcProvider) => rpcProvider.getBlock("latest"),
+          "read"
+        )
+      : await provider.getBlock("latest");
+    if (!block) {
+      throw new Error("The RPC returned no latest block");
+    }
+    return { number: block.number, gasLimit: block.gasLimit };
   }
 
   async readContract(
@@ -408,24 +581,15 @@ export class EvmChainAdapter implements ChainAdapter {
       return provider.getTransactionReceipt(tx.hash);
     };
 
-    const deadline = Date.now() + TEMPO_RECEIPT_TIMEOUT_MS;
-    let lastReadError: unknown;
-    while (Date.now() < deadline) {
-      let receipt: ethers.TransactionReceipt | null = null;
-      try {
-        receipt = await fetchReceipt();
-        lastReadError = undefined;
-      } catch (error) {
-        // A transient read failure is post-broadcast, but it should not throw
-        // away the rest of the confirmation window. Keep polling until the
-        // deadline; only the exhausted case below settles as pending.
-        lastReadError = error;
-      }
-      if (receipt) {
-        return receipt;
-      }
-      await sleep(TEMPO_RECEIPT_POLL_INTERVAL_MS);
+    // A failed read is post-broadcast: it keeps polling until the deadline.
+    const outcome = await pollReceipt(fetchReceipt, {
+      timeoutMs: TEMPO_RECEIPT_TIMEOUT_MS,
+      intervalMs: TEMPO_RECEIPT_POLL_INTERVAL_MS,
+    });
+    if (outcome.receipt) {
+      return outcome.receipt;
     }
+    const { lastReadError } = outcome;
     // The poll ran out of time, but the transaction is on the network: the
     // same unknown-not-failed case as an empty receipt in confirmTransaction
     // below. The hash rides on the error rather than living only in the
@@ -483,10 +647,13 @@ export class EvmChainAdapter implements ChainAdapter {
       if (code === "CALL_EXCEPTION") {
         const reverted = (error as { receipt?: ethers.TransactionReceipt })
           .receipt;
+        // The mined receipt goes back so the caller's status check settles it.
+        if (reverted) {
+          return reverted;
+        }
         throw new OnChainRevertError({
-          message: `Transaction ${reverted?.hash ?? tx.hash} reverted on-chain (${getErrorMessage(error)})`,
-          transactionHash: reverted?.hash ?? tx.hash,
-          blockNumber: reverted?.blockNumber,
+          message: `Transaction ${tx.hash} reverted on-chain (${getErrorMessage(error)})`,
+          transactionHash: tx.hash,
         });
       }
 
@@ -557,6 +724,7 @@ export class EvmChainAdapter implements ChainAdapter {
     gasConfig: GasConfig,
     options: TransactionOptions
   ): Promise<TransactionReceipt> {
+    const report: SendReport = options.sendReport ?? {};
     await this.nonceManager.recordTransaction(
       session,
       nonce,
@@ -581,16 +749,17 @@ export class EvmChainAdapter implements ChainAdapter {
         transactionHash: tx.hash,
       });
     }
+    report.included = true;
     // ethers v6 wait() throws CALL_EXCEPTION on reverts it can detect, but
     // that detection is provider-dependent; a tx that passed the staticCall
     // preflight and reverted only at inclusion time can still resolve here.
     // status 0 is authoritative: never report a reverted tx as confirmed.
     if (receipt.status === 0) {
-      throw new OnChainRevertError({
-        message: `Transaction ${receipt.hash} reverted on-chain (status 0, block ${receipt.blockNumber})`,
-        transactionHash: receipt.hash,
-        blockNumber: receipt.blockNumber,
-      });
+      throw minedRevertError(
+        receipt,
+        gasConfig.gasLimit,
+        fixedGasLimit(options.gasOverrides.gasLimitOverride) !== undefined
+      );
     }
 
     await this.nonceManager.confirmTransaction(tx.hash);

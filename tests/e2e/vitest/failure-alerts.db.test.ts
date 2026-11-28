@@ -13,6 +13,7 @@ import {
   member,
   organization,
   orgFailureAlertSettings,
+  pendingTransactions,
   securityAuditLog,
   users,
   workflowExecutions,
@@ -321,6 +322,7 @@ async function addRun(
     | "success"
     | "error"
     | "skipped"
+    | "not_landed"
     | "system_error"
     | "phantom"
     | "pending",
@@ -556,6 +558,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
     setEnv("SENDGRID_API_URL", `http://127.0.0.1:${port}/v3/mail/send`);
     setEnv("SENDGRID_API_KEY", "stub-key");
     setEnv("FAILURE_ALERTS_ROLLOUT", "orgs:");
+    // The not-landing alert is read only where bundles are on.
+    setEnv("BUNDLE_SEND_ROLLOUT", "all");
     setEnv("NEXT_PUBLIC_BILLING_ENABLED", "true");
     setEnv(
       "INTEGRATION_ENCRYPTION_KEY",
@@ -622,7 +626,7 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(row?.countingSince).toBeTruthy();
     });
 
-    it("does not open an incident at 2 automated failures (manual, skipped and system errors do not count)", async () => {
+    it("does not open an incident at 2 automated failures (manual, skipped, not landed and system errors do not count)", async () => {
       for (let i = 0; i < 2; i++) {
         await addRun(acme, wf, "error", { at: at(-5 + i * 0.5) });
       }
@@ -633,6 +637,8 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       });
       await addRun(acme, wf, "skipped", { at: at(-2) });
       await addRun(acme, wf, "system_error", { at: at(-1.5) });
+      // Neither counts nor resets: the next failure still opens the incident.
+      await addRun(acme, wf, "not_landed", { at: at(-1.2) });
       await runCycle();
       expect(await openIncident(wf)).toBeUndefined();
     });
@@ -3658,6 +3664,63 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(after.triggersOff).toEqual([]);
     });
 
+    it("queues the alert check on a not landed run through its own trigger", async () => {
+      const org = await makeOrg("notlandedtrigger");
+      const inserted = await makeWorkflow(org, "notlandedtrigger-insert");
+      const updated = await makeWorkflow(org, "notlandedtrigger-update");
+      const queued = async (workflowId: string): Promise<boolean> => {
+        const [row] = await db
+          .select({ fedAt: workflowFailureAlertQueue.fedAt })
+          .from(workflowFailureAlertQueue)
+          .where(eq(workflowFailureAlertQueue.workflowId, workflowId));
+        return row?.fedAt != null;
+      };
+      // The original trigger keeps its old condition; the new one has only not_landed.
+      const defs = [
+        ...(await db.execute<{ name: string; def: string }>(
+          sql`SELECT tgname AS name, pg_get_triggerdef(oid) AS def FROM pg_trigger
+            WHERE tgrelid = 'public.workflow_executions'::regclass
+              AND tgname IN ('queue_alert_check', 'queue_alert_check_not_landed')
+            ORDER BY tgname`
+        )),
+      ];
+      expect(defs.map((d) => d.name)).toEqual([
+        "queue_alert_check",
+        "queue_alert_check_not_landed",
+      ]);
+      expect(defs[0]?.def).toContain(
+        "WHEN ((new.status = ANY (ARRAY['success'::text, 'error'::text, 'skipped'::text])))"
+      );
+      expect(defs[1]?.def).toContain(
+        "WHEN ((new.status = 'not_landed'::text))"
+      );
+
+      await addRun(org, inserted, "not_landed");
+      expect(await queued(inserted)).toBe(true);
+
+      await addRun(org, updated, "pending");
+      expect(await queued(updated)).toBe(false);
+      await db
+        .update(workflowExecutions)
+        .set({ status: "not_landed" })
+        .where(eq(workflowExecutions.workflowId, updated));
+      expect(await queued(updated)).toBe(true);
+
+      await db.execute(
+        sql`ALTER TABLE workflow_executions DISABLE TRIGGER queue_alert_check_not_landed`
+      );
+      try {
+        const report = await watchdog.checkFailureAlertsRunning();
+        expect(report.triggersOff).toEqual([
+          "workflow_executions.queue_alert_check_not_landed",
+        ]);
+      } finally {
+        await db.execute(
+          sql`ALTER TABLE workflow_executions ENABLE TRIGGER queue_alert_check_not_landed`
+        );
+      }
+    });
+
     it("sees a run trigger that stopped feeding the queue, even while other rows are claimed", async () => {
       const org = await makeOrg("heartbeat");
       const workflowId = await makeWorkflow(org, "heartbeat");
@@ -4244,6 +4307,23 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       expect(incident?.lastError).toBeNull();
     });
 
+    it("a skip with no category (expired signal, previous run still running) is not a refusal", async () => {
+      const org = await countingOrg("uncategorisedskip");
+      const wf = await makeWorkflow(org, "Uncategorised skip");
+      await addSchedule(wf);
+      await refusedRun(org, wf, -1, {
+        error:
+          "Pyth signal expired or its trigger configuration changed before dispatch.",
+        errorCategory: null,
+        errorType: null,
+      });
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("missed");
+      expect(incident?.lastFailedExecutionId).toBeNull();
+      expect(incident?.lastError).toBeNull();
+    });
+
     it("an open not-running incident takes the newest refusal, and a plain one becomes refused", async () => {
       const org = await countingOrg("newrefusal");
       const wf = await makeWorkflow(org, "Newer refusal");
@@ -4378,6 +4458,61 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
       await unpaid(org, wf, -2);
       await runCycle();
       expect(await openIncident(wf)).toBeUndefined();
+    });
+
+    it("not landed runs take no slot in the streak window: errors around more of them than the window still open an incident", async () => {
+      const org = await countingOrg("notlandedwindow");
+      const wf = await makeWorkflow(org, "Mostly not landed");
+      await addRun(org, wf, "error", { at: at(-30) });
+      for (let i = 0; i < 13; i++) {
+        await addRun(org, wf, "not_landed", { at: at(-29 + i) });
+      }
+      await addRun(org, wf, "error", { at: at(-10) });
+      for (let i = 0; i < 13; i++) {
+        await addRun(org, wf, "not_landed", { at: at(-9 + i * 0.5) });
+      }
+      await addRun(org, wf, "error", { at: at(-1) });
+      await runCycle();
+      expect((await openIncident(wf))?.failureCount).toBe(3);
+    });
+
+    it("a not landed run between two refusals breaks the pair: it was accepted", async () => {
+      const org = await countingOrg("refusednotlanded");
+      const wf = await makeWorkflow(
+        org,
+        "Refused around not landed",
+        "Webhook"
+      );
+      await unpaid(org, wf, -4);
+      await addRun(org, wf, "not_landed", { at: at(-3), source: "webhook" });
+      await unpaid(org, wf, -2);
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+    });
+
+    it("accepted again with every run not landed: the refused incident closes once, and no new one opens and closes in a loop", async () => {
+      const org = await countingOrg("refusedthennotlanded");
+      const wf = await makeWorkflow(org, "Refused then missing", "Webhook");
+      await unpaid(org, wf, -10);
+      await unpaid(org, wf, -9);
+      await runCycle();
+      const first = await openIncident(wf);
+      expect(first?.openedBy).toBe("refused");
+
+      await addRun(org, wf, "not_landed", { at: at(-5), source: "webhook" });
+      await runCycle();
+      await addRun(org, wf, "not_landed", { at: at(-4), source: "webhook" });
+      await runCycle();
+      await runCycle();
+
+      expect(await openIncident(wf)).toBeUndefined();
+      expect((await incidentById(first?.id))?.resolvedReason).toBe("ran");
+      const all = await db
+        .select({ id: workflowFailureIncidents.id })
+        .from(workflowFailureIncidents)
+        .where(eq(workflowFailureIncidents.workflowId, wf));
+      expect(all).toHaveLength(1);
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
     });
 
     it("an accepted run closes it; the recovery waits out the hold and says runs are accepted again", async () => {
@@ -4732,6 +4867,212 @@ describe.skipIf(SKIP)("workflow failure alerts (real Postgres)", () => {
         .from(workflowFailureIncidents)
         .where(eq(workflowFailureIncidents.workflowId, wf));
       expect(all.map((row) => row.openedBy)).toEqual(["missed"]);
+    });
+
+    const notLanded = async (
+      org: Org,
+      wf: string,
+      count: number,
+      from: number
+    ): Promise<void> => {
+      for (let i = 0; i < count; i++) {
+        await addRun(org, wf, "not_landed", { at: at(from + i * 0.5) });
+      }
+    };
+
+    it("bundles not landing: N not landed runs in a row open their own alert, more keep counting, a success resolves it", async () => {
+      const org = await countingOrg("notlanding");
+      const wf = await makeWorkflow(org, "Bundles missing");
+      await addRun(org, wf, "success", { at: at(-20) });
+      await notLanded(org, wf, 2, -10);
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+
+      await notLanded(org, wf, 1, -5);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident).toMatchObject({
+        openedBy: "not_landing",
+        failureCount: 3,
+      });
+      const alert = mailsAbout(org, "Bundles missing").at(-1);
+      expect(alert?.subject).toContain(
+        "bundles have not landed in the last 3 runs"
+      );
+      expect(alert?.text).toContain(
+        "A higher tip (Priority Fee or the tip increase) or more builders can help."
+      );
+
+      await notLanded(org, wf, 1, -3);
+      const before = mailsTo(org).length;
+      await runCycle();
+      expect(mailsTo(org)).toHaveLength(before);
+      expect((await openIncident(wf))?.failureCount).toBe(4);
+
+      await addRun(org, wf, "success", { at: at(-1) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      expect((await incidentById(incident?.id))?.resolvedReason).toBe(
+        "success"
+      );
+      // That success sent no bundle: the recovery does not say bundles land again.
+      const recovery = (await deliveriesOf(org.orgId)).find(
+        (d) => d.kind === "recovery"
+      );
+      expect(recovery).toBeDefined();
+      expect(recovery?.context?.bundleLanded).toBeUndefined();
+    });
+
+    const runsOldestFirst = async (wf: string): Promise<string[]> =>
+      (
+        await db
+          .select({ id: workflowExecutions.id })
+          .from(workflowExecutions)
+          .where(eq(workflowExecutions.workflowId, wf))
+          .orderBy(workflowExecutions.startedAt)
+      ).map((row) => row.id);
+
+    const resettle = async (id: string | undefined): Promise<void> => {
+      await db
+        .update(workflowExecutions)
+        .set({ status: "success", error: null })
+        .where(eq(workflowExecutions.id, id ?? ""));
+    };
+
+    it("bundles not landing: a late landing of an older run keeps it open; of the newest run, resolves it", async () => {
+      const org = await countingOrg("notlandinglate");
+      const wf = await makeWorkflow(org, "Bundles late");
+      await notLanded(org, wf, 3, -10);
+      await runCycle();
+      const incident = await openIncident(wf);
+      expect(incident?.openedBy).toBe("not_landing");
+      const ids = await runsOldestFirst(wf);
+      // The oldest is mined later; the newer two still missed.
+      await resettle(ids[0]);
+      await runCycle();
+      expect((await openIncident(wf))?.id).toBe(incident?.id);
+      // The newest is mined later too (4a's re-settle): bundles land again.
+      await resettle(ids.at(-1));
+      // Its own hash was mined, though a later run sent at the nonce since.
+      const mined = `0x${"cd".repeat(32)}`;
+      await db.insert(pendingTransactions).values({
+        walletAddress: nextId("wallet_"),
+        chainId: 1,
+        nonce: 7,
+        txHash: mined,
+        executionId: nextId("later_run_"),
+        workflowId: wf,
+        status: "confirmed",
+        lastTargetBlock: 100,
+        bundleRuns: [
+          { executionId: ids.at(-1) ?? "", hashes: [mined], signedAt: 1 },
+        ],
+      });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+      expect((await incidentById(incident?.id))?.resolvedReason).toBe(
+        "success"
+      );
+      const recovery = (await deliveriesOf(org.orgId)).find(
+        (d) => d.kind === "recovery"
+      );
+      expect(recovery?.context).toMatchObject({ bundleLanded: true });
+    });
+
+    it("bundles not landing again inside the hold continues the same incident and withdraws its recovery", async () => {
+      const org = await countingOrg("notlandingflap");
+      const wf = await makeWorkflow(org, "Bundles flapping");
+      await notLanded(org, wf, 3, -20);
+      await runCycle();
+      const first = await openIncident(wf);
+      expect(first?.openedBy).toBe("not_landing");
+
+      await addRun(org, wf, "success", { at: at(-8) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+
+      await notLanded(org, wf, 3, -5);
+      await runCycle();
+      const again = await openIncident(wf);
+      expect(again?.id).toBe(first?.id);
+      expect(again?.openedBy).toBe("not_landing");
+      const recoveries = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "recovery"
+      );
+      expect(recoveries.every((d) => d.state === "skipped")).toBe(true);
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
+      expect(await sentEmails(org, "recovery")).toHaveLength(0);
+    });
+
+    it("one bundle not landing after the close, inside the hold, reopens it and withdraws the recovery", async () => {
+      const org = await countingOrg("notlandingone");
+      const wf = await makeWorkflow(org, "Bundles landing now and then");
+      await notLanded(org, wf, 3, -20);
+      await runCycle();
+      const first = await openIncident(wf);
+      expect(first?.openedBy).toBe("not_landing");
+
+      await addRun(org, wf, "success", { at: at(-8) });
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
+
+      // One miss, under the threshold: only the hold reopens the incident.
+      await notLanded(org, wf, 1, -5);
+      await runCycle();
+      const again = await openIncident(wf);
+      expect(again?.id).toBe(first?.id);
+      const recoveries = (await deliveriesOf(org.orgId)).filter(
+        (d) => d.kind === "recovery"
+      );
+      expect(recoveries.every((d) => d.state === "skipped")).toBe(true);
+      expect(await sentEmails(org, "alert")).toHaveLength(1);
+      expect(await sentEmails(org, "recovery")).toHaveLength(0);
+    });
+
+    it("bundles not landing: no extra read and no alert where bundles are off", async () => {
+      const org = await countingOrg("notlandingoff");
+      const wf = await makeWorkflow(org, "Bundles off");
+      setEnv("BUNDLE_SEND_ROLLOUT", "off");
+      try {
+        await notLanded(org, wf, 3, -10);
+        await runCycle();
+        expect(await openIncident(wf)).toBeUndefined();
+      } finally {
+        setEnv("BUNDLE_SEND_ROLLOUT", "all");
+      }
+    });
+
+    it("bundles not landing never counts toward or resets the failure streak: errors around it still open a failure alert", async () => {
+      const org = await countingOrg("notlandingerrors");
+      const wf = await makeWorkflow(org, "Bundles and errors");
+      await addFailures(org, wf, 2, -20);
+      await notLanded(org, wf, 3, -10);
+      await runCycle();
+      const notLanding = await openIncident(wf);
+      expect(notLanding?.openedBy).toBe("not_landing");
+
+      // A failure ends the not-landing alert; with the two before it, the failure alert opens.
+      await addRun(org, wf, "error", { at: at(-1) });
+      await runCycle();
+      expect((await incidentById(notLanding?.id))?.resolvedReason).toBe("ran");
+      expect(await openIncident(wf)).toMatchObject({
+        openedBy: "count",
+        failureCount: 3,
+      });
+    });
+
+    it("bundles not landing: a person's not landed runs do not count", async () => {
+      const org = await countingOrg("notlandingmanual");
+      const wf = await makeWorkflow(org, "Bundles by hand");
+      for (let i = 0; i < 3; i++) {
+        await addRun(org, wf, "not_landed", {
+          at: at(-10 + i),
+          source: "manual",
+          credential: "session",
+        });
+      }
+      await runCycle();
+      expect(await openIncident(wf)).toBeUndefined();
     });
   });
   describe("pause safeguards", { timeout: SUITE_TIMEOUT }, () => {

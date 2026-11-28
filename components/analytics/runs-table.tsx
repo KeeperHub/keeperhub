@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { MouseEvent, ReactNode } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { parseWei } from "@/lib/analytics/format-gas";
 import { buildRunsQuery, runsPageCount } from "@/lib/analytics/runs-query";
 import {
   normalizeRunsResponse,
@@ -50,6 +51,10 @@ import {
 } from "@/lib/atoms/analytics";
 import { authClient } from "@/lib/auth-client";
 import { getCustomerRunErrorMessage } from "@/lib/errors/customer-message";
+import {
+  NOT_LANDED_LATER,
+  SKIPPED_BILLING_TEXT,
+} from "@/lib/errors/execution-status";
 import type { ChainDisplay } from "@/lib/hooks/use-chain-display";
 import {
   ChainDisplayProvider,
@@ -59,6 +64,18 @@ import {
 import { useCopiedFlag } from "@/lib/hooks/use-copied-flag";
 import { CHANNEL_LABEL } from "@/lib/notifications/failure-alerts/view-types";
 import { cn } from "@/lib/utils";
+import {
+  NOT_MINED_YET_TEXT,
+  PUBLIC_COPY_DROPPED_NEXT_STEP,
+} from "@/lib/workflow/executor/run-outcome-keys";
+import {
+  groupWaitingRuns,
+  type WaitingGroup,
+  waitingChipText,
+  waitingDetails,
+  waitingRowLine,
+  waitingRowTitle,
+} from "@/lib/workflow/waiting-run-groups";
 import { ProjectDrawer } from "./project-drawer";
 
 const LEADING_ZEROS_RE = /^0+(?=\d)/;
@@ -183,9 +200,12 @@ function composedGasNetworks(run: UnifiedRun): string[] {
 function ComposedGasCell({
   chains,
   run,
+  grouped,
 }: {
   chains: ChainDisplay;
   run: UnifiedRun;
+  // A waiting row's sum over its runs, which cannot be expanded one by one.
+  grouped: boolean;
 }): ReactNode {
   const names = CHAIN_LIST.format(composedGasNetworks(run).map(chains.name));
   return (
@@ -196,7 +216,9 @@ function ComposedGasCell({
         </span>
       </TooltipTrigger>
       <TooltipContent className={cn(TOOLTIP_SURFACE, "max-w-xs text-left")}>
-        {`This run spent gas on ${names}. Those networks have different native tokens, so there is no single total to show. Expand the run for the amount on each.`}
+        {grouped
+          ? `These runs spent gas on ${names}. Those networks have different native tokens, so there is no single total to show.`
+          : `This run spent gas on ${names}. Those networks have different native tokens, so there is no single total to show. Expand the run for the amount on each.`}
       </TooltipContent>
     </Tooltip>
   );
@@ -208,20 +230,50 @@ function ComposedGasCell({
 // ledger would drop the rest.
 export function runGasDisplay(
   run: UnifiedRun,
-  chains: ChainDisplay = FALLBACK_CHAIN_DISPLAY
+  chains: ChainDisplay = FALLBACK_CHAIN_DISPLAY,
+  grouped = false
 ): ReactNode {
   const wei = run.gasUsedWei ?? run.gasCostWei;
   if (!wei) {
     return NO_VALUE;
   }
   if (runGasComposed(run)) {
-    return <ComposedGasCell chains={chains} run={run} />;
+    return <ComposedGasCell chains={chains} grouped={grouped} run={run} />;
   }
   return formatGasNative(
     wei,
     run.gasNetworks[0] ?? run.networks[0] ?? run.network,
     chains
   );
+}
+
+/** A waiting row's gas: the group's runs summed, on the union of their gas chains. */
+function groupGasRun(runs: readonly UnifiedRun[]): UnifiedRun {
+  let total = BigInt(0);
+  const gasNetworks = new Set<string>();
+  const networks = new Set<string>();
+  for (const run of runs) {
+    const wei = parseWei(run.gasUsedWei ?? run.gasCostWei) ?? BigInt(0);
+    total += wei;
+    for (const network of run.networks) {
+      networks.add(network);
+    }
+    // A ledger-only leg names no gas chain, so it borrows the run's own.
+    const paidOn =
+      run.gasNetworks.length > 0 || wei === BigInt(0)
+        ? run.gasNetworks
+        : run.networks;
+    for (const network of paidOn) {
+      gasNetworks.add(network);
+    }
+  }
+  return {
+    ...runs[0],
+    gasUsedWei: total > BigInt(0) ? total.toString() : null,
+    gasCostWei: null,
+    gasNetworks: [...gasNetworks],
+    networks: [...networks],
+  };
 }
 
 function formatTimeAgo(dateString: string): string {
@@ -246,11 +298,12 @@ function formatTimeAgo(dateString: string): string {
   return `${days}d ago`;
 }
 
-// The four outcome badges a user cannot tell apart from the label alone. Each
+// The outcome badges a user cannot tell apart from the label alone. Each
 // one answers "whose fault is it and what do I do about it".
-const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
-  skipped:
-    "The trigger fired but the run was refused before it started. Either the monthly execution limit was reached, or the workflow uses an action your plan does not include, or a pay-as-you-go charge could not be collected. Nothing ran, so a skipped run is not a failure and does not count towards your success rate or your usage.",
+export const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
+  skipped: `The trigger fired but the run did not start (the monthly execution limit was reached, the workflow uses an action your plan does not include, or a pay-as-you-go charge could not be collected), a Block trigger set to skip while running found the previous run still going, a bundle step found an earlier run's bundle still in flight, or an earlier run's public copy not mined yet, and sent nothing (the run's other steps still ran, and may have sent transactions), or a bundle step is waiting because its Not before time is still too far ahead. Not a failure, and it does not count toward your success rate. ${SKIPPED_BILLING_TEXT}`,
+  running: `The run is still going, or a transaction was sent and ${NOT_MINED_YET_TEXT}`,
+  not_landed: `The run finished, but a bundle in it was not seen in any of its target blocks (or could not be checked), for example because no block builder picked it up or the call would have failed by then. ${NOT_LANDED_LATER} No gas is paid for a bundle that does not land. ${PUBLIC_COPY_DROPPED_NEXT_STEP} Not a failure and not a success, but it still counts toward your plan's runs.`,
   error:
     "The run started and failed on something in the workflow itself: bad input, a missing or invalid credential, or a 4xx from an endpoint you configured. Fix the workflow and run it again.",
   external_error:
@@ -261,10 +314,7 @@ const STATUS_TOOLTIPS: Partial<Record<NormalizedStatus, string>> = {
 
 function StatusBadge({ status }: { status: NormalizedStatus }): ReactNode {
   const badge = (
-    <Badge
-      className={cn("capitalize", STATUS_DISPLAY[status].badge)}
-      variant="outline"
-    >
+    <Badge className={STATUS_DISPLAY[status].badge} variant="outline">
       {STATUS_DISPLAY[status].label}
     </Badge>
   );
@@ -512,11 +562,34 @@ function ExpandedStepRows({
     );
   }
 
+  // A skipped or not landed run says why in `error`; it is not a failure.
+  const outcomeNote =
+    (run.status === "skipped" || run.status === "not_landed") && run.error
+      ? run.error
+      : null;
   if (steps.length > 0) {
-    return steps.map((step) => <StepLogRow key={step.id} step={step} />);
+    return (
+      <>
+        {outcomeNote && (
+          <tr>
+            <td
+              className="py-2 pl-10 pr-3 text-xs text-muted-foreground"
+              colSpan={8}
+            >
+              <span className="wrap-anywhere" data-testid="run-outcome-note">
+                {outcomeNote}
+              </span>
+            </td>
+          </tr>
+        )}
+        {steps.map((step) => (
+          <StepLogRow key={step.id} step={step} />
+        ))}
+      </>
+    );
   }
 
-  const errorMessage = getCustomerRunErrorMessage(run);
+  const errorMessage = getCustomerRunErrorMessage(run) ?? outcomeNote;
   return (
     <tr>
       <td className="py-2 pl-10 pr-3 text-xs text-muted-foreground" colSpan={8}>
@@ -618,30 +691,12 @@ function ExpandableRunRow({
         <td className="w-8 py-3 pl-3">
           <ChevronIcon className="size-4 text-muted-foreground" />
         </td>
-        <td className="py-3 pr-3">
-          <div className="flex items-center gap-1.5">
-            <span
-              className={cn(
-                "text-sm font-medium capitalize",
-                isDeleted && "italic text-muted-foreground line-through"
-              )}
-            >
-              {runName}
-            </span>
-            {run.source === "workflow" && run.workflowId && !isDeleted ? (
-              <a
-                aria-label={`Open ${runName} in a new tab`}
-                className="opacity-0 transition-opacity group-hover:opacity-100"
-                href={`/workflows/${run.workflowId}`}
-                onClick={(e) => e.stopPropagation()}
-                rel="noopener"
-                target="_blank"
-              >
-                <ExternalLink className="size-3.5 text-muted-foreground" />
-              </a>
-            ) : null}
-          </div>
-        </td>
+        <WorkflowNameCell
+          isDeleted={isDeleted}
+          name={runName}
+          source={run.source}
+          workflowId={run.workflowId}
+        />
         <td className="py-3 pr-3">
           <div className="flex flex-wrap items-center gap-1.5">
             <StatusBadge status={run.status} />
@@ -691,6 +746,204 @@ function ExpandableRunRow({
         />
       ) : null}
     </>
+  );
+}
+
+type WaitingGroupRowProps = {
+  group: WaitingGroup<UnifiedRun>;
+  expanded: boolean;
+  onToggle: () => void;
+  retentionCutoff?: string | null;
+};
+
+/** One row for back-to-back runs of a workflow that waited for the same Not before. */
+function WaitingGroupRow({
+  group,
+  expanded,
+  onToggle,
+  retentionCutoff,
+}: WaitingGroupRowProps): ReactNode {
+  const chains = useChainDisplay();
+  const latest = group.runs[0];
+  const [steps, setSteps] = useState<StepLog[]>([]);
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const [loadingSteps, setLoadingSteps] = useState(false);
+  const textOptions = { now: new Date(), numbered: false };
+
+  // The latest waiting run's steps, again once a newer run joins the row.
+  useEffect(() => {
+    if (!expanded || loadedFor === latest.id) {
+      return;
+    }
+    let cancelled = false;
+    setLoadingSteps(true);
+    fetch(`/api/analytics/runs/${latest.id}/steps`)
+      .then(async (response) =>
+        response.ok ? ((await response.json()) as StepLog[]) : []
+      )
+      .catch(() => [] as StepLog[])
+      .then((loaded) => {
+        if (!cancelled) {
+          setSteps(loaded);
+          setLoadedFor(latest.id);
+          setLoadingSteps(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, latest.id, loadedFor]);
+
+  const runName = latest.workflowName ?? "Unnamed Workflow";
+  const isDeleted = latest.workflowName === "(Deleted)";
+  const ChevronIcon = expanded ? ChevronDown : ChevronRight;
+  const gasRun = groupGasRun(group.runs);
+  // A total only names a single-chain amount, not "-" or Composed.
+  const gasTitle =
+    gasRun.gasUsedWei && !runGasComposed(gasRun)
+      ? `Total for the ${group.runs.length} ${group.runs.length === 1 ? "run" : "runs"} in this row`
+      : undefined;
+  return (
+    <>
+      <tr
+        className={cn(
+          "group cursor-pointer transition-colors hover:bg-muted/50",
+          expanded && "bg-muted/30"
+        )}
+        data-testid="analytics-waiting-group"
+        onClick={onToggle}
+        title={waitingRowTitle(group, textOptions)}
+      >
+        <td className="w-8 py-3 pl-3">
+          <button
+            aria-expanded={expanded}
+            aria-label={`${expanded ? "Collapse" : "Expand"} waiting runs of ${runName}`}
+            className="flex items-center rounded"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle();
+            }}
+            type="button"
+          >
+            <ChevronIcon className="size-4 text-muted-foreground" />
+          </button>
+        </td>
+        <WorkflowNameCell
+          isDeleted={isDeleted}
+          linkTestId="analytics-waiting-workflow-link"
+          name={runName}
+          source={latest.source}
+          workflowId={latest.workflowId}
+        >
+          <div className="font-mono text-muted-foreground text-xs">
+            {waitingRowLine(group, textOptions)}
+          </div>
+        </WorkflowNameCell>
+        <td className="py-3 pr-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <StatusBadge status={latest.status} />
+            <span
+              className="rounded-full border border-muted-foreground/50 bg-muted px-2 py-0.5 font-medium text-foreground text-xs"
+              data-testid="analytics-waiting-count"
+            >
+              {waitingChipText(group, "Waiting")}
+            </span>
+          </div>
+        </td>
+        <td className="py-3 pr-3">
+          <SourceBadge source={latest.source} />
+        </td>
+        <td className="py-3 pr-3 text-muted-foreground text-sm">{NO_VALUE}</td>
+        <td
+          className="whitespace-nowrap py-3 pr-3 text-muted-foreground text-sm"
+          data-testid="analytics-waiting-network"
+          title={latest.networks.map(chains.name).join(", ")}
+        >
+          {formatNetworks(latest.networks, chains)}
+        </td>
+        <td
+          className="whitespace-nowrap py-3 pr-3 text-muted-foreground text-sm"
+          data-testid="analytics-waiting-gas"
+          title={gasTitle}
+        >
+          {runGasDisplay(gasRun, chains, true)}
+        </td>
+        <td className="whitespace-nowrap py-3 pr-3 text-right text-muted-foreground text-sm">
+          {formatTimeAgo(latest.startedAt)}
+        </td>
+      </tr>
+      {expanded ? (
+        <>
+          <tr>
+            <td className="p-0" colSpan={8}>
+              {/* Pinned to the visible width of the scrolling table, so it wraps on a phone. */}
+              <div
+                className="sticky left-0 flex w-[100cqw] flex-col gap-1 py-2 pr-3 pl-10 text-muted-foreground text-xs"
+                data-testid="analytics-waiting-details"
+              >
+                {waitingDetails(group, textOptions).map((line) => (
+                  <span className="wrap-anywhere" key={line}>
+                    {line}
+                  </span>
+                ))}
+              </div>
+            </td>
+          </tr>
+          <ExpandedStepRows
+            loadingSteps={loadingSteps}
+            retentionCutoff={retentionCutoff}
+            run={{ ...latest, error: null }}
+            steps={steps}
+          />
+        </>
+      ) : null}
+    </>
+  );
+}
+
+/** The Name cell: the run's name and, for a workflow run, a link that opens it in a new tab. */
+function WorkflowNameCell({
+  name,
+  isDeleted,
+  source,
+  workflowId,
+  linkTestId,
+  children,
+}: {
+  name: string;
+  isDeleted: boolean;
+  source: UnifiedRun["source"];
+  workflowId: string | null;
+  linkTestId?: string;
+  children?: ReactNode;
+}): ReactNode {
+  return (
+    <td className="py-3 pr-3">
+      <div className="flex items-center gap-1.5">
+        <span
+          className={cn(
+            "font-medium text-sm capitalize",
+            isDeleted && "text-muted-foreground italic line-through"
+          )}
+        >
+          {name}
+        </span>
+        {source === "workflow" && workflowId && !isDeleted ? (
+          <a
+            aria-label={`Open ${name} in a new tab`}
+            className="opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
+            data-testid={linkTestId}
+            href={`/workflows/${workflowId}`}
+            onClick={(event) => event.stopPropagation()}
+            rel="noopener"
+            target="_blank"
+          >
+            <ExternalLink className="size-3.5 text-muted-foreground" />
+          </a>
+        ) : null}
+      </div>
+      {children}
+    </td>
   );
 }
 
@@ -762,7 +1015,8 @@ export function Pagination({
   );
 }
 
-function RunsTableContent({
+// Exported for the unit test of waiting-run grouping.
+export function RunsTableContent({
   loading,
   isEmpty,
   retentionCutoff,
@@ -775,6 +1029,23 @@ function RunsTableContent({
   runs: UnifiedRun[];
   pageLoading: boolean;
 }): ReactNode {
+  // Open waiting rows by state key, so a poll or a newer run keeps them open; a new page remounts this.
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const toggleGroup = useCallback((key: string): void => {
+    setOpenGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+  const entries = useMemo(() => groupWaitingRuns(runs, runs.length), [runs]);
+
   if (loading && isEmpty) {
     return <TableSkeleton />;
   }
@@ -788,7 +1059,9 @@ function RunsTableContent({
   }
 
   return (
-    <div className={cn("overflow-x-auto", pageLoading && "opacity-50")}>
+    <div
+      className={cn("@container overflow-x-auto", pageLoading && "opacity-50")}
+    >
       <table className="min-w-[700px] w-full text-left">
         <thead>
           <tr className="border-b text-xs text-muted-foreground">
@@ -803,13 +1076,23 @@ function RunsTableContent({
           </tr>
         </thead>
         <tbody>
-          {runs.map((run) => (
-            <ExpandableRunRow
-              key={run.id}
-              retentionCutoff={retentionCutoff}
-              run={run}
-            />
-          ))}
+          {entries.map((entry) =>
+            entry.kind === "waiting" ? (
+              <WaitingGroupRow
+                expanded={openGroups.has(entry.stateKey)}
+                group={entry}
+                key={`waiting-${entry.stateKey}`}
+                onToggle={() => toggleGroup(entry.stateKey)}
+                retentionCutoff={retentionCutoff}
+              />
+            ) : (
+              <ExpandableRunRow
+                key={entry.run.id}
+                retentionCutoff={retentionCutoff}
+                run={entry.run}
+              />
+            )
+          )}
         </tbody>
       </table>
     </div>
@@ -977,6 +1260,7 @@ export function RunsTable(): ReactNode {
           <CardContent>
             <RunsTableContent
               isEmpty={isEmpty}
+              key={currentPage}
               loading={loading}
               pageLoading={pageLoading}
               retentionCutoff={runsData?.stepLogRetentionCutoff}
