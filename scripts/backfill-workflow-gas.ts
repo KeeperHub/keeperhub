@@ -17,7 +17,7 @@
  * total counts that gas regardless of run status. Scoping to success would make
  * the backfilled column disagree with today's dashboard.
  *
- * The extraction uses the shared logOutputField builder, the same one the
+ * The extraction uses the shared logOutputWei builder, the same one the
  * executor writer and the /analytics reads use, so all three agree
  * value-for-value.
  *
@@ -39,7 +39,7 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { logOutputField } from "@/lib/db/execution-log-fields";
+import { logOutputWei } from "@/lib/db/execution-log-fields";
 import { workflowExecutions } from "@/lib/db/schema";
 import { isLocalDb } from "@/scripts/lib/local-db";
 
@@ -127,10 +127,10 @@ async function applyBatch(afterId: string, batchSize: number): Promise<number> {
     ), agg AS (
       SELECT
         workflow_execution_logs.execution_id AS execution_id,
-        SUM(CAST(${logOutputField("gasUsed")} AS NUMERIC)) AS gas_used_wei
+        SUM(${logOutputWei("gasUsed")}) AS gas_used_wei
       FROM workflow_execution_logs
       JOIN batch ON batch.id = workflow_execution_logs.execution_id
-      WHERE ${logOutputField("gasUsed")} IS NOT NULL
+      WHERE ${logOutputWei("gasUsed")} IS NOT NULL
       GROUP BY workflow_execution_logs.execution_id
     )
     UPDATE workflow_executions we
@@ -156,7 +156,7 @@ async function countBatch(afterId: string, batchSize: number): Promise<number> {
     SELECT COUNT(DISTINCT workflow_execution_logs.execution_id) AS n
     FROM workflow_execution_logs
     JOIN batch ON batch.id = workflow_execution_logs.execution_id
-    WHERE ${logOutputField("gasUsed")} IS NOT NULL
+    WHERE ${logOutputWei("gasUsed")} IS NOT NULL
       AND batch.gas_used_wei IS NULL
   `);
   // postgres-js: db.execute resolves to the rows array.

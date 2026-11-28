@@ -10,13 +10,14 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { logInputField, logOutputField } from "@/lib/db/execution-log-fields";
+import { logInputField, logOutputWei } from "@/lib/db/execution-log-fields";
 import { workflowExecutionLogs } from "@/lib/db/schema";
 
 export const DEFAULT_BATCH_SIZE = 1000;
 
 const networkExpr = logInputField("network");
-const gasExpr = logOutputField("gasUsed");
+// Non-numeric gas (a step's own output) reads as NULL instead of failing the batch.
+const gasExpr = logOutputWei("gasUsed");
 
 /**
  * A row still needs denormalising if either column is unset while the JSONB it
@@ -74,7 +75,7 @@ export async function applyBatch(
     SET network = COALESCE(workflow_execution_logs.network, ${networkExpr}),
         gas_used_wei = COALESCE(
           workflow_execution_logs.gas_used_wei,
-          CAST(${gasExpr} AS NUMERIC)
+          ${gasExpr}
         )
     FROM batch
     WHERE workflow_execution_logs.id = batch.id
