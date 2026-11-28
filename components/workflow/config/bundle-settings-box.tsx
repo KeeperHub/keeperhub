@@ -13,10 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { bundleTipsText } from "@/lib/web3/bundles/editor-text";
-import {
-  READ_ONLY_LIST_PLACE,
-  WAITING_BILLING_TEXT,
-} from "@/lib/workflow/waiting-run-groups";
+import { WAITING_RUN_COUNTS_TEXT } from "@/lib/workflow/waiting-run-groups";
 import {
   BUNDLE_FALLBACK,
   BUNDLE_SETTING_KEYS,
@@ -229,27 +226,9 @@ function FallbackSetting({
   );
 }
 
-const BUNDLE_DOCS_URL = "https://docs.keeperhub.com/plugins/web3#send-as-bundle";
-
-// The billing line, with its docs place linked to the Send as Bundle section.
-const [BILLING_BEFORE, BILLING_AFTER] =
-  WAITING_BILLING_TEXT.split(READ_ONLY_LIST_PLACE);
-
 const NOT_BEFORE_HINTS = [
   "Optional. The bundle never lands in a block before this time. Unix seconds, such as 1796126400, or a date with a time zone, such as 2026-12-01T12:00:00Z. Can be a template, such as {{Read Contract.result}}. Empty: sends for the next blocks.",
-  <>
-    A run that is too early sends nothing and ends Skipped (Waiting).{" "}
-    {BILLING_BEFORE}
-    <a
-      className="underline hover:text-primary"
-      href={BUNDLE_DOCS_URL}
-      rel="noopener noreferrer"
-      target="_blank"
-    >
-      {READ_ONLY_LIST_PLACE}
-    </a>
-    {BILLING_AFTER}
-  </>,
+  `A run that is too early sends nothing and ends Skipped (Waiting). ${WAITING_RUN_COUNTS_TEXT}`,
 ] as const;
 
 function isSetText(value: unknown): boolean {

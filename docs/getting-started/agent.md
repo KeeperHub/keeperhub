@@ -65,7 +65,7 @@ A run reaches one of these terminal states:
 | `error` | Failed from bad input, workflow logic, or an external dependency |
 | `system_error` | Failed inside KeeperHub infrastructure |
 | `cancelled` | Stopped before completing |
-| `skipped` | Refused before it started, skipped behind a run that was still going, or a Send as Bundle step sent no transaction because an earlier run's bundle could still land (other steps still ran). Counts towards your usage only in that last case |
+| `skipped` | Refused before it started, skipped behind a run that was still going, or a Send as Bundle step sent no transaction because an earlier run's bundle could still land or its Not before time was still too far ahead (other steps still ran). Counts towards your usage only in those last two cases |
 | `not_landed` | Finished, but a bundle in it was not seen in its target blocks. Neither a success nor a failure, and it still counts towards your usage. A bundle that could not be checked can still land within about a day (less for a workflow that sends very often from one wallet); then the run changes to `success`, or to `error` if the call reverted |
 
 `pending`, `running`, and `unconfirmed` are non-terminal. New statuses can be added, so decide when

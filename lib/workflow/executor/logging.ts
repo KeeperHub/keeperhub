@@ -58,7 +58,6 @@ import {
 } from "@/lib/web3/verify-receipt";
 import { pollForCompletedOutput } from "@/lib/workflow/executor/poll-for-output";
 import {
-  billableAfterSettle,
   mergeSignals,
   NO_RUN_OUTCOME_SIGNALS,
   type RunOutcome,
@@ -620,12 +619,6 @@ async function selfHealWorkflowAfterLateStepCommit(
     .set({
       status: runOutcome ?? "success",
       error: outcomeReason ?? null,
-      // A run that only waited for Not before is not billed.
-      billable: billableAfterSettle(workflowExecutions, {
-        status: runOutcome ?? "success",
-        errorCode: outcomeCode,
-        error: outcomeReason,
-      }),
       // The classification columns are written alongside `error` at finalize.
       // Clearing only the message left a success row still labelled with the
       // spurious failure (e.g. E-0002), which the UI reads as a failed run.
@@ -1267,12 +1260,6 @@ export async function logWorkflowCompleteDb(
       // reaches this function with an oversized value.
       output: boundStoredOutput(params.output).value,
       error: resolvedError,
-      // A run that only waited for Not before is not billed.
-      billable: billableAfterSettle(workflowExecutions, {
-        status: executionStatus,
-        errorCode: persistedClassification?.code ?? resolvedCode,
-        error: resolvedError,
-      }),
       errorCategory: persistedClassification?.errorCategory ?? null,
       errorType: persistedClassification?.errorType ?? null,
       errorCode: persistedClassification?.code ?? resolvedCode,

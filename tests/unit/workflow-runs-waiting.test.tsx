@@ -213,7 +213,7 @@ describe("waiting runs in the Runs panel", () => {
     );
     expect(details).toContain("3 waiting, #2 to #4, from ");
     expect(details).toContain(
-      "These runs do not count toward your plan's runs. Pay-as-you-go charges taken when a run starts are not refunded."
+      "A waiting run counts toward your plan's runs like any other run."
     );
     expect(details).not.toContain("not billed");
     expect(details).toContain(

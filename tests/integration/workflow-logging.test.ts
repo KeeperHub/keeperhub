@@ -316,19 +316,12 @@ vi.mock("@/lib/db", () => ({
     // resolveGasTotal: db.select({...}).from(logs).where(...) -> rows[]
     // resolveOrgSlugForCounter: db.select({...}).from(workflows)
     //   .leftJoin(organization).where(...).limit(1) -> rows[]
-    select: vi.fn((fields?: Record<string, unknown>) => ({
+    select: vi.fn(() => ({
       from: () => ({
-        where: () => {
-          // The log scan's other-work read fails or answers with the scan.
-          if (fields && Object.keys(fields).join() === "otherWork") {
-            return logScanFails
-              ? Promise.reject(new Error("statement timeout"))
-              : Promise.resolve([{ otherWork: false }]);
-          }
-          return finishQueryFails
+        where: () =>
+          finishQueryFails
             ? Promise.reject(new Error("statement timeout"))
-            : Promise.resolve(mockGasRows);
-        },
+            : Promise.resolve(mockGasRows),
         leftJoin: () => ({
           where: () => ({
             limit: () => Promise.resolve(mockOrgRows),
@@ -1804,8 +1797,8 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("not_landed");
-    // The row keeps its billable value (only a pure waiting run sets false).
-    expect(set?.billable).not.toBe(false);
+    // The finalizer never writes billable: the row keeps its value.
+    expect(set).not.toHaveProperty("billable");
     // The runs list shows why; no error classification is written.
     expect(set?.error).toContain("Not landed: a bundle in this run");
     expect(set?.errorType).toBeNull();
@@ -1816,10 +1809,20 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("skipped");
-    // The row keeps its billable value (only a pure waiting run sets false).
-    expect(set?.billable).not.toBe(false);
+    // The finalizer never writes billable: the row keeps its value.
+    expect(set).not.toHaveProperty("billable");
     expect(set?.error).toContain("the bundle step sent no transaction");
     expect(set?.errorType).toBeNull();
+  });
+
+  it("writes skipped with the waiting code, still billable, for a waiting bundle step", async () => {
+    recordRunOutcomeIfPresent(stepContext, { success: true, route: "waiting" });
+    await finalize("success");
+    const set = getExecUpdate()?.set;
+    expect(set?.status).toBe("skipped");
+    expect(set?.errorCode).toBe("bundle-waiting");
+    // A waiting run is billed like any other run: billable is left as inserted.
+    expect(set).not.toHaveProperty("billable");
   });
 
   describe("tracked hashes and another pod's signal", () => {
@@ -1961,8 +1964,8 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("not_landed");
-    // The row keeps its billable value (only a pure waiting run sets false).
-    expect(set?.billable).not.toBe(false);
+    // The finalizer never writes billable: the row keeps its value.
+    expect(set).not.toHaveProperty("billable");
   });
 
   it("ends a skip as skipped, billable, even when another step sent a transaction", async () => {
@@ -1974,8 +1977,8 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("skipped");
-    // The row keeps its billable value (only a pure waiting run sets false).
-    expect(set?.billable).not.toBe(false);
+    // The finalizer never writes billable: the row keeps its value.
+    expect(set).not.toHaveProperty("billable");
     expect(set?.error).toContain("the bundle step sent no transaction");
   });
 
@@ -1999,8 +2002,8 @@ describe("run outcome from step outputs", () => {
     await finalize("success");
     const set = getExecUpdate()?.set;
     expect(set?.status).toBe("success");
-    // The row keeps its billable value (only a pure waiting run sets false).
-    expect(set?.billable).not.toBe(false);
+    // The finalizer never writes billable: the row keeps its value.
+    expect(set).not.toHaveProperty("billable");
   });
 
   it("ignores an empty or blank not-included reason", async () => {

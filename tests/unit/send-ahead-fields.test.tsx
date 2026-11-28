@@ -159,15 +159,8 @@ describe("Not before in the bundle box", () => {
     expect(label?.textContent).toBe("Not before");
     expect(describedBy(box)).toEqual([
       "Optional. The bundle never lands in a block before this time. Unix seconds, such as 1796126400, or a date with a time zone, such as 2026-12-01T12:00:00Z. Can be a template, such as {{Read Contract.result}}. Empty: sends for the next blocks.",
-      "A run that is too early sends nothing and ends Skipped (Waiting). A waiting run whose other steps are all on the read-only list (Billing in the Web3 docs) does not count toward your plan's runs. Pay-as-you-go charges taken when a run starts are not refunded.",
+      "A run that is too early sends nothing and ends Skipped (Waiting). A waiting run counts toward your plan's runs like any other run.",
     ]);
-    const link = [...container.querySelectorAll("a")].find(
-      (anchor) => anchor.textContent === "Billing in the Web3 docs"
-    );
-    expect(link?.getAttribute("href")).toBe(
-      "https://docs.keeperhub.com/plugins/web3#send-as-bundle"
-    );
-    expect(link?.getAttribute("rel")).toContain("noopener");
     expect(setting("sendAheadBlocks")).toBeNull();
     expect(boxText()).toContain(
       "Tries 3 blocks in a row, starting with the next one"

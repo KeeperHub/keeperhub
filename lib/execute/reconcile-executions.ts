@@ -34,7 +34,6 @@ import {
   verifyExecutionReceipts,
 } from "@/lib/web3/verify-receipt";
 import {
-  billableAfterSettle,
   type RunOutcome,
   type RunOutcomeSignals,
   runOutcomeCode,
@@ -340,12 +339,6 @@ async function settleWorkflow(
       completedAt: new Date(),
       ...(transactionHashes && { transactionHashes }),
       ...(code !== undefined && { errorCode: code }),
-      // A run that only waited for Not before is not billed.
-      billable: billableAfterSettle(workflowExecutions, {
-        status,
-        errorCode: code,
-        error,
-      }),
     })
     .where(
       and(

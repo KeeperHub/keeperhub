@@ -152,7 +152,7 @@ describe("waiting runs in the Analytics runs table", () => {
       container.querySelector('[data-testid="analytics-waiting-details"]')
         ?.textContent ?? "";
     expect(details).toContain(
-      "These runs do not count toward your plan's runs. Pay-as-you-go charges taken when a run starts are not refunded."
+      "A waiting run counts toward your plan's runs like any other run."
     );
     expect(fetch).toHaveBeenCalledWith("/api/analytics/runs/w2/steps");
     expect(fetch).toHaveBeenCalledTimes(1);

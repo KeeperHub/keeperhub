@@ -3,12 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
+import { workflowExecutionLogs } from "@/lib/db/schema";
 import {
-  billableAfterSettle,
-  isOtherWorkStep,
   NO_RUN_OUTCOME_SIGNALS,
-  otherWorkSql,
   runOutcomeCode,
   runOutcomeLogSql,
   runOutcomeOf,
@@ -20,12 +17,10 @@ import {
 import {
   BUNDLE_ROUTES,
   bundleReservationEnd,
-  bundleSignalsOfStep,
   FALLBACK_NOT_SENT_REASONS,
   FALLBACK_NOT_SENT_TEXT,
   fallbackNotSentText,
   isBundleRoute,
-  isUnbilledOutcome,
   NEVER_MINED_RUN_ERROR,
   NOT_INCLUDED_REASON_TEXT,
   nodeOutcomeOf,
@@ -109,29 +104,25 @@ describe("signalsOfStep", () => {
     ).toEqual({
       ...NO_RUN_OUTCOME_SIGNALS,
       skippedInFlight: true,
-      otherWork: true,
     });
   });
 
-  it.each([
-    ["http-request", true],
-    ["code/run-code", true],
-    ["web3/read-contract", false],
-    ["Condition", false],
-  ])("ignores the bundle keys on a %s step", (nodeType, otherWork) => {
-    expect(
-      signalsOfStep(nodeType, {
-        route: "skipped-in-flight",
-        notIncludedReason: "not-picked",
-      })
-    ).toEqual({ ...NO_RUN_OUTCOME_SIGNALS, otherWork });
-  });
+  it.each(["http-request", "code/run-code", "web3/read-contract", "Condition"])(
+    "ignores the bundle keys on a %s step",
+    (nodeType) => {
+      expect(
+        signalsOfStep(nodeType, {
+          route: "skipped-in-flight",
+          notIncludedReason: "not-picked",
+        })
+      ).toEqual(NO_RUN_OUTCOME_SIGNALS);
+    }
+  );
 
-  it("marks a sent bundle, and only a waiting bundle step as no other work", () => {
+  it("marks a sent bundle and a waiting bundle step", () => {
     expect(signalsOfStep(WRITE, { route: "bundle", included: true })).toEqual({
       ...NO_RUN_OUTCOME_SIGNALS,
       bundleSent: true,
-      otherWork: true,
     });
     expect(signalsOfStep(WRITE, { route: "waiting", included: false })).toEqual(
       { ...NO_RUN_OUTCOME_SIGNALS, waiting: true }
@@ -150,7 +141,6 @@ describe("signalsOfStep", () => {
       ...NO_RUN_OUTCOME_SIGNALS,
       waiting: true,
     });
-    expect(isOtherWorkStep(WRITE, feeHeld)).toBe(false);
     expect(waitingStepSentence(feeHeld)).toMatch(/^Max Fee held back/);
     expect(
       waitingStepSentence({
@@ -159,33 +149,6 @@ describe("signalsOfStep", () => {
       })
     ).toBe(WAITING_STEP_TEXT.sentence);
     expect(waitingStepSentence(null)).toBe(WAITING_STEP_TEXT.sentence);
-  });
-});
-
-describe("isOtherWorkStep", () => {
-  it.each([
-    ["trigger", { triggeredAt: "x", triggerGasUsed: "21000" }, false],
-    ["web3/read-contract", { success: true, result: "1" }, false],
-    ["Read Contract", { success: true }, false],
-    ["Condition", { result: false }, false],
-    ["For Each", {}, true],
-    ["Collect", { count: 2 }, true],
-    ["web3/batch-read-contract", { results: [] }, true],
-    ["web3/decode-calldata", { functionName: "transfer" }, true],
-    ["web3/check-balance", { balance: "1" }, false],
-    [WRITE, { route: "waiting", included: false }, false],
-    [WRITE, { route: "waiting", transactionHash: "0xabc" }, true],
-    [WRITE, { route: "waiting", gasUsed: "21000" }, true],
-    ["web3/read-contract", { gasUsed: "1" }, true],
-    [WRITE, { route: "public", transactionHash: "0xabc" }, true],
-    [WRITE, { success: false }, true],
-    [WRITE, null, true],
-    ["HTTP Request", { status: 200 }, true],
-    ["discord/send-message", { success: true }, true],
-    ["code/run-code", { result: 1 }, true],
-    ["web3/transfer-funds", { success: false }, true],
-  ])("%s %j: %s", (nodeType, output, expected) => {
-    expect(isOtherWorkStep(nodeType, output)).toBe(expected);
   });
 });
 
@@ -209,13 +172,6 @@ describe("runOutcomeOf", () => {
   it("lets a sent bundle's landing beat a waiting step (For Each)", () => {
     expect(
       runOutcomeOf({ ...signals(false, false, true), bundleSent: true })
-    ).toBeUndefined();
-    expect(
-      runOutcomeOf({
-        ...signals(false, false, true),
-        bundleSent: true,
-        otherWork: true,
-      })
     ).toBeUndefined();
   });
 
@@ -262,7 +218,6 @@ describe("bundle routes: TS and SQL agree", () => {
 
   it.each(BUNDLE_ROUTES)("route %s is a sent bundle in TS", (route) => {
     expect(isBundleRoute(route)).toBe(true);
-    expect(bundleSignalsOfStep(WRITE, { route }).bundleSent).toBe(true);
     expect(signalsOfStep(WRITE, { route }).bundleSent).toBe(true);
     expect(
       bundleReservationEnd({ success: true, route, included: false })
@@ -279,7 +234,7 @@ describe("bundle routes: TS and SQL agree", () => {
 
   it.each(NOT_BUNDLE_ROUTES)("route %s is no sent bundle", (route) => {
     expect(isBundleRoute(route)).toBe(false);
-    expect(bundleSignalsOfStep(WRITE, { route }).bundleSent).toBe(false);
+    expect(signalsOfStep(WRITE, { route }).bundleSent).toBe(false);
   });
 });
 
@@ -436,13 +391,12 @@ describe("recordRunOutcomeIfPresent", () => {
       ...NO_RUN_OUTCOME_SIGNALS,
       skippedInFlight: true,
       notIncluded: true,
-      otherWork: true,
     });
     clearExecution(executionId);
     expect(getRunOutcomeSignals(executionId)).toEqual(NO_RUN_OUTCOME_SIGNALS);
   });
 
-  it("records only other work for another action's output, nothing without an execution", () => {
+  it("records nothing for another action's output or without an execution", () => {
     recordRunOutcomeIfPresent(
       { ...context, nodeType: "http-request" },
       { route: "skipped-in-flight" }
@@ -451,15 +405,7 @@ describe("recordRunOutcomeIfPresent", () => {
       { ...context, executionId: undefined },
       { notIncludedReason: "not-picked" }
     );
-    expect(getRunOutcomeSignals(executionId)).toEqual({
-      ...NO_RUN_OUTCOME_SIGNALS,
-      otherWork: true,
-    });
-    recordRunOutcomeIfPresent(
-      { ...context, nodeType: "web3/read-contract" },
-      { result: "1" }
-    );
-    expect(getRunOutcomeSignals(executionId).otherWork).toBe(true);
+    expect(getRunOutcomeSignals(executionId)).toEqual(NO_RUN_OUTCOME_SIGNALS);
   });
 });
 
@@ -502,15 +448,6 @@ describe("runOutcomeReason", () => {
     ).toBeNull();
     expect(runOutcomeReason("not_landed", waiting)).toMatch(/^Not landed:/);
     expect(runOutcomeCode("not_landed", waiting)).toBeNull();
-  });
-
-  it("gives a waiting run that ran other steps a reason that names the waiting step only", () => {
-    const mixed = { ...NO_RUN_OUTCOME_SIGNALS, waiting: true, otherWork: true };
-    expect(runOutcomeCode("skipped", mixed)).toBe("bundle-waiting-other-steps");
-    const reason = runOutcomeReason("skipped", mixed);
-    expect(reason).toBe(RUN_OUTCOME_REASON.waitingWithOtherSteps);
-    expect(reason).not.toContain("no gas was paid");
-    expect(reason).toContain("that step sent no transaction");
   });
 });
 
@@ -560,7 +497,7 @@ describe("run views reading a not landed run again", () => {
   });
 });
 
-describe("waiting runs: skip reason, billing, metrics, node outcome", () => {
+describe("waiting runs: skip reason, metrics, node outcome", () => {
   it("keys a skipped run by its code first, then its exact reason (rows stored before the code)", () => {
     // The code wins over the text, so a reworded reason keeps its key.
     expect(
@@ -570,13 +507,6 @@ describe("waiting runs: skip reason, billing, metrics, node outcome", () => {
         errorCode: "bundle-waiting",
       })
     ).toBe(SKIP_REASON.bundleWaiting);
-    expect(
-      skipReasonOf({
-        status: "skipped",
-        error: RUN_OUTCOME_REASON.waiting,
-        errorCode: "bundle-waiting-other-steps",
-      })
-    ).toBeNull();
     expect(
       skipReasonOf({ status: "skipped", error: RUN_OUTCOME_REASON.waiting })
     ).toBe(SKIP_REASON.bundleWaiting);
@@ -605,107 +535,14 @@ describe("waiting runs: skip reason, billing, metrics, node outcome", () => {
     ).toBeNull();
   });
 
-  it("bills every run but a skip that only waited", () => {
-    expect(isUnbilledOutcome("skipped", "bundle-waiting", "x")).toBe(true);
-    expect(isUnbilledOutcome("skipped", null, RUN_OUTCOME_REASON.waiting)).toBe(
-      true
-    );
-    expect(
-      isUnbilledOutcome(
-        "skipped",
-        "bundle-waiting-other-steps",
-        RUN_OUTCOME_REASON.waitingWithOtherSteps
-      )
-    ).toBe(false);
-    expect(isUnbilledOutcome("skipped", null, RUN_OUTCOME_REASON.skipped)).toBe(
-      false
-    );
-    expect(
-      isUnbilledOutcome(
-        "not_landed",
-        "bundle-waiting",
-        RUN_OUTCOME_REASON.waiting
-      )
-    ).toBe(false);
-    expect(isUnbilledOutcome("success", null, null)).toBe(false);
-  });
-
   it("labels the skipped metric by code or reason", () => {
     expect(skippedMetricReason("bundle-waiting", "x")).toBe("bundle_waiting");
-    expect(
-      skippedMetricReason(
-        "bundle-waiting-other-steps",
-        RUN_OUTCOME_REASON.waitingWithOtherSteps
-      )
-    ).toBe("bundle_waiting");
     expect(skippedMetricReason(null, RUN_OUTCOME_REASON.waiting)).toBe(
       "bundle_waiting"
     );
     expect(skippedMetricReason(null, RUN_OUTCOME_REASON.skipped)).toBe(
       "bundle_in_flight"
     );
-  });
-
-  it("sets billable false for a settle to a pure waiting run, back to true only from one", () => {
-    const dialect = new PgDialect();
-    expect(
-      billableAfterSettle(workflowExecutions, {
-        status: "skipped",
-        errorCode: "bundle-waiting",
-        error: RUN_OUTCOME_REASON.waiting,
-      })
-    ).toBe(false);
-    const away = billableAfterSettle(workflowExecutions, {
-      status: "success",
-      errorCode: null,
-      error: null,
-    });
-    expect(away).not.toBe(false);
-    const text = dialect
-      .sqlToQuery(away as Exclude<typeof away, false>)
-      .sql.replace(/\s+/g, " ");
-    expect(text).toContain(
-      `CASE WHEN ("workflow_executions"."status" = 'skipped' AND ("workflow_executions"."error_code" = 'bundle-waiting'`
-    );
-    expect(text).toContain(
-      `THEN true ELSE "workflow_executions"."billable" END`
-    );
-  });
-
-  it("puts the other-work rule in SQL, never NULL, the generated read list as one bound text[] parameter", () => {
-    const query = new PgDialect().sqlToQuery(
-      otherWorkSql(workflowExecutionLogs)
-    );
-    const text = query.sql.replace(/\s+/g, " ");
-    expect(text).toContain(
-      `coalesce("workflow_execution_logs"."output_raw"->>'transactionHash', '') <> ''`
-    );
-    expect(text).toContain(
-      `coalesce("workflow_execution_logs"."output_raw"->>'gasUsed', '') <> ''`
-    );
-    // The type is checked first, so most rows never read their output; the read list is not SQL text.
-    expect(text).toMatch(
-      /^\(CASE WHEN "workflow_execution_logs"\."node_type" <> ALL\(\$1::text\[\]\) THEN true/
-    );
-    // The constant bundle types are literals, as in the sibling signal SQL.
-    expect(text).toContain(
-      `"workflow_execution_logs"."node_type" IN ('web3/write-contract', 'Write Contract')`
-    );
-    expect(text).not.toContain("web3/read-contract");
-    expect(query.params).toHaveLength(1);
-    const [quiet] = query.params as string[][];
-    expect(quiet).toEqual(
-      expect.arrayContaining([
-        "web3/write-contract",
-        "Write Contract",
-        "trigger",
-        "web3/read-contract",
-        "aave-v3/get-user-account-data",
-      ])
-    );
-    expect(quiet).not.toContain("aave-v3/supply");
-    expect(quiet).not.toContain("web3/query-events");
-    expect(quiet).not.toContain("For Each");
   });
 
   it("gives a waiting Write Contract step the node outcome waiting", () => {
@@ -793,9 +630,6 @@ describe("review round 2 texts and outcomes", () => {
     expect(
       skippedMetricReason(null, RUN_OUTCOME_REASON.skippedPublicCopy)
     ).toBe("bundle_in_flight");
-    expect(
-      isUnbilledOutcome("skipped", null, RUN_OUTCOME_REASON.skippedPublicCopy)
-    ).toBe(false);
   });
 
   it("a skip behind a bundle keeps the bundle reason; the flag is only set when true", () => {
@@ -812,7 +646,7 @@ describe("review round 2 texts and outcomes", () => {
       signalsOfStep(WRITE, { route: "skipped-in-flight", inFlightHash: 5 })
     ).not.toHaveProperty("skippedPublicCopy");
     // Only Write Contract carries it.
-    expect(bundleSignalsOfStep("HTTP Request", behind)).not.toHaveProperty(
+    expect(signalsOfStep("HTTP Request", behind)).not.toHaveProperty(
       "skippedPublicCopy"
     );
   });

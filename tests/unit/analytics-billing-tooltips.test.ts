@@ -8,9 +8,13 @@ describe("Analytics billing tooltips", () => {
   it("the KPI Skipped tooltip and the Skipped badge both carry the skipped billing line", () => {
     expect(SKIPPED_TOOLTIP).toContain(SKIPPED_BILLING_TEXT);
     expect(STATUS_TOOLTIPS.skipped).toContain(SKIPPED_BILLING_TEXT);
-    expect(SKIPPED_BILLING_TEXT).toContain(
-      "and so does a waiting run with a step off the read-only list."
+    expect(SKIPPED_BILLING_TEXT).toBe(
+      "Most skipped runs do not count toward your plan's runs; a run skipped because an earlier run's bundle (or public copy) was in flight does, and so does a waiting run."
     );
+    for (const text of [SKIPPED_TOOLTIP, STATUS_TOOLTIPS.skipped]) {
+      expect(text).not.toContain("read-only list");
+      expect(text).not.toContain("refunded");
+    }
   });
 
   it("the Not landed badge counts toward your plan's runs", () => {

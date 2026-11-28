@@ -152,7 +152,7 @@ export function bundleSettingsFields(): ActionConfigFieldBase[] {
     },
     {
       editorRenderer: "bundle-setting",
-      helpTip: `Bundle with Not before only: how many blocks before the first allowed block the step may already send, so the builders hold the bundle when that block starts. A whole number from 0 to ${MAX_SEND_AHEAD_BLOCKS}, no templates; empty means ${DEFAULT_SEND_AHEAD_BLOCKS}. With Target blocks, at most ${MAX_BUNDLE_BLOCKS}.`,
+      helpTip: `Bundle or Bundle and public, with Not before only: how many blocks before the first allowed block the step may already send, so the builders hold the bundle when that block starts. A whole number from 0 to ${MAX_SEND_AHEAD_BLOCKS}, no templates; empty means ${DEFAULT_SEND_AHEAD_BLOCKS}. With Target blocks, at most ${MAX_BUNDLE_BLOCKS}.`,
       key: BUNDLE_SETTING_KEYS.sendAheadBlocks,
       label: BUNDLE_SETTING_LABELS.sendAheadBlocks,
       max: MAX_SEND_AHEAD_BLOCKS,

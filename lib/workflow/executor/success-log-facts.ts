@@ -10,7 +10,6 @@ import {
 import {
   mergeSignals,
   NO_RUN_OUTCOME_SIGNALS,
-  otherWorkSql,
   type RunOutcomeSignals,
   runOutcomeLogSql,
   runOutcomeSignalSql,
@@ -147,21 +146,6 @@ export async function loadSuccessLogFacts(
     seen.add(entry.hash);
     hashes.push(entry);
   }
-  // Other work only matters to a waiting run; any status, as a failed step may have called out.
-  if (signals.waiting) {
-    const [work] = await db
-      .select({
-        otherWork: sql<
-          boolean | null
-        >`bool_or(${otherWorkSql(workflowExecutionLogs)})`,
-      })
-      .from(workflowExecutionLogs)
-      .where(eq(workflowExecutionLogs.executionId, executionId));
-    signals = {
-      ...signals,
-      otherWork: signals.otherWork || work?.otherWork === true,
-    };
-  }
   return { hashes, signals, notIncludedSteps: [...notIncluded] };
 }
 
@@ -198,14 +182,12 @@ export async function loadFinishLogFacts(
       bundleSent: sql<
         boolean | null
       >`bool_or(${succeeded} AND ${signal.bundleSent})`,
-      // Any status, as in loadSuccessLogFacts.
-      otherWork: sql<boolean | null>`bool_or(${signal.otherWork})`,
     })
     .from(workflowExecutionLogs)
     .where(
       and(
         eq(workflowExecutionLogs.executionId, executionId),
-        sql`(${gasUsed} IS NOT NULL OR ${runOutcomeLogSql(workflowExecutionLogs)} OR ${signal.otherWork})`
+        sql`(${gasUsed} IS NOT NULL OR ${runOutcomeLogSql(workflowExecutionLogs)})`
       )
     );
   return {
@@ -216,7 +198,6 @@ export async function loadFinishLogFacts(
       notIncluded: row?.notIncluded === true,
       waiting: row?.waiting === true,
       bundleSent: row?.bundleSent === true,
-      otherWork: row?.otherWork === true,
     },
   };
 }

@@ -356,12 +356,17 @@ async function traceWithinRun(
   }
 }
 
+// A block number or gas amount with separators, as the run notes show them ("21,400,421").
+function grouped(value: number | bigint | null | undefined): string {
+  return value == null ? "unknown" : value.toLocaleString("en-US");
+}
+
 /** What a mined, reverted public copy cost: the fee in the native token, and the gas units. */
 async function paidGasText(
   chainId: number,
   mined: MinedHash
 ): Promise<string> {
-  const units = mined.gasUnits?.toString() ?? "unknown";
+  const units = grouped(mined.gasUnits);
   if (mined.feeWei === null) {
     return `${units} gas units`;
   }
@@ -383,7 +388,7 @@ async function paidRevertText(
 ): Promise<string> {
   const paid = await paidGasText(write.chainId, mined);
   if (lostRace) {
-    return `Most likely another transaction made the call first: your public copy (${mined.hash}) was mined in block ${mined.blockNumber ?? "unknown"} and reverted (${revert}), and the wallet paid ${paid} in gas.`;
+    return `Most likely another transaction made the call first: your public copy (${mined.hash}) was mined in block ${grouped(mined.blockNumber)} and reverted (${revert}), and the wallet paid ${paid} in gas.`;
   }
   return `${revert}. The public copy was mined and reverted, so the wallet paid its gas: ${paid}.`;
 }

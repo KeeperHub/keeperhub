@@ -363,7 +363,7 @@ describe("the waiting row's words", () => {
     expect(waitingDetails(group, options)).toEqual([
       "Waiting for Not before: 1 Dec 2026, 12:00:00 UTC. The Write Contract step sent nothing and did not touch the wallet.",
       "2 waiting, #3158 to #3159, from 12:00:36 to 12:07:48, shown as one row. Waiting runs end Skipped and do not count as failures.",
-      "These runs do not count toward your plan's runs. Pay-as-you-go charges taken when a run starts are not refunded.",
+      "A waiting run counts toward your plan's runs like any other run.",
       "First allowed block 21,400,421, 262 blocks away. The step sends 2 blocks before it (Send ahead).",
     ]);
   });
@@ -382,7 +382,7 @@ describe("the waiting row's words", () => {
     ]);
     expect(waitingDetails(single, options).slice(1)).toEqual([
       "One run, #1, at 12:00:36. Waiting runs end Skipped and do not count as failures.",
-      "This run does not count toward your plan's runs. Pay-as-you-go charges taken when a run starts are not refunded.",
+      "A waiting run counts toward your plan's runs like any other run.",
       "First allowed block 101, 1 block away. The step sends once it is the next block (Send ahead 0).",
     ]);
   });

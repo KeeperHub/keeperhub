@@ -440,7 +440,6 @@ describe("writeAsBundle", () => {
     expect(h.send).not.toHaveBeenCalled();
     expect(signals(result)).toEqual({
       bundleSent: false,
-      otherWork: true,
       skippedInFlight: true,
       notIncluded: false,
       waiting: false,
@@ -495,7 +494,6 @@ describe("writeAsBundle", () => {
     expect(h.send).not.toHaveBeenCalled();
     expect(signals(result)).toEqual({
       bundleSent: true,
-      otherWork: true,
       skippedInFlight: false,
       notIncluded: true,
       waiting: false,
@@ -727,7 +725,6 @@ describe("writeAsBundle", () => {
     expect(result).not.toHaveProperty("transactionHash");
     expect(signals(result)).toEqual({
       bundleSent: true,
-      otherWork: true,
       skippedInFlight: false,
       notIncluded: true,
       waiting: false,
@@ -764,7 +761,6 @@ describe("writeAsBundle", () => {
     });
     expect(signals(result)).toEqual({
       bundleSent: true,
-      otherWork: true,
       skippedInFlight: false,
       notIncluded: false,
       waiting: false,
@@ -1083,7 +1079,7 @@ describe("Bundle and public and the public fallback in Write Contract", () => {
     });
     expect(!result.success && result.error).toContain("reverted on-chain");
     expect(!result.success && result.error).toContain(
-      "The public copy was mined and reverted, so the wallet paid its gas: 0.00006 ETH (30000 gas units)."
+      "The public copy was mined and reverted, so the wallet paid its gas: 0.00006 ETH (30,000 gas units)."
     );
     expect(bundleReservationEnd(result)).toBe("release");
   });
@@ -1094,7 +1090,7 @@ describe("Bundle and public and the public fallback in Write Contract", () => {
       gasLimit: BigInt(60_000),
       mined: {
         hash: PUBLIC_HASH,
-        blockNumber: 12,
+        blockNumber: 21_400_422,
         succeeded: false,
         gasUnits: BigInt(30_000),
         feeWei: BigInt(30_000) * BigInt(2e9),
@@ -1105,7 +1101,7 @@ describe("Bundle and public and the public fallback in Write Contract", () => {
     const result = await write({ route: await publicRoute() });
     expect(!result.success && result.error).toMatch(
       new RegExp(
-        `^Most likely another transaction made the call first: your public copy \\(${PUBLIC_HASH}\\) was mined in block 12 and reverted \\(.+\\), and the wallet paid 0\\.00006 ETH \\(30000 gas units\\) in gas\\.$`
+        `^Most likely another transaction made the call first: your public copy \\(${PUBLIC_HASH}\\) was mined in block 21,400,422 and reverted \\(.+\\), and the wallet paid 0\\.00006 ETH \\(30,000 gas units\\) in gas\\.$`
       )
     );
   });
@@ -1560,7 +1556,6 @@ describe("writeAsBundle with Not before", () => {
     expect(h.send).not.toHaveBeenCalled();
     expect(signals(result)).toEqual({
       bundleSent: false,
-      otherWork: false,
       skippedInFlight: false,
       notIncluded: false,
       waiting: true,

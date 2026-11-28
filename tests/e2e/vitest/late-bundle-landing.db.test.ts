@@ -2420,8 +2420,6 @@ describe.skipIf(SKIP)("late landing of a not landed bundle", () => {
           notIncluded: true,
           waiting: false,
           bundleSent: true,
-          // The transfer and the HTTP step (any status) did more than read.
-          otherWork: true,
         },
       });
     });

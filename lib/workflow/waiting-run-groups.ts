@@ -145,23 +145,13 @@ export function groupWaitingRuns<T extends GroupableRun>(
 // `numbered: false` leaves run numbers out, where a list does not number runs.
 type TextOptions = { now: Date; timeZone?: string; numbered?: boolean };
 
-const PAYG_NOT_REFUNDED =
-  "Pay-as-you-go charges taken when a run starts are not refunded.";
+/** What a waiting run costs, as the editor hint and the waiting row say it. */
+export const WAITING_RUN_COUNTS_TEXT =
+  "A waiting run counts toward your plan's runs like any other run.";
 
-/** Where the read-only list is, as the billing line names it. */
-export const READ_ONLY_LIST_PLACE = "Billing in the Web3 docs";
-
-/** What a waiting run costs, as the editor hint and the Analytics tooltips say it. */
-export const WAITING_BILLING_TEXT = `A waiting run whose other steps are all on the read-only list (${READ_ONLY_LIST_PLACE}) does not count toward your plan's runs. ${PAYG_NOT_REFUNDED}`;
-
-/** Which skipped runs count, for the Analytics Skipped tooltips; the waiting run's line follows. */
-export const SKIPPED_BILLING_TEXT = `Most skipped runs do not count toward your plan's runs; a run skipped because an earlier run's bundle was in flight does, and so does a waiting run with a step off the read-only list. ${WAITING_BILLING_TEXT}`;
-
-// A waiting row holds only runs that ran nothing else, so it can say it plainly.
-function waitingGroupBillingText(runs: number): string {
-  const subject = runs === 1 ? "This run does" : "These runs do";
-  return `${subject} not count toward your plan's runs. ${PAYG_NOT_REFUNDED}`;
-}
+/** Which skipped runs count, for the Analytics Skipped tooltips. */
+export const SKIPPED_BILLING_TEXT =
+  "Most skipped runs do not count toward your plan's runs; a run skipped because an earlier run's bundle (or public copy) was in flight does, and so does a waiting run.";
 
 function secondsOf(value: Date | string): number {
   return Math.floor(new Date(value).getTime() / 1000);
@@ -262,7 +252,7 @@ export function waitingDetails(
   const lines = [
     `${time} The Write Contract step sent nothing and did not touch the wallet.`,
     `${runSpan(group, options)}${group.runs.length === 1 ? "" : ", shown as one row"}. Waiting runs end Skipped and do not count as failures.`,
-    waitingGroupBillingText(group.runs.length),
+    WAITING_RUN_COUNTS_TEXT,
   ];
   // The latest run's view of the chain: the newest first allowed block and head.
   const info = group.runs[0]?.waiting;

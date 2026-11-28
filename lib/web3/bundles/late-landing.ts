@@ -16,7 +16,6 @@ import {
 } from "@/lib/metrics/collectors/prometheus";
 import { NA_ERROR_TYPE } from "@/lib/metrics/metric-constants";
 import { resolveOrgSlugForCounter } from "@/lib/metrics/org-slug.server";
-import { billableAfterSettle } from "@/lib/workflow/executor/run-outcome";
 import {
   NOT_LANDED_PARTLY_REASON,
   type PublicCopyEnd,
@@ -513,11 +512,6 @@ export async function settleDroppedPublicCopy(
       error,
       completedAt: new Date(),
       transactionHashes: kept,
-      billable: billableAfterSettle(workflowExecutions, {
-        status: "not_landed",
-        errorCode: null,
-        error,
-      }),
     })
     .where(
       and(

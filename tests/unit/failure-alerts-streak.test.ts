@@ -366,23 +366,21 @@ describe("refused runs", () => {
 });
 
 describe("waiting runs (Not before)", () => {
-  // As finalize stores them: a pure waiting run is unbilled, one with other steps billed.
-  const waiting = (run: StreakRun, billable: boolean): StreakRun => ({
+  // As finalize stores them: Skipped and billed like any other run.
+  const waiting = (run: StreakRun): StreakRun => ({
     ...run,
     status: "skipped",
-    error: billable
-      ? RUN_OUTCOME_REASON.waitingWithOtherSteps
-      : RUN_OUTCOME_REASON.waiting,
-    billable,
+    error: RUN_OUTCOME_REASON.waiting,
+    billable: true,
   });
 
   it("neither counts nor resets the failure streak", () => {
     const list = runs(["error", "error", "error", "error", "success"]);
     const withWaiting: StreakRun[] = [
       list[0],
-      waiting(list[1], false),
+      waiting(list[1]),
       list[1],
-      waiting(list[2], true),
+      waiting(list[2]),
       list[2],
       list[3],
       list[4],
@@ -392,7 +390,7 @@ describe("waiting runs (Not before)", () => {
     expect(summary.latestSuccessRunId).toBeNull();
     // A waiting run newest: still the same streak, nothing resolved.
     const newest = summarizeStreak(
-      [waiting(list[0], false), ...withWaiting.slice(1)],
+      [waiting(list[0]), ...withWaiting.slice(1)],
       null,
       20
     );
@@ -404,9 +402,9 @@ describe("waiting runs (Not before)", () => {
     const list = runs(["not_landed", "not_landed", "not_landed", "success"]);
     const streak = summarizeNotLanding(
       [
-        waiting(list[0], false),
+        waiting(list[0]),
         list[0],
-        waiting(list[1], true),
+        waiting(list[1]),
         { ...list[1], status: "skipped", error: SKIPPED_WHILE_RUNNING_REASON },
         list[1],
         list[2],

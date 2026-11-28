@@ -1,6 +1,6 @@
 /**
  * Runs whose Send as Bundle step waited for Not before: finalize ends them
- * Skipped with the waiting reason and not billed, and the runs list reads
+ * Skipped with the waiting reason, billed like any other run, and the runs list reads
  * each one's reason key and waiting outputs back. Needs Postgres (DATABASE_URL, migrated).
  */
 import "dotenv/config";
@@ -65,13 +65,11 @@ type Db = typeof import("@/lib/db").db;
 type Schema = typeof import("@/lib/db/schema");
 type Logging = typeof import("@/lib/workflow/executor/logging");
 type Keys = typeof import("@/lib/workflow/executor/run-outcome-keys");
-type Signals = typeof import("@/lib/workflow/executor/step-signals");
 type Waiting = typeof import("@/lib/workflow/executor/waiting-runs");
 let db: Db;
 let schema: Schema;
 let logging: Logging;
 let keys: Keys;
-let signals: Signals;
 let waiting: Waiting;
 let seq = 0;
 
@@ -171,7 +169,6 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     schema = await import("@/lib/db/schema");
     logging = await import("@/lib/workflow/executor/logging");
     keys = await import("@/lib/workflow/executor/run-outcome-keys");
-    signals = await import("@/lib/workflow/executor/step-signals");
     waiting = await import("@/lib/workflow/executor/waiting-runs");
     await db.insert(schema.users).values({
       id: USER_ID,
@@ -201,7 +198,7 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     await cleanup();
   });
 
-  it("finalizes a waiting run as Skipped with its own reason, not billed", async () => {
+  it("finalizes a waiting run as Skipped with its own reason, billed like any other run", async () => {
     const run = await newRun();
     await logStep(
       run,
@@ -218,11 +215,11 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     expect(row.errorCode).toBe("bundle-waiting");
     expect(row.errorCategory).toBeNull();
     expect(row.errorType).toBeNull();
-    expect(row.billable).toBe(false);
+    expect(row.billable).toBe(true);
     expect(keys.skipReasonOf(row)).toBe("bundle-waiting");
   });
 
-  it("a waiting step beside an HTTP step ends Skipped but billed, its reason naming the waiting step only", async () => {
+  it("a waiting step beside an HTTP step ends Skipped, billed, with the one waiting code, grouped", async () => {
     const run = await newRun();
     await logStep(run, "write-1", WAITING_OUTPUT);
     await logStep(
@@ -234,12 +231,13 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     const row = await finalize(run);
     expect(row.status).toBe("skipped");
     expect(row.billable).toBe(true);
-    expect(row.errorCode).toBe("bundle-waiting-other-steps");
-    expect(row.error).toBe(keys.RUN_OUTCOME_REASON.waitingWithOtherSteps);
-    expect(row.error).not.toContain("no gas was paid");
+    expect(row.errorCode).toBe("bundle-waiting");
+    expect(row.error).toBe(keys.RUN_OUTCOME_REASON.waiting);
+    // The reason names the waiting step only.
+    expect(row.error).toContain("so that step sent no transaction");
     expect(row.errorCategory).toBeNull();
-    // Not grouped with waiting runs.
-    expect(keys.skipReasonOf(row)).toBeNull();
+    // Grouped with the other waiting runs.
+    expect(keys.skipReasonOf(row)).toBe("bundle-waiting");
   });
 
   it("a waiting step beside a normal Write Contract that sent is billed", async () => {
@@ -255,42 +253,10 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     const row = await finalize(run);
     expect(row.status).toBe("skipped");
     expect(row.billable).toBe(true);
-    expect(row.errorCode).toBe("bundle-waiting-other-steps");
+    expect(row.errorCode).toBe("bundle-waiting");
   });
 
-  it("any other Write Contract route, or a hash or gas on an allowed step, makes it billed", async () => {
-    // A relay send not yet confirmed carries no hash, but it did send.
-    const relay = await newRun();
-    await logStep(relay, "write-1", WAITING_OUTPUT);
-    await logStep(relay, "write-2", { success: true, route: "private-relay" });
-    expect((await finalize(relay)).billable).toBe(true);
-    const paid = await newRun();
-    await logStep(paid, "write-1", WAITING_OUTPUT);
-    await logStep(
-      paid,
-      "read-1",
-      { success: true, gasUsed: "21000" },
-      "web3/read-contract"
-    );
-    expect((await finalize(paid)).billable).toBe(true);
-  });
-
-  it("a waiting step beside a failed HTTP step the run went on past is billed", async () => {
-    const run = await newRun();
-    await logStep(run, "write-1", WAITING_OUTPUT);
-    await logStep(
-      run,
-      "http-1",
-      { success: false, error: "502" },
-      "HTTP Request",
-      { status: "error" }
-    );
-    const row = await finalize(run);
-    expect(row.billable).toBe(true);
-    expect(row.errorCode).toBe("bundle-waiting-other-steps");
-  });
-
-  it("a waiting step beside only read steps is not billed", async () => {
+  it("a waiting step beside only read steps, a protocol read included, is billed too", async () => {
     const run = await newRun();
     await logStep(
       run,
@@ -300,21 +266,6 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     );
     await logStep(
       run,
-      "bal-1",
-      { success: true, balance: "1" },
-      "web3/check-balance"
-    );
-    await logStep(run, "write-1", WAITING_OUTPUT);
-    const row = await finalize(run);
-    expect(row.status).toBe("skipped");
-    expect(row.billable).toBe(false);
-    expect(row.errorCode).toBe("bundle-waiting");
-  });
-
-  it("a waiting step beside a protocol read is not billed", async () => {
-    const run = await newRun();
-    await logStep(
-      run,
       "aave-1",
       { success: true, healthFactor: "2" },
       "aave-v3/get-user-account-data"
@@ -322,54 +273,11 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     await logStep(run, "write-1", WAITING_OUTPUT);
     const row = await finalize(run);
     expect(row.status).toBe("skipped");
-    expect(row.billable).toBe(false);
+    expect(row.billable).toBe(true);
     expect(row.errorCode).toBe("bundle-waiting");
   });
 
-  it.each([
-    ["web3/query-events", { success: true, events: [] }],
-    ["web3/query-transactions", { success: true, transactions: [] }],
-    ["web3/query-solana-program-events", { success: true, events: [] }],
-    ["web3/decode-calldata", { success: true, functionName: "transfer" }],
-    ["web3/batch-read-contract", { success: true, results: [] }],
-  ])(
-    "a waiting step beside %s (platform services or many reads) is billed",
-    async (nodeType, output) => {
-      const run = await newRun();
-      await logStep(run, "query-1", output, nodeType);
-      await logStep(run, "write-1", WAITING_OUTPUT);
-      const row = await finalize(run);
-      expect(row.status).toBe("skipped");
-      expect(row.billable).toBe(true);
-      expect(row.errorCode).toBe("bundle-waiting-other-steps");
-    }
-  );
-
-  it("a waiting step after a For Each over a Read Contract is billed: the For Each counts, its body reads do not", async () => {
-    const run = await newRun();
-    await logStep(
-      run,
-      "loop-1",
-      { success: true, arrayLength: 2, maxIterations: 2 },
-      "For Each"
-    );
-    for (const iterationIndex of [0, 1]) {
-      await logStep(
-        run,
-        "read-1",
-        { success: true, result: "7" },
-        "web3/read-contract",
-        { iterationIndex }
-      );
-    }
-    await logStep(run, "write-1", WAITING_OUTPUT);
-    const row = await finalize(run);
-    expect(row.status).toBe("skipped");
-    expect(row.billable).toBe(true);
-    expect(row.errorCode).toBe("bundle-waiting-other-steps");
-  });
-
-  it("a waiting step inside a For Each is billed: the For Each row counts", async () => {
+  it("a waiting step inside a For Each is billed, with the one waiting code", async () => {
     const run = await newRun();
     await logStep(
       run,
@@ -385,71 +293,10 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     const row = await finalize(run);
     expect(row.status).toBe("skipped");
     expect(row.billable).toBe(true);
-    expect(row.errorCode).toBe("bundle-waiting-other-steps");
-  });
-
-  it("a waiting step beside a single Read Contract is not billed", async () => {
-    const run = await newRun();
-    await logStep(
-      run,
-      "read-1",
-      { success: true, result: "7" },
-      "web3/read-contract"
-    );
-    await logStep(run, "write-1", WAITING_OUTPUT);
-    const row = await finalize(run);
-    expect(row.status).toBe("skipped");
-    expect(row.billable).toBe(false);
     expect(row.errorCode).toBe("bundle-waiting");
   });
 
-  it("the SQL other-work rule agrees with isOtherWorkStep, row by row", async () => {
-    const { otherWorkSql } = await import(
-      "@/lib/workflow/executor/run-outcome"
-    );
-    const cases: [string, object][] = [
-      ["trigger", { triggerGasUsed: "21000" }],
-      ["trigger", { transactionHash: HASH }],
-      ["web3/query-events", { events: [] }],
-      ["web3/query-solana-program-events", { transactionHash: "" }],
-      ["aave-v3/get-user-account-data", { healthFactor: "2" }],
-      ["aave-v3/get-user-account-data", { gasUsed: "1" }],
-      ["aave-v3/supply", { success: true }],
-      ["For Each", { arrayLength: 2 }],
-      ["Collect", { count: 2 }],
-      ["web3/batch-read-contract", { results: [] }],
-      ["web3/decode-calldata", { functionName: "transfer" }],
-      ["web3/read-contract", { result: "7" }],
-      ["Condition", { condition: true }],
-      ["web3/write-contract", WAITING_OUTPUT],
-      ["web3/write-contract", { ...WAITING_OUTPUT, transactionHash: HASH }],
-      ["Write Contract", { route: "bundle" }],
-      ["HTTP Request", {}],
-      ["data/filter-array", { result: [] }],
-    ];
-    const run = await newRun();
-    for (const [index, [nodeType, output]] of cases.entries()) {
-      await logStep(run, `n${index}`, output, nodeType);
-    }
-    const rows = await db
-      .select({
-        nodeId: schema.workflowExecutionLogs.nodeId,
-        nodeType: schema.workflowExecutionLogs.nodeType,
-        outputRaw: schema.workflowExecutionLogs.outputRaw,
-        sql: otherWorkSql(schema.workflowExecutionLogs).mapWith(Boolean),
-      })
-      .from(schema.workflowExecutionLogs)
-      .where(eq(schema.workflowExecutionLogs.executionId, run));
-    expect(rows).toHaveLength(cases.length);
-    for (const row of rows) {
-      expect({ node: row.nodeId, work: row.sql }).toEqual({
-        node: row.nodeId,
-        work: signals.isOtherWorkStep(row.nodeType, row.outputRaw),
-      });
-    }
-  });
-
-  it("the SQL bundleSent signal agrees with bundleSignalsOfStep, every bundle route included", async () => {
+  it("the SQL bundleSent signal agrees with signalsOfStep, every bundle route included", async () => {
     const { runOutcomeSignalSql } = await import(
       "@/lib/workflow/executor/run-outcome"
     );
@@ -484,7 +331,7 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
       .where(eq(schema.workflowExecutionLogs.executionId, run));
     expect(rows).toHaveLength(routes.length + 1);
     for (const row of rows) {
-      const ts = keys.bundleSignalsOfStep(row.nodeType, row.outputRaw);
+      const ts = keys.signalsOfStep(row.nodeType, row.outputRaw);
       expect({ output: row.outputRaw, sent: row.sql }).toEqual({
         output: row.outputRaw,
         sent: ts.bundleSent,
@@ -495,16 +342,6 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     expect(sent).toEqual(
       expect.arrayContaining(keys.BUNDLE_ROUTES.map((route) => ({ route })))
     );
-  });
-
-  it("a waiting step beside a protocol write is billed, even one that sent nothing yet", async () => {
-    const run = await newRun();
-    await logStep(run, "write-1", WAITING_OUTPUT);
-    await logStep(run, "supply-1", { success: true }, "aave-v3/supply");
-    const row = await finalize(run);
-    expect(row.status).toBe("skipped");
-    expect(row.billable).toBe(true);
-    expect(row.errorCode).toBe("bundle-waiting-other-steps");
   });
 
   it("For Each: a first item that waits and a later item whose bundle landed ends success, billed", async () => {
@@ -534,76 +371,56 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     expect(row.transactionHashes.map((entry) => entry.hash)).toEqual([HASH]);
   });
 
-  it("the reconciler settles an unconfirmed waiting run as a finalize would: Skipped, not billed", async () => {
+  it("the reconciler settles an unconfirmed waiting run as a finalize would: Skipped, billed, billable left as it was", async () => {
     const started = new Date(Date.now() - 60 * 60 * 1000);
     const pure = await newRun({ status: "unconfirmed", startedAt: started });
     await logStep(pure, "write-1", WAITING_OUTPUT);
     const mixed = await newRun({ status: "unconfirmed", startedAt: started });
     await logStep(mixed, "write-1", WAITING_OUTPUT);
     await logStep(mixed, "http-1", { status: 200 }, "HTTP Request");
+    // A marketplace-exempt run keeps its false: no settle writes billable.
+    const exempt = await newRun({
+      status: "unconfirmed",
+      startedAt: started,
+      billable: false,
+    });
+    await logStep(exempt, "write-1", WAITING_OUTPUT);
     const { reconcileUnconfirmedExecutions } = await import(
       "@/lib/execute/reconcile-executions"
     );
     await reconcileUnconfirmedExecutions(new Date(), 500, 30_000);
-    expect(await rowOf(pure)).toMatchObject({
+    for (const run of [pure, mixed]) {
+      expect(await rowOf(run)).toMatchObject({
+        status: "skipped",
+        error: keys.RUN_OUTCOME_REASON.waiting,
+        errorCode: "bundle-waiting",
+        errorCategory: null,
+        billable: true,
+      });
+    }
+    expect(await rowOf(exempt)).toMatchObject({
       status: "skipped",
-      error: keys.RUN_OUTCOME_REASON.waiting,
       errorCode: "bundle-waiting",
-      errorCategory: null,
       billable: false,
-    });
-    expect(await rowOf(mixed)).toMatchObject({
-      status: "skipped",
-      error: keys.RUN_OUTCOME_REASON.waitingWithOtherSteps,
-      errorCode: "bundle-waiting-other-steps",
-      billable: true,
     });
   });
 
-  it("a settle away from a pure waiting run sets billable back to true, and only from one", async () => {
-    const { billableAfterSettle } = await import(
-      "@/lib/workflow/executor/run-outcome"
-    );
-    const waitingRun = await newRun({
-      status: "skipped",
-      error: keys.RUN_OUTCOME_REASON.waiting,
-      errorCode: "bundle-waiting",
-      billable: false,
+  it("a finalize leaves billable as it was: no flip either way", async () => {
+    const exempt = await newRun({ billable: false });
+    await logStep(exempt, "write-1", WAITING_OUTPUT);
+    expect((await finalize(exempt)).billable).toBe(false);
+    const landed = await newRun({ billable: false });
+    await logStep(landed, "write-1", {
+      success: true,
+      route: "bundle",
+      included: true,
+      transactionHash: HASH,
+      chainId: 1,
+      gasUsed: "50000",
     });
-    // A row stored before the code: the exact reason text counts.
-    const legacyWaiting = await newRun({
-      status: "skipped",
-      error: keys.RUN_OUTCOME_REASON.waiting,
-      billable: false,
-    });
-    // Marketplace (paid elsewhere) and a refused run keep false.
-    const marketplace = await newRun({ status: "success", billable: false });
-    const refused = await newRun({
-      status: "skipped",
-      error: "Execution skipped: refused",
-      billable: false,
-    });
-    const settle = async (id: string, to: "success" | "skipped") => {
-      const next = {
-        status: to,
-        errorCode: to === "skipped" ? "bundle-waiting" : null,
-        error: to === "skipped" ? keys.RUN_OUTCOME_REASON.waiting : null,
-      };
-      await db
-        .update(schema.workflowExecutions)
-        .set({
-          status: next.status,
-          billable: billableAfterSettle(schema.workflowExecutions, next),
-        })
-        .where(eq(schema.workflowExecutions.id, id));
-      return (await rowOf(id)).billable;
-    };
-    expect(await settle(waitingRun, "success")).toBe(true);
-    expect(await settle(legacyWaiting, "success")).toBe(true);
-    expect(await settle(marketplace, "success")).toBe(false);
-    expect(await settle(refused, "success")).toBe(false);
-    // To a pure waiting run: false whatever it was.
-    expect(await settle(marketplace, "skipped")).toBe(false);
+    const row = await finalize(landed);
+    expect(row.status).toBe("success");
+    expect(row.billable).toBe(false);
   });
 
   it("a skip in flight beside a waiting step keeps the in-flight reason and is billed", async () => {
@@ -638,7 +455,7 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     expect(keys.skipReasonOf(row)).toBe("bundle-in-flight");
   });
 
-  it("the SQL skippedPublicCopy signal agrees with bundleSignalsOfStep", async () => {
+  it("the SQL skippedPublicCopy signal agrees with signalsOfStep", async () => {
     const { runOutcomeSignalSql } = await import(
       "@/lib/workflow/executor/run-outcome"
     );
@@ -665,7 +482,7 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
       .where(eq(schema.workflowExecutionLogs.executionId, run));
     expect(rows).toHaveLength(outputs.length + 1);
     for (const row of rows) {
-      const ts = keys.bundleSignalsOfStep(row.nodeType, row.outputRaw);
+      const ts = keys.signalsOfStep(row.nodeType, row.outputRaw);
       expect({ output: row.outputRaw, behind: row.sql }).toEqual({
         output: row.outputRaw,
         behind: ts.skippedPublicCopy === true,
@@ -686,6 +503,41 @@ describe.skipIf(SKIP)("runs that waited for Not before", () => {
     const row = await finalize(run);
     expect(row.status).toBe("not_landed");
     expect(row.billable).toBe(true);
+  });
+
+  it("a mixed waiting run groups with a pure one into one row", async () => {
+    const { groupWaitingRuns } = await import(
+      "@/lib/workflow/waiting-run-groups"
+    );
+    const pure = await newRun();
+    await logStep(pure, "write-1", WAITING_OUTPUT);
+    await finalize(pure);
+    const mixed = await newRun();
+    await logStep(mixed, "write-1", WAITING_OUTPUT);
+    await logStep(mixed, "http-1", { status: 200 }, "HTTP Request");
+    await finalize(mixed);
+    const rows = await Promise.all([mixed, pure].map(rowOf));
+    const page = rows.map((row) => ({
+      id: row.id,
+      startedAt: row.startedAt,
+      workflowId: row.workflowId,
+      status: row.status,
+      skipReason: keys.skipReasonOf(row),
+    }));
+    expect(page.map((run) => run.skipReason)).toEqual([
+      "bundle-waiting",
+      "bundle-waiting",
+    ]);
+    const info = await waiting.loadWaitingRunInfo(page);
+    const entries = groupWaitingRuns(
+      page.map((run) => ({ ...run, waiting: info.get(run.id) ?? null })),
+      2
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "waiting" });
+    expect(
+      entries[0].kind === "waiting" && entries[0].runs.map((run) => run.id)
+    ).toEqual([mixed, pure]);
   });
 
   it("reads each waiting run's outputs back for the runs list, one query for the page", async () => {
